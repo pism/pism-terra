@@ -22,6 +22,11 @@ Prepare RGI.
 # pylint: disable=unused-import,assignment-from-none,unexpected-keyword-arg
 
 from pathlib import Path
+
+import geopandas as gpd
+import rioxarray
+from shapely.geometry import Point
+
 from pism_terra.download import download_archive
 
 baseurl = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-C-RGIREGION.zip"

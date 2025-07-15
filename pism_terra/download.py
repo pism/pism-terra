@@ -26,7 +26,6 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
-import requests
 
 import earthaccess
 import numpy as np
@@ -163,16 +162,16 @@ def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
         The downloaded archive file as a tarfile.TarFile object if the file is a .tar.gz,
         or as a ZipFile object if the file is a .zip.
     """
-    response = requests.get(url, stream=True)
+    response = requests.get(url, stream=True, timeout=5)
     response.raise_for_status()
 
     total_size = int(response.headers.get("Content-Length", 0))
     buffer = BytesIO()
 
-    with tqdm(total=total_size, unit="B", unit_scale=True, unit_divisor=1024, desc="Downloading archive") as bar:
+    with tqdm(total=total_size, unit="B", unit_scale=True, unit_divisor=1024, desc="Downloading archive") as pbar:
         for chunk in response.iter_content(chunk_size=8192):
             buffer.write(chunk)
-            bar.update(len(chunk))
+            pbar.update(len(chunk))
 
     buffer.seek(0)
 
