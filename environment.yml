@@ -1,0 +1,11 @@
+name: pism-terra
+channels:
+  - conda-forge
+  - pism
+dependencies:
+  - wget
+  - pism
+  - python=3.12.6
+  - pip
+  - pip:
+      - -r requirements.txt

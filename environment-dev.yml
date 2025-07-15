@@ -1,0 +1,19 @@
+name: pism-terra
+channels:
+  - conda-forge
+  - pism
+dependencies:
+  - black
+  - cdo
+  - ncview
+  - petsc
+  - petsc4py
+  - pre-commit
+  - pism
+  - python=3.12.6
+  - pylint
+  - pytest
+  - pip
+  - wget
+  - pip:
+      - -r requirements.txt

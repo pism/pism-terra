@@ -1,0 +1,125 @@
+[project]
+name = "pism-terra"
+version = "0.0.1"
+maintainers = [{name = "Andy Aschwanden", email = "andy.aschwanden@gmail.com"}]
+description = """Global PISM"""
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL 3.0"}
+classifiers = [
+        "License :: OSI Approved :: Apache Software License",
+        "Natural Language :: English",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python :: 3.10",
+        "Topic :: Scientific/Engineering :: Postprocessing",
+        ]
+dynamic = ["dependencies"]
+
+[tool.setuptools.packages.find]
+include = ["pism_terra"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["pism_terra"]
+
+[tool.setuptools.package-data]
+"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml']
+
+[tool.flake8]
+# https://pep8.readthedocs.io/en/latest/intro.html#error-codes
+ignore = """
+    E203,
+    E501,
+    W503,
+    W605,
+    C901,
+    F841,
+    E722,
+    E402,
+    F722,
+    """
+# Max width of Github code review is 119 characters
+max-line-length = 119
+max-complexity = 18
+exclude = [
+    ".tox",
+    ".git",
+    "*/migrations/*",
+    ".mypy_cache",
+    ".pytest_cache",
+    "*__init__.py",
+    "venv"
+    ]
+
+[tool.isort]
+multi_line_output = 3
+include_trailing_comma = "True"
+force_grid_wrap = 0
+use_parentheses = "True"
+line_length = 88
+
+[tool.pycodestyle]
+max-line-length = 119
+exclude = [
+    ".tox",
+    ".git",
+    "*/migrations/*",
+    ".mypy_cache",
+    ".pytest_cache",
+    "*__init__.py",
+    "venv"
+    ]
+
+[tool.mypy]
+python_version = 3.11
+check_untyped_defs = "True"
+ignore_missing_imports = "True"
+warn_unused_ignores = "True"
+warn_redundant_casts = "True"
+warn_unused_configs = "True"
+
+[[tool.mypy.overrides]]
+module = "pism_terra.*"
+ignore_missing_imports = true
+
+[tool.black]
+line-length = 120
+target-version = ['py312']
+include = '\.pyi?$'
+exclude = '''
+/(
+      \.eggs
+    | \.git
+    | \.mypy_cache
+    | _build
+    | conda
+    | docs
+ )/
+'''
+
+[tool.pylint.messages_control]
+disable = """
+    too-many-lines,
+    too-many-positional-arguments,
+    no-else-return,
+    bare-except
+"""
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.numpydoc_validation]
+checks = [
+    "all",   # report on all checks, except the below
+    "EX01",
+    "SA01",
+    "ES01",
+]
