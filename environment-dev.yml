@@ -3,6 +3,7 @@ channels:
   - conda-forge
   - pism
 dependencies:
+  - asf_tools
   - black
   - cdo
   - ncview
@@ -14,6 +15,5 @@ dependencies:
   - pylint
   - pytest
   - pip
-  - wget
   - pip:
       - -r requirements.txt

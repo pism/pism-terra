@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - pism
 dependencies:
-  - wget
+  - asf_tools
   - pism
   - python=3.12.6
   - pip

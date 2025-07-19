@@ -15,7 +15,6 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=too-many-positional-arguments,consider-using-with
 
 """
 Module for data processing.
@@ -99,6 +98,44 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
             file_path = Path(extract_to) / file
             if not file_path.exists() or overwrite:
                 zip_ref.extract(member=file, path=extract_to)
+
+
+def extract_archive(
+    archive: tarfile.TarFile | zipfile.ZipFile, extract_to: str | Path, overwrite: bool = False
+) -> None:
+    """
+    Extract a ZIP or TAR archive to a specified directory with a progress bar.
+
+    Supports both `zipfile.ZipFile` and `tarfile.TarFile` objects. Existing files
+    will be skipped unless `overwrite` is set to True.
+
+    Parameters
+    ----------
+    archive : zipfile.ZipFile or tarfile.TarFile
+        The archive object to extract. Must be opened prior to calling this function.
+    extract_to : str
+        The path to the directory where the archive contents should be extracted.
+    overwrite : bool, optional
+        If True, overwrite files that already exist at the destination. Default is False.
+
+    Notes
+    -----
+    Displays a progress bar using `tqdm` while extracting files.
+    """
+    # Ensure the extract_to directory exists
+    Path(extract_to).mkdir(parents=True, exist_ok=True)
+
+    # Get the list of file names in the zip file
+    if isinstance(archive, tarfile.TarFile):
+        file_list = archive.getnames()
+    else:
+        file_list = archive.namelist()
+
+    # Iterate over the file names with a progress bar
+    for file in tqdm(file_list, desc="Extracting files", unit="file"):
+        file_path = Path(extract_to) / file
+        if not file_path.exists() or overwrite:
+            archive.extract(member=file, path=extract_to)
 
 
 def save_netcdf(

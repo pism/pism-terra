@@ -19,55 +19,126 @@
 """
 Prepare RGI.
 """
-# pylint: disable=unused-import,assignment-from-none,unexpected-keyword-arg
+# pylint: disable=broad-exception-caught
 
+import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import geopandas as gpd
-import rioxarray
-from shapely.geometry import Point
+import pandas as pd
 
-from pism_terra.download import download_archive
-
-baseurl = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-C-RGIREGION.zip"
-
-path = Path("rgi")
-path.mkdir(parents=True, exist_ok=True)
-
-region = "01_alaska"
-url = f"https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-C-{region}.zip"
-archive = download_archive(url)
-archive.extractall(path=path)
+from pism_terra.download import download_archive, extract_archive
 
 
+def get_rgi_url(url_template: str, region: str) -> str:
+    """
+    Format the given URL template with the provided region.
+
+    Parameters
+    ----------
+    url_template : str
+        A string with a `{region}` placeholder to be replaced.
+    region : str
+        The region code to insert into the template.
+
+    Returns
+    -------
+    str
+        The formatted URL.
+    """
+    return url_template.format(region=region)
+
+
+def prepare_rgi_region(
+    region: str,
+    url_template: str = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-C-{region}.zip",
+    extract_to: Path | str = "rgi",
+    area_threshold: float = 1.0,
+):
+    """
+    Download, extract, and preprocess a specific RGI region shapefile.
+
+    This function downloads the zipped shapefile for a given RGI region, extracts it,
+    filters out glaciers smaller than a specified area threshold, and computes the EPSG
+    code and CRS for each glacier based on its UTM zone and latitude.
+
+    Parameters
+    ----------
+    region : str or None
+        The region code (e.g., "01_alaska", "06_iceland") used to fill in the URL template.
+    url_template : str, optional
+        URL template containing a `{region}` placeholder. Defaults to the NSIDC RGI v7 template.
+    extract_to : str or Path, optional
+        Path to the directory where the archive will be extracted. Default is "rgi".
+    area_threshold : float, optional
+        Minimum glacier area (in square kilometers) for inclusion in the result. Defaults to 1.0.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        A GeoDataFrame of glaciers in the region, each with added columns:
+        - "crs": EPSG code string based on hemisphere and UTM zone
+        - "epsg_code": Integer EPSG code for reprojection
+
+    See Also
+    --------
+    download_archive : Downloads an archive from a URL.
+    extract_archive : Extracts a zip archive to a directory.
+
+    Notes
+    -----
+    This function assumes that each region shapefile includes columns `"utm_zone"` and `"cenlat"`.
+    """
+
+    extract_to = Path(extract_to)
+    url = get_rgi_url(url_template, region)
+    archive = download_archive(url)
+    extract_archive(archive, extract_to)
+
+    rgi = gpd.read_file(extract_to / f"RGI2000-v7.0-C-{region}.shp")
+    rgi = rgi[rgi["area_km2"] > area_threshold]
+    rgi["crs"] = rgi.apply(
+        lambda row: f"""EPSG:{32600 + int(row["utm_zone"]) if row["cenlat"] >= 0 else 32700 + int(row["utm_zone"])}""",
+        axis=1,
+    )
+    rgi["epsg_code"] = rgi.apply(
+        lambda row: f"""{32600 + int(row["utm_zone"]) if row["cenlat"] >= 0 else 32700 + int(row["utm_zone"])}""",
+        axis=1,
+    )
+    return rgi
+
+
+rgi_path = Path("rgi")
+rgi_path.mkdir(parents=True, exist_ok=True)
+rgi_archive_path = rgi_path / Path("archive")
+rgi_archive_path.mkdir(parents=True, exist_ok=True)
+
+regions = pd.read_csv(rgi_path / "regions.csv", dtype={"id": str, "name": str})
+regions["region"] = regions["id"] + "_" + regions["name"]
+# Optional: tune this
+MAX_WORKERS = min(8, len(regions))  # or os.cpu_count() if CPU-bound
+
+
+url_template = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-C-{region}.zip"
 wgs84 = "EPSG:4326"
 
-url = "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_UTM_Grid/FeatureServer/0/query?where=1=1&outFields=*&f=geojson"
-utm_zones = gpd.read_file(url)
 
-rgi = gpd.read_file("data/rgi/RGI2000-v7.0-C-01_alaska.shp")
-# Extract bounds from original glacier polygons
-bounds = rgi.geometry.bounds.reset_index(drop=True)
+rgis = []
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    futures = {
+        executor.submit(prepare_rgi_region, region, url_template=url_template, extract_to=rgi_archive_path): region
+        for region in regions["region"]
+    }
 
-# Rename columns for clarity
-bounds.columns = ["minx", "miny", "maxx", "maxy"]
+    for future in as_completed(futures):
+        region = futures[future]
+        try:
+            rgis.append(future.result())
+            print(f"✓ Finished region: {region}")
+        except Exception as e:
+            print(f"✗ Failed region: {region} with error: {e}")
 
-# Add bounds to rgi_with_utm
-rgi_with_bounds = rgi.reset_index(drop=True).join(bounds)
-
-rgi_center = rgi.copy()
-rgi_center["geometry"] = gpd.points_from_xy(rgi["cenlon"], rgi["cenlat"])
-rgi_points = gpd.GeoDataFrame(rgi_center, geometry="geometry", crs=rgi.crs).to_crs(wgs84)
-
-# Ensure UTM grid is in WGS84
-utm_zones = utm_zones.to_crs(wgs84)
-
-# Spatial join: assign each centroid the matching UTM zone polygon attributes
-rgi_with_utm = gpd.sjoin(rgi_points, utm_zones[["ZONE", "ROW_", "geometry"]], how="left", predicate="within")
-
-# Rename for clarity (optional)
-rgi_with_utm = rgi_with_utm.rename(columns={"ZONE": "utm_zone_assigned", "ROW_": "utm_row"})
-
-rgi_with_utm = gpd.GeoDataFrame(rgi_with_utm, geometry=rgi.geometry, crs=rgi.crs).to_crs(wgs84)
-# Preview
-print(rgi_with_utm[["rgi_id", "cenlon", "cenlat", "utm_zone_assigned", "utm_row"]])
+rgi = pd.concat(rgis)
+rgi.to_file(rgi_path / "rgi.gpkg")
+shutil.rmtree(rgi_archive_path)

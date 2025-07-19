@@ -10,6 +10,7 @@ geocube
 geopandas
 gsl
 h5netcdf
+hyp3lib
 joblib
 jupyter
 jupyter-server-proxy
