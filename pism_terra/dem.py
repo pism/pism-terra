@@ -28,16 +28,81 @@ import rasterio
 import rioxarray as rxr
 from dem_stitcher import stitch_dem
 from rasterio.warp import Resampling, calculate_default_transform, reproject
+from shapely.geometry import box
 
 from pism_terra.domain import create_domain
 
 
-def prepare_dem(
+def raster_overlaps_glacier(
+    raster: rasterio.DatasetBase | str | Path, glacier: gpd.GeoDataFrame | gpd.GeoSeries, crs: str | None = None
+) -> bool:
+    """
+    Check whether a raster overlaps with a glacier geometry.
+
+    This function determines whether the bounding box of a raster intersects
+    with the bounding box of a glacier geometry, after reprojecting the glacier
+    to the raster's CRS if needed.
+
+    Parameters
+    ----------
+    raster : rasterio.DatasetBase or str or Path
+        An open rasterio dataset or a path to a raster file.
+    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
+        The glacier geometry. Must contain exactly one geometry.
+    crs : str, optional
+        The CRS of the input glacier geometry, by default "EPSG:4326".
+
+    Returns
+    -------
+    bool
+        True if the raster and glacier bounding boxes intersect, False otherwise.
+
+    Raises
+    ------
+    ValueError
+        If `glacier` contains more than one geometry.
+
+    Notes
+    -----
+    This function compares bounding boxes only. It does not perform pixel-wise
+    or exact geometry intersection.
+    """
+
+    # Open raster
+    if not isinstance(raster, rasterio.DatasetBase):
+        with rasterio.open(raster) as src:
+            raster_bounds = src.bounds
+            raster_crs = src.crs
+    else:
+        raster_crs = raster.crs
+        raster_bounds = raster.bounds
+
+    # Ensure glacier is a GeoSeries with one geometry
+    if isinstance(glacier, gpd.GeoDataFrame):
+        glacier = glacier.geometry
+        glacier_crs = glacier.crs
+    else:
+        glacier_crs = crs
+
+    if len(glacier) != 1:
+        raise ValueError("The glacier input must contain exactly one geometry.")
+
+    glacier = gpd.GeoSeries([glacier.iloc[0]], crs=glacier_crs)
+    glacier = glacier.to_crs(raster_crs)
+
+    # Compare bounding boxes
+    glacier_box = box(*glacier.total_bounds)
+    raster_box = box(*raster_bounds)
+
+    return glacier_box.intersects(raster_box)
+
+
+def prepare_dem_by_id(
     rgi_id: str,
     rgi_file: str | Path = "rgi/rgi.gpkg",
     buffer_distance: float = 0.1,
     dem_name: str = "glo_30",
-    resolution: float = 25.0,
+    resolution: float = 50.0,
 ):
     """
     Generate a reprojected and interpolated DEM for a specific glacier from the RGI.
@@ -94,7 +159,6 @@ def prepare_dem(
             src.write(X, 1)
             src.update_tags(AREA_OR_POINT="Point")
             transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
-            print(transform, width, height)
             kwargs = src.meta.copy()
             kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
 

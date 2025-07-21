@@ -98,7 +98,7 @@ def prepare_rgi_region(
 
     rgi = gpd.read_file(extract_to / f"RGI2000-v7.0-C-{region}.shp")
     rgi = rgi[rgi["area_km2"] > area_threshold]
-    rgi["crs"] = rgi.apply(
+    rgi["epsg"] = rgi.apply(
         lambda row: f"""EPSG:{32600 + int(row["utm_zone"]) if row["cenlat"] >= 0 else 32700 + int(row["utm_zone"])}""",
         axis=1,
     )
