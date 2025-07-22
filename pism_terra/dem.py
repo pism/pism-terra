@@ -15,6 +15,8 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
+# mypy: disable-error-code="call-overload"
+
 """
 Prepare DEM.
 """
@@ -26,6 +28,7 @@ import geopandas as gpd
 import numpy as np
 import rasterio
 import rioxarray as rxr
+import xarray as xr
 from dem_stitcher import stitch_dem
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from shapely.geometry import box
@@ -34,7 +37,7 @@ from pism_terra.domain import create_domain
 
 
 def raster_overlaps_glacier(
-    raster: rasterio.DatasetBase | str | Path, glacier: gpd.GeoDataFrame | gpd.GeoSeries, crs: str | None = None
+    raster: rasterio.DatasetBase | str | Path, glacier: gpd.GeoDataFrame | gpd.GeoSeries, glacier_crs: str | None = None
 ) -> bool:
     """
     Check whether a raster overlaps with a glacier geometry.
@@ -49,8 +52,8 @@ def raster_overlaps_glacier(
         An open rasterio dataset or a path to a raster file.
     glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
         The glacier geometry. Must contain exactly one geometry.
-    crs : str, optional
-        The CRS of the input glacier geometry, by default "EPSG:4326".
+    glacier_crs : str, optional
+        The CRS of the input glacier geometry need if glacier is a GeoSeries.
 
     Returns
     -------
@@ -79,16 +82,17 @@ def raster_overlaps_glacier(
 
     # Ensure glacier is a GeoSeries with one geometry
     if isinstance(glacier, gpd.GeoDataFrame):
-        glacier = glacier.geometry
-        glacier_crs = glacier.crs
+        if len(glacier) != 1:
+            raise ValueError("The glacier input must contain exactly one geometry.")
+        glacier = glacier.to_crs(raster_crs)
+    elif isinstance(glacier, gpd.GeoSeries):
+        if len(glacier) != 1:
+            raise ValueError("Expected exactly one geometry in glacier input.")
+        glacier = gpd.GeoSeries([glacier.iloc[0]], crs=glacier_crs)
     else:
-        glacier_crs = crs
-
-    if len(glacier) != 1:
-        raise ValueError("The glacier input must contain exactly one geometry.")
-
-    glacier = gpd.GeoSeries([glacier.iloc[0]], crs=glacier_crs)
-    glacier = glacier.to_crs(raster_crs)
+        geometry = glacier.geometry
+        glacier = gpd.GeoSeries([geometry], crs=glacier_crs)
+        glacier = glacier.to_crs(raster_crs)
 
     # Compare bounding boxes
     glacier_box = box(*glacier.total_bounds)
@@ -97,76 +101,85 @@ def raster_overlaps_glacier(
     return glacier_box.intersects(raster_box)
 
 
-def prepare_dem_by_id(
-    rgi_id: str,
-    rgi_file: str | Path = "rgi/rgi.gpkg",
-    buffer_distance: float = 0.1,
+def get_surface_dem_by_bounds(
+    bounds: tuple[float, float, float, float],
     dem_name: str = "glo_30",
-    resolution: float = 50.0,
-):
+) -> str:
     """
-    Generate a reprojected and interpolated DEM for a specific glacier from the RGI.
+    Generate and save a surface DEM for a given bounding box, returning the file path.
 
-    This function extracts a glacier by its RGI ID, creates a buffered bounding box,
-    stitches a DEM over the area, reprojects it to the glacier's CRS, interpolates it
-    to a target grid aligned to 100 m, and saves it as a NetCDF file.
+    This function uses `stitch_dem` to create a digital elevation model (DEM) for a specified
+    bounding box. The resulting DEM is saved as a temporary GeoTIFF file in the specified
+    destination CRS, and the file path is returned for further use.
 
     Parameters
     ----------
-    rgi_id : str
-        The RGI ID of the target glacier (e.g., "RGI2000-v7.0-C-06-00014").
-    rgi_file : str or Path, optional
-        Path to the RGI GeoPackage file. Default is "rgi/rgi.gpkg".
-    buffer_distance : float, optional
-        Buffer distance (in degrees) added around the glacier geometry. Default is 0.1.
+    bounds : tuple of float
+        The bounding box of the target area in the form (minx, miny, maxx, maxy).
     dem_name : str, optional
-        Name of the DEM to be used in `stitch_dem` (e.g., "glo_30"). Default is "glo_30".
-    resolution : float, optional
-        Target resolution (in meters) for the resampled DEM. Default is 25.0.
+        The name of the DEM source to use (e.g., "glo_30", "arcticdem"). Default is "glo_30".
 
     Returns
     -------
-    None
-        Saves the reprojected and interpolated DEM as a NetCDF file named "DEM_<rgi_id>.nc".
-
-    See Also
-    --------
-    get_glacier_by_rgi_id : Function to extract a single glacier row from the RGI dataset.
-    stitch_dem : Function to assemble a DEM mosaic over a bounding box.
-    create_domain : Generates a regular domain with specified resolution and bounds.
+    str
+        The file path to the temporary GeoTIFF DEM file.
 
     Notes
     -----
-    - The output NetCDF file contains a single variable `"surface"` on a regular grid.
-    - Intermediate files like GeoTIFF are cleaned or overwritten as needed.
-    - CRS is inferred from the glacier metadata (`rgi["crs"]`) and used for reprojection.
+    - The temporary file is not automatically deleted. The caller is responsible for cleanup.
+    - The DEM is written with AREA_OR_POINT="Point" tag and ellipsoidal height.
     """
-
-    rgi = gpd.read_file(rgi_file)
-    glacier = get_glacier_by_rgi_id(rgi, rgi_id)
-
-    dst_crs = glacier["crs"]
-    bounds = glacier.geometry.buffer(buffer_distance).bounds
-
     X, p = stitch_dem(
         bounds,
         dem_name=dem_name,
         dst_ellipsoidal_height=True,
         dst_area_or_point="Point",
     )
-    with NamedTemporaryFile(suffix=".tif") as geoid_file:
-        with rasterio.open(geoid_file, "w", **p) as src:
-            src.write(X, 1)
-            src.update_tags(AREA_OR_POINT="Point")
-            transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
-            kwargs = src.meta.copy()
-            kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+    with NamedTemporaryFile(suffix=".tif", delete=False) as geoid_file:
+        geoid_path = geoid_file.name  # save path before file is closed
 
-            projected_file = Path(f"DEM_{rgi_id}.tif")
-            nc_file = Path(f"DEM_{rgi_id}.nc")
-            if nc_file.exists():
-                nc_file.unlink()
-            with rasterio.open(projected_file, "w", **kwargs) as dst:
+    with rasterio.open(geoid_path, "w", **p) as src:
+        src.write(X, 1)
+        src.update_tags(AREA_OR_POINT="Point")
+
+    return geoid_path
+
+
+def reproject_file(src_file: str | Path, dst_crs: str | dict, resolution: float) -> str:
+    """
+    Reproject a raster file to a new coordinate reference system and resolution.
+
+    This function opens a source raster file, reprojects its contents to a specified
+    destination CRS and resolution using average resampling, and writes the result
+    to a temporary GeoTIFF file. The path to this reprojected file is returned.
+
+    Parameters
+    ----------
+    src_file : str or Path
+        Path to the source raster file.
+    dst_crs : str or dict
+        Destination coordinate reference system (e.g., "EPSG:32633" or a CRS dict).
+    resolution : float
+        Target resolution for the output raster in units of the destination CRS.
+
+    Returns
+    -------
+    str
+        Path to the temporary reprojected raster file (GeoTIFF).
+
+    Notes
+    -----
+    - The output file is written to a temporary location and is not automatically deleted.
+      It is the caller's responsibility to clean it up.
+    - The reprojected data is resampled using `Resampling.average`.
+    """
+    with rasterio.open(src_file) as src:
+        transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
+        kwargs = src.meta.copy()
+        kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+
+        with NamedTemporaryFile(suffix=".tif", delete=False, delete_on_close=False) as projected_file:
+            with rasterio.open(projected_file.name, "w", **kwargs) as dst:
                 for i in range(1, src.count + 1):
                     reproject(
                         source=rasterio.band(src, i),
@@ -178,22 +191,197 @@ def prepare_dem_by_id(
                         resampling=Resampling.average,
                         resolution=resolution,
                     )
-            da = rxr.open_rasterio(projected_file)
-            da.name = "surface"
-            ds = da.squeeze().to_dataset().drop_vars("band", errors="ignore")
-
-            x_min = np.ceil(ds.x.min() / 100) * 100
-            x_max = np.floor(ds.x.max() / 100) * 100
-            y_min = np.ceil(ds.y.min() / 100) * 100
-            y_max = np.floor(ds.y.max() / 100) * 100
-            ds_target = create_domain([x_min, x_max], [y_min, y_max], resolution=resolution)
-            ds = ds.interp_like(ds_target)
-            ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
-            ds.rio.write_crs(dst_crs, inplace=True)
-            ds.to_netcdf(nc_file)
+            return projected_file.name
 
 
-def get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame, rgi_id: str) -> gpd.GeoSeries:
+def prepare_ice_thickness(glacier, target_grid: xr.Dataset | xr.DataArray, dataset: str = "millan", **kwargs):
+    """
+    Prepare ice thickness data for a given glacier and target grid.
+
+    This function dispatches to a dataset-specific loader to prepare an
+    ice thickness field interpolated to the resolution and bounds of a
+    specified target grid. Currently only the "millan" dataset is supported.
+
+    Parameters
+    ----------
+    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
+        Glacier geometry to match against ice thickness tiles.
+    target_grid : xarray.Dataset or xarray.DataArray
+        Grid to which the output ice thickness will be interpolated.
+    dataset : str, optional
+        The name of the ice thickness dataset to use. Currently only "millan" is implemented.
+        Default is "millan".
+    **kwargs
+        Additional keyword arguments passed to the dataset-specific function,
+        e.g., `target_crs="EPSG:32641"`.
+
+    Returns
+    -------
+    xarray.DataArray
+        Ice thickness interpolated to the target grid.
+
+    Raises
+    ------
+    NotImplementedError
+        If the specified dataset is not supported.
+    """
+    if dataset == "millan":
+        thickness = prepare_ice_thickness_millan(glacier, target_grid, **kwargs)
+    else:
+        raise NotImplementedError(f"Ice thickness dataset '{dataset}' not implemented.")
+    return thickness
+
+
+def prepare_ice_thickness_millan(glacier, target_grid: xr.Dataset | xr.DataArray, **kwargs):
+    """
+    Load and interpolate Millan et al. (2022) ice thickness data to a target grid.
+
+    This function identifies all Millan ice thickness raster files that overlap
+    the input glacier geometry, reprojects them to the specified CRS and resolution,
+    interpolates them onto the target grid, and returns the summed result.
+
+    Parameters
+    ----------
+    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
+        Geometry of the glacier to extract overlapping thickness rasters.
+    target_grid : xarray.Dataset or xarray.DataArray
+        Target grid to which ice thickness should be interpolated.
+    **kwargs
+        Additional keyword arguments. Must include:
+        - target_crs : str
+            CRS to reproject rasters to (e.g., "EPSG:32641").
+
+    Returns
+    -------
+    xarray.DataArray
+        Interpolated and summed ice thickness field on the target grid.
+
+    Notes
+    -----
+    - Uses `rioxarray` to load and project raster files.
+    - All overlapping rasters are summed to produce the final thickness field.
+    - Assumes a fixed reprojected resolution of 50 meters.
+    """
+    ice_thickness_files = list(Path("data/ice_thickness").rglob("*.tif"))
+
+    overlapping_rasters = [path for path in ice_thickness_files if raster_overlaps_glacier(path, glacier)]
+
+    thicknesses = []
+    for k, path in enumerate(overlapping_rasters):
+        projected_file = reproject_file(path, dst_crs=kwargs["target_crs"], resolution=50)
+        da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
+        thickness = da.interp_like(target_grid)
+        thickness.name = "thickness"
+        thickness["raster"] = k
+        thicknesses.append(thickness)
+
+    thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
+
+    return thickness
+
+
+def glacier_dem_from_rgi_id(
+    rgi_id: str,
+    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
+    dem_name: str = "glo_30",
+    buffer_distance: float = 2000.0,
+    resolution: float = 50.0,
+) -> xr.Dataset:
+    """
+    Generate a glacier DEM, ice thickness, and bedrock topography from an RGI ID.
+
+    This function extracts a glacier geometry from an RGI dataset, creates a buffered
+    bounding box around it, stitches and reprojects a DEM over that region, interpolates
+    it to a regular target grid, and derives ice thickness and bed elevation fields.
+
+    Parameters
+    ----------
+    rgi_id : str
+        The RGI ID of the target glacier (e.g., "RGI2000-v7.0-C-06-00014").
+    rgi : geopandas.GeoDataFrame or str or Path, optional
+        Either a pre-loaded RGI GeoDataFrame or the path to the RGI file (e.g., a GeoPackage).
+        Default is "rgi/rgi.gpkg".
+    dem_name : str, optional
+        The name of the DEM source to use (e.g., "glo_30", "arcticdem"). Default is "glo_30".
+    buffer_distance : float, optional
+        Buffer distance in meters applied around the glacier geometry for DEM coverage.
+        Default is 2000.0.
+    resolution : float, optional
+        Target spatial resolution (in meters) for the interpolated DEM and thickness fields.
+        Default is 50.0.
+
+    Returns
+    -------
+    xarray.Dataset
+        A dataset containing the following variables on a regular 2D grid:
+
+        - `surface` : Surface elevation (DEM) in meters
+        - `thickness` : Ice thickness in meters
+        - `bed` : Bedrock elevation (surface - thickness) in meters
+        - `land_ice_area_fraction_retreat` : Boolean mask where ice may retreat (1 if ice-free in DEM)
+
+    See Also
+    --------
+    get_glacier_by_rgi_id : Extract a glacier geometry by RGI ID.
+    get_surface_dem_by_bounds : Download and mosaic a DEM from bounding box.
+    reproject_file : Reproject and resample a raster to a target CRS and resolution.
+    prepare_ice_thickness : Interpolate glacier ice thickness data to a target grid.
+    create_domain : Create a regular xarray grid with specified bounds and resolution.
+
+    Notes
+    -----
+    - This function assumes that the RGI entry contains a valid `epsg` code.
+    - All raster reprojection and interpolation is done using `rasterio` and `rioxarray`.
+    - The glacier is buffered in projected coordinates before reprojecting to geographic CRS.
+    - The result is not written to disk — it is returned as an in-memory xarray.Dataset.
+    - The mask `land_ice_area_fraction_retreat` is derived from missing values in the clipped DEM.
+    """
+
+    if isinstance(rgi, str | Path):
+        rgi = gpd.read_file(rgi)
+    glacier = get_glacier_by_rgi_id(rgi, rgi_id)
+    glacier_series = glacier.iloc[0]
+    dst_crs = glacier_series["epsg"]
+
+    glacier_projected = glacier.to_crs(dst_crs)
+    geometry_buffered_projected = glacier_projected.geometry.buffer(buffer_distance)
+    geometry_buffered_geoid = geometry_buffered_projected.to_crs("EPSG:4326").iloc[0]
+
+    bounds = geometry_buffered_geoid.bounds
+
+    geoid_file = get_surface_dem_by_bounds(bounds, dem_name=dem_name)
+    projected_file = reproject_file(geoid_file, dst_crs, resolution)
+
+    surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
+    surface.name = "surface"
+    surface.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
+
+    x_min = np.ceil((surface.x.min() + buffer_distance) / 100) * 100
+    x_max = np.floor((surface.x.max() - buffer_distance) / 100) * 100
+    y_min = np.ceil((surface.y.min() + buffer_distance) / 100) * 100
+    y_max = np.floor((surface.y.max() - buffer_distance) / 100) * 100
+    target_grid = create_domain([x_min, x_max], [y_min, y_max], resolution=resolution)
+
+    surface = surface.interp_like(target_grid)
+    surface = surface.rio.set_spatial_dims(x_dim="x", y_dim="y")
+    surface.rio.write_crs(dst_crs, inplace=True)
+
+    ice_thickness = prepare_ice_thickness(glacier, target_grid=target_grid, target_crs=dst_crs)
+    ice_thickness.attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
+
+    bed = surface - ice_thickness
+    bed.name = "bed"
+    bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
+
+    liafr = surface.rio.clip(glacier_projected.geometry, drop=False)
+    liafr = xr.where(liafr.isnull(), 1, 0)
+    liafr.name = "land_ice_area_fraction_retreat"
+    liafr.attrs.update({"units": "1"})
+    liafr = liafr.astype("bool")
+    return xr.merge([bed, surface, ice_thickness, liafr])
+
+
+def get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame, rgi_id: str) -> gpd.GeoDataFrame:
     """
     Return the row in the GeoDataFrame matching the given RGI ID.
 
@@ -210,4 +398,4 @@ def get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame, rgi_id: str) -> gpd.GeoSeries:
         The matching row.
     """
     glacier = rgi[rgi["rgi_id"] == rgi_id]
-    return glacier.iloc[0]
+    return glacier

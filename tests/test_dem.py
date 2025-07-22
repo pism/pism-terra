@@ -16,13 +16,14 @@
 # along with PISM; if not, write to the Free Software
 
 """
-Test DEM function.
+Test DEM functions.
 """
 
 import geopandas as gpd
 import numpy as np
 import pytest
 import rasterio
+import xarray as xr
 from numpy.testing import assert_array_almost_equal
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
@@ -30,6 +31,7 @@ from shapely.geometry import box
 
 from pism_terra.dem import (
     get_glacier_by_rgi_id,
+    glacier_dem_from_rgi_id,
     raster_overlaps_glacier,
 )
 
@@ -45,6 +47,37 @@ def fixture_read_rgi() -> gpd.GeoDataFrame:
         RGI test.
     """
     return gpd.read_file("tests/rgi_test.gpkg")
+
+
+def test_glacier_dem_from_rgi_id(rgi):
+    """
+    Test the `glacier_dem_from_rgi_id` function for successful dataset creation.
+
+    This test ensures that the glacier DEM and associated variables can be successfully
+    generated from a given RGI ID and RGI dataset. It verifies that the returned object
+    is a valid `xarray.Dataset` and implicitly tests core functionality like DEM stitching,
+    reprojection, and ice thickness interpolation.
+
+    Parameters
+    ----------
+    rgi : geopandas.GeoDataFrame
+        Pre-loaded RGI dataset fixture or input, typically provided via a pytest fixture.
+
+    Notes
+    -----
+    - This test is intended to be run inside a test suite (e.g., with pytest).
+    - The selected RGI ID ("RGI2000-v7.0-C-01-10853") should correspond to a valid glacier
+      present in the provided RGI dataset.
+    """
+
+    rgi_id = "RGI2000-v7.0-C-01-10853"
+    resolution = 100.0
+    ds = glacier_dem_from_rgi_id(rgi_id, rgi, resolution=resolution)
+    assert isinstance(ds, xr.Dataset)
+    assert "surface" in ds
+    assert "thickness" in ds
+    assert "bed" in ds
+    assert abs(ds.x[0] - ds.x[1]) == resolution
 
 
 def test_get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame):
@@ -72,7 +105,7 @@ def test_get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame):
     """
 
     m_id = "RGI2000-v7.0-C-01-16098"
-    glacier = get_glacier_by_rgi_id(rgi, m_id)
+    glacier = get_glacier_by_rgi_id(rgi, m_id).iloc[0]
     center_true = np.array([-129.73625986215418, 56.197765000000004])
     center = np.array([glacier["cenlon"], glacier["cenlat"]])
     assert_array_almost_equal(center, center_true)
@@ -197,7 +230,7 @@ def test_raster_overlaps_true(in_memory_raster: MemoryFile):
         glacier_poly = box(2, 2, 5, 5)
         glacier = gpd.GeoSeries([glacier_poly], crs="EPSG:32633")
 
-        assert raster_overlaps_glacier(dataset, glacier, crs="EPSG:32633")
+        assert raster_overlaps_glacier(dataset, glacier)
 
 
 def test_raster_overlaps_true_da(dataset: rasterio.DatasetBase):
@@ -225,7 +258,7 @@ def test_raster_overlaps_true_da(dataset: rasterio.DatasetBase):
     glacier_poly = box(2, 2, 5, 5)
     glacier = gpd.GeoSeries([glacier_poly], crs="EPSG:32633")
 
-    assert raster_overlaps_glacier(dataset, glacier, crs="EPSG:32633")
+    assert raster_overlaps_glacier(dataset, glacier)
 
 
 def test_raster_overlaps_false(in_memory_raster: MemoryFile):
@@ -252,7 +285,7 @@ def test_raster_overlaps_false(in_memory_raster: MemoryFile):
         glacier_poly = box(1000, 1000, 1010, 1010)
         glacier = gpd.GeoSeries([glacier_poly], crs="EPSG:32633")
 
-        assert not raster_overlaps_glacier(dataset, glacier, crs="EPSG:32633")
+        assert not raster_overlaps_glacier(dataset, glacier)
 
 
 def test_raster_overlaps_false_da(dataset: rasterio.DatasetBase):
@@ -278,4 +311,4 @@ def test_raster_overlaps_false_da(dataset: rasterio.DatasetBase):
     glacier_poly = box(1000, 1000, 1010, 1010)
     glacier = gpd.GeoSeries([glacier_poly], crs="EPSG:32633")
 
-    assert not raster_overlaps_glacier(dataset, glacier, crs="EPSG:32633")
+    assert not raster_overlaps_glacier(dataset, glacier)
