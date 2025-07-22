@@ -21,12 +21,13 @@ Staging.
 
 from pathlib import Path
 
+from pism_terra.climate import era5_reanalysis_from_rgi_id
 from pism_terra.dem import glacier_dem_from_rgi_id
 
 
 def stage_glacier(
-    rgi_id: str, rgi: str | Path = "rgi/rgi.gpkg", path: str | Path = "boot_files", resolution: float = 50.0
-) -> str:
+    rgi_id: str, rgi: str | Path = "rgi/rgi.gpkg", path: str | Path = "input_files", resolution: float = 50.0
+) -> dict:
     """
     Generate and save a glacier DEM and related variables to a NetCDF file.
 
@@ -65,8 +66,12 @@ def stage_glacier(
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    filename = path / Path(f"{rgi_id}_g{int(resolution)}m.nc")
+    boot_filename = path / Path(f"bootfile_g{int(resolution)}m_{rgi_id}.nc")
     ds = glacier_dem_from_rgi_id(rgi_id, rgi)
-    ds.to_netcdf(filename)
+    ds.to_netcdf(boot_filename)
 
-    return str(filename)
+    climate_filename = path / Path(f"era5_{rgi_id}.nc")
+    ds = era5_reanalysis_from_rgi_id(rgi_id, rgi)
+    ds.to_netcdf(climate_filename)
+
+    return {"boot_file": boot_filename, "historical_climate_file": climate_filename}
