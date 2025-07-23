@@ -20,8 +20,167 @@
 Create domains.
 """
 
+import geopandas as gpd
 import numpy as np
 import xarray as xr
+
+
+def new_range(x: np.array, dx: float) -> tuple[float, float, int]:
+    """
+    Compute the center and half-width of a domain that will contain all values in `x`.
+
+    The resulting half-width is an integer multiple of `dx`.
+
+    Parameters
+    ----------
+    x : numpy.array
+        A 1D array of coordinate values.
+    dx : float
+        The desired resolution for the new domain.
+
+    Returns
+    -------
+    tuple
+        A tuple containing:
+        - center (float): The center of the new domain.
+        - Lx (float): The half-width of the new domain.
+        - N (int): The number of grid points in the new domain.
+
+    Notes
+    -----
+    The function assumes that `x` is sorted in ascending order and that the spacing
+    between consecutive elements in `x` is uniform.
+    """
+    x_min = np.min(x)
+    x_max = np.max(x)
+    dx_old = np.abs(x[1] - x[0])
+
+    # Note: add dx_old because the cell centered grid interpretation implies
+    # that the domain extends by 0.5*dx_old past x_min and x_max
+    width = dx_old + (x_max - x_min)
+    center = 0.5 * (x_min + x_max)
+
+    # compute the number of grid points
+    # (in a cell centered grid the numbers of points and spaces are the same)
+    N = np.ceil(width / dx)
+
+    # compute the new domain half-width
+    Lx = 0.5 * N * dx
+
+    return center, Lx, int(N)
+
+
+def get_bounds(
+    ds: xr.Dataset,
+    base_resolution: int = 50,
+    multipliers: list | np.ndarray = [1, 2, 4],
+) -> tuple[list[float], list[float]]:
+    """
+    Compute the x and y boundaries for a given dataset and set of grid resolutions.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        The input dataset containing the x and y coordinates.
+    base_resolution : int, optional
+        The base resolution in meters, by default 150.
+    multipliers : list or numpy.ndarray, optional
+        A list or array of multipliers to compute the set of grid resolutions,
+        by default [1, 2, 4].
+
+    Returns
+    -------
+    tuple of list of float
+        A tuple containing:
+        - x boundaries (list of float)
+        - y boundaries (list of float)
+
+    Examples
+    --------
+    >>> ds = xr.Dataset({'x': ('x', np.linspace(0, 1000, 11)), 'y': ('y', np.linspace(0, 2000, 21))})
+    >>> x_bnds, y_bnds = get_bounds(ds)
+    >>> print(x_bnds, y_bnds)
+    """
+    x = ds.variables["x"][:]
+    y = ds.variables["y"][:]
+
+    # set of grid resolutions, in meters
+    dx = base_resolution * np.array(multipliers)
+
+    # compute x_bnds for this set of resolutions
+    center, Lx, _ = new_range(x.values, np.lcm.reduce(dx))
+    x_bnds = [center - Lx, center + Lx]
+
+    # compute y_bnds for this set of resolutions
+    center, Ly, _ = new_range(y.values, np.lcm.reduce(dx))
+    y_bnds = [
+        np.minimum(center - Ly, center + Ly),
+        np.maximum(center - Ly, center + Ly),
+    ]
+    return x_bnds, y_bnds
+
+
+def create_grid(
+    series: gpd.GeoSeries,
+    ds: xr.Dataset,
+    buffer_distance: float = 1000.0,
+    base_resolution: int = 50,
+    multipliers: list | np.ndarray = [1, 2, 4],
+    crs: str = "EPSG:3413",
+) -> xr.Dataset:
+    """
+    Create a local grid around a GeoSeries geometry with a buffer_distance.
+
+    Parameters
+    ----------
+    series : geopandas.GeoSeries
+        The GeoSeries containing the geometry to buffer_distance.
+    ds : xarray.Dataset
+        The dataset containing the x and y coordinates.
+    buffer_distance : float, optional
+        The buffer_distance distance around the geometry, by default 500.
+    base_resolution : int, optional
+        The base resolution in meters, by default 150.
+    multipliers : list or numpy.ndarray, optional
+        A list or array of multipliers to compute the set of grid resolutions,
+        by default [1, 2, 4].
+    crs : str, optional
+        The coordinate reference system (CRS) for the domain, by default "EPSG:3413".
+
+    Returns
+    -------
+    xarray.Dataset
+        A dataset representing the local grid.
+
+    Notes
+    -----
+    The function uses the buffered geometry to determine the bounds of the local grid.
+    """
+    series_projected = series.to_crs(crs)
+    try:
+        minx, miny, maxx, maxy = series_projected.iloc[0]["geometry"].buffer(buffer_distance).bounds
+    except:
+        minx, miny, maxx, maxy = series_projected["geometry"].buffer(buffer_distance).bounds
+
+    max_mult = multipliers[-1]
+    resolution_coarse = base_resolution * max_mult
+    x_bnds, y_bnds = get_bounds(ds, base_resolution=base_resolution, multipliers=multipliers)
+    coarse_ds = create_domain(x_bnds, y_bnds, resolution=resolution_coarse)
+
+    ll = coarse_ds.sel({"x": minx, "y": miny}, method="nearest")
+    ur = coarse_ds.sel({"x": maxx, "y": maxy}, method="nearest")
+
+    if miny < maxy:
+        local_ds = coarse_ds.sel({"x": slice(ll["x"], ur["x"]), "y": slice(ll["y"], ur["y"])})
+    else:
+        local_ds = coarse_ds.sel({"x": slice(ll["x"], ur["x"]), "y": slice(ur["y"], ll["y"])})
+
+    x_bnds, y_bnds = [local_ds["x_bnds"][0, 0], local_ds["x_bnds"][-1, -1]], [
+        local_ds["y_bnds"][0, 0],
+        local_ds["y_bnds"][-1, -1],
+    ]
+    grid = create_domain(x_bnds, y_bnds, crs=crs)
+    return grid
 
 
 def create_domain(

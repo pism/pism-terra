@@ -29,14 +29,17 @@ import cdsapi
 import cf_xarray
 import geopandas as gpd
 import numpy as np
+import rioxarray
 import xarray as xr
 
-from pism_terra.dem import get_glacier_by_rgi_id
+from pism_terra.dem import get_glacier_from_rgi_id
 
 
 def era5_reanalysis_from_rgi_id(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
+    dataset: str = "reanalysis-era5-single-levels-monthly-means",
+    buffer_distance: float = 0.1,
 ) -> xr.Dataset:
     """
     Download and return ERA5-Land monthly reanalysis data for a glacier bounding box.
@@ -53,14 +56,18 @@ def era5_reanalysis_from_rgi_id(
         The RGI dataset as a GeoDataFrame or a file path to the RGI GeoPackage.
         If a string or Path is provided, the file is read using `geopandas.read_file`.
         Default is "rgi/rgi.gpkg".
+    dataset : str
+        A valid product name.
+    buffer_distance : float, optional
+        The buffer_distance distance around the geometry, by default 0.1 degrees.
 
     Returns
     -------
     xarray.Dataset
         A dataset containing monthly mean ERA5-Land variables over the glacier bounding box,
         including:
-        - `t2m`: 2-meter air temperature [K]
-        - `tp`: total precipitation [m]
+        - `air_temp`: 2-meter air temperature [K]
+        - `precipitation`: total precipitation [kg m^-2 month^-1]
         The dataset includes a `time` dimension and time bounds.
 
     See Also
@@ -77,15 +84,18 @@ def era5_reanalysis_from_rgi_id(
     - The returned dataset uses CF conventions and has time bounds added via `cf_xarray`.
     """
 
+    print("")
+    print("Generate historical climate")
+    print("-" * 20)
+
     if isinstance(rgi, str | Path):
         rgi = gpd.read_file(rgi)
 
-    glacier = get_glacier_by_rgi_id(rgi, rgi_id)
-    minx, miny, maxx, maxy = glacier.iloc[0].geometry.bounds
+    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
+    minx, miny, maxx, maxy = glacier.iloc[0]["geometry"].buffer(buffer_distance).bounds
 
     client = cdsapi.Client()
 
-    dataset = "reanalysis-era5-land-monthly-means"
     request = {
         "variable": ["2m_temperature", "total_precipitation"],
         "year": [
@@ -144,6 +154,22 @@ def era5_reanalysis_from_rgi_id(
 
     client = cdsapi.Client()
     f = client.retrieve(dataset, request).download()
-    ds = xr.open_dataset(f).rename({"valid_time": "time"})
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
+
+    ds = (
+        xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True)
+        .rename({"valid_time": "time"})
+        .drop_vars(["number", "expver"])
+    )
+    ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
+    ds.rio.write_crs("EPSG:4326", inplace=True)
+
+    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
+    # .fillna(0)
+    # ds["air_temp"] = xr.where(ds["air_temp"] > 0, ds["air_temp"], 273.0, keep_attrs=True)
+    ds["precipitation"].attrs.update({"units": "kg m^-2 month^-1"})
+    ds["precipitation"] *= 1000
     ds = ds.cf.add_bounds("time")
+    ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
+    ds["time"].encoding["calendar"] = "standard"
     return ds

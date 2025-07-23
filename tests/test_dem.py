@@ -30,7 +30,7 @@ from rasterio.transform import from_origin
 from shapely.geometry import box
 
 from pism_terra.dem import (
-    get_glacier_by_rgi_id,
+    get_glacier_from_rgi_id,
     glacier_dem_from_rgi_id,
     raster_overlaps_glacier,
 )
@@ -80,11 +80,11 @@ def test_glacier_dem_from_rgi_id(rgi):
     assert abs(ds.x[0] - ds.x[1]) == resolution
 
 
-def test_get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame):
+def test_get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame):
     """
-    Pytest for the `get_glacier_by_rgi_id` function.
+    Pytest for the `get_glacier_from_rgi_id` function.
 
-    This test checks that the glacier returned by `get_glacier_by_rgi_id` for a known
+    This test checks that the glacier returned by `get_glacier_from_rgi_id` for a known
     RGI ID has the expected central coordinates (longitude and latitude).
 
     Parameters
@@ -105,7 +105,7 @@ def test_get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame):
     """
 
     m_id = "RGI2000-v7.0-C-01-16098"
-    glacier = get_glacier_by_rgi_id(rgi, m_id).iloc[0]
+    glacier = get_glacier_from_rgi_id(rgi, m_id).iloc[0]
     center_true = np.array([-129.73625986215418, 56.197765000000004])
     center = np.array([glacier["cenlon"], glacier["cenlat"]])
     assert_array_almost_equal(center, center_true)

@@ -322,7 +322,7 @@ def glacier_dem_from_rgi_id(
 
     See Also
     --------
-    get_glacier_by_rgi_id : Extract a glacier geometry by RGI ID.
+    get_glacier_from_rgi_id : Extract a glacier geometry by RGI ID.
     get_surface_dem_by_bounds : Download and mosaic a DEM from bounding box.
     reproject_file : Reproject and resample a raster to a target CRS and resolution.
     prepare_ice_thickness : Interpolate glacier ice thickness data to a target grid.
@@ -337,9 +337,13 @@ def glacier_dem_from_rgi_id(
     - The mask `land_ice_area_fraction_retreat` is derived from missing values in the clipped DEM.
     """
 
+    print("")
+    print("Generate DEM")
+    print("-" * 20)
+
     if isinstance(rgi, str | Path):
         rgi = gpd.read_file(rgi)
-    glacier = get_glacier_by_rgi_id(rgi, rgi_id)
+    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
     glacier_series = glacier.iloc[0]
     dst_crs = glacier_series["epsg"]
 
@@ -352,15 +356,15 @@ def glacier_dem_from_rgi_id(
     geoid_file = get_surface_dem_by_bounds(bounds, dem_name=dem_name)
     projected_file = reproject_file(geoid_file, dst_crs, resolution)
 
-    surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
+    surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore").fillna(0)
     surface.name = "surface"
-    surface.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
+    surface.attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
 
-    x_min = np.ceil((surface.x.min() + buffer_distance) / 100) * 100
-    x_max = np.floor((surface.x.max() - buffer_distance) / 100) * 100
-    y_min = np.ceil((surface.y.min() + buffer_distance) / 100) * 100
-    y_max = np.floor((surface.y.max() - buffer_distance) / 100) * 100
-    target_grid = create_domain([x_min, x_max], [y_min, y_max], resolution=resolution)
+    x_min = np.ceil((surface.x.min()) / 1000) * 1000
+    x_max = np.floor((surface.x.max()) / 1000) * 1000
+    y_min = np.ceil((surface.y.min()) / 1000) * 1000
+    y_max = np.floor((surface.y.max()) / 1000) * 1000
+    target_grid = create_domain([x_min, x_max], [y_min, y_max], resolution=resolution, crs=dst_crs)
 
     surface = surface.interp_like(target_grid)
     surface = surface.rio.set_spatial_dims(x_dim="x", y_dim="y")
@@ -374,14 +378,20 @@ def glacier_dem_from_rgi_id(
     bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
 
     liafr = surface.rio.clip(glacier_projected.geometry, drop=False)
-    liafr = xr.where(liafr.isnull(), 1, 0)
+    liafr = xr.where(liafr.isnull(), 0, 1)
     liafr.name = "land_ice_area_fraction_retreat"
     liafr.attrs.update({"units": "1"})
     liafr = liafr.astype("bool")
-    return xr.merge([bed, surface, ice_thickness, liafr])
+
+    ftt_mask = surface.rio.clip(glacier_projected.geometry, drop=False)
+    ftt_mask = xr.where(ftt_mask.isnull(), 1, 0)
+    ftt_mask.name = "ftt_mask"
+    ftt_mask.attrs.update({"units": "1"})
+    ftt_mask = ftt_mask.astype("bool")
+    return xr.merge([bed, surface, ice_thickness, liafr, ftt_mask])
 
 
-def get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame, rgi_id: str) -> gpd.GeoDataFrame:
+def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:
     """
     Return the row in the GeoDataFrame matching the given RGI ID.
 
@@ -397,5 +407,8 @@ def get_glacier_by_rgi_id(rgi: gpd.GeoDataFrame, rgi_id: str) -> gpd.GeoDataFram
     geopandas.GeoSeries
         The matching row.
     """
+    if isinstance(rgi, str | Path):
+        rgi = gpd.read_file(rgi)
+
     glacier = rgi[rgi["rgi_id"] == rgi_id]
     return glacier

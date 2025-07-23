@@ -18,11 +18,12 @@
 """
 Staging.
 """
-
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
 from pism_terra.climate import era5_reanalysis_from_rgi_id
-from pism_terra.dem import glacier_dem_from_rgi_id
+from pism_terra.dem import get_glacier_from_rgi_id, glacier_dem_from_rgi_id
+from pism_terra.domain import create_grid
 
 
 def stage_glacier(
@@ -64,14 +65,51 @@ def stage_glacier(
     - The staging directory is created if it doesn't exist.
     """
 
+    print("=" * 80)
+    print(f"Stage Glacier {rgi_id}")
+    print("-" * 80)
+    print("")
+
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     boot_filename = path / Path(f"bootfile_g{int(resolution)}m_{rgi_id}.nc")
-    ds = glacier_dem_from_rgi_id(rgi_id, rgi)
-    ds.to_netcdf(boot_filename)
+    dem = glacier_dem_from_rgi_id(rgi_id, rgi, buffer_distance=10000.0)
+    crs = dem.rio.crs
+    dem.to_netcdf(boot_filename)
+
+    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
+
+    grid = create_grid(glacier, dem, crs=crs, buffer_distance=1000.0)
+    grid.attrs.update({"domain": rgi_id})
+    grid_filename = path / Path(f"grid_g{int(resolution)}m_{rgi_id}.nc")
+    grid.to_netcdf(grid_filename, engine="h5netcdf")
 
     climate_filename = path / Path(f"era5_{rgi_id}.nc")
-    ds = era5_reanalysis_from_rgi_id(rgi_id, rgi)
-    ds.to_netcdf(climate_filename)
+    climate = era5_reanalysis_from_rgi_id(rgi_id, rgi)
+    climate.to_netcdf(climate_filename)
 
-    return {"boot_file": boot_filename, "historical_climate_file": climate_filename}
+    return {"boot_file": boot_filename, "historical_climate_file": climate_filename, "grid_file": grid_filename}
+
+
+if __name__ == "__main__":
+    __spec__ = None  # type: ignore
+    # set up the option parser
+    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
+    parser.description = "Stage RGI Glacier."
+    parser.add_argument(
+        "--rgi_file",
+        help="""Path to RGI file. Default="data/rgi/rgi.gpkg".""",
+        type=str,
+        default="data/rgi/rgi.gpkg",
+    )
+    parser.add_argument(
+        "RGI_ID",
+        help="""Ensemble netCDF files.""",
+        nargs=1,
+    )
+
+    options, unknown = parser.parse_known_args()
+    rgi = options.rgi_file
+    rgi_id = options.RGI_ID[0]
+
+    stage_glacier(rgi_id, rgi)
