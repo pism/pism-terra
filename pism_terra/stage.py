@@ -21,6 +21,8 @@ Staging.
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
+import pandas as pd
+
 from pism_terra.climate import era5_reanalysis_from_rgi_id
 from pism_terra.dem import get_glacier_from_rgi_id, glacier_dem_from_rgi_id
 from pism_terra.domain import create_grid
@@ -103,13 +105,26 @@ if __name__ == "__main__":
         default="data/rgi/rgi.gpkg",
     )
     parser.add_argument(
+        "--output_path",
+        help="""Path to save all files. Default="data".""",
+        type=str,
+        default="data",
+    )
+    parser.add_argument(
         "RGI_ID",
         help="""Ensemble netCDF files.""",
         nargs=1,
     )
 
     options, unknown = parser.parse_known_args()
+    path = options.output_path
     rgi = options.rgi_file
     rgi_id = options.RGI_ID[0]
 
-    stage_glacier(rgi_id, rgi)
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+    glacier_dict = {"rgi_id": rgi_id}
+    glacier_dict.update(stage_glacier(rgi_id, rgi, path=path))
+    glacier_df = pd.DataFrame.from_dict([glacier_dict])
+    glacier_df.to_csv(path / Path(f"{rgi_id}.csv"))

@@ -29,17 +29,59 @@ import cdsapi
 import cf_xarray
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import rioxarray
 import xarray as xr
 
+import pism_terra.interpolation
 from pism_terra.dem import get_glacier_from_rgi_id
+
+
+def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Add time bounds to a dataset by computing interval start and end times.
+
+    This function computes time bounds for each time step in the dataset
+    by pairing each timestamp with the following one, creating a bounds array
+    with shape (n_time - 1, 2). The dataset is truncated by one time step to
+    ensure alignment with the bounds.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        An xarray Dataset with a one-dimensional "time" coordinate.
+
+    Returns
+    -------
+    xr.Dataset
+        A new dataset with:
+        - one fewer time step (last one dropped),
+        - a new variable "time_bounds" with shape (time, 2),
+        - an attribute "bounds" set on the "time" coordinate pointing to "time_bounds".
+
+    Notes
+    -----
+    - The function assumes that `ds["time"]` is sorted and regularly spaced.
+    - The resulting time bounds are left-closed, right-open intervals: [t, t+1).
+    """
+    time = ds["time"]
+    # Compute bounds (start is current time, end is next time)
+    start = time.values[:-1]
+    end = time.values[1:]
+
+    # Drop the last bound to match shape
+    time_bounds = xr.DataArray(np.stack([start, end], axis=1), dims=["time", "nv"], coords={"time": time[:-1]})
+    ds = ds.isel({"time": slice(0, -1)})
+    ds["time_bounds"] = time_bounds
+    ds["time"].attrs["bounds"] = "time_bounds"
+    return ds
 
 
 def era5_reanalysis_from_rgi_id(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
-    dataset: str = "reanalysis-era5-single-levels-monthly-means",
-    buffer_distance: float = 0.1,
+    dataset: str = "reanalysis-era5-land-monthly-means",
+    buffer_distance: float = 0.02,
 ) -> xr.Dataset:
     """
     Download and return ERA5-Land monthly reanalysis data for a glacier bounding box.
@@ -59,7 +101,7 @@ def era5_reanalysis_from_rgi_id(
     dataset : str
         A valid product name.
     buffer_distance : float, optional
-        The buffer_distance distance around the geometry, by default 0.1 degrees.
+        The buffer_distance distance around the geometry, by default 0.02 degrees.
 
     Returns
     -------
@@ -86,17 +128,21 @@ def era5_reanalysis_from_rgi_id(
 
     print("")
     print("Generate historical climate")
-    print("-" * 20)
+    print("-" * 40)
 
     if isinstance(rgi, str | Path):
         rgi = gpd.read_file(rgi)
 
     glacier = get_glacier_from_rgi_id(rgi, rgi_id)
     minx, miny, maxx, maxy = glacier.iloc[0]["geometry"].buffer(buffer_distance).bounds
+    area = [np.ceil(maxy * 10) / 10, np.floor(minx * 10) / 10, np.floor(miny * 10) / 10, np.ceil(maxx * 10) / 10]
+
+    print(f"Bounding box {area}")
 
     client = cdsapi.Client()
 
     request = {
+        "product_type": ["monthly_averaged_reanalysis"],
         "variable": ["2m_temperature", "total_precipitation"],
         "year": [
             "1980",
@@ -147,12 +193,11 @@ def era5_reanalysis_from_rgi_id(
             "2025",
         ],
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+        "time": ["00:00"],
         "data_format": "netcdf",
         "download_format": "unarchived",
-        "area": [np.ceil(maxy * 10) / 10, np.floor(minx * 10) / 10, np.floor(miny * 10) / 10, np.ceil(maxx * 10) / 10],
+        "area": area,
     }
-
-    client = cdsapi.Client()
     f = client.retrieve(dataset, request).download()
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
@@ -165,11 +210,11 @@ def era5_reanalysis_from_rgi_id(
     ds.rio.write_crs("EPSG:4326", inplace=True)
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
-    # .fillna(0)
-    # ds["air_temp"] = xr.where(ds["air_temp"] > 0, ds["air_temp"], 273.0, keep_attrs=True)
     ds["precipitation"].attrs.update({"units": "kg m^-2 month^-1"})
     ds["precipitation"] *= 1000
-    ds = ds.cf.add_bounds("time")
+    for v in ["precipitation", "air_temp"]:
+        ds[v] = ds[v].utils.fillna(dim=["latitude", "longitude"])
     ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
     ds["time"].encoding["calendar"] = "standard"
-    return ds
+
+    return add_time_bounds(ds)

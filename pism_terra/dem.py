@@ -377,6 +377,10 @@ def glacier_dem_from_rgi_id(
     bed.name = "bed"
     bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
 
+    tillwat = xr.zeros_like(surface) + 2
+    tillwat.name = "tillwat"
+    tillwat.attrs.update({"units": "m"})
+
     liafr = surface.rio.clip(glacier_projected.geometry, drop=False)
     liafr = xr.where(liafr.isnull(), 0, 1)
     liafr.name = "land_ice_area_fraction_retreat"
@@ -388,7 +392,7 @@ def glacier_dem_from_rgi_id(
     ftt_mask.name = "ftt_mask"
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
-    return xr.merge([bed, surface, ice_thickness, liafr, ftt_mask])
+    return xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
 
 
 def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:
