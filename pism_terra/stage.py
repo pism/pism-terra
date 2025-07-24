@@ -90,7 +90,11 @@ def stage_glacier(
     climate = era5_reanalysis_from_rgi_id(rgi_id, rgi)
     climate.to_netcdf(climate_filename)
 
-    return {"boot_file": boot_filename, "historical_climate_file": climate_filename, "grid_file": grid_filename}
+    return {
+        "boot_file": boot_filename.absolute(),
+        "historical_climate_file": climate_filename.absolute(),
+        "grid_file": grid_filename.absolute(),
+    }
 
 
 if __name__ == "__main__":
@@ -123,8 +127,10 @@ if __name__ == "__main__":
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
+    glacier_path = path / Path(rgi_id)
+    glacier_path.mkdir(parents=True, exist_ok=True)
 
     glacier_dict = {"rgi_id": rgi_id}
-    glacier_dict.update(stage_glacier(rgi_id, rgi, path=path))
-    glacier_df = pd.DataFrame.from_dict([glacier_dict])
-    glacier_df.to_csv(path / Path(f"{rgi_id}.csv"))
+    glacier_dict.update(stage_glacier(rgi_id, rgi, path=glacier_path))
+    glacier_df = pd.DataFrame(glacier_dict.items(), columns=["key", "value"])
+    glacier_df.to_csv(glacier_path / Path(f"{rgi_id}.csv"))
