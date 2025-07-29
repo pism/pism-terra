@@ -23,6 +23,7 @@
 Prepare Climate.
 """
 
+from collections.abc import Iterable
 from pathlib import Path
 
 import cdsapi
@@ -33,8 +34,8 @@ import pandas as pd
 import rioxarray
 import xarray as xr
 
-import pism_terra.interpolation
 from pism_terra.dem import get_glacier_from_rgi_id
+from pism_terra.download import extract_archive
 
 
 def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:
@@ -80,7 +81,8 @@ def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:
 def era5_reanalysis_from_rgi_id(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
-    dataset: str = "reanalysis-era5-land-monthly-means",
+    years: list | Iterable = range(1980, 2025),
+    dataset: str = "reanalysis-era5-single-levels-monthly-means",
     buffer_distance: float = 0.02,
 ) -> xr.Dataset:
     """
@@ -94,36 +96,42 @@ def era5_reanalysis_from_rgi_id(
     ----------
     rgi_id : str
         The RGI ID of the glacier (e.g., "RGI2000-v7.0-C-01-10853").
+
     rgi : geopandas.GeoDataFrame or str or Path, optional
-        The RGI dataset as a GeoDataFrame or a file path to the RGI GeoPackage.
-        If a string or Path is provided, the file is read using `geopandas.read_file`.
+        The RGI dataset as a GeoDataFrame or a file path to a GeoPackage (GPKG).
+        If a string or Path is provided, it is read using `geopandas.read_file`.
         Default is "rgi/rgi.gpkg".
-    dataset : str
-        A valid product name.
+
+    years : list or Iterable of int, optional
+        Sequence of years to request data for. Default is `range(1980, 2025)`.
+
+    dataset : str, optional
+        The ERA5 CDS dataset name to use for the query.
+        Default is "reanalysis-era5-single-levels-monthly-means".
+
     buffer_distance : float, optional
-        The buffer_distance distance around the geometry, by default 0.02 degrees.
+        Buffer distance (in degrees) to expand the glacier bounding box before querying.
+        Default is 0.02 degrees.
 
     Returns
     -------
     xarray.Dataset
-        A dataset containing monthly mean ERA5-Land variables over the glacier bounding box,
-        including:
+        A dataset containing monthly mean ERA5-Land variables over the glacier bounding box:
         - `air_temp`: 2-meter air temperature [K]
         - `precipitation`: total precipitation [kg m^-2 month^-1]
-        The dataset includes a `time` dimension and time bounds.
+        Includes a `time` coordinate and `time_bounds` following CF conventions.
 
     See Also
     --------
-    cdsapi.Client : The CDS API Python client for data download.
-    geopandas.read_file : Reads vector geospatial files such as GeoPackages or shapefiles.
-    xarray.open_dataset : Opens NetCDF datasets into xarray objects.
+    cdsapi.Client : CDS API Python client for data access.
+    geopandas.read_file : Reads geospatial vector files such as GeoPackages.
+    xarray.open_dataset : Opens NetCDF files into xarray Datasets.
 
     Notes
     -----
-    - Data is downloaded from the Copernicus CDS and may require a valid CDS API key
-      configured in `~/.cdsapirc`.
-    - The spatial extent of the request is rounded to the nearest 0.1° to match CDS constraints.
-    - The returned dataset uses CF conventions and has time bounds added via `cf_xarray`.
+    - Requires a valid CDS API key configured in `~/.cdsapirc`.
+    - The bounding box is rounded to 0.1° precision for compatibility with CDS queries.
+    - Time bounds are added using `cf_xarray` for CF-compliant time axes.
     """
 
     print("")
@@ -132,6 +140,8 @@ def era5_reanalysis_from_rgi_id(
 
     if isinstance(rgi, str | Path):
         rgi = gpd.read_file(rgi)
+
+    years = list(years)
 
     glacier = get_glacier_from_rgi_id(rgi, rgi_id)
     minx, miny, maxx, maxy = glacier.iloc[0]["geometry"].buffer(buffer_distance).bounds
@@ -144,54 +154,7 @@ def era5_reanalysis_from_rgi_id(
     request = {
         "product_type": ["monthly_averaged_reanalysis"],
         "variable": ["2m_temperature", "total_precipitation"],
-        "year": [
-            "1980",
-            "1981",
-            "1982",
-            "1983",
-            "1984",
-            "1985",
-            "1986",
-            "1987",
-            "1988",
-            "1989",
-            "1990",
-            "1991",
-            "1992",
-            "1993",
-            "1994",
-            "1995",
-            "1996",
-            "1997",
-            "1998",
-            "1999",
-            "2000",
-            "2001",
-            "2002",
-            "2003",
-            "2004",
-            "2005",
-            "2006",
-            "2007",
-            "2008",
-            "2009",
-            "2010",
-            "2011",
-            "2012",
-            "2013",
-            "2014",
-            "2015",
-            "2016",
-            "2017",
-            "2018",
-            "2019",
-            "2020",
-            "2021",
-            "2022",
-            "2023",
-            "2024",
-            "2025",
-        ],
+        "year": years,
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
         "time": ["00:00"],
         "data_format": "netcdf",
@@ -199,21 +162,27 @@ def era5_reanalysis_from_rgi_id(
         "area": area,
     }
     f = client.retrieve(dataset, request).download()
+
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    ds = (
-        xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True)
-        .rename({"valid_time": "time"})
-        .drop_vars(["number", "expver"])
-    )
+    if f.endswith("zip"):
+        era_files = extract_archive(f)
+        dss = []
+        for era_file in era_files:
+            ds = xr.open_mfdataset(era_file, decode_times=time_coder, decode_timedelta=True)
+            ds["valid_time"] = ds["valid_time"].dt.floor("D")
+            dss.append(ds)
+        ds = xr.merge(dss)
+    else:
+        ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True)
+
+    ds = ds.rename({"valid_time": "time"}).drop_vars(["number", "expver"])
     ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
     ds.rio.write_crs("EPSG:4326", inplace=True)
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
-    ds["precipitation"].attrs.update({"units": "kg m^-2 month^-1"})
+    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
     ds["precipitation"] *= 1000
-    for v in ["precipitation", "air_temp"]:
-        ds[v] = ds[v].utils.fillna(dim=["latitude", "longitude"])
     ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
     ds["time"].encoding["calendar"] = "standard"
 

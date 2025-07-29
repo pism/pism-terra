@@ -21,6 +21,7 @@
 Prepare DEM.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -30,10 +31,12 @@ import rasterio
 import rioxarray as rxr
 import xarray as xr
 from dem_stitcher import stitch_dem
+from rasterio.merge import merge
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from shapely.geometry import box
 
 from pism_terra.domain import create_domain
+from pism_terra.download import download_archive, extract_archive
 
 
 def raster_overlaps_glacier(
@@ -229,6 +232,7 @@ def prepare_ice_thickness(glacier, target_grid: xr.Dataset | xr.DataArray, datas
         thickness = prepare_ice_thickness_millan(glacier, target_grid, **kwargs)
     else:
         raise NotImplementedError(f"Ice thickness dataset '{dataset}' not implemented.")
+    thickness = thickness.where(thickness > 0, 0)
     return thickness
 
 
@@ -262,22 +266,118 @@ def prepare_ice_thickness_millan(glacier, target_grid: xr.Dataset | xr.DataArray
     - All overlapping rasters are summed to produce the final thickness field.
     - Assumes a fixed reprojected resolution of 50 meters.
     """
-    ice_thickness_files = list(Path("data/ice_thickness").rglob("*.tif"))
+    ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
 
-    overlapping_rasters = [path for path in ice_thickness_files if raster_overlaps_glacier(path, glacier)]
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
+
+        overlapping_rasters = [f.result() for f in as_completed(futures) if f.result() is not None]
 
     thicknesses = []
     for k, path in enumerate(overlapping_rasters):
-        projected_file = reproject_file(path, dst_crs=kwargs["target_crs"], resolution=50)
-        da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
-        thickness = da.interp_like(target_grid)
-        thickness.name = "thickness"
-        thickness["raster"] = k
-        thicknesses.append(thickness)
+        if path is not None:
+            projected_file = reproject_file(path, dst_crs=kwargs["target_crs"], resolution=50)
+            da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
+            thickness = da.interp_like(target_grid)
+            thickness.name = "thickness"
+            thickness["raster"] = k
+            thicknesses.append(thickness)
 
     thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
 
     return thickness
+
+
+def prepare_ice_thickness_farinotti(glacier):
+    """
+    Load and interpolate Farniotti et al (2019) ice thickness data to a target grid.
+
+    This function identifies all Millan ice thickness raster files that overlap
+    the input glacier geometry, reprojects them to the specified CRS and resolution,
+    interpolates them onto the target grid, and returns the summed result.
+
+    Parameters
+    ----------
+    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
+        Geometry of the glacier to extract overlapping thickness rasters.
+
+    Returns
+    -------
+    xarray.DataArray
+        Interpolated and summed ice thickness field on the target grid.
+
+    Notes
+    -----
+    - Uses `rioxarray` to load and project raster files.
+    - All overlapping rasters are summed to produce the final thickness field.
+    - Assumes a fixed reprojected resolution of 50 meters.
+    """
+
+    path = Path("data/ice_thickness")
+    path.mkdir(parents=True, exist_ok=True)
+
+    region = glacier["o1region"]
+    url = f"https://www.research-collection.ethz.ch/bitstream/handle/20.500.11850/315707/composite_thickness_RGI60-{region}.zip"
+    archive = download_archive(url)
+    extract_archive(archive, extract_to=path)
+
+    ice_thickness_files = list(Path(f"data/ice_thickness/RGI60-{region}").rglob("*.tif"))
+
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
+
+        overlapping_rasters = [f.result() for f in as_completed(futures) if f.result() is not None]
+
+    # Step 1: List all .tif files
+    tif_files = overlapping_rasters
+
+    # Step 2: Open all files as datasets
+    src_files_to_mosaic = [rasterio.open(fp) for fp in tif_files]
+
+    # Step 3: Merge them
+    mosaic, out_transform = merge(src_files_to_mosaic)
+
+    # Step 4: Get metadata from first file, update with new shape and transform
+    out_meta = src_files_to_mosaic[0].meta.copy()
+    out_meta.update(
+        {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
+    )
+
+    # Step 5: Write the result to disk
+    with rasterio.open("merged.tif", "w", **out_meta) as dest:
+        dest.write(mosaic)
+
+
+def check_overlap(path: str | Path, glacier: gpd.GeoDataFrame | gpd.GeoSeries) -> str | Path | None:
+    """
+    Check whether a raster file spatially overlaps a glacier geometry.
+
+    This function determines if the raster at the given path overlaps with the
+    provided glacier geometry. If an overlap is found, the input path is returned;
+    otherwise, `None` is returned. This is typically used to filter a list of
+    raster files based on spatial intersection.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Path to the raster file to be checked for spatial overlap.
+    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
+        The glacier geometry (in projected CRS) to test for intersection.
+
+    Returns
+    -------
+    str or Path or None
+        The input path if the raster intersects with the glacier geometry;
+        otherwise, `None`.
+
+    Notes
+    -----
+    - This function is often used in parallel workflows (e.g., with concurrent.futures)
+      to efficiently identify overlapping rasters.
+    - The CRS of the raster and the glacier geometry must match, or be reprojected
+      accordingly within the `raster_overlaps_glacier` implementation.
+    """
+    return path if raster_overlaps_glacier(path, glacier) else None
 
 
 def glacier_dem_from_rgi_id(
@@ -367,8 +467,6 @@ def glacier_dem_from_rgi_id(
     target_grid = create_domain([x_min, x_max], [y_min, y_max], resolution=resolution, crs=dst_crs)
 
     surface = surface.interp_like(target_grid)
-    surface = surface.rio.set_spatial_dims(x_dim="x", y_dim="y")
-    surface.rio.write_crs(dst_crs, inplace=True)
 
     ice_thickness = prepare_ice_thickness(glacier, target_grid=target_grid, target_crs=dst_crs)
     ice_thickness.attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
@@ -392,7 +490,10 @@ def glacier_dem_from_rgi_id(
     ftt_mask.name = "ftt_mask"
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
-    return xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
+    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
+    ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
+    ds.rio.write_crs(dst_crs, inplace=True)
+    return ds
 
 
 def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:

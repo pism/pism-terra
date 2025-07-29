@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-
+# pylint: disable=consider-using-with
 """
 Module for data processing.
 """
@@ -101,41 +101,82 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
 
 
 def extract_archive(
-    archive: tarfile.TarFile | zipfile.ZipFile, extract_to: str | Path, overwrite: bool = False
-) -> None:
+    archive: tarfile.TarFile | zipfile.ZipFile, extract_to: str | Path = Path("archive"), overwrite: bool = True
+) -> list[str]:
     """
     Extract a ZIP or TAR archive to a specified directory with a progress bar.
 
-    Supports both `zipfile.ZipFile` and `tarfile.TarFile` objects. Existing files
-    will be skipped unless `overwrite` is set to True.
+    Supports `.zip`, `.tar`, `.tar.gz`, `.tgz`, and other common formats. Files
+    are extracted to the specified directory. Existing files are skipped unless
+    `overwrite` is True.
 
     Parameters
     ----------
-    archive : zipfile.ZipFile or tarfile.TarFile
-        The archive object to extract. Must be opened prior to calling this function.
-    extract_to : str
-        The path to the directory where the archive contents should be extracted.
+    archive : str, Path, tarfile.TarFile, or zipfile.ZipFile
+        Path to the archive file or an already opened archive object.
+    extract_to : str or Path, optional
+        Directory to extract the archive contents into. Defaults to "archive".
     overwrite : bool, optional
-        If True, overwrite files that already exist at the destination. Default is False.
+        Whether to overwrite existing files. Defaults to True.
+
+    Returns
+    -------
+    list of str
+        List of paths (as strings) to the extracted files.
+
+    Raises
+    ------
+    ValueError
+        If the archive format is not supported or the file is invalid.
 
     Notes
     -----
-    Displays a progress bar using `tqdm` while extracting files.
+    - Uses `tqdm` for a progress bar.
+    - Automatically creates the `extract_to` directory if needed.
+    - Automatically closes the archive if opened internally.
     """
-    # Ensure the extract_to directory exists
-    Path(extract_to).mkdir(parents=True, exist_ok=True)
+    extract_to = Path(extract_to)
+    extract_to.mkdir(parents=True, exist_ok=True)
 
-    # Get the list of file names in the zip file
-    if isinstance(archive, tarfile.TarFile):
-        file_list = archive.getnames()
+    opened_internally = False
+
+    if isinstance(archive, (str, Path)):
+        archive_path = Path(archive)
+        if archive_path.suffix == ".zip":
+            archive = zipfile.ZipFile(archive_path, "r")
+            opened_internally = True
+        elif archive_path.suffix in [".tar", ".gz", ".tgz", ".bz2", ".xz"]:
+            archive = tarfile.open(archive_path, "r:*")
+            opened_internally = True
+        else:
+            raise ValueError(f"Unsupported archive type: {archive_path}")
+
+    extracted_files = []
+
+    members: str | list[str] | list[zipfile.ZipInfo] | list[tarfile.TarInfo]
+    if isinstance(archive, zipfile.ZipFile):
+        members = archive.namelist()
+        for member in tqdm(members, desc="Extracting files", unit="file"):
+            file_path = extract_to / member
+            if not file_path.exists() or overwrite:
+                archive.extract(member, path=extract_to)
+                extracted_files.append(str(file_path))
+
+    elif isinstance(archive, tarfile.TarFile):
+        members = archive.getmembers()
+        for member in tqdm(members, desc="Extracting files", unit="file"):
+            file_path = extract_to / member.name
+            if not file_path.exists() or overwrite:
+                archive.extract(member, path=extract_to)
+                extracted_files.append(str(file_path))
+
     else:
-        file_list = archive.namelist()
+        raise ValueError(f"Unsupported archive object: {type(archive)}")
 
-    # Iterate over the file names with a progress bar
-    for file in tqdm(file_list, desc="Extracting files", unit="file"):
-        file_path = Path(extract_to) / file
-        if not file_path.exists() or overwrite:
-            archive.extract(member=file, path=extract_to)
+    if opened_internally:
+        archive.close()
+
+    return extracted_files
 
 
 def save_netcdf(

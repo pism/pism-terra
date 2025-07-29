@@ -73,7 +73,7 @@ def new_range(x: np.array, dx: float) -> tuple[float, float, int]:
 def get_bounds(
     ds: xr.Dataset,
     base_resolution: int = 50,
-    multipliers: list | np.ndarray = [1, 2, 4],
+    multipliers: list | np.ndarray = [1, 2, 4, 5, 10, 20],
 ) -> tuple[list[float], list[float]]:
     """
     Compute the x and y boundaries for a given dataset and set of grid resolutions.
@@ -125,7 +125,7 @@ def create_grid(
     ds: xr.Dataset,
     buffer_distance: float = 1000.0,
     base_resolution: int = 50,
-    multipliers: list | np.ndarray = [1, 2, 4],
+    multipliers: list | np.ndarray = [1, 2, 4, 5, 10, 20],
     crs: str = "EPSG:3413",
 ) -> xr.Dataset:
     """

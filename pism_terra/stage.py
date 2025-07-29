@@ -15,14 +15,23 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
+# pylint: disable=unused-import
+
 """
 Staging.
 """
+import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
+import cf_xarray
+import geopandas as gpd
 import pandas as pd
+import rioxarray
+from dask.distributed import Client
+from shapely.geometry import Polygon
 
+import pism_terra.interpolation
 from pism_terra.climate import era5_reanalysis_from_rgi_id
 from pism_terra.dem import get_glacier_from_rgi_id, glacier_dem_from_rgi_id
 from pism_terra.domain import create_grid
@@ -86,9 +95,31 @@ def stage_glacier(
     grid_filename = path / Path(f"grid_g{int(resolution)}m_{rgi_id}.nc")
     grid.to_netcdf(grid_filename, engine="h5netcdf")
 
+    x_point_list = [grid.x_bnds[0][0], grid.x_bnds[0][0], grid.x_bnds[0][1], grid.x_bnds[0][1], grid.x_bnds[0][0]]
+    y_point_list = [grid.y_bnds[0][0], grid.y_bnds[0][1], grid.y_bnds[0][1], grid.y_bnds[0][0], grid.y_bnds[0][0]]
+    polygon_geom = Polygon(zip(x_point_list, y_point_list))
+    polygon = gpd.GeoDataFrame(index=[0], crs=crs, geometry=[polygon_geom])
+    polygon_filename = path / Path(f"domgain_{rgi_id}.gpkg")
+    polygon.to_file(polygon_filename)
+
     climate_filename = path / Path(f"era5_{rgi_id}.nc")
     climate = era5_reanalysis_from_rgi_id(rgi_id, rgi)
-    climate.to_netcdf(climate_filename)
+
+    climate_projected = climate[["air_temp", "precipitation"]].rio.reproject_match(dem.thin({"x": 4, "y": 4}))
+
+    client = Client()
+    print(f"Open client in browser: {client.dashboard_link}")
+    start = time.time()
+    for v in ["precipitation", "air_temp"]:
+        climate_projected[v] = climate_projected[v].utils.fillna(client=client)
+    end = time.time()
+    time_elapsed = end - start
+    print(f"Time elapsed {time_elapsed:.0f}s")
+
+    climate_projected["time_bounds"] = climate["time_bounds"]
+    climate_projected.to_netcdf(climate_filename)
+
+    # climate.to_netcdf(climate_filename)
 
     return {
         "boot_file": boot_filename.absolute(),
