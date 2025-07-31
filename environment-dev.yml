@@ -1,16 +1,11 @@
 name: pism-terra
 channels:
   - conda-forge
-  - pism
 dependencies:
-  - asf_tools
   - black
   - cdo
   - ncview
-  - petsc
-  - petsc4py
   - pre-commit
-  - pism
   - python=3.12.6
   - pylint
   - pytest
