@@ -16,13 +16,14 @@
 # along with PISM; if not, write to the Free Software
 
 """
-Staging.
+Running.
 """
+import json
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
 import pandas as pd
-import xarray as xr
+import toml
 
 
 def merge_dicts(*dicts: dict) -> dict:
@@ -87,80 +88,113 @@ def dict2str(d: dict) -> str:
     return " ".join(f"-{k} {v}" for k, v in d.items())
 
 
-def initialize_glacier(rgi_file: str | Path, path: str | Path = "result", resolution: str = "500m"):
+def run_glacier(rgi_file: str | Path, config_file: str | Path, path: str | Path = "result", resolution: str = "500m"):
     """
-    Initialize configuration and directory structure for a glacier model run.
+    Configure and print a PISM model run command for a glacier.
 
-    This function reads glacier metadata from a CSV file and sets up a simulation
-    directory with configuration attributes required to run a PISM (Parallel Ice
-    Sheet Model) experiment. It modifies attributes of an existing template
-    configuration file and prepares paths for output.
+    This function reads glacier metadata from a CSV file and simulation settings
+    from a TOML configuration file, then builds and prints a full PISM command-line
+    string for executing a model run. It sets up output directories and constructs
+    appropriate output filenames.
 
     Parameters
     ----------
     rgi_file : str or Path
-        Path to a CSV file containing glacier-specific input metadata. Must include
-        the columns: 'rgi_id', 'boot_file', 'grid_file', and 'historical_climate_file'.
+        Path to a CSV file with glacier metadata. Required columns:
+        'rgi_id', 'boot_file', 'grid_file', 'historical_climate_file'.
+    config_file : str or Path
+        Path to a TOML file containing PISM run configuration, including time,
+        energy model, stress balance model, and reporting options.
     path : str or Path, optional
-        Base output directory where the glacier subdirectory will be created.
-        Default is "result".
+        Base directory for storing model outputs. A subdirectory with the glacier RGI ID
+        will be created within this path. Default is "result".
     resolution : str, optional
-        Horizontal grid resolution to assign to the model domain, e.g., "500m".
-        This string is used in the output file name and the configuration.
-
-    Notes
-    -----
-    - Assumes the `historical.nc` configuration template exists at "data/historical.nc".
-    - The start and end times are hard-coded as 1980–2000.
-    - Configuration attributes are updated in-memory and printed but not saved.
-    - This function is a setup step and does not execute the actual model.
+        Horizontal resolution to assign to the model grid (e.g., "500m").
+        This overrides the resolution from the config file if provided.
     """
-
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(rgi_file)
     rgi_id = df["rgi_id"].iloc[0]
-    config = xr.open_dataarray("data/historical.nc")
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    glacier_path = path / Path(rgi_id)
+    glacier_path.mkdir(parents=True, exist_ok=True)
+
+    output_path = glacier_path / Path("output")
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    config_toml = toml.load(config_file)
+    config = json.loads(json.dumps(config_toml))
+    prefix = f"""{config["run"]["mpi"]} {config["run"]["cores"]} {config["run"]["exec"]} """
     start = "1980-01-01"
     end = "2000-01-01"
-    rgi_path = path / Path(rgi_id)
-    rgi_path.mkdir(parents=True, exist_ok=True)
 
-    blatter_dict = {
-        "bp_ksp_monitor": "",
-        "bp_ksp_view_singularvalues": "",
-        "bp_snes_monitor_ratio": "",
-        "bp_pc_type": "mg",
-        "bp_mg_levels_ksp_type richardson": "",
-        "bp_mg_levels_pc_type": "sor",
-        "bp_mg_coarse_ksp_type": "preonly",
-        "bp_mg_coarse_pc_type": "lu",
-        "bp_pc_mg_levels": 3,
-        "bp_pc_type mg": "",
-        "bp_snes_ksp_ew": 1,
-        "bp_snes_ksp_ew_version": 3,
+    run = {}
+    resolution = config["domain"]["resolution"]
+
+    misc = {
+        "atmosphere.models": "given",
+        "atmosphere.given.file": "none",
+        "basal_resistance.pseudo_plastic.q": 0.75,
+        "basal_resistance.pseudo_plastic.u_threshold": "100m/yr",
+        "basal_resistance.pseudo_plastic.enabled": "yes",
+        "basal_yield_stress.mohr_coulomb.till_phi_default": 25,
+        "basal_yield_stress.model": "mohr_coulomb",
+        "basal_yield_stress.mohr_coulomb.till_effective_fraction_overburden": 0.025,
+        "geometry.front_retreat.use_cfl": "yes",
+        "calving.methods": "float_kill",
+        "geometry.part_grid.enabled": "yes",
+        "geometry.remove_icebergs": "yes",
+        "grid.Lbz": 0,
+        "grid.Lz": 2000,
+        "grid.Mbz": 1,
+        "grid.Mz": 101,
+        "grid.registration": "center",
+        "ocean.constant.melt_rate": 0.0,
+        "ocean.models": "constant",
+        "surface.models": "pdd",
+        "stress_balance.blatter.Mz": 17,
+        "stress_balance.blatter.coarsening_factor": 4,
+        "stress_balance.blatter.use_eta_transform": "yes",
+        "stress_balance.calving_front_stress_bc": "yes",
+        "stress_balance.sia.surface_gradient_method": "eta",
+        "stress_balance.ssa.flow_law": "isothermal_glen",
+        "stress_balance.sia.max_diffusivity": 100000.0,
+        "time_stepping.adaptive_ratio": 250,
+        "time_stepping.skip.enabled": "yes",
+        "time_stepping.skip.max": 100,
     }
-    config.attrs.update(blatter_dict)
-    stress_balance_dict = {"stress_balance.model": "blatter"}
-    config.attrs.update(stress_balance_dict)
-    spatial_file = rgi_path / Path(f"spatial_g{resolution}_{rgi_id}_{start}_{end}.nc")
-    config.attrs.update(
+    run.update(misc)
+
+    run.update(config["reporting"])
+    run.update(config["time"])
+    stress_balance = config["stress_balance"]["model"]
+    run.update(config["stress_balance"]["options"][stress_balance])
+    energy = config["energy"]["model"]
+    run.update(config["energy"]["options"][energy])
+    spatial_file = output_path / Path(
+        f"spatial_g{resolution}_{rgi_id}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.nc"
+    )
+    state_file = output_path / Path(
+        f"state_g{resolution}_{rgi_id}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.nc"
+    )
+    run.update(
         {
+            "input.bootstrap": "yes",
             "input.file": df["boot_file"].iloc[0],
             "grid.file": df["grid_file"].iloc[0],
             "grid.dx": resolution,
             "grid.dy": resolution,
+            "output.file": state_file,
             "output.extra.file": spatial_file,
-            "time.start": start,
-            "time.end": end,
             "surface.models": "pdd,forcing",
             "surface.force_to_thickness.file": df["boot_file"].iloc[0],
             "atmosphere.given.file": df["historical_climate_file"].iloc[0],
         }
     )
-    pism_config = config.attrs
-    run_str = dict2str(sort_dict_by_key(pism_config))
+    run_str = dict2str(sort_dict_by_key(run))
+    run_str = prefix + run_str
     print(run_str)
 
 
@@ -171,9 +205,9 @@ if __name__ == "__main__":
     parser.description = "Stage RGI Glacier."
     parser.add_argument(
         "--output_path",
-        help="""Path to save all files. Default="data".""",
+        help="""Base path to save all files data/rgi_id/output. Default="data".""",
         type=str,
-        default="result",
+        default="data",
     )
     parser.add_argument(
         "--resolution",
@@ -186,10 +220,16 @@ if __name__ == "__main__":
         help="""RGI CSV.""",
         nargs=1,
     )
+    parser.add_argument(
+        "CONFIG_FILE",
+        help="""CONFIG TOML.""",
+        nargs=1,
+    )
 
     options, unknown = parser.parse_known_args()
     path = options.output_path
     rgi_file = options.RGI_FILE[0]
+    config_file = options.CONFIG_FILE[0]
     resolution = options.resolution
 
-    initialize_glacier(rgi_file, path=path, resolution=resolution)
+    run_glacier(rgi_file, config_file, path=path, resolution=resolution)

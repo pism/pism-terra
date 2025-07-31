@@ -26,5 +26,6 @@ scikit-learn
 scipy
 seaborn
 shapely
+toml
 tqdm
 xarray

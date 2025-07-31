@@ -89,11 +89,11 @@ def stage_glacier(
     path.mkdir(parents=True, exist_ok=True)
 
     v_filename = path / Path(f"obs_velocities_g{int(resolution)}m_{rgi_id}.nc")
-    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=2000.0)
+    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
     v.to_netcdf(v_filename)
 
     boot_filename = path / Path(f"bootfile_g{int(resolution)}m_{rgi_id}.nc")
-    dem = glacier_dem_from_rgi_id(rgi_id, rgi, buffer_distance=2000.0)
+    dem = glacier_dem_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
     crs = dem.rio.crs
 
     tillwat = xr.zeros_like(dem["surface"])
@@ -107,7 +107,7 @@ def stage_glacier(
     glacier_filename = path / Path(f"rgi_{rgi_id}.gpkg")
     glacier.to_file(glacier_filename)
 
-    grid = create_grid(glacier, dem, crs=crs, buffer_distance=1000.0)
+    grid = create_grid(glacier, dem, crs=crs, buffer_distance=2500.0)
     bounds = [
         grid["x_bnds"].values[0][0],
         grid["y_bnds"].values[0][0],
@@ -118,6 +118,7 @@ def stage_glacier(
     for v in ["bed", "thickness", "surface"]:
         dem[v] = apply_perimeter_band(dem[v], bounds=bounds)
     dem["thickness"] = dem["thickness"].where(dem["thickness"] > 0.0, 0.0)
+    dem["surface"] = dem["surface"].where(dem["thickness"] > 0.0, 0.0)
     dem.rio.write_crs(crs, inplace=True)
     dem.to_netcdf(boot_filename)
 
@@ -133,24 +134,27 @@ def stage_glacier(
     polygon.to_file(polygon_filename)
 
     climate_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
-    climate_projected_filename = path / Path(f"era5_{rgi_id}.nc")
-    climate = era5_reanalysis_from_rgi_id(rgi_id, rgi, buffer_distance=0.2)
+    climate = era5_reanalysis_from_rgi_id(
+        rgi_id, rgi, buffer_distance=0.2, dataset="reanalysis-era5-land-monthly-means"
+    )
     print(f"Saving {climate_filename}")
     climate.to_netcdf(climate_filename)
-    climate_projected = climate[["air_temp", "precipitation"]].rio.reproject_match(dem.thin({"x": 4, "y": 4}))
 
-    client = Client()
-    print(f"Open client in browser: {client.dashboard_link}")
-    start = time.time()
-    for v in ["precipitation", "air_temp"]:
-        climate_projected[v] = climate_projected[v].utils.fillna(client=client)
-    end = time.time()
-    time_elapsed = end - start
-    print(f"Time elapsed {time_elapsed:.0f}s")
+    # climate_projected_filename = path / Path(f"era5_{rgi_id}.nc")
+    # climate_projected = climate[["air_temp", "precipitation"]].rio.reproject_match(dem.thin({"x": 4, "y": 4}))
 
-    climate_projected["time_bounds"] = climate["time_bounds"]
-    print(f"Saving {climate_projected_filename}")
-    climate_projected.to_netcdf(climate_projected_filename)
+    # client = Client()
+    # print(f"Open client in browser: {client.dashboard_link}")
+    # start = time.time()
+    # for v in ["precipitation", "air_temp"]:
+    #     climate_projected[v] = climate_projected[v].utils.fillna(client=client)
+    # end = time.time()
+    # time_elapsed = end - start
+    # print(f"Time elapsed {time_elapsed:.0f}s")
+
+    # climate_projected["time_bounds"] = climate["time_bounds"]
+    # print(f"Saving {climate_projected_filename}")
+    # climate_projected.to_netcdf(climate_projected_filename)
 
     return {
         "boot_file": boot_filename.absolute(),
@@ -192,7 +196,10 @@ if __name__ == "__main__":
     glacier_path = path / Path(rgi_id)
     glacier_path.mkdir(parents=True, exist_ok=True)
 
+    input_path = glacier_path / Path("input")
+    input_path.mkdir(parents=True, exist_ok=True)
+
     glacier_dict = {"rgi_id": rgi_id}
-    glacier_dict.update(stage_glacier(rgi_id, rgi, path=glacier_path))
+    glacier_dict.update(stage_glacier(rgi_id, rgi, path=input_path))
     glacier_df = pd.DataFrame.from_dict([glacier_dict])
-    glacier_df.to_csv(glacier_path / Path(f"{rgi_id}.csv"))
+    glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
