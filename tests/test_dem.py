@@ -32,8 +32,8 @@ from shapely.geometry import box
 from pism_terra.dem import (
     get_glacier_from_rgi_id,
     glacier_dem_from_rgi_id,
-    raster_overlaps_glacier,
 )
+from pism_terra.raster import raster_overlaps_glacier
 
 
 @pytest.fixture(name="rgi")

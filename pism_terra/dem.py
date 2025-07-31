@@ -32,76 +32,11 @@ import rioxarray as rxr
 import xarray as xr
 from dem_stitcher import stitch_dem
 from rasterio.merge import merge
-from rasterio.warp import Resampling, calculate_default_transform, reproject
-from shapely.geometry import box
 
 from pism_terra.domain import create_domain
 from pism_terra.download import download_archive, extract_archive
-
-
-def raster_overlaps_glacier(
-    raster: rasterio.DatasetBase | str | Path, glacier: gpd.GeoDataFrame | gpd.GeoSeries, glacier_crs: str | None = None
-) -> bool:
-    """
-    Check whether a raster overlaps with a glacier geometry.
-
-    This function determines whether the bounding box of a raster intersects
-    with the bounding box of a glacier geometry, after reprojecting the glacier
-    to the raster's CRS if needed.
-
-    Parameters
-    ----------
-    raster : rasterio.DatasetBase or str or Path
-        An open rasterio dataset or a path to a raster file.
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        The glacier geometry. Must contain exactly one geometry.
-    glacier_crs : str, optional
-        The CRS of the input glacier geometry need if glacier is a GeoSeries.
-
-    Returns
-    -------
-    bool
-        True if the raster and glacier bounding boxes intersect, False otherwise.
-
-    Raises
-    ------
-    ValueError
-        If `glacier` contains more than one geometry.
-
-    Notes
-    -----
-    This function compares bounding boxes only. It does not perform pixel-wise
-    or exact geometry intersection.
-    """
-
-    # Open raster
-    if not isinstance(raster, rasterio.DatasetBase):
-        with rasterio.open(raster) as src:
-            raster_bounds = src.bounds
-            raster_crs = src.crs
-    else:
-        raster_crs = raster.crs
-        raster_bounds = raster.bounds
-
-    # Ensure glacier is a GeoSeries with one geometry
-    if isinstance(glacier, gpd.GeoDataFrame):
-        if len(glacier) != 1:
-            raise ValueError("The glacier input must contain exactly one geometry.")
-        glacier = glacier.to_crs(raster_crs)
-    elif isinstance(glacier, gpd.GeoSeries):
-        if len(glacier) != 1:
-            raise ValueError("Expected exactly one geometry in glacier input.")
-        glacier = gpd.GeoSeries([glacier.iloc[0]], crs=glacier_crs)
-    else:
-        geometry = glacier.geometry
-        glacier = gpd.GeoSeries([geometry], crs=glacier_crs)
-        glacier = glacier.to_crs(raster_crs)
-
-    # Compare bounding boxes
-    glacier_box = box(*glacier.total_bounds)
-    raster_box = box(*raster_bounds)
-
-    return glacier_box.intersects(raster_box)
+from pism_terra.raster import check_overlap, reproject_file
+from pism_terra.vector import get_glacier_from_rgi_id
 
 
 def get_surface_dem_by_bounds(
@@ -146,55 +81,6 @@ def get_surface_dem_by_bounds(
         src.update_tags(AREA_OR_POINT="Point")
 
     return geoid_path
-
-
-def reproject_file(src_file: str | Path, dst_crs: str | dict, resolution: float) -> str:
-    """
-    Reproject a raster file to a new coordinate reference system and resolution.
-
-    This function opens a source raster file, reprojects its contents to a specified
-    destination CRS and resolution using average resampling, and writes the result
-    to a temporary GeoTIFF file. The path to this reprojected file is returned.
-
-    Parameters
-    ----------
-    src_file : str or Path
-        Path to the source raster file.
-    dst_crs : str or dict
-        Destination coordinate reference system (e.g., "EPSG:32633" or a CRS dict).
-    resolution : float
-        Target resolution for the output raster in units of the destination CRS.
-
-    Returns
-    -------
-    str
-        Path to the temporary reprojected raster file (GeoTIFF).
-
-    Notes
-    -----
-    - The output file is written to a temporary location and is not automatically deleted.
-      It is the caller's responsibility to clean it up.
-    - The reprojected data is resampled using `Resampling.average`.
-    """
-    with rasterio.open(src_file) as src:
-        transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
-        kwargs = src.meta.copy()
-        kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
-
-        with NamedTemporaryFile(suffix=".tif", delete=False, delete_on_close=False) as projected_file:
-            with rasterio.open(projected_file.name, "w", **kwargs) as dst:
-                for i in range(1, src.count + 1):
-                    reproject(
-                        source=rasterio.band(src, i),
-                        destination=rasterio.band(dst, i),
-                        src_transform=src.transform,
-                        src_crs=src.crs,
-                        dst_transform=transform,
-                        dst_crs=dst_crs,
-                        resampling=Resampling.average,
-                        resolution=resolution,
-                    )
-            return projected_file.name
 
 
 def prepare_ice_thickness(glacier, target_grid: xr.Dataset | xr.DataArray, dataset: str = "millan", **kwargs):
@@ -348,43 +234,11 @@ def prepare_ice_thickness_farinotti(glacier):
         dest.write(mosaic)
 
 
-def check_overlap(path: str | Path, glacier: gpd.GeoDataFrame | gpd.GeoSeries) -> str | Path | None:
-    """
-    Check whether a raster file spatially overlaps a glacier geometry.
-
-    This function determines if the raster at the given path overlaps with the
-    provided glacier geometry. If an overlap is found, the input path is returned;
-    otherwise, `None` is returned. This is typically used to filter a list of
-    raster files based on spatial intersection.
-
-    Parameters
-    ----------
-    path : str or pathlib.Path
-        Path to the raster file to be checked for spatial overlap.
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        The glacier geometry (in projected CRS) to test for intersection.
-
-    Returns
-    -------
-    str or Path or None
-        The input path if the raster intersects with the glacier geometry;
-        otherwise, `None`.
-
-    Notes
-    -----
-    - This function is often used in parallel workflows (e.g., with concurrent.futures)
-      to efficiently identify overlapping rasters.
-    - The CRS of the raster and the glacier geometry must match, or be reprojected
-      accordingly within the `raster_overlaps_glacier` implementation.
-    """
-    return path if raster_overlaps_glacier(path, glacier) else None
-
-
 def glacier_dem_from_rgi_id(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     dem_name: str = "glo_30",
-    buffer_distance: float = 2000.0,
+    buffer_distance: float = 5000.0,
     resolution: float = 50.0,
 ) -> xr.Dataset:
     """
@@ -439,7 +293,7 @@ def glacier_dem_from_rgi_id(
 
     print("")
     print("Generate DEM")
-    print("-" * 20)
+    print("-" * 80)
 
     if isinstance(rgi, str | Path):
         rgi = gpd.read_file(rgi)
@@ -451,22 +305,21 @@ def glacier_dem_from_rgi_id(
     geometry_buffered_projected = glacier_projected.geometry.buffer(buffer_distance)
     geometry_buffered_geoid = geometry_buffered_projected.to_crs("EPSG:4326").iloc[0]
 
-    bounds = geometry_buffered_geoid.bounds
+    bounds_geoid_buffered = geometry_buffered_geoid.bounds
 
-    geoid_file = get_surface_dem_by_bounds(bounds, dem_name=dem_name)
+    geoid_file = get_surface_dem_by_bounds(bounds_geoid_buffered, dem_name=dem_name)
     projected_file = reproject_file(geoid_file, dst_crs, resolution)
 
-    surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore").fillna(0)
+    surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
     surface.name = "surface"
     surface.attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
-
-    x_min = np.ceil((surface.x.min()) / 1000) * 1000
-    x_max = np.floor((surface.x.max()) / 1000) * 1000
-    y_min = np.ceil((surface.y.min()) / 1000) * 1000
-    y_max = np.floor((surface.y.max()) / 1000) * 1000
+    x_min = np.ceil((surface.x.min()) / 100) * 100
+    x_max = np.floor((surface.x.max()) / 100) * 100
+    y_min = np.ceil((surface.y.min()) / 100) * 100
+    y_max = np.floor((surface.y.max()) / 100) * 100
     target_grid = create_domain([x_min, x_max], [y_min, y_max], resolution=resolution, crs=dst_crs)
 
-    surface = surface.interp_like(target_grid)
+    surface = surface.interp_like(target_grid).fillna(0)
 
     ice_thickness = prepare_ice_thickness(glacier, target_grid=target_grid, target_crs=dst_crs)
     ice_thickness.attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
@@ -474,10 +327,6 @@ def glacier_dem_from_rgi_id(
     bed = surface - ice_thickness
     bed.name = "bed"
     bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
-
-    tillwat = xr.zeros_like(surface) + 2
-    tillwat.name = "tillwat"
-    tillwat.attrs.update({"units": "m"})
 
     liafr = surface.rio.clip(glacier_projected.geometry, drop=False)
     liafr = xr.where(liafr.isnull(), 0, 1)
@@ -490,30 +339,8 @@ def glacier_dem_from_rgi_id(
     ftt_mask.name = "ftt_mask"
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
+
+    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask])
     ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
     ds.rio.write_crs(dst_crs, inplace=True)
     return ds
-
-
-def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:
-    """
-    Return the row in the GeoDataFrame matching the given RGI ID.
-
-    Parameters
-    ----------
-    rgi : geopandas.GeoDataFrame
-        GeoDataFrame containing glacier data.
-    rgi_id : str
-        RGI identifier to look up.
-
-    Returns
-    -------
-    geopandas.GeoSeries
-        The matching row.
-    """
-    if isinstance(rgi, str | Path):
-        rgi = gpd.read_file(rgi)
-
-    glacier = rgi[rgi["rgi_id"] == rgi_id]
-    return glacier

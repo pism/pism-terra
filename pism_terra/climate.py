@@ -83,7 +83,7 @@ def era5_reanalysis_from_rgi_id(
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     years: list | Iterable = range(1980, 2025),
     dataset: str = "reanalysis-era5-single-levels-monthly-means",
-    buffer_distance: float = 0.02,
+    buffer_distance: float = 0.1,
 ) -> xr.Dataset:
     """
     Download and return ERA5-Land monthly reanalysis data for a glacier bounding box.
@@ -136,7 +136,7 @@ def era5_reanalysis_from_rgi_id(
 
     print("")
     print("Generate historical climate")
-    print("-" * 40)
+    print("-" * 80)
 
     if isinstance(rgi, str | Path):
         rgi = gpd.read_file(rgi)
