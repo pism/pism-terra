@@ -1,15 +1,14 @@
 bokeh
 cartopy
 cdsapi
-cf-xarray
+cf_xarray
 cf_units
 cftime
 dask[distributed,dataframe]
+dem_stitcher
 earthaccess
 flox
-geocube
 geopandas
-gsl
 h5netcdf
 joblib
 jupyter

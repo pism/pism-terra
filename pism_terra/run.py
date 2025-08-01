@@ -88,7 +88,9 @@ def dict2str(d: dict) -> str:
     return " ".join(f"-{k} {v}" for k, v in d.items())
 
 
-def run_glacier(rgi_file: str | Path, config_file: str | Path, path: str | Path = "result", resolution: str = "500m"):
+def run_glacier(
+    rgi_file: str | Path, config_file: str | Path, path: str | Path = "result", resolution: None | str = None
+):
     """
     Configure and print a PISM model run command for a glacier.
 
@@ -127,49 +129,25 @@ def run_glacier(rgi_file: str | Path, config_file: str | Path, path: str | Path 
     config_toml = toml.load(config_file)
     config = json.loads(json.dumps(config_toml))
     prefix = f"""{config["run"]["mpi"]} {config["run"]["cores"]} {config["run"]["exec"]} """
-    start = "1980-01-01"
-    end = "2000-01-01"
 
     run = {}
-    resolution = config["domain"]["resolution"]
+    if resolution is None:
+        resolution = config["grid"]["resolution"]
 
-    misc = {
-        "atmosphere.models": "given",
-        "atmosphere.given.file": "none",
-        "basal_resistance.pseudo_plastic.q": 0.75,
-        "basal_resistance.pseudo_plastic.u_threshold": "100m/yr",
-        "basal_resistance.pseudo_plastic.enabled": "yes",
-        "basal_yield_stress.mohr_coulomb.till_phi_default": 25,
-        "basal_yield_stress.model": "mohr_coulomb",
-        "basal_yield_stress.mohr_coulomb.till_effective_fraction_overburden": 0.025,
-        "geometry.front_retreat.use_cfl": "yes",
-        "calving.methods": "float_kill",
-        "geometry.part_grid.enabled": "yes",
-        "geometry.remove_icebergs": "yes",
-        "grid.Lbz": 0,
-        "grid.Lz": 2000,
-        "grid.Mbz": 1,
-        "grid.Mz": 101,
-        "grid.registration": "center",
-        "ocean.constant.melt_rate": 0.0,
-        "ocean.models": "constant",
-        "surface.models": "pdd",
-        "stress_balance.blatter.Mz": 17,
-        "stress_balance.blatter.coarsening_factor": 4,
-        "stress_balance.blatter.use_eta_transform": "yes",
-        "stress_balance.calving_front_stress_bc": "yes",
-        "stress_balance.sia.surface_gradient_method": "eta",
-        "stress_balance.ssa.flow_law": "isothermal_glen",
-        "stress_balance.sia.max_diffusivity": 100000.0,
-        "time_stepping.adaptive_ratio": 250,
-        "time_stepping.skip.enabled": "yes",
-        "time_stepping.skip.max": 100,
-    }
-    run.update(misc)
+    start = config["time"]["time.start"]
+    end = config["time"]["time.end"]
 
+    run.update(config["atmosphere"])
+    run.update(config["geometry"])
+    run.update(config["ocean"])
+    run.update(config["calving"])
+    run.update(config["iceflow"])
+    run.update(config["surface"])
     run.update(config["reporting"])
     run.update(config["time"])
-    stress_balance = config["stress_balance"]["model"]
+    run.update(config["input"])
+
+    stress_balance = config["stress_balance"]["stress_balance.model"]
     run.update(config["stress_balance"]["options"][stress_balance])
     energy = config["energy"]["model"]
     run.update(config["energy"]["options"][energy])
@@ -181,20 +159,33 @@ def run_glacier(rgi_file: str | Path, config_file: str | Path, path: str | Path 
     )
     run.update(
         {
-            "input.bootstrap": "yes",
             "input.file": df["boot_file"].iloc[0],
             "grid.file": df["grid_file"].iloc[0],
             "grid.dx": resolution,
             "grid.dy": resolution,
-            "output.file": state_file,
-            "output.extra.file": spatial_file,
-            "surface.models": "pdd,forcing",
+            "output.file": state_file.absolute(),
+            "output.extra.file": spatial_file.absolute(),
             "surface.force_to_thickness.file": df["boot_file"].iloc[0],
             "atmosphere.given.file": df["historical_climate_file"].iloc[0],
         }
     )
     run_str = dict2str(sort_dict_by_key(run))
     run_str = prefix + run_str
+
+    input_path = glacier_path / Path("input")
+    glacier_filename = input_path / Path(f"rgi_{rgi_id}.gpkg")
+
+    run_toml = {
+        "rgi_id": rgi_id,
+        "outline": str(glacier_filename.absolute()),
+        "output": {"spatial": str(spatial_file.absolute()), "state": str(state_file.absolute())},
+        "config": run,
+    }
+    run_file = output_path / Path(
+        f"g{resolution}_{rgi_id}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.toml"
+    )
+    with open(run_file, "w", encoding="utf-8") as toml_file:
+        toml.dump(run_toml, toml_file)
     print(run_str)
 
 
@@ -211,9 +202,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--resolution",
-        help="""Horizontal grid resolution. Default="500m".""",
+        help="""Override horizontal grid resolution. Default is None.""",
         type=str,
-        default="500m",
+        default=None,
     )
     parser.add_argument(
         "RGI_FILE",
