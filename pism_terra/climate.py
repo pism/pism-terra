@@ -152,6 +152,8 @@ def era5_reanalysis_from_rgi_id(
     ds = download_request(dataset, area, years)
     ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
     ds.rio.write_crs("EPSG:4326", inplace=True)
+    lon_attrs = ds["longitude"].attrs
+    lat_attrs = ds["latitude"].attrs
 
     if ("GRIB_missingValue" or "missing_value" or "_FillValue") in (ds["tp"].attrs or ds["t2m"].attrs):
         print("Missing values detected, filling with global reanalysis")
@@ -161,18 +163,19 @@ def era5_reanalysis_from_rgi_id(
             .rio.reproject_match(ds)
             .rename_dims({"x": "longitude", "y": "latitude"})
         )
-        print(ds)
-        print(ds_global)
-        print(ds_global_)
         ds = xr.where(np.isnan(ds), ds_global_, ds)
 
     ds = ds.rename({"valid_time": "time"}).drop_vars(["number", "expver"])
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
     ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
+    ds["air_temp"].attrs.update({"units": "kelvin"})
     ds["precipitation"] *= 1000
     ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
     ds["time"].encoding["calendar"] = "standard"
+    ds["longitude"].attrs = lon_attrs
+    ds["latitude"].attrs = lat_attrs
+    ds.rio.write_crs("EPSG:4326", inplace=True)
 
     return add_time_bounds(ds)
 
