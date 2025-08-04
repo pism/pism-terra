@@ -149,6 +149,70 @@ def era5_reanalysis_from_rgi_id(
 
     print(f"Bounding box {area}")
 
+    ds = download_request(dataset, area, years)
+    ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
+    ds.rio.write_crs("EPSG:4326", inplace=True)
+
+    if ("GRIB_missingValue" or "missing_value" or "_FillValue") in (ds["tp"].attrs or ds["t2m"].attrs):
+        print("Missing values detected, filling with global reanalysis")
+        ds_global = download_request("reanalysis-era5-single-levels-monthly-means", area, years)
+        ds_global_ = (
+            ds_global.rio.write_crs("EPSG:4326")
+            .rio.reproject_match(ds)
+            .rename_dims({"x": "longitude", "y": "latitude"})
+        )
+        print(ds)
+        print(ds_global)
+        print(ds_global_)
+        ds = xr.where(np.isnan(ds), ds_global_, ds)
+
+    ds = ds.rename({"valid_time": "time"}).drop_vars(["number", "expver"])
+
+    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
+    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
+    ds["precipitation"] *= 1000
+    ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
+    ds["time"].encoding["calendar"] = "standard"
+
+    return add_time_bounds(ds)
+
+
+def download_request(
+    dataset: str = "reanalysis-era5-single-levels-monthly-means",
+    area: list[float] = [90, -90, 45, 90],
+    years: list | Iterable = range(1980, 2025),
+) -> xr.Dataset:
+    """
+    Download ERA5 monthly reanalysis data from the Copernicus Climate Data Store (CDS).
+
+    This function sends a request to the CDS API to retrieve monthly mean 2m temperature
+    and total precipitation data for a specified spatial domain and time range.
+    The downloaded data are returned as an xarray Dataset.
+
+    Parameters
+    ----------
+    dataset : str, optional
+        The CDS dataset identifier. Defaults to "reanalysis-era5-single-levels-monthly-means".
+    area : list of float, optional
+        Bounding box [North, West, South, East] in degrees. Defaults to [90, -90, 45, 90].
+    years : list or iterable, optional
+        List or range of years to download. Defaults to range(1980, 2025).
+
+    Returns
+    -------
+    xr.Dataset
+        An xarray Dataset containing the merged ERA5 monthly data. The variables include:
+        - `t2m` : 2-meter air temperature [K]
+        - `tp` : total precipitation [m]
+        If multiple NetCDF files are returned, they are merged into a single dataset.
+
+    Notes
+    -----
+    - Requires a valid CDS API key in `~/.cdsapirc`.
+    - Uses the `cdsapi` client to perform the download.
+    - If the data is delivered as a ZIP archive, the contents are extracted before loading.
+    - The `valid_time` field is floored to daily resolution.
+    """
     client = cdsapi.Client()
 
     request = {
@@ -161,8 +225,8 @@ def era5_reanalysis_from_rgi_id(
         "download_format": "unarchived",
         "area": area,
     }
-    f = client.retrieve(dataset, request).download()
 
+    f = client.retrieve(dataset, request).download()
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
     if f.endswith("zip"):
@@ -176,14 +240,4 @@ def era5_reanalysis_from_rgi_id(
     else:
         ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True)
 
-    ds = ds.rename({"valid_time": "time"}).drop_vars(["number", "expver"])
-    ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
-    ds.rio.write_crs("EPSG:4326", inplace=True)
-
-    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
-    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
-    ds["precipitation"] *= 1000
-    ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
-    ds["time"].encoding["calendar"] = "standard"
-
-    return add_time_bounds(ds)
+    return ds
