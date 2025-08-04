@@ -34,7 +34,7 @@ from shapely.geometry import Polygon
 
 import pism_terra.interpolation
 from pism_terra.climate import era5_reanalysis_from_rgi_id
-from pism_terra.dem import glacier_dem_from_rgi_id
+from pism_terra.dem import add_malaspina_bed, glacier_dem_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.observations import glacier_velocities_from_rgi_id
 from pism_terra.raster import apply_perimeter_band
@@ -119,6 +119,8 @@ def stage_glacier(
         dem[v] = apply_perimeter_band(dem[v], bounds=bounds)
     dem["thickness"] = dem["thickness"].where(dem["thickness"] > 0.0, 0.0)
     dem["surface"] = dem["surface"].where(dem["thickness"] > 0.0, 0.0)
+    if rgi_id == "RGI2000-v7.0-C-01-09429-A":
+        dem = add_malaspina_bed(dem, target_crs=crs)
     dem.rio.write_crs(crs, inplace=True)
     dem.to_netcdf(boot_filename)
 

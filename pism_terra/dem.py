@@ -344,3 +344,67 @@ def glacier_dem_from_rgi_id(
     ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
     ds.rio.write_crs(dst_crs, inplace=True)
     return ds
+
+
+def add_malaspina_bed(
+    ds: xr.Dataset,
+    target_crs: str,
+    bed_file: str | Path = "data/ice_thickness/malaspina/malaspina_bed_3338.tif",
+    outline_file: str | Path = "data/rgi/rgi-malaspina.shp",
+) -> xr.Dataset:
+    """
+    Replace bed topography in a dataset using the Malaspina Glacier bed dataset.
+
+    This function reads a GeoTIFF file containing bed topography data for the Malaspina Glacier,
+    clips it to the glacier outline, reprojects it to match the target dataset's CRS, and
+    replaces the corresponding region in the input dataset. It also updates the `thickness`
+    and `surface` fields accordingly.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Input dataset containing at least the variables 'bed', 'thickness', and 'surface'.
+    target_crs : str
+        The target coordinate reference system (CRS) to use for reprojection (e.g., "EPSG:3413").
+    bed_file : str or Path, optional
+        Path to the GeoTIFF file containing the Malaspina bed topography.
+        Default is "data/ice_thickness/malaspina/malaspina_bed_3338.tif".
+    outline_file : str or Path, optional
+        Path to the glacier outline shapefile used to clip the bed topography.
+        Default is "data/rgi/rgi-malaspina.shp".
+
+    Returns
+    -------
+    xr.Dataset
+        Modified dataset with updated 'bed', 'thickness', and 'surface' fields within the Malaspina region.
+
+    Notes
+    -----
+    - Bed values of -9999.0 are treated as nodata and replaced with NaN.
+    - Replaces `bed` where new values are available and recalculates `thickness = surface - bed`.
+    - Ensures that thickness and surface are non-negative.
+    - Updates CF-convention attributes and CRS metadata.
+    """
+
+    outline = gpd.read_file(outline_file).to_crs(target_crs)
+    da = (
+        rxr.open_rasterio(bed_file, mask=True)
+        .squeeze()
+        .drop_vars("band", errors="ignore")
+        .rio.reproject_match(ds["bed"])
+    )
+    clipped_da = da.rio.clip(outline.geometry, drop=False)
+    clipped_da = clipped_da.where(clipped_da != -9999.0, other=np.nan).drop_vars("spatial_ref")
+    ds["bed"] = xr.where(~np.isnan(clipped_da), clipped_da, ds["bed"])
+    ds["thickness"] = xr.where(~np.isnan(clipped_da), ds["surface"] - clipped_da, ds["thickness"])
+
+    ds["thickness"] = ds["thickness"].where(ds["thickness"] > 0.0, 0.0)
+    ds["surface"] = ds["surface"].where(ds["thickness"] > 0.0, 0.0)
+    ds["surface"].attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
+
+    ds["thickness"].attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
+
+    ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
+    ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
+    ds.rio.write_crs(target_crs, inplace=True)
+    return ds
