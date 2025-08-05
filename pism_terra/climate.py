@@ -159,9 +159,7 @@ def era5_reanalysis_from_rgi_id(
         print("Missing values detected, filling with global reanalysis")
         ds_global = download_request("reanalysis-era5-single-levels-monthly-means", area, years)
         ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds)
-            .rename_dims({"x": "longitude", "y": "latitude"})
+            ds_global.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
         )
         ds = xr.where(np.isnan(ds), ds_global_, ds)
 
@@ -169,8 +167,8 @@ def era5_reanalysis_from_rgi_id(
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
     ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
-    ds["air_temp"].attrs.update({"units": "kelvin"})
     ds["precipitation"] *= 1000
+    ds["air_temp"].attrs.update({"units": "kelvin"})
     ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
     ds["time"].encoding["calendar"] = "standard"
     ds["longitude"].attrs = lon_attrs
