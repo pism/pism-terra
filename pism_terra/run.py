@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
+
 """
 Running.
 """
@@ -140,6 +141,7 @@ def run_glacier(
     run.update(config["atmosphere"])
     run.update(config["geometry"])
     run.update(config["ocean"])
+    run.update(config["grid"])
     run.update(config["calving"])
     run.update(config["iceflow"])
     run.update(config["surface"])
