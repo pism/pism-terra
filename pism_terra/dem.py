@@ -395,7 +395,7 @@ def add_malaspina_bed(
     )
     clipped_da = da.rio.clip(outline.geometry, drop=False)
     clipped_da = clipped_da.where(clipped_da != -9999.0, other=np.nan).drop_vars("spatial_ref")
-    ds["bed"] = xr.where(~np.isnan(clipped_da), clipped_da, ds["bed"])
+    ds["bed"] = xr.where(~np.isnan(clipped_da), clipped_da, ds["bed"], keep_attrs=True)
     ds["thickness"] = xr.where(~np.isnan(clipped_da), ds["surface"] - clipped_da, ds["thickness"])
 
     ds["thickness"] = ds["thickness"].where(ds["thickness"] > 0.0, 0.0)
@@ -405,6 +405,4 @@ def add_malaspina_bed(
     ds["thickness"].attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
 
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
-    ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
-    ds.rio.write_crs(target_crs, inplace=True)
     return ds
