@@ -396,7 +396,7 @@ def add_malaspina_bed(
     clipped_da = da.rio.clip(outline.geometry, drop=False)
     clipped_da = clipped_da.where(clipped_da != -9999.0, other=np.nan).drop_vars("spatial_ref")
     ds["bed"] = xr.where(~np.isnan(clipped_da), clipped_da, ds["bed"], keep_attrs=True)
-    ds["thickness"] = xr.where(~np.isnan(clipped_da), ds["surface"] - clipped_da, ds["thickness"])
+    ds["thickness"] = xr.where(~np.isnan(clipped_da), ds["surface"] - clipped_da, ds["thickness"], keep_attrs=True)
 
     ds["thickness"] = ds["thickness"].where(ds["thickness"] > 0.0, 0.0)
     ds["surface"] = ds["surface"].where(ds["thickness"] > 0.0, 0.0)

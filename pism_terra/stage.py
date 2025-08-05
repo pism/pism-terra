@@ -142,22 +142,6 @@ def stage_glacier(
     print(f"Saving {climate_filename}")
     climate.to_netcdf(climate_filename)
 
-    # climate_projected_filename = path / Path(f"era5_{rgi_id}.nc")
-    # climate_projected = climate[["air_temp", "precipitation"]].rio.reproject_match(dem.thin({"x": 4, "y": 4}))
-
-    # client = Client()
-    # print(f"Open client in browser: {client.dashboard_link}")
-    # start = time.time()
-    # for v in ["precipitation", "air_temp"]:
-    #     climate_projected[v] = climate_projected[v].utils.fillna(client=client)
-    # end = time.time()
-    # time_elapsed = end - start
-    # print(f"Time elapsed {time_elapsed:.0f}s")
-
-    # climate_projected["time_bounds"] = climate["time_bounds"]
-    # print(f"Saving {climate_projected_filename}")
-    # climate_projected.to_netcdf(climate_projected_filename)
-
     return {
         "boot_file": boot_filename.absolute(),
         "historical_climate_file": climate_filename.absolute(),
