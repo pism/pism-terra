@@ -118,7 +118,7 @@ def stage_glacier(
     for v in ["bed", "thickness", "surface"]:
         dem[v] = apply_perimeter_band(dem[v], bounds=bounds)
     dem["thickness"] = dem["thickness"].where(dem["thickness"] > 0.0, 0.0)
-    dem["surface"] = dem["surface"].where(dem["thickness"] > 0.0, 0.0)
+    dem["bed"] = dem["bed"].where(dem["surface"] > 0.0, -1000.0)
     if rgi_id == "RGI2000-v7.0-C-01-09429-A":
         dem = add_malaspina_bed(dem, target_crs=crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
     dem.rio.write_crs(crs, inplace=True)

@@ -70,7 +70,7 @@ def get_surface_dem_by_bounds(
     X, p = stitch_dem(
         bounds,
         dem_name=dem_name,
-        dst_ellipsoidal_height=True,
+        dst_ellipsoidal_height=False,
         dst_area_or_point="Point",
     )
     with NamedTemporaryFile(suffix=".tif", delete=False) as geoid_file:

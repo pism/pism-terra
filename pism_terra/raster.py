@@ -32,6 +32,46 @@ from rasterio.warp import Resampling, calculate_default_transform, reproject
 from shapely.geometry import box
 
 
+def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Add time bounds to a dataset by computing interval start and end times.
+
+    This function computes time bounds for each time step in the dataset
+    by pairing each timestamp with the following one, creating a bounds array
+    with shape (n_time - 1, 2). The dataset is truncated by one time step to
+    ensure alignment with the bounds.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        An xarray Dataset with a one-dimensional "time" coordinate.
+
+    Returns
+    -------
+    xr.Dataset
+        A new dataset with:
+        - one fewer time step (last one dropped),
+        - a new variable "time_bounds" with shape (time, 2),
+        - an attribute "bounds" set on the "time" coordinate pointing to "time_bounds".
+
+    Notes
+    -----
+    - The function assumes that `ds["time"]` is sorted and regularly spaced.
+    - The resulting time bounds are left-closed, right-open intervals: [t, t+1).
+    """
+    time = ds["time"]
+    # Compute bounds (start is current time, end is next time)
+    start = time.values[:-1]
+    end = time.values[1:]
+
+    # Drop the last bound to match shape
+    time_bounds = xr.DataArray(np.stack([start, end], axis=1), dims=["time", "nv"], coords={"time": time[:-1]})
+    ds = ds.isel({"time": slice(0, -1)})
+    ds["time_bounds"] = time_bounds
+    ds["time"].attrs["bounds"] = "time_bounds"
+    return ds
+
+
 def apply_perimeter_band(
     da: xr.DataArray, bounds: list[float] | None = None, width: float = 1000.0, value: float = -1000.0
 ) -> xr.DataArray:

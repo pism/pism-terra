@@ -125,7 +125,7 @@ def create_grid(
     ds: xr.Dataset,
     buffer_distance: float = 1000.0,
     base_resolution: int = 50,
-    multipliers: list | np.ndarray = [1, 2, 4, 5, 10, 20],
+    multipliers: list | np.ndarray = [1, 2, 4, 5, 8, 10, 20],
     crs: str = "EPSG:3413",
 ) -> xr.Dataset:
     """

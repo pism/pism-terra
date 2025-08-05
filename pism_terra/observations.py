@@ -203,5 +203,8 @@ def glacier_velocities_from_rgi_id(
     bounds = geometry_buffered_geoid.bounds
 
     ds = get_velocities_by_bounds(bounds, product_name=product_name)
+    crs = ds.rio.crs
+    glacier_projected = glacier.to_crs(crs)
+    ds_clipped = ds.rio.clip(glacier_projected.geometry)
 
-    return ds
+    return ds_clipped
