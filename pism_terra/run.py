@@ -89,7 +89,7 @@ def dict2str(d: dict) -> str:
     '-a 1
      -b 2'
     """
-    return " ".join(f"\\ \n  -{k} {v}" for k, v in d.items())
+    return " ".join(f" -{k} {v}" for k, v in d.items())
 
 
 def run_glacier(
@@ -210,7 +210,8 @@ def run_glacier(
         "ntasks": config["run"]["ntasks"],
         "walltime": config["run"]["walltime"],
     }
-
+    if "nodes" in config["run"]:
+        params.update({"nodes": config["run"]["nodes"]})
     if debug:
         rendered_script = ""
     else:
