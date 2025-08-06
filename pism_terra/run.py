@@ -138,7 +138,7 @@ def run_glacier(
     -----
     - Assumes the config file contains nested dictionaries under keys like
       'run', 'grid', 'surface', 'energy', 'stress_balance', etc.
-    - The Jinja2 template should contain placeholders for 'partition', 'ntasks', and 'walltime'.
+    - The Jinja2 template should contain placeholders for 'queue', 'ntasks', and 'walltime'.
     - The function does not execute the model; it only prepares the necessary files for submission.
     """
 
@@ -206,7 +206,7 @@ def run_glacier(
 
     # Variables to substitute
     params = {
-        "partition": config["run"]["partition"],
+        "queue": config["run"]["queue"],
         "ntasks": config["run"]["ntasks"],
         "walltime": config["run"]["walltime"],
     }
