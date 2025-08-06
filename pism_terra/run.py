@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
+# pylint: disable=too-many-positional-arguments
 
 """
 Running.
@@ -25,6 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 import toml
+from jinja2 import Environment, FileSystemLoader
 
 
 def merge_dicts(*dicts: dict) -> dict:
@@ -84,21 +86,26 @@ def dict2str(d: dict) -> str:
     --------
     >>> d = {"a": 1, "b": 2}
     >>> dict2str(d)
-    '-a 1 -b 2'
+    '-a 1
+     -b 2'
     """
-    return " ".join(f"-{k} {v}" for k, v in d.items())
+    return " ".join(f"\\ \n  -{k} {v}" for k, v in d.items())
 
 
 def run_glacier(
-    rgi_file: str | Path, config_file: str | Path, path: str | Path = "result", resolution: None | str = None
+    rgi_file: str | Path,
+    config_file: str | Path,
+    template_file: Path | str,
+    path: str | Path = "result",
+    resolution: None | str = None,
+    debug: bool = False,
 ):
     """
-    Configure and print a PISM model run command for a glacier.
+    Configure and generate a PISM model run script for a glacier.
 
     This function reads glacier metadata from a CSV file and simulation settings
-    from a TOML configuration file, then builds and prints a full PISM command-line
-    string for executing a model run. It sets up output directories and constructs
-    appropriate output filenames.
+    from a TOML configuration file, builds a full PISM command-line string,
+    renders an HPC submission script from a Jinja2 template, and saves both to disk.
 
     Parameters
     ----------
@@ -106,14 +113,33 @@ def run_glacier(
         Path to a CSV file with glacier metadata. Required columns:
         'rgi_id', 'boot_file', 'grid_file', 'historical_climate_file'.
     config_file : str or Path
-        Path to a TOML file containing PISM run configuration, including time,
-        energy model, stress balance model, and reporting options.
+        Path to a TOML file containing the PISM run configuration, including time,
+        energy model, stress balance model, grid, and reporting options.
+    template_file : str or Path
+        Path to a Jinja2 shell script template (e.g., SLURM submission script).
+        The template is rendered using job parameters like partition, ntasks, and walltime.
     path : str or Path, optional
         Base directory for storing model outputs. A subdirectory with the glacier RGI ID
         will be created within this path. Default is "result".
-    resolution : str, optional
+    resolution : str or None, optional
         Horizontal resolution to assign to the model grid (e.g., "500m").
-        This overrides the resolution from the config file if provided.
+        If None, uses the value from the config file.
+    debug : bool, optional
+        If True, skip rendering the template and only print the constructed run command.
+        Default is False.
+
+    Returns
+    -------
+    None
+        This function writes the run script and TOML configuration file to disk.
+        It prints the rendered run script including the full PISM command.
+
+    Notes
+    -----
+    - Assumes the config file contains nested dictionaries under keys like
+      'run', 'grid', 'surface', 'energy', 'stress_balance', etc.
+    - The Jinja2 template should contain placeholders for 'partition', 'ntasks', and 'walltime'.
+    - The function does not execute the model; it only prepares the necessary files for submission.
     """
 
     df = pd.read_csv(rgi_file)
@@ -129,7 +155,11 @@ def run_glacier(
 
     config_toml = toml.load(config_file)
     config = json.loads(json.dumps(config_toml))
-    prefix = f"""{config["run"]["mpi"]} {config["run"]["cores"]} {config["run"]["exec"]} """
+    prefix = f"""{config["run"]["mpi"]} {config["run"]["ntasks"]} {config["run"]["exec"]} """
+
+    template_file = Path(template_file)
+    env = Environment(loader=FileSystemLoader(template_file.parent))
+    template = env.get_template(template_file.name)
 
     run = {}
     if resolution is None:
@@ -174,6 +204,31 @@ def run_glacier(
     run_str = dict2str(sort_dict_by_key(run))
     run_str = prefix + run_str
 
+    # Variables to substitute
+    params = {
+        "partition": config["run"]["partition"],
+        "ntasks": config["run"]["ntasks"],
+        "walltime": config["run"]["walltime"],
+    }
+
+    if debug:
+        rendered_script = ""
+    else:
+        # Render the template
+        rendered_script = template.render(params)
+
+    # Append the run_str
+    rendered_script += f"\n\n{run_str}\n"
+
+    run_script_path = glacier_path / Path("run_scripts")
+    run_script_path.mkdir(parents=True, exist_ok=True)
+
+    run_script = run_script_path / Path(
+        f"submit_g{resolution}_{rgi_id}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.sh"
+    )
+    # Save or print the output
+    run_script.write_text(rendered_script)
+
     input_path = glacier_path / Path("input")
     glacier_filename = input_path / Path(f"rgi_{rgi_id}.gpkg")
 
@@ -188,7 +243,7 @@ def run_glacier(
     )
     with open(run_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
-    print(run_str)
+    print(rendered_script)
 
 
 if __name__ == "__main__":
@@ -209,6 +264,12 @@ if __name__ == "__main__":
         default=None,
     )
     parser.add_argument(
+        "--debug",
+        help="""Debug or testing mode, do not write template, just the run command. Default is False.""",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "RGI_FILE",
         help="""RGI CSV.""",
         nargs=1,
@@ -218,11 +279,18 @@ if __name__ == "__main__":
         help="""CONFIG TOML.""",
         nargs=1,
     )
+    parser.add_argument(
+        "TEMPLATE_FILE",
+        help="""TEMPLATE J2.""",
+        nargs=1,
+    )
 
     options, unknown = parser.parse_known_args()
     path = options.output_path
     rgi_file = options.RGI_FILE[0]
     config_file = options.CONFIG_FILE[0]
+    template_file = options.TEMPLATE_FILE[0]
     resolution = options.resolution
+    debug = options.debug
 
-    run_glacier(rgi_file, config_file, path=path, resolution=resolution)
+    run_glacier(rgi_file, config_file, template_file, path=path, resolution=resolution, debug=debug)
