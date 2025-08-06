@@ -75,12 +75,12 @@ if __name__ == "__main__":
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Postprocess RGI Glacier."
     parser.add_argument(
-        "CONFIG_FILE",
+        "RUN_FILE",
         help="""CONFIG TOML.""",
         nargs=1,
     )
 
     options, unknown = parser.parse_known_args()
-    config_file = options.CONFIG_FILE[0]
+    config_file = options.RUN_FILE[0]
 
     postprocess_glacier(config_file)
