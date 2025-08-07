@@ -29,6 +29,48 @@ import geopandas as gpd
 import rioxarray
 import toml
 import xarray as xr
+from dask.distributed import Client, progress
+from dask.diagnostics import ProgressBar
+import time
+
+
+def process_file(infile: str | Path, rgi_file: str | Path):
+    """
+    Clip a NetCDF dataset to the glacier geometry defined in an RGI file.
+
+    This function reads a NetCDF file containing geospatial data and clips it to the
+    geometry defined in a glacier outline file (e.g., RGI shapefile). The clipped dataset
+    is saved to a new NetCDF file prefixed with "clipped_".
+
+    Parameters
+    ----------
+    infile : str or Path
+        Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
+    rgi_file : str or Path
+        Path to the RGI glacier outline file (e.g., GeoPackage or shapefile) that defines
+        the geometry to clip the dataset to. Must include an `epsg` column to define the CRS.
+    """
+
+    infile = Path(infile)
+    infile_name = infile.name
+    infile_path = infile.parent
+    clipped_file = infile_path / Path("clipped_" + infile_name)
+
+    rgi = gpd.read_file(rgi_file)
+    crs = rgi.iloc[0]["epsg"]
+    rgi_projected = rgi.to_crs(crs)
+    geometry = rgi_projected.geometry
+
+    ds = (
+        xr.open_dataset(
+            infile, decode_times=False, decode_timedelta=False, chunks="auto"
+        )
+        .drop_vars("time_bounds")
+        .rio.set_spatial_dims(x_dim="x", y_dim="y")
+    )
+    ds.rio.write_crs(crs, inplace=True)
+    ds_clipped = ds.rio.clip(geometry)
+    ds_clipped.to_netcdf(clipped_file)
 
 
 def postprocess_glacier(config_file: str | Path):
@@ -50,23 +92,30 @@ def postprocess_glacier(config_file: str | Path):
     config_toml = toml.load(config_file)
     config = json.loads(json.dumps(config_toml))
     # time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-    rgi = gpd.read_file(config["outline"])
-    crs = rgi.iloc[0]["epsg"]
-    rgi_projected = rgi.to_crs(crs)
+
+    # client = Client()
+    # print(f"Open client in browser: {client.dashboard_link}")
+
+    start = time.time()
+    rgi_file = config["outline"]
+    # futures = []
+    # for o in ["state", "spatial"]:
+    #     s_file = Path(config["output"][o])
+    #     future = client.submit(process_file, s_file, rgi_file)
+
     for o in ["state", "spatial"]:
         s_file = Path(config["output"][o])
-        s_file_name = s_file.name
-        s_path = s_file.parent
-        s_clipped_file = s_path / Path("clipped_" + s_file_name)
+        print(s_file)
+        with ProgressBar():
+            process_file(s_file, rgi_file)
 
-        ds = (
-            xr.open_dataset(s_file, decode_times=False, decode_timedelta=False)
-            .drop_vars("time_bounds")
-            .rio.set_spatial_dims(x_dim="x", y_dim="y")
-        )
-        ds.rio.write_crs(crs, inplace=True)
-        ds_clipped = ds.rio.clip(rgi_projected.geometry)
-        ds_clipped.to_netcdf(s_clipped_file)
+    # progress(futures)
+    # result = client.gather(futures)
+
+    # client.close()
+    end = time.time()
+    time_elapsed = end - start
+    print(f"Time elapsed {time_elapsed:.0f}s")
 
 
 if __name__ == "__main__":
