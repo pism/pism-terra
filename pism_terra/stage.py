@@ -33,7 +33,7 @@ from dask.distributed import Client
 from shapely.geometry import Polygon
 
 import pism_terra.interpolation
-from pism_terra.climate import era5_reanalysis_from_rgi_id
+from pism_terra.climate import era5_reanalysis_from_rgi_id, jif_cosipy
 from pism_terra.dem import add_malaspina_bed, glacier_dem_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.observations import glacier_velocities_from_rgi_id
@@ -142,11 +142,21 @@ def stage_glacier(
     print(f"Saving {climate_filename}")
     climate.to_netcdf(climate_filename)
 
-    return {
+    files_dict = {
         "boot_file": boot_filename.absolute(),
         "historical_climate_file": climate_filename.absolute(),
         "grid_file": grid_filename.absolute(),
     }
+
+    if rgi_id == "RGI2000-v7.0-C-01-12784":
+        for dataset in ["CCSM"]:
+            url = f"https://zenodo.org/records/13912616/files/cosipy_output_{dataset}_JIF_1980_2010.nc"
+            ds = jif_cosipy(url)
+            filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
+            ds.to_netcdf(filename)
+            files_dict.update({f"cosipy_{dataset}_file": filename})
+
+    return files_dict
 
 
 if __name__ == "__main__":

@@ -199,8 +199,12 @@ def run_glacier(
             "output.extra.file": spatial_file.absolute(),
             "surface.force_to_thickness.file": df["boot_file"].iloc[0],
             "atmosphere.given.file": df["historical_climate_file"].iloc[0],
+            "atmosphere.elevation_change.file": df["historical_climate_file"].iloc[0],
         }
     )
+    if rgi_id == "RGI2000-v7.0-C-01-12784":
+        run.update({"surface.given.file": df["cosipy_CCSM_file"].iloc[0]})
+
     run_str = dict2str(sort_dict_by_key(run))
     run_str = prefix + run_str
 

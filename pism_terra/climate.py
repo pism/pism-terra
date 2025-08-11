@@ -35,7 +35,7 @@ import rioxarray
 import xarray as xr
 
 from pism_terra.dem import get_glacier_from_rgi_id
-from pism_terra.download import extract_archive
+from pism_terra.download import download_netcdf, extract_archive
 from pism_terra.raster import add_time_bounds
 
 
@@ -113,6 +113,9 @@ def era5_reanalysis_from_rgi_id(
     ds = download_request(dataset, area, years)
     ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
     ds.rio.write_crs("EPSG:4326", inplace=True)
+    ds_geo = download_request(dataset, area, [2013], variable=["geopotential"]).mean(dim="time")
+    ds_geo_ = ds_geo.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
+
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
@@ -124,11 +127,14 @@ def era5_reanalysis_from_rgi_id(
         )
         ds = xr.where(np.isnan(ds), ds_global_, ds)
 
+    ds = xr.merge([ds, ds_geo_])
     ds = ds.rename({"valid_time": "time"}).drop_vars(["number", "expver"])
 
-    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
-    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
+    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
+    ds["surface"] /= 9.80665
+    ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
     ds["precipitation"] *= 1000
+    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
     ds["air_temp"].attrs.update({"units": "kelvin"})
     ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
     ds["time"].encoding["calendar"] = "standard"
@@ -139,10 +145,39 @@ def era5_reanalysis_from_rgi_id(
     return add_time_bounds(ds)
 
 
+def jif_cosipy(url: str) -> xr.Dataset:
+    """
+    Download and prepare COSIPY.
+
+    Parameters
+    ----------
+    url : str, optional
+        The URL to download.
+
+    Returns
+    -------
+    xr.Dataset
+        An xarray Dataset containing COSIPY.
+    """
+
+    ds = download_netcdf(url)
+    # ds = xr.open_dataset("/Users/andy/Downloads/cosipy_output_CCSM_JIF_1980_2010.nc")
+    ds = ds[["T2", "surfMB"]].rename({"T2": "ice_surface_temp", "surfMB": "climatic_mass_balance"})
+    ds["ice_surface_temp"] -= 273.15
+    ds["climatic_mass_balance"] *= 910
+    ds["climatic_mass_balance"].attrs.update({"units": "kg m^-2 day^-1"})
+    ds["ice_surface_temp"].attrs.update({"units": "celsius"})
+    ds = ds.fillna(0)
+    ds.rio.write_crs("EPSG:4326", inplace=True)
+
+    return add_time_bounds(ds)
+
+
 def download_request(
     dataset: str = "reanalysis-era5-single-levels-monthly-means",
     area: list[float] = [90, -90, 45, 90],
     years: list | Iterable = range(1980, 2025),
+    variable: list = ["2m_temperature", "total_precipitation"],
 ) -> xr.Dataset:
     """
     Download ERA5 monthly reanalysis data from the Copernicus Climate Data Store (CDS).
@@ -159,6 +194,8 @@ def download_request(
         Bounding box [North, West, South, East] in degrees. Defaults to [90, -90, 45, 90].
     years : list or iterable, optional
         List or range of years to download. Defaults to range(1980, 2025).
+    variable : list, optional
+        List of variables to download.
 
     Returns
     -------
@@ -179,7 +216,7 @@ def download_request(
 
     request = {
         "product_type": ["monthly_averaged_reanalysis"],
-        "variable": ["2m_temperature", "total_precipitation"],
+        "variable": variable,
         "year": years,
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
         "time": ["00:00"],
@@ -195,8 +232,9 @@ def download_request(
         era_files = extract_archive(f)
         dss = []
         for era_file in era_files:
-            ds = xr.open_mfdataset(era_file, decode_times=time_coder, decode_timedelta=True)
-            ds["valid_time"] = ds["valid_time"].dt.floor("D")
+            ds = xr.open_dataset(era_file, decode_times=time_coder, decode_timedelta=True)
+            if "valid_time" in ds.coords:
+                ds["valid_time"] = ds["valid_time"].dt.floor("D")
             dss.append(ds)
         ds = xr.merge(dss)
     else:
