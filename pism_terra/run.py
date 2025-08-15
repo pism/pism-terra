@@ -20,13 +20,72 @@
 """
 Running.
 """
+from __future__ import annotations
+
 import json
+import shutil
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import toml
 from jinja2 import Environment, FileSystemLoader
+
+
+@dataclass
+class RunOpts:
+    """
+    Options used to assemble batch/run parameters for template rendering.
+
+    Attributes
+    ----------
+    queue : str or None
+        Scheduler queue/partition name. If ``None``, the key is omitted
+        from rendered parameters.
+    ntasks : int or None
+        Total number of MPI tasks (processes).
+    walltime : str or None
+        Wall clock time limit (e.g., ``"02:00:00"``). The accepted format
+        depends on the scheduler.
+    nodes : int or None
+        Number of compute nodes to request.
+
+    Notes
+    -----
+    This is a dataclass; the attributes also serve as constructor arguments
+    with the same names and defaults. Validation (e.g., non-negative values
+    or specific time formats) should be enforced upstream if needed.
+    """
+
+    queue: str | None = None
+    ntasks: int | None = None
+    walltime: str | None = None
+    nodes: int | None = None
+
+    def as_params(self) -> dict[str, Any]:
+        """
+        Convert options to a minimal parameter dictionary.
+
+        Keys with "empty" values are dropped to keep templates clean.
+        Boolean values (if present in the future) are always preserved,
+        even when ``False``.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary containing only keys whose values are considered present.
+            Values equal to ``None``, empty strings ``""``, empty lists ``[]``,
+            or empty dicts ``{}`` are omitted.
+
+        Examples
+        --------
+        >>> opts = RunOpts(queue="debug", ntasks=8)
+        >>> opts.as_params()
+        {'queue': 'debug', 'ntasks': 8}
+        """
+        return {k: v for k, v in asdict(self).items() if isinstance(v, bool) or v not in (None, "", [], {})}
 
 
 def merge_dicts(*dicts: dict) -> dict:
@@ -98,48 +157,78 @@ def run_glacier(
     template_file: Path | str,
     path: str | Path = "result",
     resolution: None | str = None,
+    nodes: None | int = None,
+    ntasks: None | int = None,
+    queue: None | str = None,
+    walltime: None | str = None,
     debug: bool = False,
 ):
     """
-    Configure and generate a PISM model run script for a glacier.
+    Configure and generate a PISM job script for a single glacier.
 
-    This function reads glacier metadata from a CSV file and simulation settings
-    from a TOML configuration file, builds a full PISM command-line string,
-    renders an HPC submission script from a Jinja2 template, and saves both to disk.
+    Reads glacier metadata from a CSV and model settings from a TOML file,
+    assembles the full PISM command line, renders an HPC submission script
+    from a Jinja2 template, and writes both the script and a resolved TOML
+    (with output paths) to disk.
 
     Parameters
     ----------
-    rgi_file : str or Path
-        Path to a CSV file with glacier metadata. Required columns:
-        'rgi_id', 'boot_file', 'grid_file', 'historical_climate_file'.
-    config_file : str or Path
-        Path to a TOML file containing the PISM run configuration, including time,
-        energy model, stress balance model, grid, and reporting options.
-    template_file : str or Path
-        Path to a Jinja2 shell script template (e.g., SLURM submission script).
-        The template is rendered using job parameters like partition, ntasks, and walltime.
-    path : str or Path, optional
-        Base directory for storing model outputs. A subdirectory with the glacier RGI ID
-        will be created within this path. Default is "result".
+    rgi_file : str or pathlib.Path
+        Path to a CSV with glacier metadata. Required columns:
+        ``'rgi_id'``, ``'boot_file'``, ``'grid_file'``, ``'historical_climate_file'``.
+        If ``rgi_id == "RGI2000-v7.0-C-01-12784"``, column ``'cosipy_CCSM_file'`` is
+        also expected.
+    config_file : str or pathlib.Path
+        Path to a TOML file containing the PISM run configuration. Expected
+        top-level sections include ``run``, ``grid``, ``time``, ``surface``,
+        ``energy``, ``stress_balance``, ``ocean``, ``geometry``, ``calving``,
+        and ``reporting``. Keys under ``run`` should include ``mpi``,
+        ``ntasks``, and ``exec``.
+    template_file : str or pathlib.Path
+        Path to a Jinja2 shell template (e.g., SLURM/LSF/PBS submit script).
+        The template may reference job parameters such as ``queue``, ``ntasks``,
+        ``nodes``, and ``walltime``.
+    path : str or pathlib.Path, optional
+        Base directory for all outputs. A subdirectory named after the
+        glacier RGI ID is created inside this path. Default is ``"result"``.
     resolution : str or None, optional
-        Horizontal resolution to assign to the model grid (e.g., "500m").
-        If None, uses the value from the config file.
+        Horizontal grid spacing (e.g., ``"500m"``). If ``None``, the value
+        from ``config['grid']['resolution']`` is used.
+    nodes : int or None, optional
+        Number of compute nodes to request. Overrides the value derived from
+        ``config['run']`` when provided.
+    ntasks : int or None, optional
+        Total number of MPI ranks. Overrides ``config['run']['ntasks']`` when provided.
+    queue : str or None, optional
+        Scheduler queue/partition. Overrides ``config['run']['queue']`` when provided.
+    walltime : str or None, optional
+        Wall clock limit (scheduler format, e.g., ``"02:00:00"``). Overrides
+        ``config['run']['walltime']`` when provided.
     debug : bool, optional
-        If True, skip rendering the template and only print the constructed run command.
-        Default is False.
-
-    Returns
-    -------
-    None
-        This function writes the run script and TOML configuration file to disk.
-        It prints the rendered run script including the full PISM command.
+        If ``True``, skip template rendering (empty script body) but still
+        print the assembled PISM command line. Default is ``False``.
 
     Notes
     -----
-    - Assumes the config file contains nested dictionaries under keys like
-      'run', 'grid', 'surface', 'energy', 'stress_balance', etc.
-    - The Jinja2 template should contain placeholders for 'queue', 'ntasks', and 'walltime'.
-    - The function does not execute the model; it only prepares the necessary files for submission.
+    The command prefix is constructed from ``config['run']['mpi']``,
+    ``config['run']['ntasks']``, and ``config['run']['exec']``.
+    Job parameters passed via function arguments take precedence over
+    values in ``config['run']``. The template is rendered with only
+    non-empty parameters (``queue``, ``ntasks``, ``nodes``, ``walltime``).
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> run_glacier(
+    ...     rgi_file="glaciers.csv",
+    ...     config_file="config.toml",
+    ...     template_file="submit.slurm.j2",
+    ...     path=Path("result"),
+    ...     resolution="500m",
+    ...     ntasks=64,
+    ...     queue="normal",
+    ...     walltime="04:00:00",
+    ... )
     """
 
     df = pd.read_csv(rgi_file)
@@ -155,7 +244,6 @@ def run_glacier(
 
     config_toml = toml.load(config_file)
     config = json.loads(json.dumps(config_toml))
-    prefix = f"""{config["run"]["mpi"]} {config["run"]["ntasks"]} {config["run"]["exec"]} """
 
     template_file = Path(template_file)
     env = Environment(loader=FileSystemLoader(template_file.parent))
@@ -206,22 +294,21 @@ def run_glacier(
         run.update({"surface.given.file": df["cosipy_CCSM_file"].iloc[0]})
 
     run_str = dict2str(sort_dict_by_key(run))
+
+    base_kwargs = {f.name: config["run"].get(f.name) for f in fields(RunOpts)}
+    opts = RunOpts(**base_kwargs)
+    opts = RunOpts(**opts.as_params())  # optional: strip empties using your helper
+
+    # override with CLI
+    for k, v in {"queue": queue, "ntasks": ntasks, "walltime": walltime, "nodes": nodes}.items():
+        if v is not None:
+            setattr(opts, k, v)
+
+    params = opts.as_params()
+    rendered_script = "" if debug else template.render(params)
+
+    prefix = f"""{config["run"]["mpi"]} {params["ntasks"]} {config["run"]["exec"]} """
     run_str = prefix + run_str
-
-    # Variables to substitute
-    params = {
-        "queue": config["run"]["queue"],
-        "ntasks": config["run"]["ntasks"],
-        "walltime": config["run"]["walltime"],
-    }
-    if "nodes" in config["run"]:
-        params.update({"nodes": config["run"]["nodes"]})
-    if debug:
-        rendered_script = ""
-    else:
-        # Render the template
-        rendered_script = template.render(params)
-
     # Append the run_str
     rendered_script += f"\n\n{run_str}\n"
 
@@ -234,12 +321,11 @@ def run_glacier(
     # Save or print the output
     run_script.write_text(rendered_script)
 
-    input_path = glacier_path / Path("input")
-    glacier_filename = input_path / Path(f"rgi_{rgi_id}.gpkg")
+    output_glacier_filename = output_path / Path(f"rgi_{rgi_id}.gpkg")
+    shutil.copy(rgi_file, output_glacier_filename)
 
     run_toml = {
-        "rgi_id": rgi_id,
-        "outline": str(glacier_filename.absolute()),
+        "rgi": {"rgi_id": rgi_id, "outline": str(output_glacier_filename.absolute())},
         "output": {"spatial": str(spatial_file.absolute()), "state": str(state_file.absolute())},
         "config": run,
     }
@@ -261,6 +347,30 @@ if __name__ == "__main__":
         help="""Base path to save all files data/rgi_id/output. Default="data".""",
         type=str,
         default="data",
+    )
+    parser.add_argument(
+        "--queue",
+        help="""Overrides queue in config file. Default=None.""",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--ntasks",
+        help="""Overrides ntatsks in config file. Default=None.""",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--nodes",
+        help="""Overrides nodes in config file. Default=None.""",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--walltime",
+        help="""Overrides walltime in config file. Default=None.""",
+        type=str,
+        default=None,
     )
     parser.add_argument(
         "--resolution",
@@ -297,5 +407,20 @@ if __name__ == "__main__":
     template_file = options.TEMPLATE_FILE[0]
     resolution = options.resolution
     debug = options.debug
+    queue = options.queue
+    ntasks = options.ntasks
+    nodes = options.nodes
+    walltime = options.walltime
 
-    run_glacier(rgi_file, config_file, template_file, path=path, resolution=resolution, debug=debug)
+    run_glacier(
+        rgi_file,
+        config_file,
+        template_file,
+        path=path,
+        resolution=resolution,
+        nodes=nodes,
+        ntasks=ntasks,
+        queue=queue,
+        walltime=walltime,
+        debug=debug,
+    )

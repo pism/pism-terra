@@ -21,6 +21,7 @@
 Running.
 """
 import json
+import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
@@ -29,9 +30,8 @@ import geopandas as gpd
 import rioxarray
 import toml
 import xarray as xr
-from dask.distributed import Client, progress
 from dask.diagnostics import ProgressBar
-import time
+from dask.distributed import Client, progress
 
 
 def process_file(infile: str | Path, rgi_file: str | Path):
@@ -55,6 +55,7 @@ def process_file(infile: str | Path, rgi_file: str | Path):
     infile_name = infile.name
     infile_path = infile.parent
     clipped_file = infile_path / Path("clipped_" + infile_name)
+    # scalar_file = infile_path / Path("scalar_" + infile_name)
 
     rgi = gpd.read_file(rgi_file)
     crs = rgi.iloc[0]["epsg"]
@@ -62,15 +63,15 @@ def process_file(infile: str | Path, rgi_file: str | Path):
     geometry = rgi_projected.geometry
 
     ds = (
-        xr.open_dataset(
-            infile, decode_times=False, decode_timedelta=False, chunks="auto"
-        )
+        xr.open_dataset(infile, decode_times=False, decode_timedelta=False, chunks="auto")
         .drop_vars("time_bounds")
         .rio.set_spatial_dims(x_dim="x", y_dim="y")
     )
     ds.rio.write_crs(crs, inplace=True)
-    ds_clipped = ds.rio.clip(geometry)
+    ds_clipped = ds.rio.clip(geometry, drop=False)
     ds_clipped.to_netcdf(clipped_file)
+    # ds_scalar = ds_clipped.sum(dim=["x", "y"])
+    # ds_scalar.to_netcdf(scalar_file)
 
 
 def postprocess_glacier(config_file: str | Path):
@@ -97,7 +98,7 @@ def postprocess_glacier(config_file: str | Path):
     # print(f"Open client in browser: {client.dashboard_link}")
 
     start = time.time()
-    rgi_file = config["outline"]
+    rgi_file = config["rgi"]["outline"]
     # futures = []
     # for o in ["state", "spatial"]:
     #     s_file = Path(config["output"][o])

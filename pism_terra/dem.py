@@ -308,7 +308,6 @@ def glacier_dem_from_rgi_id(
     bounds_geoid_buffered = geometry_buffered_geoid.bounds
 
     geoid_file = get_surface_dem_by_bounds(bounds_geoid_buffered, dem_name=dem_name)
-    print(geoid_file)
     projected_file = reproject_file(geoid_file, dst_crs, resolution)
 
     surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")

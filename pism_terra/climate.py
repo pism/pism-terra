@@ -168,6 +168,7 @@ def jif_cosipy(url: str) -> xr.Dataset:
     ds["climatic_mass_balance"].attrs.update({"units": "kg m^-2 day^-1"})
     ds["ice_surface_temp"].attrs.update({"units": "celsius"})
     ds = ds.fillna(0)
+    ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
     ds.rio.write_crs("EPSG:4326", inplace=True)
 
     return add_time_bounds(ds)
