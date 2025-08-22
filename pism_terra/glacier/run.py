@@ -188,6 +188,7 @@ def run_glacier(
     run.update(cfg.stress_balance.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.grid.as_params())
+    run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
 
     template_file = Path(template_file)
@@ -220,6 +221,8 @@ def run_glacier(
     if rgi_id == "RGI2000-v7.0-C-01-12784":
         run.update({"surface.given.file": df["cosipy_CCSM_file"].iloc[0]})
 
+    print("Checking files")
+    print("-" * 80)
     input_files = {k: v for k, v in run.items() if k.endswith(".file") and not k.startswith("output.")}
     for k, v in input_files.items():
         p = Path(v)
@@ -228,6 +231,7 @@ def run_glacier(
             print(f"{k}: {v} is valid ✓")
         except FileNotFoundError as e:
             print(f"{k}: {v} is valid ✗")
+    print("-" * 80)
 
     run_str = dict2str(sort_dict_by_key(run))
 

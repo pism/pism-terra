@@ -386,6 +386,7 @@ class PismConfig(BaseModelWithDot):
     """
 
     run: RunConfig
+    run_info: InfoConfig
     job: JobConfig
     time: TimeConfig
     energy: EnergyConfig
@@ -399,6 +400,64 @@ class PismConfig(BaseModelWithDot):
     surface: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
     input: dict[str, Any] = {}
+
+
+class InfoConfig(BaseModelWithDot):
+    """
+    Info settings for run metadata.
+
+    Accepts dotted keys inside the ``[run_info]`` table (via BaseModelWithDot)
+    and exports params with *quoted* string values for use in templates.
+    """
+
+    SECTION = "run_info"
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    institution: str = Field(
+        default="University of Alaska Fairbanks",
+        alias="run_info.institution",
+    )
+    title: str = Field(
+        default="PISM Campaign",
+        alias="run_info.title",
+    )
+
+    @staticmethod
+    def _quote(v: Any) -> str:
+        """
+        Return ``v`` as a double-quoted string, escaping inner quotes/backslashes.
+
+        Parameters
+        ----------
+        v : str
+            String to quote.
+
+        Returns
+        ----------
+        str
+            String in quotes.
+        """
+        s = str(v)
+        # strip existing wrapping quotes to avoid double-quoting
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in {"'", '"'}:
+            s = s[1:-1]
+        s = s.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{s}"'
+
+    def as_params(self) -> dict[str, Any]:
+        """
+        Export run-info parameters with dotted aliases and quoted string values.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary like ``{'run_info.institution': '\"Foo\"', 'run_info.title': '\"Bar\"'}``.
+        """
+        out = self.model_dump(by_alias=True, exclude_none=True)
+        for key in ("run_info.institution", "run_info.title"):
+            if key in out and out[key] is not None:
+                out[key] = self._quote(out[key])
+        return out
 
 
 class GridConfig(BaseModelWithDot):
