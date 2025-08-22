@@ -29,6 +29,9 @@ dataset = "reanalysis-era5-land-monthly-means"
 'time.end' =  "1990-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1980-01-01"
+
+[time_stepping]
+
 'time_stepping.adaptive_ratio' = 250
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100

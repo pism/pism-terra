@@ -400,6 +400,7 @@ class PismConfig(BaseModelWithDot):
     surface: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
     input: dict[str, Any] = {}
+    time_stepping: dict[str, Any] = {}
 
 
 class InfoConfig(BaseModelWithDot):

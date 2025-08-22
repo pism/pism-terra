@@ -18,9 +18,9 @@ classifiers = [
 dynamic = ["dependencies"]
 
 [project.scripts]
-glacier-stage = "pism_terra.glacier.stage:main"
-glacier-run = "pism_terra.glacier.run:main"
-glacier-postprocess = "pism_terra.glacier.postprocess:main"
+pism-glacier-stage = "pism_terra.glacier.stage:main"
+pism-glacier-run = "pism_terra.glacier.run:main"
+pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
 
 [tool.setuptools.packages.find]
 include = ["pism_terra*"]

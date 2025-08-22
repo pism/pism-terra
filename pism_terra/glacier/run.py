@@ -77,7 +77,7 @@ def dict2str(d: dict) -> str:
     '-a 1
      -b 2'
     """
-    return " ".join(f" -{k} {v}" for k, v in d.items())
+    return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
 
 
 def run_glacier(
@@ -183,6 +183,7 @@ def run_glacier(
         "surface",
         "reporting",
         "input",
+        "time_stepping",
     ):
         run.update(getattr(cfg, section))
     run.update(cfg.stress_balance.selected())
