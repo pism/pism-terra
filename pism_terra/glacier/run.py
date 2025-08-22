@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pandas as pd
 import toml
+import xarray as xr
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from pism_terra.config import JobConfig, RunConfig, load_config
@@ -218,6 +219,15 @@ def run_glacier(
     )
     if rgi_id == "RGI2000-v7.0-C-01-12784":
         run.update({"surface.given.file": df["cosipy_CCSM_file"].iloc[0]})
+
+    input_files = {k: v for k, v in run.items() if k.endswith(".file") and not k.startswith("output.")}
+    for k, v in input_files.items():
+        p = Path(v)
+        try:
+            xr.open_dataset(p)
+            print(f"{k}: {v} is valid ✓")
+        except FileNotFoundError as e:
+            print(f"{k}: {v} is valid ✗")
 
     run_str = dict2str(sort_dict_by_key(run))
 
