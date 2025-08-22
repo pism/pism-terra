@@ -17,6 +17,7 @@ matplotlib
 numpy
 pandas
 pint_xarray
+pydantic
 pyarrow
 pyogrio
 rioxarray

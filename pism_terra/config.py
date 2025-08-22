@@ -1,0 +1,641 @@
+# Copyright (C) 2025 Andy Aschwanden
+#
+# This file is part of pism-terra.
+#
+# PISM-TERRA is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3 of the License, or (at your option) any later
+# version.
+#
+# PISM-TERRA is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License
+# along with PISM; if not, write to the Free Software
+
+# pylint: disable=too-many-positional-arguments
+
+"""
+Config.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any, ClassVar
+
+import toml
+from jinja2 import Environment, StrictUndefined
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+# one Jinja environment for all renders
+_JINJA = Environment(undefined=StrictUndefined, autoescape=False)
+
+
+def load_config(path: str | Path) -> PismConfig:
+    """
+    Load and validate a PISM configuration from a TOML file.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Path to the TOML configuration file.
+
+    Returns
+    -------
+    PismConfig
+        Parsed and validated configuration model.
+    """
+    data = toml.loads(Path(path).read_text("utf-8"))
+    return PismConfig.model_validate(data)
+
+
+class BaseModelWithDot(BaseModel):
+    """
+    Normalize dotted keys that may be redundantly prefixed with a section/table name.
+
+    This base class lets Pydantic models accept inputs where field aliases such as
+    ``"time.start"`` appear again prefixed inside a same-named table (e.g., under
+    ``[time]`` you might see ``"time.time.start"``). The validator rewrites such
+    keys to the exact alias expected by the model before normal field parsing.
+
+    Attributes
+    ----------
+    SECTION : str or None
+        The section/table name that may redundantly prefix keys (e.g., ``"time"``).
+        Subclasses should set this to enable normalization.
+    model_config : pydantic.ConfigDict
+        Pydantic configuration for the model. Defaults to ``extra='ignore'``.
+
+    Notes
+    -----
+    Normalization runs in a ``model_validator`` with ``mode='before'``. For each
+    declared field, the following input keys are accepted and mapped to the field's
+    alias (or the field name if no alias is set):
+
+    * ``<alias>`` (exact), e.g., ``"time.start"``.
+    * ``<SECTION>.<alias>``, e.g., ``"time.time.start"``.
+    * ``<SECTION>.<field_name>`` (fallback when no alias is set).
+
+    This enables TOML like:
+
+    .. code-block:: toml
+
+        [time]
+        'time.start' = "1980-01-01"
+        'time.end'   = "1990-01-01"
+
+    while keeping Pydantic fields with dotted aliases.
+
+    Examples
+    --------
+    >>> class TimeConfig(BaseModelWithDot):
+    ...     SECTION = "time"
+    ...     time_start: str = Field(alias="time.start")
+    ...     time_end: str   = Field(alias="time.end")
+    ...
+    >>> cfg = TimeConfig.model_validate({
+    ...     "time.time.start": "1980-01-01",
+    ...     "time.time.end":   "1990-01-01",
+    ... })
+    >>> cfg.time_start, cfg.time_end
+    ('1980-01-01', '1990-01-01')
+    """
+
+    model_config = ConfigDict(extra="ignore")
+    SECTION: ClassVar[str | None] = None  # e.g. "time"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_dotted_keys(cls, v: Any) -> Any:
+        """
+        Rewrite redundantly prefixed dotted keys to the model's expected aliases.
+
+        Parameters
+        ----------
+        v : dict or Any
+            Incoming value for validation. If a mapping, keys like
+            ``f"{SECTION}.{alias}"`` or ``f"{SECTION}.{field_name}"`` are
+            detected and moved to the canonical key (``alias`` or field name).
+
+        Returns
+        -------
+        dict or Any
+            The normalized mapping if ``v`` is a dict; otherwise returns ``v``
+            unchanged.
+        """
+        if not isinstance(v, dict):
+            return v
+        if cls.SECTION is None:
+            return v
+
+        out = dict(v)  # shallow copy
+        sec = cls.SECTION
+
+        # For each declared field, ensure its alias is present; if not,
+        # look for a redundantly-prefixed variant like "<SECTION>.<alias>".
+        for fname, field in cls.model_fields.items():
+            target = field.alias or fname  # what Pydantic expects in the input
+            if target in out:
+                continue  # already good
+
+            # Candidate alternative keys we accept:
+            candidates = [f"{sec}.{target}", f"{sec}.{fname}"]
+            for cand in candidates:
+                if cand in out:
+                    out[target] = out.pop(cand)
+                    break
+
+        return out
+
+
+class RunConfig(BaseModel):
+    """
+    Execution settings for a PISM run.
+
+    Provides executable/launcher options and a helper to export parameters
+    for templating. String fields that contain Jinja expressions (e.g.,
+    ``"mpirun -np {{ ntasks }}"``) are rendered using the model values.
+
+    Attributes
+    ----------
+    mpi : str
+        MPI launcher template, e.g., ``"mpirun -np {{ ntasks }}"``.
+        Defaults to ``"mpirun"``.
+    executable : str
+        Path to the PISM executable, or command name. Defaults to ``"pism"``.
+    ntasks : int
+        Total number of MPI ranks. Must be >= 1.
+
+    Notes
+    -----
+    The :meth:`as_params` method returns only non-empty fields and renders any
+    string value containing Jinja delimiters ``{{ ... }}`` using the current
+    field values (plus any extra context provided).
+
+    Examples
+    --------
+    >>> rc = RunConfig(mpi="mpirun -np {{ ntasks }}", executable="/path/pism", ntasks=56)
+    >>> rc.as_params()["mpi"]
+    'mpirun -np 56'
+    """
+
+    mpi: str = Field(default="mpirun")
+    executable: str = Field(default="pism")
+    ntasks: int = Field(ge=1)
+
+    def as_params(self, **extra: Any) -> dict[str, Any]:
+        """
+        Export non-empty parameters and render templated strings.
+
+        Any string field containing Jinja expressions is rendered using a
+        context composed of the model's own values plus ``extra``.
+
+        Parameters
+        ----------
+        **extra
+            Additional key/value pairs to inject into the Jinja render
+            context (these do not mutate the model).
+
+        Returns
+        -------
+        dict of str to Any
+            Dictionary of parameters suitable for template rendering.
+            Fields with ``None``/unset/default values are omitted; templated
+            strings (e.g., ``mpi``) are rendered to plain strings.
+        """
+        params = self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
+        ctx = {**params, **extra}
+
+        def _render(v: Any) -> Any:
+            """
+            Render templated strings using the current context.
+
+            Parameters
+            ----------
+            v : Any
+                Candidate value to render. If `v` is a string containing Jinja
+                delimiters (``{{ ... }}``), it is rendered using the closure
+                context ``ctx``; otherwise it is returned unchanged.
+
+            Returns
+            -------
+            Any
+                The rendered string when `v` is a templated string; otherwise the
+                original value.
+
+            Raises
+            ------
+            jinja2.UndefinedError
+                If the template references an undefined variable and the Jinja
+                environment uses ``StrictUndefined``.
+            """
+            if isinstance(v, str) and "{{" in v:
+                return _JINJA.from_string(v).render(ctx)
+            return v
+
+        return {k: _render(v) for k, v in params.items()}
+
+
+class JobConfig(BaseModelWithDot):
+    """
+    Scheduler job options parsed from configuration.
+
+    Accepts dotted keys via :class:`BaseModelWithDot` and provides a compact
+    export for templating.
+
+    Attributes
+    ----------
+    queue : str or None
+        Scheduler queue/partition name.
+    walltime : str or None
+        Wall clock limit in ``HH:MM:SS`` (or ``H:MM:SS``) format.
+    nodes : int or None
+        Number of compute nodes to request (>= 1).
+
+    Notes
+    -----
+    Unknown/extra keys are forbidden (``extra='forbid'``). Use
+    :meth:`as_params` to obtain only present, non-empty keys.
+
+    Examples
+    --------
+    >>> jc = JobConfig(queue="normal", walltime="04:00:00", nodes=2)
+    >>> jc.as_params()
+    {'queue': 'normal', 'walltime': '04:00:00', 'nodes': 2}
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    queue: str | None = None
+    walltime: str | None = None
+    nodes: int | None = Field(default=None, ge=1)
+
+    @field_validator("walltime")
+    @classmethod
+    def _hhmmss(cls, v: str | None) -> str | None:
+        """
+        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS``.
+
+        Parameters
+        ----------
+        v : str or None
+            Candidate walltime string.
+
+        Returns
+        -------
+        str or None
+            The original value if valid; ``None`` is passed through.
+
+        Raises
+        ------
+        ValueError
+            If the value does not match the expected format.
+        """
+        if v is None:
+            return v
+        if not re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", v):
+            raise ValueError("walltime must look like HH:MM:SS")
+        return v
+
+    def as_params(self) -> dict[str, Any]:
+        """
+        Export only non-empty job parameters for templating.
+
+        Returns
+        -------
+        dict of str to Any
+            A dictionary containing only keys whose values are present
+            (i.e., excludes ``None``, unset, and defaulted fields).
+        """
+        return self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
+
+
+class PismConfig(BaseModelWithDot):
+    """
+    Top-level configuration model for a PISM run.
+
+    This model aggregates validated sub-sections (execution, job/scheduler,
+    time, physics choices, and grid) together with several pass-through
+    dictionaries that hold option maps forwarded directly to PISM. Because
+    it derives from :class:`BaseModelWithDot`, inputs may use dotted keys
+    that are redundantly prefixed by their table/section names.
+
+    Attributes
+    ----------
+    run : RunConfig
+        Execution settings (launcher template, executable path/name,
+        number of MPI ranks) with support for rendering Jinja placeholders.
+    job : JobConfig
+        Scheduler options such as queue/partition, walltime, and number of
+        nodes. Unknown keys are forbidden in this section.
+    time : TimeConfig
+        Time configuration (e.g., ``time.start``, ``time.end``, calendar).
+    energy : EnergyConfig
+        Energy model selection and its option set (e.g., ``energy.model`` and
+        ``energy.options[model]``).
+    stress_balance : StressBalanceConfig
+        Stress-balance model selection and its option set (e.g.,
+        ``stress_balance.model`` and ``stress_balance.options[model]``).
+    grid : GridConfig
+        Horizontal/vertical grid settings and registration. Derives
+        ``grid.dx``/``grid.dy`` from ``resolution`` when not explicitly set.
+    atmosphere : dict of str to Any, optional
+        Additional atmosphere-related options to pass through (keys are
+        typically dotted, e.g., ``"atmosphere.given.file"``). Defaults to ``{}``.
+    geometry : dict of str to Any, optional
+        Geometry-related options to pass through. Defaults to ``{}``.
+    ocean : dict of str to Any, optional
+        Ocean-related options to pass through. Defaults to ``{}``.
+    calving : dict of str to Any, optional
+        Calving-related options to pass through. Defaults to ``{}``.
+    iceflow : dict of str to Any, optional
+        Ice-flow-related options to pass through. Defaults to ``{}``.
+    surface : dict of str to Any, optional
+        Surface-related options to pass through. Defaults to ``{}``.
+    reporting : dict of str to Any, optional
+        Reporting/output options to pass through. Defaults to ``{}``.
+    input : dict of str to Any, optional
+        Input file options to pass through. Defaults to ``{}``.
+
+    Notes
+    -----
+    * Dotted option keys inside nested tables are accepted due to
+      :class:`BaseModelWithDot` (e.g., inside ``[time]`` you may still use
+      ``'time.start'``).
+    * The dictionary sections (``atmosphere``, ``geometry``, …, ``input``)
+      are intentionally permissive and are stored as-is to be forwarded to
+      PISM; validation of their contents is out of scope for this model.
+
+    Examples
+    --------
+    >>> cfg = PismConfig.model_validate(data)  # 'data' parsed from TOML
+    >>> cfg.run.ntasks
+    56
+    >>> cfg.grid.as_run()["grid.dx"]
+    '200m'
+    """
+
+    run: RunConfig
+    job: JobConfig
+    time: TimeConfig
+    energy: EnergyConfig
+    stress_balance: StressBalanceConfig
+    grid: GridConfig
+    atmosphere: dict[str, Any] = {}
+    geometry: dict[str, Any] = {}
+    ocean: dict[str, Any] = {}
+    calving: dict[str, Any] = {}
+    iceflow: dict[str, Any] = {}
+    surface: dict[str, Any] = {}
+    reporting: dict[str, Any] = {}
+    input: dict[str, Any] = {}
+
+
+class GridConfig(BaseModelWithDot):
+    """
+    Grid settings.
+    """
+
+    SECTION = "grid"
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    # what your TOML shows:
+    resolution: str = Field(alias="resolution")  # e.g. "200m" (also accepts "grid.resolution")
+    Lbz: int | None = Field(default=None, alias="grid.Lbz")
+    Lz: int | float | None = Field(default=None, alias="grid.Lz")
+    Mbz: int | None = Field(default=None, alias="grid.Mbz")
+    Mz: int | None = Field(default=None, alias="grid.Mz")
+    registration: str | None = Field(default=None, alias="grid.registration")
+
+    # derived / optionally provided:
+    dx: str | None = Field(default=None, alias="grid.dx")
+    dy: str | None = Field(default=None, alias="grid.dy")
+
+    @field_validator("resolution")
+    @classmethod
+    def _check_resolution(cls, v: str) -> str:
+        """
+        Validate and normalize the grid resolution string.
+
+        Parameters
+        ----------
+        v : str
+            Resolution value, e.g., ``"200m"``, ``"1500 m"``, ``"0.2km"``, or ``"1 km"``.
+            Optional whitespace is allowed; units must be meters (``m``) or kilometers (``km``).
+
+        Returns
+        -------
+        str
+            Normalized resolution with whitespace removed (e.g., ``"200m"``).
+
+        Raises
+        ------
+        ValueError
+            If the value does not match the expected ``<number><unit>`` pattern,
+            where ``unit`` is ``m`` or ``km`` (e.g., ``"200m"``, ``"0.2km"``).
+
+        Notes
+        -----
+        The numeric part may be an integer or a decimal. Only ``m`` and ``km`` are accepted units.
+        """
+        # accept "200m", "0.2km", "1500 m", "1 km" (with optional space)
+        if not re.fullmatch(r"\s*\d+(\.\d+)?\s*(m|km)\s*", v):
+            raise ValueError('resolution must look like "200m" or "0.2km"')
+        return re.sub(r"\s+", "", v)  # normalize by removing spaces
+
+    @field_validator("registration")
+    @classmethod
+    def _check_registration(cls, v: str | None) -> str | None:
+        """
+        Validate and normalize ``grid.registration``.
+
+        Parameters
+        ----------
+        v : str or None
+            Candidate registration string.
+
+        Returns
+        -------
+        str or None
+            Lowercased normalized value (``"center"`` or ``"corner"``) or
+            ``None`` if not provided.
+
+        Raises
+        ------
+        ValueError
+            If ``v`` is not one of ``{"center", "corner"}``.
+
+        Notes
+        -----
+        Leading/trailing whitespace is stripped and the value is lowercased
+        before validation.
+        """
+        if v is None:
+            return v
+        v_norm = v.strip().lower()
+        if v_norm not in {"center", "corner"}:
+            raise ValueError('grid.registration must be "center" or "corner"')
+        return v_norm
+
+    @model_validator(mode="after")
+    def _derive_dx_dy(self) -> "GridConfig":
+        """
+        Derive ``grid.dx`` and ``grid.dy`` from ``resolution`` when absent.
+
+        Returns
+        -------
+        GridConfig
+            The same instance with ``dx`` and/or ``dy`` populated if they
+            were ``None``.
+
+        Notes
+        -----
+        - If either ``dx`` or ``dy`` is missing, it is set to the normalized
+          ``resolution`` string (e.g., ``"200m"``).
+        - Existing values for ``dx``/``dy`` are left unchanged.
+        """
+        if self.dx is None:
+            self.dx = self.resolution
+        if self.dy is None:
+            self.dy = self.resolution
+        return self
+
+    def as_params(self) -> dict[str, Any]:
+        """
+        Export grid parameters as dotted keys suitable for runtime.
+
+        Ensures ``'grid.dx'`` and ``'grid.dy'`` are present (derived from
+        ``resolution`` if necessary) and omits the plain ``resolution`` key.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary with dotted aliases (e.g., ``'grid.Mz'``, ``'grid.dx'``,
+            ``'grid.dy'``) and no ``None`` values. The ``'resolution'`` key is
+            removed from the output.
+
+        Examples
+        --------
+        >>> g = GridConfig(resolution="200m", Mz=101)
+        >>> g.as_params()["grid.dx"], g.as_params()["grid.dy"]
+        ('200m', '200m')
+        """
+        out = self.model_dump(by_alias=True, exclude_none=True)
+        out["grid.dx"] = self.dx or self.resolution
+        out["grid.dy"] = self.dy or self.resolution
+        del out["resolution"]
+        return out
+
+
+class TimeConfig(BaseModelWithDot):
+    """
+    Time configuration (accepts dotted keys inside the ``[time]`` table).
+
+    Because this inherits from :class:`BaseModelWithDot` with
+    ``SECTION = "time"``, inputs may redundantly prefix keys with ``"time."``
+    (e.g., ``"time.time.start"``) and they will be normalized to the aliases
+    declared below.
+
+    Attributes
+    ----------
+    time_start : str
+        Simulation start time (alias: ``"time.start"``).
+    time_end : str
+        Simulation end time (alias: ``"time.end"``).
+    calendar : str or None
+        Calendar name (alias: ``"time.calendar"``), e.g., ``"standard"``.
+    reference_date : str or None
+        Reference date (alias: ``"time.reference_date"``).
+    """
+
+    SECTION = "time"
+    model_config = ConfigDict(populate_by_name=True)
+
+    time_start: str = Field(alias="time.start")
+    time_end: str = Field(alias="time.end")
+    calendar: str | None = Field(default=None, alias="time.calendar")
+    reference_date: str | None = Field(default=None, alias="time.reference_date")
+
+    def as_params(self) -> dict[str, Any]:
+        """
+        Export time parameters using dotted aliases.
+
+        Returns
+        -------
+        dict of str to Any
+            Dictionary with aliases (e.g., ``"time.start"``) and no ``None`` values.
+        """
+        return self.model_dump(by_alias=True, exclude_none=True)
+
+
+class ModelWithOptions(BaseModelWithDot):
+    """
+    Generic "pick a model and its option set" section.
+
+    This shape is used by sub-sections like energy and stress balance that
+    specify a chosen ``model`` and an ``options`` mapping keyed by model name.
+
+    Attributes
+    ----------
+    model : str
+        Name of the selected sub-model (e.g., ``"ssa"``).
+    options : dict of str to dict
+        Mapping from model name to that model's option dictionary.
+
+    Notes
+    -----
+    Inheriting from :class:`BaseModelWithDot` allows accepting dotted keys
+    if the subclass sets ``SECTION`` appropriately.
+    """
+
+    model: str
+    options: dict[str, dict[str, Any]]
+
+    def selected(self) -> dict[str, Any]:
+        """
+        Return the option dictionary for the selected model.
+
+        Returns
+        -------
+        dict
+            Options corresponding to ``self.model``, e.g., ``options[model]``.
+
+        Raises
+        ------
+        ValueError
+            If ``self.model`` is not present in ``options``.
+        """
+        try:
+            return self.options[self.model]
+        except KeyError as e:
+            raise ValueError(f"model '{self.model}' not in options") from e
+
+
+class EnergyConfig(ModelWithOptions):
+    """
+    Energy model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "energy"
+
+
+class StressBalanceConfig(ModelWithOptions):
+    """
+    Stress-balance model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "stress_balance"

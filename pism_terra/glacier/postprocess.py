@@ -15,10 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=unused-import
+# pylint: disable=unused-import,unused-variable
 
 """
-Running.
+Postprocessing.
 """
 import json
 import time
@@ -119,8 +119,11 @@ def postprocess_glacier(config_file: str | Path):
     print(f"Time elapsed {time_elapsed:.0f}s")
 
 
-if __name__ == "__main__":
-    __spec__ = None  # type: ignore
+def main():
+    """
+    Run main script.
+    """
+
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Postprocess RGI Glacier."
@@ -134,3 +137,8 @@ if __name__ == "__main__":
     config_file = options.RUN_FILE[0]
 
     postprocess_glacier(config_file)
+
+
+if __name__ == "__main__":
+    __spec__ = None  # type: ignore
+    main()

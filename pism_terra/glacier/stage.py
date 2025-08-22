@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=unused-import
+# pylint: disable=unused-import,unused-variable
 
 """
 Staging.
@@ -32,7 +32,6 @@ import xarray as xr
 from dask.distributed import Client
 from shapely.geometry import Polygon
 
-import pism_terra.interpolation
 from pism_terra.climate import era5_reanalysis_from_rgi_id, jif_cosipy
 from pism_terra.dem import add_malaspina_bed, glacier_dem_from_rgi_id
 from pism_terra.domain import create_grid
@@ -159,8 +158,11 @@ def stage_glacier(
     return files_dict
 
 
-if __name__ == "__main__":
-    __spec__ = None  # type: ignore
+def main():
+    """
+    Run main script.
+    """
+
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
@@ -199,3 +201,8 @@ if __name__ == "__main__":
     glacier_dict.update(stage_glacier(rgi_id, rgi, path=input_path))
     glacier_df = pd.DataFrame.from_dict([glacier_dict])
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
+
+
+if __name__ == "__main__":
+    __spec__ = None  # type: ignore
+    main()
