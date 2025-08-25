@@ -286,11 +286,12 @@ def run_glacier(
         "config": run,
     }
     run_file = output_path / Path(
-        f"g{resolution}_{rgi_id}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.toml"
+        f"g{resolution}_{rgi_id}_surface_{surface}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.toml"
     )
     with open(run_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
-    print(f"\nScript written to {run_script}\n")
+    print(f"\nSLURM script written to {run_script}\n")
+    print(f"Postprocessing script written to {run_file}\n")
 
 
 def main():
