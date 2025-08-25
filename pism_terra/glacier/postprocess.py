@@ -32,6 +32,7 @@ import toml
 import xarray as xr
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, progress
+import dask
 
 
 def process_file(infile: str | Path, rgi_file: str | Path):
@@ -55,23 +56,40 @@ def process_file(infile: str | Path, rgi_file: str | Path):
     infile_name = infile.name
     infile_path = infile.parent
     clipped_file = infile_path / Path("clipped_" + infile_name)
-    # scalar_file = infile_path / Path("scalar_" + infile_name)
+    scalar_file = infile_path / Path("fldsum_" + infile_name)
 
     rgi = gpd.read_file(rgi_file)
     crs = rgi.iloc[0]["epsg"]
     rgi_projected = rgi.to_crs(crs)
     geometry = rgi_projected.geometry
 
+    start = time.time()
+
     ds = (
-        xr.open_dataset(infile, decode_times=False, decode_timedelta=False, chunks="auto")
-        .drop_vars("time_bounds")
+        xr.open_dataset(
+            infile,
+            decode_times=False,
+            decode_timedelta=False,
+            chunks="auto",
+            engine="h5netcdf",
+        )
+        .drop_vars("time_bounds", errors="ignore")
         .rio.set_spatial_dims(x_dim="x", y_dim="y")
     )
-    ds.rio.write_crs(crs, inplace=True)
+
+    ds = ds.rio.write_crs(crs, inplace=False)
     ds_clipped = ds.rio.clip(geometry, drop=False)
     ds_clipped.to_netcdf(clipped_file)
-    # ds_scalar = ds_clipped.sum(dim=["x", "y"])
-    # ds_scalar.to_netcdf(scalar_file)
+
+    end = time.time()
+    time_elapsed = end - start
+    print(f"Time elapsed for postprocessing: {time_elapsed:.0f}s")
+    pism_config = ds["pism_config"]
+    ds_scalar = ds_clipped.drop_vars(["pism_config"], errors="ignore").sum(
+        dim=["x", "y"]
+    )
+    ds_scalar = xr.merge([ds_scalar, pism_config])
+    ds_scalar.to_netcdf(scalar_file)
 
 
 def postprocess_glacier(config_file: str | Path):
@@ -92,28 +110,16 @@ def postprocess_glacier(config_file: str | Path):
 
     config_toml = toml.load(config_file)
     config = json.loads(json.dumps(config_toml))
-    # time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-
-    # client = Client()
-    # print(f"Open client in browser: {client.dashboard_link}")
 
     start = time.time()
     rgi_file = config["rgi"]["outline"]
-    # futures = []
-    # for o in ["state", "spatial"]:
-    #     s_file = Path(config["output"][o])
-    #     future = client.submit(process_file, s_file, rgi_file)
 
-    for o in ["state", "spatial"]:
+    for o in ["spatial", "state"]:
         s_file = Path(config["output"][o])
         print(s_file)
         with ProgressBar():
             process_file(s_file, rgi_file)
 
-    # progress(futures)
-    # result = client.gather(futures)
-
-    # client.close()
     end = time.time()
     time_elapsed = end - start
     print(f"Time elapsed {time_elapsed:.0f}s")

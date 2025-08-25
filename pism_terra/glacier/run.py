@@ -187,6 +187,8 @@ def run_glacier(
     ):
         run.update(getattr(cfg, section))
     run.update(cfg.stress_balance.selected())
+    run.update(cfg.atmosphere.selected())
+    run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
@@ -199,14 +201,20 @@ def run_glacier(
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
 
+    if resolution is None:
+        resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
+    surface = cfg.model_dump(by_alias=True)["surface"]["model"]
+
+    if surface == "cosipy":
+        run.update({"surface.given.file": df["cosipy_CCSM_file"].iloc[0]})
 
     spatial_file = output_path / Path(
-        f"spatial_g{resolution}_{rgi_id}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.nc"
+        f"spatial_g{resolution}_{rgi_id}_surface_{surface}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.nc"
     )
     state_file = output_path / Path(
-        f"state_g{resolution}_{rgi_id}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.nc"
+        f"state_g{resolution}_{rgi_id}_surface_{surface}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.nc"
     )
     run.update(
         {
@@ -219,12 +227,14 @@ def run_glacier(
             "atmosphere.elevation_change.file": df["historical_climate_file"].iloc[0],
         }
     )
-    if rgi_id == "RGI2000-v7.0-C-01-12784":
-        run.update({"surface.given.file": df["cosipy_CCSM_file"].iloc[0]})
 
     print("Checking files")
     print("-" * 80)
-    input_files = {k: v for k, v in run.items() if k.endswith(".file") and not k.startswith("output.")}
+    input_files = {
+        k: v
+        for k, v in run.items()
+        if k.endswith(".file") and not k.startswith("output.")
+    }
     for k, v in input_files.items():
         p = Path(v)
         try:
@@ -237,16 +247,19 @@ def run_glacier(
     run_str = dict2str(sort_dict_by_key(run))
 
     run_opts = RunConfig(**cfg.run.model_dump())
-    run_cli_opts = RunConfig(ntasks=ntasks)
     job_opts = JobConfig(**cfg.job.model_dump())
-    job_cli_opts = JobConfig(queue=queue, walltime=walltime, nodes=nodes)
 
     params = {
         **run_opts.model_dump(exclude_none=True, by_alias=True),
         **job_opts.model_dump(exclude_none=True, by_alias=True),
     }
-    params.update(run_cli_opts.as_params())
-    params.update(job_cli_opts.as_params())
+    if ntasks is not None:
+        run_cli_opts = RunConfig(ntasks=ntasks)
+        params.update(run_cli_opts.as_params())
+    for kv in [queue, walltime, nodes]:
+        if kv is not None:
+            job_cli_opts = JobConfig(kv=kv)
+            params.update(job_cli_opts.as_params())
 
     rendered_script = "" if debug else template.render(params)
     rendered_script += f"\n\n{prefix}{run_str}\n"
@@ -255,8 +268,9 @@ def run_glacier(
     run_script_path.mkdir(parents=True, exist_ok=True)
 
     run_script = run_script_path / Path(
-        f"submit_g{resolution}_{rgi_id}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.sh"
+        f"submit_g{resolution}_{rgi_id}_surface_{surface}_energy_{energy}_stress_balance_{stress_balance}_{start}_{end}.sh"
     )
+
     # Save or print the output
     run_script.write_text(rendered_script)
 
@@ -265,7 +279,10 @@ def run_glacier(
 
     run_toml = {
         "rgi": {"rgi_id": rgi_id, "outline": str(output_glacier_filename.absolute())},
-        "output": {"spatial": str(spatial_file.absolute()), "state": str(state_file.absolute())},
+        "output": {
+            "spatial": str(spatial_file.absolute()),
+            "state": str(state_file.absolute()),
+        },
         "config": run,
     }
     run_file = output_path / Path(
@@ -273,7 +290,7 @@ def run_glacier(
     )
     with open(run_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
-    print(rendered_script)
+    print(f"\nScript written to {run_script}\n")
 
 
 def main():

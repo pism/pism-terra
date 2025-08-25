@@ -213,7 +213,9 @@ class RunConfig(BaseModel):
             Fields with ``None``/unset/default values are omitted; templated
             strings (e.g., ``mpi``) are rendered to plain strings.
         """
-        params = self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
+        params = self.model_dump(
+            exclude_none=True, exclude_unset=True, exclude_defaults=True
+        )
         ctx = {**params, **extra}
 
         def _render(v: Any) -> Any:
@@ -317,7 +319,9 @@ class JobConfig(BaseModelWithDot):
             A dictionary containing only keys whose values are present
             (i.e., excludes ``None``, unset, and defaulted fields).
         """
-        return self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
+        return self.model_dump(
+            exclude_none=True, exclude_unset=True, exclude_defaults=True
+        )
 
 
 class PismConfig(BaseModelWithDot):
@@ -392,12 +396,12 @@ class PismConfig(BaseModelWithDot):
     energy: EnergyConfig
     stress_balance: StressBalanceConfig
     grid: GridConfig
-    atmosphere: dict[str, Any] = {}
+    atmosphere: AtmosphereConfig
+    surface: SurfaceConfig
     geometry: dict[str, Any] = {}
     ocean: dict[str, Any] = {}
     calving: dict[str, Any] = {}
     iceflow: dict[str, Any] = {}
-    surface: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
     input: dict[str, Any] = {}
     time_stepping: dict[str, Any] = {}
@@ -470,7 +474,9 @@ class GridConfig(BaseModelWithDot):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     # what your TOML shows:
-    resolution: str = Field(alias="resolution")  # e.g. "200m" (also accepts "grid.resolution")
+    resolution: str = Field(
+        alias="resolution"
+    )  # e.g. "200m" (also accepts "grid.resolution")
     Lbz: int | None = Field(default=None, alias="grid.Lbz")
     Lz: int | float | None = Field(default=None, alias="grid.Lz")
     Mbz: int | None = Field(default=None, alias="grid.Mbz")
@@ -679,6 +685,26 @@ class ModelWithOptions(BaseModelWithDot):
             return self.options[self.model]
         except KeyError as e:
             raise ValueError(f"model '{self.model}' not in options") from e
+
+
+class AtmosphereConfig(ModelWithOptions):
+    """
+    Atmosphere model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "atmosphere"
+
+
+class SurfaceConfig(ModelWithOptions):
+    """
+    Surface model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "surface"
 
 
 class EnergyConfig(ModelWithOptions):

@@ -41,7 +41,10 @@ from pism_terra.vector import get_glacier_from_rgi_id
 
 
 def stage_glacier(
-    rgi_id: str, rgi: str | Path = "rgi/rgi.gpkg", path: str | Path = "input_files", resolution: float = 50.0
+    rgi_id: str,
+    rgi: str | Path = "rgi/rgi.gpkg",
+    path: str | Path = "input_files",
+    resolution: float = 50.0,
 ) -> dict:
     """
     Generate and save a glacier DEM and related variables to a NetCDF file.
@@ -119,7 +122,9 @@ def stage_glacier(
     dem["thickness"] = dem["thickness"].where(dem["thickness"] > 0.0, 0.0)
     dem["bed"] = dem["bed"].where(dem["surface"] > 0.0, -1000.0)
     if rgi_id == "RGI2000-v7.0-C-01-09429-A":
-        dem = add_malaspina_bed(dem, target_crs=crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
+        dem = add_malaspina_bed(dem, target_crs=crs).rio.set_spatial_dims(
+            x_dim="x", y_dim="y"
+        )
     dem.rio.write_crs(crs, inplace=True)
     dem.to_netcdf(boot_filename)
 
@@ -127,8 +132,20 @@ def stage_glacier(
     grid_filename = path / Path(f"grid_g{int(resolution)}m_{rgi_id}.nc")
     grid.to_netcdf(grid_filename, engine="h5netcdf")
 
-    x_point_list = [grid.x_bnds[0][0], grid.x_bnds[0][0], grid.x_bnds[0][1], grid.x_bnds[0][1], grid.x_bnds[0][0]]
-    y_point_list = [grid.y_bnds[0][0], grid.y_bnds[0][1], grid.y_bnds[0][1], grid.y_bnds[0][0], grid.y_bnds[0][0]]
+    x_point_list = [
+        grid.x_bnds[0][0],
+        grid.x_bnds[0][0],
+        grid.x_bnds[0][1],
+        grid.x_bnds[0][1],
+        grid.x_bnds[0][0],
+    ]
+    y_point_list = [
+        grid.y_bnds[0][0],
+        grid.y_bnds[0][1],
+        grid.y_bnds[0][1],
+        grid.y_bnds[0][0],
+        grid.y_bnds[0][0],
+    ]
     polygon_geom = Polygon(zip(x_point_list, y_point_list))
     polygon = gpd.GeoDataFrame(index=[0], crs=crs, geometry=[polygon_geom])
     polygon_filename = path / Path(f"domain_{rgi_id}.gpkg")
@@ -149,10 +166,13 @@ def stage_glacier(
 
     if rgi_id == "RGI2000-v7.0-C-01-12784":
         for dataset in ["CCSM"]:
-            url = f"https://zenodo.org/records/13912616/files/cosipy_output_{dataset}_JIF_1980_2010.nc"
-            ds = jif_cosipy(url)
             filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
-            ds.to_netcdf(filename)
+            url = f"https://zenodo.org/records/13912616/files/cosipy_output_{dataset}_JIF_1980_2010.nc"
+            try:
+                xr.open_dataset(filename)
+            except:
+                ds = jif_cosipy(url)
+                ds.to_netcdf(filename)
             files_dict.update({f"cosipy_{dataset}_file": filename})
 
     return files_dict
