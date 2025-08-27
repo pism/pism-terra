@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Iterator
 
+import scipy.stats as st
 import toml
 from jinja2 import Environment, StrictUndefined
 from pydantic import (
@@ -57,6 +58,427 @@ def load_config(path: str | Path) -> PismConfig:
     """
     data = toml.loads(Path(path).read_text("utf-8"))
     return PismConfig.model_validate(data)
+
+
+def load_uq(path: str | Path) -> UQConfig:
+    """
+    Load and validate a UQ configuration from a TOML file.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Path to the TOML file describing the uncertainty specification.
+        The file may contain a top-level ``samples`` (int), optional
+        ``mapping`` (str), and a nested or already-dotted set of leaves
+        defining distributions.
+
+    Returns
+    -------
+    UQConfig
+        Parsed and validated configuration model.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``path`` does not exist.
+    toml.TomlDecodeError
+        If the file content is not valid TOML.
+    pydantic.ValidationError
+        If the parsed content fails model validation.
+
+    Examples
+    --------
+    >>> uq = load_uq("uq/spec.toml")
+    >>> uq.samples
+    100
+    >>> list(uq.to_flat().keys())[:2]
+    ['surface.pdd.factor_ice', 'surface.pdd.factor_snow']
+    """
+    data = toml.loads(Path(path).read_text("utf-8"))
+    return UQConfig.model_validate(data)
+
+
+class DistSpec(BaseModel):
+    """
+    Distribution specification for a single random variable.
+
+    This model captures the SciPy distribution name (``distribution``) and its
+    parameters. For **continuous** distributions, ``loc`` and ``scale`` are
+    typically required. For **discrete** distributions or special cases
+    (e.g., ``randint``, ``truncnorm``), required parameters differ and are
+    validated accordingly.
+
+    Attributes
+    ----------
+    distribution : str
+        Name of the SciPy distribution in ``scipy.stats`` (case-insensitive),
+        e.g., ``"norm"``, ``"uniform"``, ``"truncnorm"``, ``"randint"``.
+    loc : float or None, default: 0.0
+        Location parameter for continuous distributions. Optional to allow
+        discrete distributions that do not use it.
+    scale : float or None, default: 1.0
+        Scale parameter for continuous distributions. Must be ``> 0`` when
+        applicable; optional for discrete distributions that do not use it.
+
+    Notes
+    -----
+    This model validates *specification* only. Construction of a frozen SciPy
+    RV (e.g., via ``stats.<dist>(...).ppf``) should be done by a helper such as
+    ``_make_frozen`` that interprets ``model_extra`` as needed.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    # Optional so discrete dists (e.g., randint) can omit them cleanly
+    loc: float | None = 0.0
+    scale: float | None = 1.0
+    distribution: str = Field(alias="distribution")
+
+    @field_validator("distribution")
+    @classmethod
+    def _norm_name(cls, v: str) -> str:
+        """
+        Normalize the distribution name.
+
+        Parameters
+        ----------
+        v : str
+            Raw distribution name (any case, may contain surrounding spaces).
+
+        Returns
+        -------
+        str
+            Lower-cased, stripped distribution name suitable for
+            ``getattr(scipy.stats, name)``.
+        """
+        return v.strip().lower()
+
+    @model_validator(mode="after")
+    def _check_params(self) -> "DistSpec":
+        """
+        Validate parameter completeness and basic constraints.
+
+        Ensures that the distribution exists in ``scipy.stats`` and that the
+        required parameters are present:
+
+        - ``randint``: must provide ``low`` and ``high`` in ``model_extra``.
+        - ``truncnorm``: must provide either standardized bounds ``a``, ``b`` or
+          raw bounds ``lower``, ``upper`` and must have ``scale > 0``.
+        - All other distributions: require ``loc`` and ``scale`` (with
+          ``scale > 0``) and any shape parameters declared by
+          ``scipy.stats.<dist>.shapes``.
+
+        Returns
+        -------
+        DistSpec
+            The validated instance (possibly unchanged).
+
+        Raises
+        ------
+        ValueError
+            If the distribution is unknown or any required parameters are
+            missing/invalid.
+        """
+
+        name = self.distribution
+        dist = getattr(st, name, None)
+        if dist is None or not hasattr(dist, "rvs"):
+            raise ValueError(f"unknown SciPy distribution: '{name}'")
+
+        shapes = (dist.shapes or "").replace(" ", "")
+        req_shapes = [s for s in shapes.split(",") if s]
+
+        vals = dict(getattr(self, "model_extra", {}) or {})
+        present = set(vals)
+
+        # randint: require low, high; loc/scale are not used
+        if name == "randint":
+            if not {"low", "high"} <= present:
+                raise ValueError("randint requires 'low' and 'high'")
+            return self
+
+        # truncnorm: require either (a,b) or (lower,upper) and valid scale
+        if name == "truncnorm":
+            if self.scale is None or float(self.scale) <= 0:
+                raise ValueError("truncnorm requires 'scale' > 0")
+            has_ab = {"a", "b"} <= present
+            has_bounds = {"lower", "upper"} <= present
+            if not (has_ab or has_bounds):
+                raise ValueError("truncnorm requires 'a' and 'b' or 'lower' and 'upper'")
+            return self
+
+        # other distributions: require loc/scale and any shape params
+        if self.loc is None or self.scale is None:
+            raise ValueError(f"spec for '{name}' must include 'loc' and 'scale'")
+        if float(self.scale) <= 0:
+            raise ValueError(f"'scale' must be > 0 for '{name}'")
+
+        if req_shapes:
+            missing = [s for s in req_shapes if s not in present]
+            if missing:
+                raise ValueError(
+                    f"distribution '{name}' requires shape parameter(s): "
+                    f"{', '.join(req_shapes)} (missing: {', '.join(missing)})"
+                )
+        return self
+
+
+class UQConfig(BaseModel):
+    """
+    Uncertainty specification as a flat dotted-key map with sampling metadata.
+
+    This model holds:
+      1) the number of ensemble ``samples`` (an integer),
+      2) an optional column name ``mapping`` (e.g., to map categorical draws to
+         filenames later), and
+      3) a ``tree`` mapping from **dotted variable names** (e.g.,
+         ``"surface.pdd.factor_ice"``) to :class:`DistSpec` entries that describe
+         the probability distribution for each variable.
+
+    Input TOML can be either *nested* (hierarchical tables) or already *flat*
+    (quoted dotted-table keys). A ``model_validator(mode="before")`` flattens
+    nested inputs by treating any dict that contains a ``"distribution"`` key as
+    a *leaf* variable.
+
+    Attributes
+    ----------
+    samples : int, default=1
+        Number of draws to use when generating ensemble samples. Must be > 0.
+    mapping : str or None, optional
+        Optional column name indicating a mapping key (e.g., to join against a
+        lookup table of file paths). Not interpreted by validation; simply
+        preserved for downstream use.
+    tree : dict[str, DistSpec]
+        Flat mapping from dotted variable names to validated :class:`DistSpec`
+        objects.
+
+    Notes
+    -----
+    - The *before* validator accepts either:
+        * top-level leaves (possibly nested tables), or
+        * a block under the key ``"tree"``.
+      In both cases, it extracts leaf specs and assigns them to ``tree``.
+    - The presence of a key named ``"distribution"`` is used to detect leaves,
+      deferring detailed parameter validation to :class:`DistSpec`.
+
+    Examples
+    --------
+    Nested TOML (flattened automatically):
+
+    .. code-block:: toml
+
+        samples = 100
+        mapping = "surface_choice"
+
+        [surface.pdd.factor_ice]
+        distribution = "truncnorm"
+        loc = 8
+        scale = 4
+        a = -1
+        b =  1
+
+    After parsing:
+
+    >>> uq = UQConfig.model_validate(parsed_toml)
+    >>> uq.samples
+    100
+    >>> uq.mapping
+    'surface_choice'
+    >>> list(uq.to_flat().keys())
+    ['surface.pdd.factor_ice']
+    """
+
+    samples: int = Field(default=1, gt=0)
+    mapping: str | None = None
+    tree: dict[str, "DistSpec"]  # values parsed as DistSpec after 'before' validator
+
+    @staticmethod
+    def _is_leaf(node: Any) -> bool:
+        """
+        Return ``True`` if a node looks like a distribution spec (a "leaf").
+
+        A *leaf* is any mapping that declares a ``"distribution"`` key; all
+        additional validation is delegated to :class:`DistSpec`.
+
+        Parameters
+        ----------
+        node : Any
+            Arbitrary value encountered during flattening.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``node`` is a ``dict`` with a ``"distribution"`` key,
+            ``False`` otherwise.
+
+        Examples
+        --------
+        >>> UQConfig._is_leaf({"distribution": "norm", "loc": 0, "scale": 1})
+        True
+        >>> UQConfig._is_leaf({"foo": "bar"})
+        False
+        """
+        # Be permissive: any dict with a 'distribution' key is a candidate leaf.
+        return isinstance(node, dict) and ("distribution" in node)
+
+    @classmethod
+    def _flatten_leaves(cls, node: Any, prefix: str = "") -> dict[str, dict[str, Any]]:
+        """
+        Recursively flatten nested dicts into dotted-key leaf specifications.
+
+        Parameters
+        ----------
+        node : Any
+            Root of a nested mapping (e.g., parsed TOML tables).
+        prefix : str, optional
+            Current dotted prefix accumulated during recursion.
+
+        Returns
+        -------
+        dict[str, dict[str, Any]]
+            A flat mapping from dotted names to raw (unvalidated) leaf dicts.
+
+        Notes
+        -----
+        - Only entries recognized by :meth:`_is_leaf` are emitted as leaves.
+        - Non-leaf dicts are traversed recursively.
+        - Non-dict values are ignored.
+
+        Examples
+        --------
+        >>> nested = {"surface": {"pdd": {"factor_ice": {"distribution": "norm"}}}}
+        >>> UQConfig._flatten_leaves(nested)
+        {'surface.pdd.factor_ice': {'distribution': 'norm'}}
+        """
+        flat: dict[str, dict[str, Any]] = {}
+        if isinstance(node, dict):
+            for k, v in node.items():
+                key = f"{prefix}.{k}" if prefix else k
+                if cls._is_leaf(v):
+                    flat[key] = v
+                elif isinstance(v, dict):
+                    flat.update(cls._flatten_leaves(v, key))
+        return flat
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_input(cls, v: Any) -> dict[str, Any]:
+        """
+        Normalize input into ``{'samples': ..., 'mapping': ..., 'tree': {...}}``.
+
+        Accepts either nested content (hierarchical TOML tables) or an already
+        dotted flat mapping. Top-level ``samples`` and ``mapping`` are preserved
+        (also accepted if provided inside the raw block).
+
+        Parameters
+        ----------
+        v : Any
+            Raw object to validate (typically a ``dict`` parsed from TOML).
+
+        Returns
+        -------
+        dict
+            A dict containing normalized keys:
+            ``'tree'`` (flat leaf mapping) and optionally ``'samples'``,
+            ``'mapping'``.
+
+        Notes
+        -----
+        - If input contains a key ``"tree"``, that block is used as the source.
+        - If any keys appear already dotted (contain ``'.'``), they are copied
+          into ``tree`` if their values are ``dict``; otherwise nested flattening
+          via :meth:`_flatten_leaves` is applied.
+
+        Examples
+        --------
+        >>> raw = {"samples": 10, "surface": {"pdd": {"factor_ice": {"distribution": "norm"}}}}
+        >>> out = UQConfig._flatten_input(raw)
+        >>> sorted(out.keys())
+        ['samples', 'tree']
+        >>> out['tree'].keys()
+        dict_keys(['surface.pdd.factor_ice'])
+        """
+        if not isinstance(v, dict):
+            return v
+
+        # Pull top-level fields if present
+        samples = v.get("samples")
+        mapping = v.get("mapping")
+
+        # Where the specs live: either under 'tree' or at top level
+        raw = v.get("tree", v)
+        if not isinstance(raw, dict):
+            outv: dict[str, Any] = {"tree": {}}
+            if samples is not None:
+                outv["samples"] = samples
+            if mapping is not None:
+                outv["mapping"] = mapping
+            return outv
+
+        raw = dict(raw)  # shallow copy so we can pop safely
+
+        # Allow samples/mapping inside the raw block too
+        if samples is None and "samples" in raw:
+            samples = raw.pop("samples")
+        if mapping is None and "mapping" in raw:
+            mapping = raw.pop("mapping")
+
+        # Ensure these don't leak into tree
+        raw.pop("samples", None)
+        raw.pop("mapping", None)
+
+        # If keys are already dotted (['a.b.c']), keep only dict-valued items
+        if any(isinstance(k, str) and "." in k for k in raw):
+            tree = {k: v for k, v in raw.items() if isinstance(v, dict)}
+        else:
+            # Nested TOML tables -> flatten by finding leaves (by 'distribution' key)
+            tree = cls._flatten_leaves(raw)
+
+        out: dict[str, Any] = {"tree": tree}
+        if samples is not None:
+            out["samples"] = samples
+        if mapping is not None:
+            out["mapping"] = mapping
+        return out
+
+    # helpers
+    def iter_specs(self) -> Iterator[tuple[str, "DistSpec"]]:
+        """
+        Iterate over variable specifications in the flat tree.
+
+        Yields
+        ------
+        Iterator[tuple[str, DistSpec]]
+            Pairs of ``(name, spec)``, where ``name`` is a dotted variable
+            identifier and ``spec`` is the corresponding :class:`DistSpec`.
+
+        Examples
+        --------
+        >>> for name, spec in uq.iter_specs():
+        ...     print(name, spec.distribution)
+        surface.pdd.factor_ice truncnorm
+        """
+        yield from self.tree.items()
+
+    def to_flat(self) -> dict[str, dict[str, Any]]:
+        """
+        Export the flat mapping to plain dictionaries.
+
+        Returns
+        -------
+        dict[str, dict[str, Any]]
+            A mapping from dotted names to plain dicts created via
+            ``DistSpec.model_dump()``. Useful for serialization or passing to
+            sampling utilities.
+
+        Examples
+        --------
+        >>> flat = uq.to_flat()
+        >>> flat['surface.pdd.factor_ice']['distribution']
+        'truncnorm'
+        """
+        # Values are DistSpec instances now; dump to plain dicts
+        return {name: spec.model_dump() for name, spec in self.tree.items()}
 
 
 class BaseModelWithDot(BaseModel):
@@ -213,9 +635,7 @@ class RunConfig(BaseModel):
             Fields with ``None``/unset/default values are omitted; templated
             strings (e.g., ``mpi``) are rendered to plain strings.
         """
-        params = self.model_dump(
-            exclude_none=True, exclude_unset=True, exclude_defaults=True
-        )
+        params = self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
         ctx = {**params, **extra}
 
         def _render(v: Any) -> Any:
@@ -319,9 +739,7 @@ class JobConfig(BaseModelWithDot):
             A dictionary containing only keys whose values are present
             (i.e., excludes ``None``, unset, and defaulted fields).
         """
-        return self.model_dump(
-            exclude_none=True, exclude_unset=True, exclude_defaults=True
-        )
+        return self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
 
 
 class PismConfig(BaseModelWithDot):
@@ -474,9 +892,7 @@ class GridConfig(BaseModelWithDot):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     # what your TOML shows:
-    resolution: str = Field(
-        alias="resolution"
-    )  # e.g. "200m" (also accepts "grid.resolution")
+    resolution: str = Field(alias="resolution")  # e.g. "200m" (also accepts "grid.resolution")
     Lbz: int | None = Field(default=None, alias="grid.Lbz")
     Lz: int | float | None = Field(default=None, alias="grid.Lz")
     Mbz: int | None = Field(default=None, alias="grid.Mbz")

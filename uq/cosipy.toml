@@ -1,0 +1,8 @@
+samples = 3
+mapping = "cosipy_file"
+
+['surface.given.file']
+
+low = 0
+high = 4
+distribution = "randint"

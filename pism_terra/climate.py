@@ -161,7 +161,6 @@ def jif_cosipy(url: str) -> xr.Dataset:
     """
 
     ds = download_netcdf(url)
-    # ds = xr.open_dataset("/Users/andy/Downloads/cosipy_output_CCSM_JIF_1980_2010.nc")
     ds = ds[["T2", "surfMB"]].rename({"T2": "ice_surface_temp", "surfMB": "climatic_mass_balance"})
     ds["ice_surface_temp"] -= 273.15
     ds["climatic_mass_balance"] *= 910

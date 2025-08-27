@@ -19,7 +19,8 @@ dynamic = ["dependencies"]
 
 [project.scripts]
 pism-glacier-stage = "pism_terra.glacier.stage:main"
-pism-glacier-run = "pism_terra.glacier.run:main"
+pism-glacier-run = "pism_terra.glacier.run:run_single"
+pism-glacier-run-ensemble = "pism_terra.glacier.run:run_ensemble"
 pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
 
 [tool.setuptools.packages.find]

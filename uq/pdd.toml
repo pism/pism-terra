@@ -1,0 +1,17 @@
+samples = 15
+
+['surface.pdd.factor_ice']
+
+loc = 8
+scale = 4
+a = -1
+b = 1
+distribution = "truncnorm"
+
+['surface.pdd.factor_snow']
+
+loc = 4
+scale = 1.5
+a = -1
+b = 1
+distribution = "truncnorm"

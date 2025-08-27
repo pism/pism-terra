@@ -45,7 +45,7 @@ def stage_glacier(
     rgi: str | Path = "rgi/rgi.gpkg",
     path: str | Path = "input_files",
     resolution: float = 50.0,
-) -> dict:
+) -> pd.DataFrame:
     """
     Generate and save a glacier DEM and related variables to a NetCDF file.
 
@@ -122,9 +122,7 @@ def stage_glacier(
     dem["thickness"] = dem["thickness"].where(dem["thickness"] > 0.0, 0.0)
     dem["bed"] = dem["bed"].where(dem["surface"] > 0.0, -1000.0)
     if rgi_id == "RGI2000-v7.0-C-01-09429-A":
-        dem = add_malaspina_bed(dem, target_crs=crs).rio.set_spatial_dims(
-            x_dim="x", y_dim="y"
-        )
+        dem = add_malaspina_bed(dem, target_crs=crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
     dem.rio.write_crs(crs, inplace=True)
     dem.to_netcdf(boot_filename)
 
@@ -159,23 +157,30 @@ def stage_glacier(
     climate.to_netcdf(climate_filename)
 
     files_dict = {
+        "rgi_id": rgi_id,
         "boot_file": boot_filename.absolute(),
         "historical_climate_file": climate_filename.absolute(),
         "grid_file": grid_filename.absolute(),
     }
 
     if rgi_id == "RGI2000-v7.0-C-01-12784":
-        for dataset in ["CCSM"]:
+        dfs = []
+        for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
             filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
-            url = f"https://zenodo.org/records/13912616/files/cosipy_output_{dataset}_JIF_1980_2010.nc"
+            url = f"https://zenodo.org/records/13912616/files/cosipy_output_{dataset}_JIF_{years}.nc"
             try:
                 xr.open_dataset(filename)
             except:
                 ds = jif_cosipy(url)
                 ds.to_netcdf(filename)
-            files_dict.update({f"cosipy_{dataset}_file": filename})
+            files_dict.update({"cosipy_file": filename})
+            df = pd.DataFrame.from_dict([files_dict])
+            dfs.append(df)
+        df = pd.concat(dfs).reset_index(drop=True)
+    else:
+        df = pd.DataFrame.from_dict([files_dict])
 
-    return files_dict
+    return df
 
 
 def main():
@@ -217,9 +222,7 @@ def main():
     input_path = glacier_path / Path("input")
     input_path.mkdir(parents=True, exist_ok=True)
 
-    glacier_dict = {"rgi_id": rgi_id}
-    glacier_dict.update(stage_glacier(rgi_id, rgi, path=input_path))
-    glacier_df = pd.DataFrame.from_dict([glacier_dict])
+    glacier_df = stage_glacier(rgi_id, rgi, path=input_path)
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
 
 

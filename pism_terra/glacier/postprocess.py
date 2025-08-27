@@ -26,13 +26,15 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
 import cf_xarray
+import dask
 import geopandas as gpd
 import rioxarray
 import toml
 import xarray as xr
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, progress
-import dask
+
+xr.set_options(keep_attrs=True)
 
 
 def process_file(infile: str | Path, rgi_file: str | Path):
@@ -85,9 +87,7 @@ def process_file(infile: str | Path, rgi_file: str | Path):
     time_elapsed = end - start
     print(f"Time elapsed for postprocessing: {time_elapsed:.0f}s")
     pism_config = ds["pism_config"]
-    ds_scalar = ds_clipped.drop_vars(["pism_config"], errors="ignore").sum(
-        dim=["x", "y"]
-    )
+    ds_scalar = ds_clipped.drop_vars(["pism_config"], errors="ignore").sum(dim=["x", "y"])
     ds_scalar = xr.merge([ds_scalar, pism_config])
     ds_scalar.to_netcdf(scalar_file)
 
