@@ -166,45 +166,39 @@ def stage_glacier(
 
     if rgi_id == "RGI2000-v7.0-C-01-12784":
         dfs = []
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = []
-            for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
-                filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
-                url = f"https://zenodo.org/records/13912616/files/cosipy_output_{dataset}_JIF_{years}.nc"
-
-                futures.append(executor.submit(get_cosipy, url, filename))
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                    files_dict.update({"cosipy_file": filename})
-                    df = pd.DataFrame.from_dict([files_dict])
-                    dfs.append(df)
-                except Exception as e:
-                    print(f"An error occurred: {e}")
+        responses = []
+        for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
+            filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
+            fn = f"cosipy_output_{dataset}_JIF_{years}.nc"
+            url = f"https://zenodo.org/records/13912616/files/{fn}"
+            fnp = path / Path(fn)
+            jif_cosipy(url, fnp, filename)
+            responses.append(filename.absolute())
+        # with ThreadPoolExecutor(max_workers=3) as executor:
+        #     futures = []
+        #     responses = []
+        #     for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
+        #         filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
+        #         fn = f"cosipy_output_{dataset}_JIF_{years}.nc"
+        #         url = f"https://zenodo.org/records/13912616/files/{fn}"
+        #         fnp = path / Path(fn)
+        #         futures.append(executor.submit(jif_cosipy, url, fnp, filename))
+        #         responses.append(filename.absolute())
+        #     for future in as_completed(futures):
+        #         try:
+        #             future.result()
+        #         except Exception as e:
+        #             print(f"An error occurred: {e}")
+        for f in responses:
+            files_dict.update({"cosipy_file": f})
+            df = pd.DataFrame.from_dict([files_dict])
+            print(df)
+            dfs.append(df)
         df = pd.concat(dfs).reset_index(drop=True)
     else:
         df = pd.DataFrame.from_dict([files_dict])
 
     return df
-
-
-def get_cosipy(url: str, output_path: Path | str) -> None:
-    """
-    Get COSIPY.
-
-    Parameters
-    ----------
-    url : str
-        The URL of the file to download.
-    output_path : Path or str
-        The local path where the downloaded file will be saved.
-    """
-
-    if Path(output_path).exists():
-        return
-
-    ds = jif_cosipy(url)
-    ds.to_netcdf(Path(output_path))
 
 
 def main():

@@ -2,16 +2,16 @@ samples = 15
 
 ['surface.pdd.factor_ice']
 
-loc = 8
-scale = 4
-a = -1
-b = 1
+loc = 0.008791208791208791
+scale = 0.004395604395604396
+a = -0.001098901098901099
+b = 0.001098901098901099
 distribution = "truncnorm"
 
 ['surface.pdd.factor_snow']
 
-loc = 4
-scale = 1.5
-a = -1
-b = 1
+loc = 0.004395604395604396
+scale = 0.0016483516483516484
+a = -0.001098901098901099
+b = 0.001098901098901099
 distribution = "truncnorm"

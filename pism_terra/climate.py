@@ -145,14 +145,18 @@ def era5_reanalysis_from_rgi_id(
     return add_time_bounds(ds)
 
 
-def jif_cosipy(url: str) -> xr.Dataset:
+def jif_cosipy(url: str, download_path: Path | str, output_path: Path | str) -> None:
     """
     Download and prepare COSIPY.
 
     Parameters
     ----------
-    url : str, optional
+    url : str
         The URL to download.
+    download_path : str, Path
+        The path to the original file.
+    output_path : str, Path
+        The path to the processed file.
 
     Returns
     -------
@@ -160,7 +164,11 @@ def jif_cosipy(url: str) -> xr.Dataset:
         An xarray Dataset containing COSIPY.
     """
 
-    ds = download_netcdf(url)
+    if Path(download_path).exists():
+        ds = xr.open_dataset(Path(download_path))
+        print(f"{download_path} exists, skipping download")
+    else:
+        ds = download_netcdf(url)
     ds = ds.rename({"TS": "ice_surface_temp", "T2": "air_temp", "surfMB": "climatic_mass_balance"})
     ds["precipitation"] = ds["SNOWFALL"] + ds["RAIN"]
     ds = ds[["precipitation", "climatic_mass_balance", "air_temp", "ice_surface_temp"]]
@@ -176,7 +184,7 @@ def jif_cosipy(url: str) -> xr.Dataset:
     ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
     ds.rio.write_crs("EPSG:4326", inplace=True)
 
-    return ds
+    ds.to_netcdf(output_path)
 
 
 def download_request(
