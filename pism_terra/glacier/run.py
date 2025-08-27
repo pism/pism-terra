@@ -374,6 +374,60 @@ def run_glacier(
     print(f"Postprocessing script written to {run_file}\n")
 
 
+def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """
+    Replace integer choices in `uq_df` with values from `df` using a per-flag mapping.
+
+    Parameters
+    ----------
+    uq_df : pandas.DataFrame
+        DataFrame produced by your sampler (has integer-coded columns like
+        'surface.given.file', 'atmosphere.given.file', etc.).
+    df : pandas.DataFrame
+        Source DataFrame that contains the lookup columns (e.g., 'cosipy_file').
+        Row order defines the integer choices: 0 -> first row, 1 -> second row, etc.
+    mapping : dict[str, str]
+        Mapping from dotted flag name in `uq_df` to column name in `df`,
+        e.g. {"surface.given.file": "cosipy_file"}.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy of `uq_df` with the specified columns mapped to their path strings.
+    """
+    out = uq_df.copy()
+
+    if not isinstance(mapping, dict) or not mapping:
+        return out
+
+    for flag, df_col in mapping.items():
+        if flag not in out.columns:
+            # nothing to map for this flag; skip
+            continue
+        if df_col not in df.columns:
+            raise KeyError(f"Mapping for '{flag}' points to missing df column '{df_col}'")
+
+        # Build int-choice -> value mapping using the *row order* of df[df_col]
+        # Using a Series preserves integer index 0..n-1 after reset_index(drop=True)
+        choice_series = df[df_col].reset_index(drop=True)
+
+        # Ensure the source choices are integer-coded
+        out[flag] = pd.to_numeric(out[flag], errors="raise").astype("int64")
+
+        # Series.map with a Series maps by index; perfect for 0..n-1 codes
+        out[flag] = out[flag].map(choice_series)
+
+        # Optional: fail fast if any choice was out of bounds
+        if out[flag].isna().any():
+            bad = out.loc[out[flag].isna(), flag].index.tolist()
+            raise ValueError(
+                f"Found out-of-range choice(s) for '{flag}' at rows {bad}; "
+                f"valid choices are 0..{len(choice_series)-1}"
+            )
+
+    return out
+
+
 def sort_dict_by_key(d: dict) -> dict:
     """
     Sort a dictionary by its keys.
@@ -620,14 +674,8 @@ def run_ensemble():
     mapping = uq.mapping
 
     uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=42)
-    try:
-        choice_to_path = dict(enumerate(df[uq.mapping]))
-        # replace numeric choices with the actual paths
-        uq_df["surface.given.file"] = (
-            uq_df["surface.given.file"].astype(int).map(choice_to_path)  # 2.0 -> 2  # 2 -> df.loc[2, "cosipy_file"]
-        )
-    except:
-        pass
+    if uq.mapping:
+        uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
     for idx, row in uq_df.iterrows():
         default.update(row)
         run_glacier(

@@ -268,7 +268,6 @@ class UQConfig(BaseModel):
     .. code-block:: toml
 
         samples = 100
-        mapping = "surface_choice"
 
         [surface.pdd.factor_ice]
         distribution = "truncnorm"
@@ -289,7 +288,7 @@ class UQConfig(BaseModel):
     """
 
     samples: int = Field(default=1, gt=0)
-    mapping: str | None = None
+    mapping: dict | None = None
     tree: dict[str, "DistSpec"]  # values parsed as DistSpec after 'before' validator
 
     @staticmethod

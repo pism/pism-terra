@@ -137,42 +137,53 @@ def create_samples(d: dict[str, dict[str, Any]], n_samples: int = 10, seed: int 
     Parameters
     ----------
     d : dict
-        Flattened config of the form:
-        ``{'name': {'distribution': 'uniform', 'loc': 6, 'scale': 6, ...}, ...}``.
-        Extra shape params are supported (e.g., 'a','b' for truncnorm, or 'lower','upper').
+        Mapping ``name -> spec`` where spec includes at least ``distribution`` and any
+        required parameters (e.g., ``low, high`` for ``randint`` or ``loc, scale`` for
+        continuous distributions; plus any shapes like ``a, b`` for ``truncnorm``).
     n_samples : int, default 10
-        Number of Latin Hypercube samples to draw.
+        Number of samples to draw.
     seed : int or None, default None
-        Random seed for reproducibility.
+        Seed for the Latin Hypercube sampler.
 
     Returns
     -------
     pandas.DataFrame
-        Columns: 'sample' followed by one column per key in ``d`` (in dict order).
+        A DataFrame with one column per variable in ``d`` and an
+        integer ``sample`` column. Discrete variables are returned as integer dtype.
     """
-    if not d:
-        return pd.DataFrame({"sample": []})
+    names = list(d.keys())
 
-    names = list(d.keys())  # preserve caller's key order
-    dim = len(names)
+    # LHS in [0,1]
+    engine = qmc.LatinHypercube(d=len(names), seed=seed)
+    U = engine.random(n_samples)
 
-    # Latin hypercube in [0,1]^dim
-    sampler = qmc.LatinHypercube(d=dim, seed=seed)
-    U = sampler.random(n_samples)
-
-    # Avoid hitting 0/1 exactly (ppf can be inf); clip slightly
+    # clip away exactly 0 or 1 so ppf is well-defined
     eps = np.finfo(float).eps
     U = np.clip(U, eps, 1 - eps)
 
     # Transform each dimension with that variable's inverse CDF (PPF)
     X = np.empty_like(U, dtype=float)
+    discrete_cols: list[int] = []
     for i, name in enumerate(names):
         spec = d[name]
         dist_name = str(spec["distribution"]).strip().lower()
         frozen = _make_frozen(dist_name, spec)
+
+        # mark discrete columns so we can cast to int later
+        dist_gen = getattr(stats, dist_name, None)
+        if isinstance(dist_gen, rv_discrete):
+            discrete_cols.append(i)
+
         X[:, i] = frozen.ppf(U[:, i])
 
     # Build DataFrame
     df = pd.DataFrame(X, columns=names)
+    # Cast discrete columns to integers
+    for i in discrete_cols:
+        col = names[i]
+        # PPF of discrete dists returns integer-valued floats; round just in case
+        df[col] = df[col].round().astype("int64")
+
+    # add sample id
     df.insert(0, "sample", np.arange(n_samples, dtype=int))
     return df

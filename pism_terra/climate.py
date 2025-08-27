@@ -161,16 +161,20 @@ def jif_cosipy(url: str) -> xr.Dataset:
     """
 
     ds = download_netcdf(url)
-    ds = ds[["T2", "surfMB"]].rename({"T2": "ice_surface_temp", "surfMB": "climatic_mass_balance"})
+    ds = ds.rename({"TS": "ice_surface_temp", "T2": "air_temp", "surfMB": "climatic_mass_balance"})
+    ds["precipitation"] = ds["SNOWFALL"] + ds["RAIN"]
+    ds = ds[["precipitation", "climatic_mass_balance", "air_temp", "ice_surface_temp"]]
     ds["ice_surface_temp"] -= 273.15
-    ds["climatic_mass_balance"] *= 910
+    ds["air_temp"] -= 273.15
+    ds["climatic_mass_balance"] *= 1000
+    ds["precipitation"] *= 1000
     ds["climatic_mass_balance"].attrs.update({"units": "kg m^-2 day^-1"})
+    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
     ds["ice_surface_temp"].attrs.update({"units": "celsius"})
+    ds["air_temp"].attrs.update({"units": "celsius"})
     ds = ds.fillna(0)
     ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
     ds.rio.write_crs("EPSG:4326", inplace=True)
-
-    return add_time_bounds(ds)
 
 
 def download_request(
