@@ -15,13 +15,14 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=unused-import,unused-variable
+# pylint: disable=unused-import,unused-variable,broad-exception-caught
 
 """
 Staging.
 """
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cf_xarray
@@ -29,7 +30,6 @@ import geopandas as gpd
 import pandas as pd
 import rioxarray
 import xarray as xr
-from dask.distributed import Client
 from shapely.geometry import Polygon
 
 from pism_terra.climate import era5_reanalysis_from_rgi_id, jif_cosipy
@@ -165,22 +165,45 @@ def stage_glacier(
 
     if rgi_id == "RGI2000-v7.0-C-01-12784":
         dfs = []
-        for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
-            filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
-            url = f"https://zenodo.org/records/13912616/files/cosipy_output_{dataset}_JIF_{years}.nc"
-            try:
-                xr.open_dataset(filename)
-            except:
-                ds = jif_cosipy(url)
-                ds.to_netcdf(filename)
-            files_dict.update({"cosipy_file": filename})
-            df = pd.DataFrame.from_dict([files_dict])
-            dfs.append(df)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = []
+            for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
+                filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
+                url = f"https://zenodo.org/records/13912616/files/cosipy_output_{dataset}_JIF_{years}.nc"
+
+                futures.append(executor.submit(get_cosipy, url, filename))
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                    files_dict.update({"cosipy_file": filename})
+                    df = pd.DataFrame.from_dict([files_dict])
+                    dfs.append(df)
+                except Exception as e:
+                    print(f"An error occurred: {e}")
         df = pd.concat(dfs).reset_index(drop=True)
     else:
         df = pd.DataFrame.from_dict([files_dict])
 
     return df
+
+
+def get_cosipy(url: str, output_path: Path | str) -> None:
+    """
+    Get COSIPY.
+
+    Parameters
+    ----------
+    url : str
+        The URL of the file to download.
+    output_path : Path or str
+        The local path where the downloaded file will be saved.
+    """
+
+    if Path(output_path).exists():
+        return
+
+    ds = jif_cosipy(url)
+    ds.to_netcdf(Path(output_path))
 
 
 def main():
