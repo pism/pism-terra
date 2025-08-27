@@ -25,6 +25,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import earthaccess
 import numpy as np
@@ -335,5 +336,6 @@ def download_netcdf(
                 progress.update(len(chunk))
     progress.close()
 
-    # Open the downloaded file with xarray
-    return xr.open_dataset("temp.nc")
+    with NamedTemporaryFile(suffix=".nc", delete=False) as xr_file:
+        # Open the downloaded file with xarray
+        return xr.open_dataset(xr_file)
