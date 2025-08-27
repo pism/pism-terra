@@ -23,6 +23,7 @@ Running.
 
 from __future__ import annotations
 
+import shutil
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
@@ -354,13 +355,8 @@ def run_glacier(
     # Save or print the output
     run_script.write_text(rendered_script)
 
-    output_glacier_filename = output_path / Path(f"rgi_{rgi_id}.gpkg")
-
-    # Fix copy right file
-    # shutil.copy(rgi_file, output_glacier_filename)
-
     run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline": str(output_glacier_filename.absolute())},
+        "rgi": {"rgi_id": rgi_id},
         "output": {
             "spatial": str(spatial_file.absolute()),
             "state": str(state_file.absolute()),
@@ -370,8 +366,8 @@ def run_glacier(
     run_file = output_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
     with open(run_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
-    print(f"\nSLURM script written to {run_script}\n")
-    print(f"Postprocessing script written to {run_file}\n")
+    print(f"\nSLURM script written to {run_script.absolute()}\n")
+    print(f"Postprocessing script written to {run_file.absolute()}\n")
 
 
 def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
@@ -551,6 +547,17 @@ def run_single():
     df = pd.read_csv(rgi_file)
     rgi_id = df["rgi_id"].iloc[0]
 
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    glacier_path = path / Path(rgi_id)
+    glacier_path.mkdir(parents=True, exist_ok=True)
+    output_path = glacier_path / Path("output")
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    input_outline_filename = df["outline"].iloc[0]
+    output_outline_filename = output_path / Path(f"rgi_{rgi_id}.gpkg")
+    shutil.copy(input_outline_filename, output_outline_filename)
+
     uq = {
         "input.file": df["boot_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
@@ -660,6 +667,17 @@ def run_ensemble():
 
     df = pd.read_csv(rgi_file)
     rgi_id = df["rgi_id"].iloc[0]
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    glacier_path = path / Path(rgi_id)
+    glacier_path.mkdir(parents=True, exist_ok=True)
+    output_path = glacier_path / Path("output")
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    input_outline_filename = df["outline"].iloc[0]
+    output_outline_filename = output_path / Path(f"rgi_{rgi_id}.gpkg")
+    shutil.copy(input_outline_filename, output_outline_filename)
 
     default = {
         "input.file": df["boot_file"].iloc[0],

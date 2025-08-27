@@ -176,6 +176,8 @@ def jif_cosipy(url: str) -> xr.Dataset:
     ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
     ds.rio.write_crs("EPSG:4326", inplace=True)
 
+    return ds
+
 
 def download_request(
     dataset: str = "reanalysis-era5-single-levels-monthly-means",

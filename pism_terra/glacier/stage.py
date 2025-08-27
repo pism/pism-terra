@@ -158,6 +158,7 @@ def stage_glacier(
 
     files_dict = {
         "rgi_id": rgi_id,
+        "outline": glacier_filename.absolute(),
         "boot_file": boot_filename.absolute(),
         "historical_climate_file": climate_filename.absolute(),
         "grid_file": grid_filename.absolute(),
