@@ -142,6 +142,7 @@ def run_glacier(
     rgi_id: str,
     config_file: str | Path,
     template_file: Path | str,
+    outline_file: Path | str,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -173,6 +174,8 @@ def run_glacier(
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template (e.g., SLURM/LSF script). The
         context is populated from validated ``RunConfig`` and ``JobConfig``.
+    outline_file : str or pathlib.Path
+        Path to a geopandas file with the glacier outline.
     path : str or pathlib.Path, optional
         Base output directory. A subfolder ``<path>/<rgi_id>`` is created with
         ``output/`` and ``run_scripts/`` subdirectories. Default is ``"result"``.
@@ -245,6 +248,8 @@ def run_glacier(
     ...     ntasks=112,         # optional template/run override
     ... )
     """
+
+    outline_file = Path(outline_file)
     cfg = load_config(config_file)
 
     mpi_str = cfg.run.as_params()["mpi"]
@@ -356,7 +361,7 @@ def run_glacier(
     run_script.write_text(rendered_script)
 
     run_toml = {
-        "rgi": {"rgi_id": rgi_id},
+        "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.absolute())},
         "output": {
             "spatial": str(spatial_file.absolute()),
             "state": str(state_file.absolute()),
@@ -546,6 +551,7 @@ def run_single():
 
     df = pd.read_csv(rgi_file)
     rgi_id = df["rgi_id"].iloc[0]
+    outline_file = df["outline"].iloc[0]
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -570,6 +576,7 @@ def run_single():
         rgi_id,
         config_file,
         template_file,
+        outline_file,
         path=path,
         resolution=resolution,
         nodes=nodes,
@@ -667,6 +674,7 @@ def run_ensemble():
 
     df = pd.read_csv(rgi_file)
     rgi_id = df["rgi_id"].iloc[0]
+    outline_file = df["outline"].iloc[0]
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -700,6 +708,7 @@ def run_ensemble():
             rgi_id,
             config_file,
             template_file,
+            outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
