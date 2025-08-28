@@ -551,7 +551,6 @@ def run_single():
 
     df = pd.read_csv(rgi_file)
     rgi_id = df["rgi_id"].iloc[0]
-    outline_file = df["outline"].iloc[0]
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -560,9 +559,9 @@ def run_single():
     output_path = glacier_path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
-    input_outline_filename = df["outline"].iloc[0]
-    output_outline_filename = output_path / Path(f"rgi_{rgi_id}.gpkg")
-    shutil.copy(input_outline_filename, output_outline_filename)
+    input_outline_file = df["outline"].iloc[0]
+    output_outline_file = output_path / Path(f"rgi_{rgi_id}.gpkg")
+    shutil.copy(input_outline_file, output_outline_file)
 
     uq = {
         "input.file": df["boot_file"].iloc[0],
@@ -576,7 +575,7 @@ def run_single():
         rgi_id,
         config_file,
         template_file,
-        outline_file,
+        output_outline_file,
         path=path,
         resolution=resolution,
         nodes=nodes,
@@ -674,7 +673,6 @@ def run_ensemble():
 
     df = pd.read_csv(rgi_file)
     rgi_id = df["rgi_id"].iloc[0]
-    outline_file = df["outline"].iloc[0]
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -683,9 +681,9 @@ def run_ensemble():
     output_path = glacier_path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
-    input_outline_filename = df["outline"].iloc[0]
-    output_outline_filename = output_path / Path(f"rgi_{rgi_id}.gpkg")
-    shutil.copy(input_outline_filename, output_outline_filename)
+    input_outline_file = df["outline"].iloc[0]
+    output_outline_file = output_path / Path(f"rgi_{rgi_id}.gpkg")
+    shutil.copy(input_outline_file, output_outline_file)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
@@ -708,7 +706,7 @@ def run_ensemble():
             rgi_id,
             config_file,
             template_file,
-            outline_file,
+            output_outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
