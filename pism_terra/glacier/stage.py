@@ -192,7 +192,6 @@ def stage_glacier(
         for f in responses:
             files_dict.update({"cosipy_file": f})
             df = pd.DataFrame.from_dict([files_dict])
-            print(df)
             dfs.append(df)
         df = pd.concat(dfs).reset_index(drop=True)
     else:
