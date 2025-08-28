@@ -56,7 +56,7 @@ dataset = "reanalysis-era5-land-monthly-means"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
 'output.extra.file' = "none"
 'output.extra.times' = "monthly"
-'output.extra.vars' = "climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
+'output.extra.vars' = "climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf,surface_accumulation_rate,surface_melt_rate,surface_runoff_rate"
 'output.checkpoint.interval' = 24
 
 [grid]
