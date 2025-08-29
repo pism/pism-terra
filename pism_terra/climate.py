@@ -175,7 +175,8 @@ def jif_cosipy(url: str, download_path: Path | str, output_path: Path | str) -> 
     else:
         ds = download_netcdf(url)
     ds = ds.rename({"TS": "ice_surface_temp", "T2": "air_temp", "surfMB": "climatic_mass_balance"})
-    ds["precipitation"] = ds["SNOWFALL"] + ds["RAIN"]
+    # Fun, fun: rainfall is in "mm", snowfall is in "m".
+    ds["precipitation"] = ds["SNOWFALL"] / 1000 + ds["RAIN"]
     ds = ds[["precipitation", "climatic_mass_balance", "air_temp", "ice_surface_temp"]]
     ds["ice_surface_temp"] -= 273.15
     ds["air_temp"] -= 273.15
