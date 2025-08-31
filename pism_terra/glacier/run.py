@@ -294,7 +294,9 @@ def run_glacier(
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
 
     if sample is None:
-        name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
+        name_options = (
+            f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
+        )
     else:
         name_options = f"id_{sample}"
 
@@ -311,8 +313,12 @@ def run_glacier(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
-    spatial_file = output_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
-    state_file = output_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
+    spatial_file = output_path / Path(
+        f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc"
+    )
+    state_file = output_path / Path(
+        f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc"
+    )
     run.update(
         {
             "output.file": state_file.absolute(),
@@ -322,7 +328,11 @@ def run_glacier(
 
     print("Checking files")
     print("-" * 80)
-    input_files = {k: v for k, v in run.items() if k.endswith(".file") and not k.startswith("output.")}
+    input_files = {
+        k: v
+        for k, v in run.items()
+        if k.endswith(".file") and not k.startswith("output.")
+    }
     for k, v in input_files.items():
         p = Path(v)
         try:
@@ -355,7 +365,9 @@ def run_glacier(
     run_script_path = glacier_path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
 
-    run_script = run_script_path / Path(f"submit_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.sh")
+    run_script = run_script_path / Path(
+        f"submit_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.sh"
+    )
 
     # Save or print the output
     run_script.write_text(rendered_script)
@@ -368,14 +380,18 @@ def run_glacier(
         },
         "config": run,
     }
-    run_file = output_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
+    run_file = output_path / Path(
+        f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml"
+    )
     with open(run_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
     print(f"\nSLURM script written to {run_script.absolute()}\n")
     print(f"Postprocessing script written to {run_file.absolute()}\n")
 
 
-def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+def apply_choice_mapping(
+    uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]
+) -> pd.DataFrame:
     """
     Replace integer choices in `uq_df` with values from `df` using a per-flag mapping.
 
@@ -406,7 +422,9 @@ def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[st
             # nothing to map for this flag; skip
             continue
         if df_col not in df.columns:
-            raise KeyError(f"Mapping for '{flag}' points to missing df column '{df_col}'")
+            raise KeyError(
+                f"Mapping for '{flag}' points to missing df column '{df_col}'"
+            )
 
         # Build int-choice -> value mapping using the *row order* of df[df_col]
         # Using a Series preserves integer index 0..n-1 after reset_index(drop=True)
@@ -696,8 +714,10 @@ def run_ensemble():
     uq = load_uq(uq_file)
     n_samples = uq.samples
     mapping = uq.mapping
-
     uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=42)
+    print("Ensemble")
+    print("-" * 80)
+    print(uq_df)
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
     for idx, row in uq_df.iterrows():
