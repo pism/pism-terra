@@ -7,7 +7,7 @@ ntasks = 40
 [job]
 
 queue = "t2small"
-walltime = "26:00:00"
+walltime = "18:00:00"
 nodes = 1
 
 [run_info]
@@ -25,8 +25,8 @@ dataset = "reanalysis-era5-land-monthly-means"
 
 [time]
 
-'time.start' = "1981-01-01"
-'time.end' =  "2021-01-01"
+'time.start' = "1982-01-01"
+'time.end' =  "2012-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1980-01-01"
 
@@ -62,7 +62,7 @@ dataset = "reanalysis-era5-land-monthly-means"
 
 [grid]
 
-resolution = "400m"
+resolution = "500m"
 grid.Lbz = 0
 grid.Lz = 2000
 grid.Mbz = 1
@@ -154,8 +154,10 @@ model = "given"
 
 [atmosphere.options.given]
 
-'atmosphere.models' = "given"
+'atmosphere.models' = "given,elevation_change"
 'atmosphere.given.file' = "none"
+'atmosphere.elevation_change.temperature_lapse_rate' = 6
+'atmosphere.elevation_change.file' = "none"
 
 [ocean]
 
