@@ -42,6 +42,16 @@ from pism_terra.sampling import create_samples
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
 
+def _merge_model(base_model, **overrides):
+    """
+    Return a NEW instance of the same Pydantic model as `base_model`,
+    with non-None values from `overrides` applied on top of base_model.
+    """
+    data = base_model.model_dump()
+    data.update({k: v for k, v in overrides.items() if v is not None})
+    return type(base_model)(**data)
+
+
 def _to_python_scalar(v: Any) -> Any:
     """
     Convert NumPy/Pandas scalar types to built-in Python objects.
@@ -252,8 +262,6 @@ def run_glacier(
     outline_file = Path(outline_file)
     cfg = load_config(config_file)
 
-    mpi_str = cfg.run.as_params()["mpi"]
-    prefix = f"{mpi_str} {cfg.run.executable} "
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     glacier_path = path / Path(rgi_id)
@@ -351,13 +359,23 @@ def run_glacier(
         **run_opts.model_dump(exclude_none=True, by_alias=True),
         **job_opts.model_dump(exclude_none=True, by_alias=True),
     }
-    if ntasks is not None:
-        run_cli_opts = RunConfig(ntasks=ntasks)
-        params.update(run_cli_opts.as_params())
-    for kv in [queue, walltime, nodes]:
-        if kv is not None:
-            job_cli_opts = JobConfig(kv=kv)
-            params.update(job_cli_opts.as_params())
+
+    # run_opts comes from your config; ntasks comes from CLI (or None)
+    active_run_opts = _merge_model(run_opts, ntasks=ntasks)
+
+    # Use this ONE source to update params and to compute mpi_str
+    run_params = active_run_opts.as_params()
+    params.update(run_params)
+    mpi_str = run_params["mpi"]  # guaranteed consistent with ntasks override
+
+    job_kwargs = {
+        k: v
+        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes}.items()
+        if v is not None
+    }
+    if job_kwargs:
+        params.update(JobConfig(**job_kwargs).as_params())
+    prefix = f"{mpi_str} {cfg.run.executable} "
 
     rendered_script = "" if debug else template.render(params)
     rendered_script += f"\n\n{prefix}{run_str}\n"

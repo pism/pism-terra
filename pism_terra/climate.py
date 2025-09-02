@@ -195,7 +195,7 @@ def jif_cosipy(url: str, download_path: Path | str, output_path: Path | str) -> 
         }
     )
     # Fun, fun: rainfall is in "mm", snowfall is in "m".
-    ds["precipitation"] = ds["SNOWFALL"] / 1000 + ds["RAIN"]
+    ds["precipitation"] = ds["SNOWFALL"] * 1000 + ds["RAIN"]
     ds = ds[
         [
             "precipitation",
