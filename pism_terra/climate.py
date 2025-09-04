@@ -118,29 +118,17 @@ def era5_reanalysis_from_rgi_id(
     ds = download_request(dataset, area, years)
     ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
     ds.rio.write_crs("EPSG:4326", inplace=True)
-    ds_geo = download_request(dataset, area, [2013], variable=["geopotential"]).mean(
-        dim="time"
-    )
-    ds_geo_ = (
-        ds_geo.rio.write_crs("EPSG:4326")
-        .rio.reproject_match(ds)
-        .rename({"x": "longitude", "y": "latitude"})
-    )
+    ds_geo = download_request(dataset, area, [2013], variable=["geopotential"]).mean(dim="time")
+    ds_geo_ = ds_geo.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
 
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if ("GRIB_missingValue" or "missing_value" or "_FillValue") in (
-        ds["tp"].attrs or ds["t2m"].attrs
-    ):
+    if ("GRIB_missingValue" or "missing_value" or "_FillValue") in (ds["tp"].attrs or ds["t2m"].attrs):
         print("Missing values detected, filling with global reanalysis")
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means", area, years
-        )
+        ds_global = download_request("reanalysis-era5-single-levels-monthly-means", area, years)
         ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds)
-            .rename({"x": "longitude", "y": "latitude"})
+            ds_global.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
         )
         ds = xr.where(np.isnan(ds), ds_global_, ds)
 
@@ -292,9 +280,7 @@ def download_request(
         era_files = extract_archive(f)
         dss = []
         for era_file in era_files:
-            ds = xr.open_dataset(
-                era_file, decode_times=time_coder, decode_timedelta=True
-            )
+            ds = xr.open_dataset(era_file, decode_times=time_coder, decode_timedelta=True)
             if "valid_time" in ds.coords:
                 ds["valid_time"] = ds["valid_time"].dt.floor("D")
             dss.append(ds)
