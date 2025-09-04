@@ -1,0 +1,37 @@
+samples = 20
+mapping = {"atmosphere.given.file"= "cosipy_file", "surface.given.file"= "cosipy_file"}
+
+['surface.pdd.factor_ice']
+
+loc = 0.008791208791208791
+scale = 0.004395604395604396
+a = -1
+b = 1
+
+distribution = "truncnorm"
+
+['surface.pdd.factor_snow']
+
+loc = 0.004395604395604396
+scale = 0.0016483516483516484
+a = -1.2
+b = 1.2
+distribution = "truncnorm"
+
+['basal_resistance.pseudo_plastic.q']
+
+loc = 0.40
+scale = 0.50
+distribution = "uniform"
+
+['basal_yield_stress.mohr_coulomb.till_effective_fraction_overburden']
+
+loc = 0.01
+scale = 0.02
+distribution = "uniform"
+
+['stress_balance.blatter.enhancement_factor']
+
+loc = 1.0
+scale = 2.0
+distribution = "uniform"
