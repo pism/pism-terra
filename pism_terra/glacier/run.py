@@ -27,13 +27,14 @@ import shutil
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 import pandas as pd
 import toml
 import xarray as xr
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from pydantic import BaseModel
 
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.sampling import create_samples
@@ -41,12 +42,68 @@ from pism_terra.sampling import create_samples
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
+T = TypeVar("T", bound=BaseModel)
 
-def _merge_model(base_model, **overrides):
+
+def _merge_model(base_model: T, **overrides: Any) -> T:
     """
-    Return a NEW instance of the same Pydantic model as `base_model`,
-    with non-None values from `overrides` applied on top of base_model.
+    Create a new Pydantic model instance by shallow-merging non-None overrides.
+
+    This returns a **new** instance of the same model class as ``base_model``.
+    It starts from ``base_model``'s data (via ``model_dump()``) and applies
+    values from ``overrides`` where the value is not ``None``. Unknown fields
+    or invalid values will raise a Pydantic ``ValidationError``.
+
+    Parameters
+    ----------
+    base_model : T
+        An existing Pydantic model instance to use as the base.
+    **overrides : Any
+        Field values to override on top of ``base_model``. Keys must be valid
+        field names of the model. Any key whose value is ``None`` is ignored.
+
+    Returns
+    -------
+    T
+        A **new** instance of ``type(base_model)`` with overrides applied.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If any override fails validation or refers to an unknown field,
+        depending on the model's configuration.
+    TypeError
+        If ``base_model`` is not a Pydantic ``BaseModel`` instance.
+
+    Notes
+    -----
+    * This is a **shallow** merge. Nested models or containers are replaced,
+      not deep-merged.
+    * In Pydantic v2, an equivalent (and concise) pattern is::
+
+        new_model = base_model.model_copy(
+            update={k: v for k, v in overrides.items() if v is not None}
+        )
+
+      This function mirrors that behavior while making the "skip None" rule explicit.
+
+    Examples
+    --------
+    >>> from pydantic import BaseModel
+    >>> class RunConfig(BaseModel):
+    ...     ntasks: int | None = None
+    ...     mpi: str = "srun -n {ntasks}"
+    ...
+    >>> rc = RunConfig(ntasks=16)
+    >>> new = _merge_model(rc, ntasks=80, extra=None)  # 'extra' ignored; None skipped
+    >>> new.ntasks
+    80
+    >>> type(new) is type(rc)
+    True
     """
+    if not isinstance(base_model, BaseModel):
+        raise TypeError("base_model must be a Pydantic BaseModel instance")
+
     data = base_model.model_dump()
     data.update({k: v for k, v in overrides.items() if v is not None})
     return type(base_model)(**data)
@@ -302,9 +359,7 @@ def run_glacier(
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
 
     if sample is None:
-        name_options = (
-            f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
-        )
+        name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
     else:
         name_options = f"id_{sample}"
 
@@ -321,12 +376,8 @@ def run_glacier(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
-    spatial_file = output_path / Path(
-        f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc"
-    )
-    state_file = output_path / Path(
-        f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc"
-    )
+    spatial_file = output_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
+    state_file = output_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     run.update(
         {
             "output.file": state_file.absolute(),
@@ -336,11 +387,7 @@ def run_glacier(
 
     print("Checking files")
     print("-" * 80)
-    input_files = {
-        k: v
-        for k, v in run.items()
-        if k.endswith(".file") and not k.startswith("output.")
-    }
+    input_files = {k: v for k, v in run.items() if k.endswith(".file") and not k.startswith("output.")}
     for k, v in input_files.items():
         p = Path(v)
         try:
@@ -368,11 +415,7 @@ def run_glacier(
     params.update(run_params)
     mpi_str = run_params["mpi"]  # guaranteed consistent with ntasks override
 
-    job_kwargs = {
-        k: v
-        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes}.items()
-        if v is not None
-    }
+    job_kwargs = {k: v for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes}.items() if v is not None}
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
     prefix = f"{mpi_str} {cfg.run.executable} "
@@ -383,9 +426,7 @@ def run_glacier(
     run_script_path = glacier_path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
 
-    run_script = run_script_path / Path(
-        f"submit_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.sh"
-    )
+    run_script = run_script_path / Path(f"submit_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.sh")
 
     # Save or print the output
     run_script.write_text(rendered_script)
@@ -398,18 +439,14 @@ def run_glacier(
         },
         "config": run,
     }
-    run_file = output_path / Path(
-        f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml"
-    )
+    run_file = output_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
     with open(run_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
     print(f"\nSLURM script written to {run_script.absolute()}\n")
     print(f"Postprocessing script written to {run_file.absolute()}\n")
 
 
-def apply_choice_mapping(
-    uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]
-) -> pd.DataFrame:
+def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
     """
     Replace integer choices in `uq_df` with values from `df` using a per-flag mapping.
 
@@ -440,9 +477,7 @@ def apply_choice_mapping(
             # nothing to map for this flag; skip
             continue
         if df_col not in df.columns:
-            raise KeyError(
-                f"Mapping for '{flag}' points to missing df column '{df_col}'"
-            )
+            raise KeyError(f"Mapping for '{flag}' points to missing df column '{df_col}'")
 
         # Build int-choice -> value mapping using the *row order* of df[df_col]
         # Using a Series preserves integer index 0..n-1 after reset_index(drop=True)

@@ -8,13 +8,16 @@ dask[distributed,dataframe]
 dem_stitcher
 earthaccess
 flox
+furo
 geopandas
 h5netcdf
 joblib
 jupyter
 jupyter-server-proxy
 matplotlib
+myst-parser
 numpy
+numpydoc
 pandas
 pint_xarray
 pydantic
@@ -25,6 +28,9 @@ scikit-learn
 scipy
 seaborn
 shapely
+sphinx
+sphinx-autodoc-typehints
+sphinx-copybutton
 toml
 tqdm
 xarray
