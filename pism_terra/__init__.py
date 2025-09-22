@@ -1,3 +1,3 @@
 """
-Init pism_ragis.
+Init pism_terra.
 """
