@@ -768,6 +768,10 @@ def run_ensemble():
     n_samples = uq.samples
     mapping = uq.mapping
     uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=42)
+
+    uq_file = output_path / Path("uq.csv")
+    uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)
+
     print("Ensemble")
     print("-" * 80)
     print(uq_df)

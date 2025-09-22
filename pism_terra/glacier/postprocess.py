@@ -114,7 +114,7 @@ def postprocess_glacier(config_file: str | Path):
     start = time.time()
     rgi_file = config["rgi"]["outline"]
 
-    for o in ["spatial"]:
+    for o in ["spatial", "state"]:
         s_file = Path(config["output"][o])
         print(s_file)
         with ProgressBar():
