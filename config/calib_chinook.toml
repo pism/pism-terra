@@ -1,6 +1,6 @@
 [run]
 
-executable = "~/pism-dev-conda-petsc/bin/pism"
+executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
 ntasks = 40
 
