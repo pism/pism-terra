@@ -7,7 +7,7 @@ ntasks = 40
 [job]
 
 queue = "t2small"
-walltime = "4:00:00"
+walltime = "24:00:00"
 nodes = 1
 
 [run_info]
@@ -26,7 +26,7 @@ dataset = "reanalysis-era5-land-monthly-means"
 [time]
 
 'time.start' = "1982-01-01"
-'time.end' =  "1983-01-01"
+'time.end' =  "1982-02-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1980-01-01"
 
@@ -53,7 +53,7 @@ dataset = "reanalysis-era5-land-monthly-means"
 'output.format' = "netcdf4_parallel"
 'output.compression_level'= 2
 'output.size' = "medium"
-'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
+'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.extra.file' = "none"
 'output.extra.times' = "monthly"
 'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
@@ -62,7 +62,7 @@ dataset = "reanalysis-era5-land-monthly-means"
 
 [grid]
 
-resolution = "200m"
+resolution = "100m"
 grid.Lbz = 0
 grid.Lz = 2000
 grid.Mbz = 1
