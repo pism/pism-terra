@@ -30,6 +30,7 @@ import geopandas as gpd
 import pandas as pd
 import rioxarray
 import xarray as xr
+from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
 from pism_terra.climate import era5_reanalysis_from_rgi_id, jif_cosipy
@@ -82,6 +83,10 @@ def stage_glacier(
     - The staging directory is created if it doesn't exist.
     """
 
+    f = Figlet(font="standard")
+    banner = f.renderText("pism-terra")
+    print("=" * 80)
+    print(banner)
     print("=" * 80)
     print(f"Stage Glacier {rgi_id}")
     print("-" * 80)
@@ -90,20 +95,21 @@ def stage_glacier(
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
-    v_filename = path / Path(f"obs_velocities_g{int(resolution)}m_{rgi_id}.nc")
-    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
-    v.to_netcdf(v_filename)
-
     boot_filename = path / Path(f"bootfile_g{int(resolution)}m_{rgi_id}.nc")
     dem = glacier_dem_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
     crs = dem.rio.crs
+
+    v_filename = path / Path(f"obs_velocities_g{int(resolution)}m_{rgi_id}.nc")
+    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
+    v = v.rio.reproject_match(dem)
+    v.to_netcdf(v_filename)
 
     tillwat = xr.zeros_like(dem["surface"])
     tillwat.name = "tillwat"
     del tillwat.attrs["standard_name"]
     tillwat.attrs.update({"units": "m"})
 
-    dem["tillwat"] = tillwat.where(v["v"].rio.reproject_match(dem).fillna(0) < 100.0, 2)
+    dem["tillwat"] = tillwat.where(v["v"].fillna(0) < 100.0, 2)
 
     glacier = get_glacier_from_rgi_id(rgi, rgi_id)
     glacier_filename = path / Path(f"rgi_{rgi_id}.gpkg")

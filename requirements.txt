@@ -21,6 +21,7 @@ numpydoc
 pandas
 pint_xarray
 pydantic
+pyfiglet
 pyarrow
 pyogrio
 rioxarray

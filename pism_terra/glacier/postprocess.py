@@ -33,6 +33,7 @@ import toml
 import xarray as xr
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, progress
+from pyfiglet import Figlet
 
 xr.set_options(keep_attrs=True)
 

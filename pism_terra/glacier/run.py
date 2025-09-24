@@ -35,6 +35,7 @@ import toml
 import xarray as xr
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel
+from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.sampling import create_samples
@@ -418,18 +419,6 @@ def run_glacier(
     job_kwargs = {k: v for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes}.items() if v is not None}
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
-    prefix = f"{mpi_str} {cfg.run.executable} "
-
-    rendered_script = "" if debug else template.render(params)
-    rendered_script += f"\n\n{prefix}{run_str}\n"
-
-    run_script_path = glacier_path / Path("run_scripts")
-    run_script_path.mkdir(parents=True, exist_ok=True)
-
-    run_script = run_script_path / Path(f"submit_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.sh")
-
-    # Save or print the output
-    run_script.write_text(rendered_script)
 
     run_toml = {
         "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.absolute())},
@@ -442,6 +431,20 @@ def run_glacier(
     run_file = output_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
     with open(run_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
+
+    prefix = f"{mpi_str} {cfg.run.executable} "
+    postfix = f"pism-glacier-postprocess {run_file}"
+    rendered_script = "" if debug else template.render(params)
+    rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
+
+    run_script_path = glacier_path / Path("run_scripts")
+    run_script_path.mkdir(parents=True, exist_ok=True)
+
+    run_script = run_script_path / Path(f"submit_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.sh")
+
+    # Save or print the output
+    run_script.write_text(rendered_script)
+
     print(f"\nSLURM script written to {run_script.absolute()}\n")
     print(f"Postprocessing script written to {run_file.absolute()}\n")
 
@@ -642,6 +645,13 @@ def run_single():
         "atmosphere.elevation_change.file": df["historical_climate_file"].iloc[0],
     }
 
+    f = Figlet(font="standard")
+    banner = f.renderText("pism-terra")
+    print("=" * 80)
+    print(banner)
+    print("=" * 80)
+    print(f"Generate Run for Glacier {rgi_id}")
+    print("-" * 80)
     run_glacier(
         rgi_id,
         config_file,
@@ -772,9 +782,13 @@ def run_ensemble():
     uq_file = output_path / Path("uq.csv")
     uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)
 
-    print("Ensemble")
+    f = Figlet(font="standard")
+    banner = f.renderText("pism-terra")
+    print("=" * 80)
+    print(banner)
+    print("=" * 80)
+    print(f"Generate Ensemble Runs for Glacier {rgi_id}")
     print("-" * 80)
-    print(uq_df)
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
     for idx, row in uq_df.iterrows():
