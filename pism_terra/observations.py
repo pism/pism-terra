@@ -92,7 +92,7 @@ def get_velocities_by_bounds(
     return subset
 
 
-def get_itslive_velocities(components: list[str] = ["v", "vx", "vy"]) -> xr.Dataset:
+def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error", "vy_error"]) -> xr.Dataset:
     """
     Load the global ITS_LIVE surface velocity mosaic as an xarray dataset.
 
