@@ -64,9 +64,9 @@ dataset = "reanalysis-era5-land-monthly-means"
 
 resolution = "100m"
 grid.Lbz = 0
-grid.Lz = 2000
+grid.Lz = 1000
 grid.Mbz = 1
-grid.Mz = 101
+grid.Mz = 51
 grid.registration = "center"
 
 [energy]

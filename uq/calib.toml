@@ -1,4 +1,4 @@
-samples = 200
+samples = 250
 
 ['basal_resistance.pseudo_plastic.q']
 
@@ -14,8 +14,8 @@ distribution = "uniform"
 
 ['basal_resistance.pseudo_plastic.u_threshold']
 
-loc = 10
-scale = 190
+loc = 50
+scale = 150
 distribution = "uniform"
 
 ['basal_yield_stress.mohr_coulomb.till_phi_default']
@@ -32,6 +32,8 @@ distribution = "uniform"
 
 ['stress_balance.blatter.Glen_exponent']
 
-loc = 1.0
-scale = 3.0
-distribution = "uniform"
+loc = 3.0
+scale = 1.0
+a = -1.0
+b = 1.0
+distribution = "truncnorm"

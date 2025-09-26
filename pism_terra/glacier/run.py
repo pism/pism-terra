@@ -326,6 +326,10 @@ def run_glacier(
     glacier_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
+    spatial_path = output_path / Path("spatial")
+    spatial_path.mkdir(parents=True, exist_ok=True)
+    state_path = output_path / Path("state")
+    state_path.mkdir(parents=True, exist_ok=True)
 
     run = {}
     for section in (
@@ -377,8 +381,8 @@ def run_glacier(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
-    spatial_file = output_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
-    state_file = output_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
+    spatial_file = spatial_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
+    state_file = state_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     run.update(
         {
             "output.file": state_file.absolute(),
