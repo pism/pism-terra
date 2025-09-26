@@ -20,7 +20,7 @@ distribution = "uniform"
 
 ['basal_yield_stress.mohr_coulomb.till_phi_default']
 
-loc = 10
+loc = 5
 scale = 30
 distribution = "uniform"
 
