@@ -104,7 +104,7 @@ def era5_reanalysis_from_rgi_id(
 
     years = list(years)
 
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
+    glacier = get_glacier_from_rgi_id(rgi, rgi_id).to_crs("EPSG:4326")
     minx, miny, maxx, maxy = glacier.iloc[0]["geometry"].buffer(buffer_distance).bounds
     area = [
         np.ceil(maxy * 10) / 10,
