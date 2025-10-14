@@ -62,7 +62,7 @@ dataset = "reanalysis-era5-land-monthly-means"
 
 [grid]
 
-resolution = "200m"
+resolution = "500m"
 grid.Lbz = 0
 grid.Lz = 2000
 grid.Mbz = 1
