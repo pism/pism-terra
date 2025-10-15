@@ -17,7 +17,7 @@ nodes = 1
 
 [campaign]
 
-setup = "init"
+setup = "Hindcast"
 
 [climate]
 

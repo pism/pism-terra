@@ -84,8 +84,6 @@ def process_file(infile: str | Path, rgi_file: str | Path):
     ds = ds.rio.write_crs(crs, inplace=False)
     ds_clipped = ds.rio.clip(geometry, drop=False)
     ds_clipped.to_netcdf(clipped_file)
-    if "velsurf_mag" in ds.data_vars:
-        ds_clipped[["spatial_ref", "pism_config", "velsurf_mag"]].to_netcdf(clipped_file)
     end = time.time()
     time_elapsed = end - start
     print(f"Time elapsed for postprocessing: {time_elapsed:.0f}s")

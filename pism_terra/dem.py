@@ -67,19 +67,25 @@ def get_surface_dem_by_bounds(
     - The temporary file is not automatically deleted. The caller is responsible for cleanup.
     - The DEM is written with AREA_OR_POINT="Point" tag and ellipsoidal height.
     """
-    X, p = stitch_dem(
-        bounds,
-        dem_name=dem_name,
-        dst_ellipsoidal_height=False,
-        dst_area_or_point="Point",
+    X, p = stitch_dem(bounds, dem_name=dem_name, dst_ellipsoidal_height=False, dst_area_or_point="Point")
+
+    # make sure profile fits what you're writing
+    p = p.copy()
+    p.update(
+        {
+            "driver": "GTiff",
+            "count": 1,
+            "dtype": X.dtype,  # e.g. 'float32'
+            "BIGTIFF": "YES",  # allow >4GB
+        }
     )
+
     with NamedTemporaryFile(suffix=".tif", delete=False) as geoid_file:
-        geoid_path = geoid_file.name  # save path before file is closed
+        geoid_path = geoid_file.name
 
     with rasterio.open(geoid_path, "w", **p) as src:
-        src.write(X, 1)
+        src.write(X, 1)  # X can be 2D; this writes band 1
         src.update_tags(AREA_OR_POINT="Point")
-
     return geoid_path
 
 
