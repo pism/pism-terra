@@ -23,6 +23,7 @@ Running.
 
 from __future__ import annotations
 
+import re
 import shutil
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
@@ -319,6 +320,13 @@ def run_glacier(
 
     outline_file = Path(outline_file)
     cfg = load_config(config_file)
+    if resolution:
+        resolution = re.sub(r"\s+", "", resolution)
+
+        # update GridConfig and force dx/dy to be derived from the new resolution
+        cfg.grid.resolution = resolution
+        cfg.grid.dx = None
+        cfg.grid.dy = None
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
