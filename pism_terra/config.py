@@ -824,6 +824,18 @@ class PismConfig(BaseModelWithDot):
     time_stepping: dict[str, Any] = {}
 
 
+class RestartConfig(BaseModelWithDot):
+    """
+    Info settings for restarting.
+
+    Accepts dotted keys inside the ``[restart]`` table (via BaseModelWithDot)
+    and exports params with *quoted* string values for use in templates.
+    """
+
+    SECTION = "restart"
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
 class InfoConfig(BaseModelWithDot):
     """
     Info settings for run metadata.

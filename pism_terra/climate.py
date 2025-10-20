@@ -32,6 +32,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rioxarray
+import s3fs
 import xarray as xr
 
 from pism_terra.dem import get_glacier_from_rgi_id
@@ -289,3 +290,90 @@ def download_request(
         ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True)
 
     return ds
+
+
+def pmip4(
+    rgi_id: str,
+    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
+    buffer_distance: float = 2.0,
+    output_path: Path | str = ".",
+) -> None:
+    """
+    Build a PMIP4 LGM monthly climatology for a glacier bounding box and save it.
+
+    For the glacier identified by an RGI ID, this function:
+    (1) reads the glacier geometry (from a GeoDataFrame or GPKG),
+    (2) constructs a buffered lon/lat bounding box,
+    (3) pulls PMIP4/CMIP6 LGM data (tas, pr) from the pangeo-cmip6 S3 catalog,
+    (4) subsets to the bounding box,
+    (5) computes a monthly climatology (mean over the final 2,400 months),
+    and (6) writes one NetCDF per model into ``<output_path>/pmip4``.
+
+    Parameters
+    ----------
+    rgi_id : str
+        RGI glacier identifier (e.g., ``"RGI2000-v7.0-C-01-10853"``).
+    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
+        Either an in-memory RGI GeoDataFrame, or a path to a GeoPackage that
+        can be read via :func:`geopandas.read_file`.
+    buffer_distance : float, default ``2.0``
+        Buffer applied to the glacier footprint (in degrees) before subsetting
+        the PMIP4 fields.
+    output_path : str or pathlib.Path, default ``"."``
+        Base directory for outputs. Files are written to
+        ``<output_path>/pmip4/{source_id}_rgi_id_{rgi_id}.nc``.
+    """
+
+    print("")
+    print("Generate PMIP4 LGM climate")
+    print("-" * 80)
+
+    if isinstance(rgi, str | Path):
+        rgi = gpd.read_file(rgi)
+
+    glacier = get_glacier_from_rgi_id(rgi, rgi_id).to_crs("EPSG:4326")
+    minx, miny, maxx, maxy = glacier.iloc[0]["geometry"].buffer(buffer_distance).bounds
+
+    minx = (np.floor(minx * 10) / 10) % 360
+    maxx = (np.ceil(maxx * 10) / 10) % 360
+    miny = np.floor(miny * 10) / 10
+    maxy = np.ceil(maxy * 10) / 10
+
+    print(f"Bounding box {minx}, {maxx}, {miny}, {maxy}")
+
+    fs = s3fs.S3FileSystem(anon=True)
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    cmip6_df = pd.read_csv("https://cmip6-pds.s3.amazonaws.com/pangeo-cmip6.csv")
+    lgm_df = cmip6_df.query(
+        "activity_id=='PMIP' & table_id=='Amon' & experiment_id=='lgm' & (variable_id=='tas' | variable_id=='pr')"
+    )
+
+    for source_id, df in lgm_df.groupby(by="source_id"):
+        dss = []
+        for v in ["tas", "pr"]:
+            zstore = df[df["variable_id"] == v].zstore.values[0]
+            mapper = fs.get_mapper(zstore)
+
+            # open using xarray
+            ds = (
+                xr.open_zarr(mapper, consolidated=True, decode_times=time_coder, decode_timedelta=True).drop_vars(
+                    ["height"], errors="ignore"
+                )
+            ).sel({"lon": slice(minx, maxx), "lat": slice(miny, maxy)})
+
+            dss.append(ds)
+        ds = (
+            xr.merge(dss)
+            .isel({"time": slice(-2401, -1)})
+            .groupby("time.month")
+            .mean()
+            .rename_vars({"pr": "precipitation", "tas": "air_temp"})
+        )
+        ds.rio.write_crs("EPSG:4326", inplace=True)
+
+        output_path = Path(output_path)
+        pmip4_path = output_path / Path("pmip4")
+        pmip4_path.mkdir(parents=True, exist_ok=True)
+
+        p = pmip4_path / f"{source_id}_rgi_id_{rgi_id}.nc"
+        ds.to_netcdf(p)
