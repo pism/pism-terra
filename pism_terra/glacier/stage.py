@@ -33,7 +33,7 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
-from pism_terra.climate import era5_reanalysis_from_rgi_id, jif_cosipy
+from pism_terra.climate import era5_reanalysis_from_rgi_id, jif_cosipy, pmip4
 from pism_terra.dem import add_malaspina_bed, glacier_dem_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.observations import glacier_velocities_from_rgi_id
@@ -155,53 +155,44 @@ def stage_glacier(
     polygon_filename = path / Path(f"domain_{rgi_id}.gpkg")
     polygon.to_file(polygon_filename)
 
-    climate_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
-    climate = era5_reanalysis_from_rgi_id(
-        rgi_id, rgi, buffer_distance=0.2, dataset="reanalysis-era5-land-monthly-means"
-    )
-    print(f"Saving {climate_filename}")
-    climate.to_netcdf(climate_filename)
+    era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
+    era5 = era5_reanalysis_from_rgi_id(rgi_id, rgi, buffer_distance=0.2, dataset="reanalysis-era5-land-monthly-means")
+    print(f"Saving {era5_filename}")
+    era5.to_netcdf(era5_filename)
+
+    responses = pmip4(rgi_id=rgi_id, rgi=rgi, output_path=path)
 
     files_dict = {
         "rgi_id": rgi_id,
         "outline": glacier_filename.absolute(),
         "boot_file": boot_filename.absolute(),
-        "historical_climate_file": climate_filename.absolute(),
+        "historical_climate_file": era5_filename.absolute(),
         "grid_file": grid_filename.absolute(),
     }
-
-    if rgi_id == "RGI2000-v7.0-C-01-12784":
-        dfs = []
-        responses = []
-        for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
-            filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
-            fn = f"cosipy_output_{dataset}_JIF_{years}.nc"
-            url = f"https://zenodo.org/records/13912616/files/{fn}"
-            fnp = path / Path(fn)
-            jif_cosipy(url, fnp, filename)
-            responses.append(filename.absolute())
-        # with ThreadPoolExecutor(max_workers=3) as executor:
-        #     futures = []
-        #     responses = []
-        #     for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
-        #         filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
-        #         fn = f"cosipy_output_{dataset}_JIF_{years}.nc"
-        #         url = f"https://zenodo.org/records/13912616/files/{fn}"
-        #         fnp = path / Path(fn)
-        #         futures.append(executor.submit(jif_cosipy, url, fnp, filename))
-        #         responses.append(filename.absolute())
-        #     for future in as_completed(futures):
-        #         try:
-        #             future.result()
-        #         except Exception as e:
-        #             print(f"An error occurred: {e}")
-        for f in responses:
-            files_dict.update({"cosipy_file": f})
-            df = pd.DataFrame.from_dict([files_dict])
-            dfs.append(df)
-        df = pd.concat(dfs).reset_index(drop=True)
-    else:
+    dfs = []
+    for f in responses:
+        files_dict.update({"pmip_file": f})
         df = pd.DataFrame.from_dict([files_dict])
+        dfs.append(df)
+
+    # Define which climate to add somewhere else.
+
+    # if rgi_id == "RGI2000-v7.0-C-01-12784":
+    #     dfs = []
+    #     responses = []
+    #     for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
+    #         filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
+    #         fn = f"cosipy_output_{dataset}_JIF_{years}.nc"
+    #         url = f"https://zenodo.org/records/13912616/files/{fn}"
+    #         fnp = path / Path(fn)
+    #         jif_cosipy(url, fnp, filename)
+    #         responses.append(filename.absolute())
+    #     for f in responses:
+    #         files_dict.update({"cosipy_file": f})
+    #         df = pd.DataFrame.from_dict([files_dict])
+    #         dfs.append(df)
+
+    df = pd.concat(dfs).reset_index(drop=True)
 
     return df
 

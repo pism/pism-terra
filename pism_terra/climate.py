@@ -297,7 +297,7 @@ def pmip4(
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     buffer_distance: float = 2.0,
     output_path: Path | str = ".",
-) -> None:
+) -> list[Path]:
     """
     Build a PMIP4 LGM monthly climatology for a glacier bounding box and save it.
 
@@ -322,6 +322,11 @@ def pmip4(
     output_path : str or pathlib.Path, default ``"."``
         Base directory for outputs. Files are written to
         ``<output_path>/pmip4/{source_id}_rgi_id_{rgi_id}.nc``.
+
+    Returns
+    -------
+    list
+        Returns a list with str or Path-like objects.
     """
 
     print("")
@@ -348,6 +353,7 @@ def pmip4(
         "activity_id=='PMIP' & table_id=='Amon' & experiment_id=='lgm' & (variable_id=='tas' | variable_id=='pr')"
     )
 
+    responses = []
     for source_id, df in lgm_df.groupby(by="source_id"):
         dss = []
         for v in ["tas", "pr"]:
@@ -367,13 +373,15 @@ def pmip4(
             .isel({"time": slice(-2401, -1)})
             .groupby("time.month")
             .mean()
-            .rename_vars({"pr": "precipitation", "tas": "air_temp"})
+            .rename_dims({"month": "time"})
+            .rename_vars({"pr": "precipitation", "tas": "air_temp", "month": "time"})
         )
         ds.rio.write_crs("EPSG:4326", inplace=True)
+        ds = add_time_bounds(ds)
 
         output_path = Path(output_path)
-        pmip4_path = output_path / Path("pmip4")
-        pmip4_path.mkdir(parents=True, exist_ok=True)
 
-        p = pmip4_path / f"{source_id}_rgi_id_{rgi_id}.nc"
+        p = output_path / f"{source_id}_rgi_id_{rgi_id}.nc"
         ds.to_netcdf(p)
+        responses.append(p)
+    return responses
