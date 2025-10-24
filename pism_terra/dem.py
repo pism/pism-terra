@@ -34,6 +34,7 @@ from dem_stitcher import stitch_dem
 from prefect import task
 from rasterio.merge import merge
 
+from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain
 from pism_terra.download import download_archive, extract_archive
 from pism_terra.raster import check_overlap, reproject_file
@@ -159,6 +160,11 @@ def prepare_ice_thickness_millan(glacier, target_grid: xr.Dataset | xr.DataArray
     - All overlapping rasters are summed to produce the final thickness field.
     - Assumes a fixed reprojected resolution of 50 meters.
     """
+
+    bucket: str = "pism-cloud-data"
+
+    s3_to_local(bucket, prefix="millan", dest_dir="data/ice_thickness")
+
     ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
 
     with ThreadPoolExecutor() as executor:
