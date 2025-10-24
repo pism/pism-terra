@@ -28,6 +28,7 @@ from pathlib import Path
 
 import cdsapi
 import cf_xarray
+import cftime
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -377,6 +378,27 @@ def pmip4(
             .rename_vars({"pr": "precipitation", "tas": "air_temp", "month": "time"})
         )
         ds.rio.write_crs("EPSG:4326", inplace=True)
+        # Build a CF-compliant time axis: 12 mid-month datetimes in a no-leap year (e.g., 2001)
+
+        base_year = 1
+        start = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
+        # Assign coordinates and bounds
+
+        ds = ds.assign_coords(time=("time", start))
+        ds["time"].attrs.update(
+            {
+                "standard_name": "time",
+                "long_name": "climatological time (mid-month)",
+                "bounds": "time_bounds",
+            }
+        )
+        # CRS is fine to keep
+        ds = ds.rio.write_crs("EPSG:4326", inplace=True)
+        ds["time"].attrs.pop("calendar", None)
+
+        # Put calendar/units ONLY in encoding (CF-compliant, and prevents the error)
+        enc = {"units": "days since 0001-01-01", "calendar": "365_day"}
+        ds.time.encoding.update(enc)
         ds = add_time_bounds(ds)
 
         output_path = Path(output_path)

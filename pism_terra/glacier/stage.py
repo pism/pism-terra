@@ -30,6 +30,7 @@ import geopandas as gpd
 import pandas as pd
 import rioxarray
 import xarray as xr
+from prefect import flow
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
@@ -39,8 +40,10 @@ from pism_terra.domain import create_grid
 from pism_terra.observations import glacier_velocities_from_rgi_id
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
+from pism_terra.workflow import check_dataset, check_xr
 
 
+@flow
 def stage_glacier(
     rgi_id: str,
     rgi: str | Path = "rgi/rgi.gpkg",
@@ -96,12 +99,14 @@ def stage_glacier(
     path.mkdir(parents=True, exist_ok=True)
 
     boot_filename = path / Path(f"bootfile_g{int(resolution)}m_{rgi_id}.nc")
+
     dem = glacier_dem_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
     crs = dem.rio.crs
 
     v_filename = path / Path(f"obs_velocities_g{int(resolution)}m_{rgi_id}.nc")
     v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
     v = v.rio.reproject_match(dem)
+    check_dataset(v)
     v.to_netcdf(v_filename)
 
     tillwat = xr.zeros_like(dem["surface"])
@@ -130,6 +135,7 @@ def stage_glacier(
     if rgi_id == "RGI2000-v7.0-C-01-09429-A":
         dem = add_malaspina_bed(dem, target_crs=crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
     dem.rio.write_crs(crs, inplace=True)
+    check_dataset(dem)
     dem.to_netcdf(boot_filename)
 
     grid.attrs.update({"domain": rgi_id})
@@ -158,9 +164,12 @@ def stage_glacier(
     era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
     era5 = era5_reanalysis_from_rgi_id(rgi_id, rgi, buffer_distance=0.2, dataset="reanalysis-era5-land-monthly-means")
     print(f"Saving {era5_filename}")
+    check_dataset(era5)
     era5.to_netcdf(era5_filename)
 
     responses = pmip4(rgi_id=rgi_id, rgi=rgi, output_path=path)
+    for response in responses:
+        check_xr(response)
 
     files_dict = {
         "rgi_id": rgi_id,

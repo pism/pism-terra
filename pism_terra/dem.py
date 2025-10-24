@@ -31,6 +31,7 @@ import rasterio
 import rioxarray as rxr
 import xarray as xr
 from dem_stitcher import stitch_dem
+from prefect import task
 from rasterio.merge import merge
 
 from pism_terra.domain import create_domain
@@ -240,6 +241,7 @@ def prepare_ice_thickness_farinotti(glacier):
         dest.write(mosaic)
 
 
+@task(retries=3, retry_delay_seconds=60)
 def glacier_dem_from_rgi_id(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",

@@ -33,13 +33,13 @@ from typing import Any, TypeVar
 import numpy as np
 import pandas as pd
 import toml
-import xarray as xr
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel
 from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.sampling import create_samples
+from pism_terra.workflow import check_xr
 
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
@@ -404,7 +404,7 @@ def run_glacier(
     for k, v in input_files.items():
         p = Path(v)
         try:
-            xr.open_dataset(p)
+            check_xr(p)
             print(f"{k}: {v} is valid ✓")
         except FileNotFoundError as e:
             print(f"{k}: {v} is valid ✗")
