@@ -39,9 +39,10 @@ import xarray as xr
 from pism_terra.dem import get_glacier_from_rgi_id
 from pism_terra.download import download_netcdf, extract_archive
 from pism_terra.raster import add_time_bounds
+from pism_terra.workflow import check_xr
 
 
-def era5_reanalysis_from_rgi_id(
+def era5(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     years: list | Iterable = range(1980, 2025),
@@ -356,54 +357,56 @@ def pmip4(
 
     responses = []
     for source_id, df in lgm_df.groupby(by="source_id"):
-        dss = []
-        for v in ["tas", "pr"]:
-            zstore = df[df["variable_id"] == v].zstore.values[0]
-            mapper = fs.get_mapper(zstore)
-
-            # open using xarray
-            ds = (
-                xr.open_zarr(mapper, consolidated=True, decode_times=time_coder, decode_timedelta=True).drop_vars(
-                    ["height"], errors="ignore"
-                )
-            ).sel({"lon": slice(minx, maxx), "lat": slice(miny, maxy)})
-
-            dss.append(ds)
-        ds = (
-            xr.merge(dss)
-            .isel({"time": slice(-2401, -1)})
-            .groupby("time.month")
-            .mean()
-            .rename_dims({"month": "time"})
-            .rename_vars({"pr": "precipitation", "tas": "air_temp", "month": "time"})
-        )
-        ds.rio.write_crs("EPSG:4326", inplace=True)
-        # Build a CF-compliant time axis: 12 mid-month datetimes in a no-leap year (e.g., 2001)
-
-        base_year = 1
-        start = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
-        # Assign coordinates and bounds
-
-        ds = ds.assign_coords(time=("time", start))
-        ds["time"].attrs.update(
-            {
-                "standard_name": "time",
-                "long_name": "climatological time (mid-month)",
-                "bounds": "time_bounds",
-            }
-        )
-        # CRS is fine to keep
-        ds = ds.rio.write_crs("EPSG:4326", inplace=True)
-        ds["time"].attrs.pop("calendar", None)
-
-        # Put calendar/units ONLY in encoding (CF-compliant, and prevents the error)
-        enc = {"units": "days since 0001-01-01", "calendar": "365_day"}
-        ds.time.encoding.update(enc)
-        ds = add_time_bounds(ds)
-
         output_path = Path(output_path)
-
         p = output_path / f"{source_id}_rgi_id_{rgi_id}.nc"
-        ds.to_netcdf(p)
+
+        if not check_xr(p):
+            dss = []
+            for v in ["tas", "pr"]:
+                zstore = df[df["variable_id"] == v].zstore.values[0]
+                mapper = fs.get_mapper(zstore)
+
+                # open using xarray
+                ds = (
+                    xr.open_zarr(mapper, consolidated=True, decode_times=time_coder, decode_timedelta=True).drop_vars(
+                        ["height"], errors="ignore"
+                    )
+                ).sel({"lon": slice(minx, maxx), "lat": slice(miny, maxy)})
+
+                dss.append(ds)
+            ds = (
+                xr.merge(dss)
+                .isel({"time": slice(-2401, -1)})
+                .groupby("time.month")
+                .mean()
+                .rename_dims({"month": "time"})
+                .rename_vars({"pr": "precipitation", "tas": "air_temp", "month": "time"})
+            )
+            ds.rio.write_crs("EPSG:4326", inplace=True)
+            # Build a CF-compliant time axis: 12 mid-month datetimes in a no-leap year (e.g., 2001)
+
+            base_year = 1
+            start = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
+            # Assign coordinates and bounds
+
+            ds = ds.assign_coords(time=("time", start))
+            ds["time"].attrs.update(
+                {
+                    "standard_name": "time",
+                    "long_name": "climatological time (mid-month)",
+                    "bounds": "time_bounds",
+                }
+            )
+            # CRS is fine to keep
+            ds = ds.rio.write_crs("EPSG:4326", inplace=True)
+            ds["time"].attrs.pop("calendar", None)
+
+            # Put calendar/units ONLY in encoding (CF-compliant, and prevents the error)
+            enc = {"units": "days since 0001-01-01", "calendar": "365_day"}
+            ds.time.encoding.update(enc)
+            ds = add_time_bounds(ds)
+
+            ds.to_netcdf(p)
+
         responses.append(p)
     return responses

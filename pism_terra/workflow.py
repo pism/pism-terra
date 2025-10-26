@@ -27,9 +27,9 @@ from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+import rasterio as rio
 import rioxarray  # noqa: F401
 import xarray as xr
-from prefect import task
 
 ScalarIndex = int | slice
 Selection = dict[str, ScalarIndex]  # e.g. {"x": slice(...), "y": slice(...), "time": 0}
@@ -158,7 +158,6 @@ def _windows_for(var: xr.DataArray, window: int = 32) -> Selections:
     return uniq
 
 
-@task(retries=1, retry_delay_seconds=2)
 def check_dataset_sampled(
     ds: xr.Dataset,
     *,
@@ -216,7 +215,7 @@ def check_dataset_sampled(
     for xd in ("x", "lon"):
         if xd in ds.coords:
             xv = ds[xd].values
-            if xv.size < 1:
+            if xv.size < 2:
                 raise ValueError(f"Coordinate '{xd}' has <1 elements")
             if not (np.all(np.diff(xv) > 0) or np.all(np.diff(xv) < 0)):
                 raise ValueError(f"Coordinate '{xd}' is not strictly monotonic")
@@ -224,7 +223,7 @@ def check_dataset_sampled(
     for yd in ("y", "lat"):
         if yd in ds.coords:
             yv = ds[yd].values
-            if yv.size < 1:
+            if yv.size < 2:
                 raise ValueError(f"Coordinate '{yd}' has <1 elements")
             if not (np.all(np.diff(yv) > 0) or np.all(np.diff(yv) < 0)):
                 raise ValueError(f"Coordinate '{yd}' is not strictly monotonic")
@@ -303,7 +302,6 @@ def check_dataset_sampled(
     # If we reached here, the dataset is healthy enough for downstream steps.
 
 
-@task(retries=1, retry_delay_seconds=2)
 def check_dataset(ds: xr.Dataset) -> None:
     """
     Validate that an xarray Dataset can be fully loaded into memory.
@@ -329,39 +327,142 @@ def check_dataset(ds: xr.Dataset) -> None:
     _ = ds.load()
 
 
-@task(retries=1, retry_delay_seconds=2)
-def check_xr(path: Path | str) -> None:
+def check_xr_sampled(path: Path | str) -> bool:
     """
-    Open a dataset from disk and verify it can be read/decoded by xarray.
+    Open a dataset and run a **sampled** health check with xarray.
+
+    This lazily opens the dataset at ``path`` and invokes a lightweight
+    validator (``check_dataset_sampled``) that loads only small windows
+    rather than the entire dataset. Prints a ✓/✗ message and returns
+    ``True`` on success.
 
     Parameters
     ----------
     path : str or pathlib.Path
-        Path to a CF-compliant NetCDF/Zarr file readable by ``xarray.open_dataset``.
+        Path to a CF-compliant NetCDF/Zarr dataset readable by
+        :func:`xarray.open_dataset`.
+
+    Returns
+    -------
+    bool
+        ``True`` if the dataset opens and the sampled checks pass;
+        ``False`` otherwise.
 
     Raises
     ------
-    FileNotFoundError
-        If the file does not exist at ``path``.
-    OSError
-        If the file cannot be opened by the underlying engine.
-    ValueError
-        If CF-time or other metadata decoding fails.
-    Exception
-        Any other error emitted by xarray/engine during ``open_dataset`` or ``load``.
+    None
+        Exceptions are caught and reported; the function returns ``False`` on
+        failure. If you want orchestrators (e.g., Prefect) to handle retries,
+        re-raise after logging.
 
     Notes
     -----
-    Prints a success/failure marker. If you want Prefect retries to trigger on
-    failures, re-raise exceptions after logging.
+    This function is intended for large datasets where ``.load()`` would be
+    impractical. The underlying checker should verify basics like coordinate
+    monotonicity, CF-time decodability, CRS presence, and small-window reads.
     """
+    p = Path(path).resolve()
+    is_ok: bool
     try:
-        ds = xr.open_dataset(path)
-        check_dataset_sampled(ds)
-        print(f"{path} is valid ✓")
+        ds = xr.open_dataset(p)
+        check_dataset_sampled(ds)  # your sampled checker
+        print(f"{p} is valid ✓")
+        is_ok = True
     except FileNotFoundError:
-        print(f"{path} is valid ✗ (missing)")
-        # raise  # uncomment to trigger Prefect retry/failure handling
+        print(f"{p} is valid ✗ (missing)")
+        is_ok = False
     except Exception as e:
-        print(f"{path} is valid ✗ ({type(e).__name__}: {e})")
-        # raise  # uncomment to trigger Prefect retry/failure handling
+        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        is_ok = False
+    return is_ok
+
+
+def check_xr(path: Path | str) -> bool:
+    """
+    Open a dataset and verify it **fully loads** with xarray.
+
+    This forces a full materialization using ``.load()`` via a helper
+    (``check_dataset``). Prints a ✓/✗ message and returns ``True`` on success.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Path to a CF-compliant NetCDF/Zarr dataset readable by
+        :func:`xarray.open_dataset`.
+
+    Returns
+    -------
+    bool
+        ``True`` if the dataset opens and fully loads; ``False`` otherwise.
+
+    Raises
+    ------
+    None
+        Exceptions are caught and reported; the function returns ``False`` on
+        failure. Re-raise after logging if you want caller-managed retries.
+
+    Notes
+    -----
+    Prefer :func:`check_xr_sampled` for very large datasets to avoid
+    out-of-memory errors. This variant is useful when the dataset is expected
+    to fit comfortably in memory and you want a strong integrity check.
+    """
+    p = Path(path).resolve()
+    is_ok: bool
+    try:
+        ds = xr.open_dataset(p)
+        check_dataset(ds)  # your full-load checker
+        print(f"{p} is valid ✓")
+        is_ok = True
+    except FileNotFoundError:
+        print(f"{p} is valid ✗ (missing)")
+        is_ok = False
+    except Exception as e:
+        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        is_ok = False
+    return is_ok
+
+
+def check_rio(path: Path | str) -> bool:
+    """
+    Open a raster dataset and verify it can be read with rioxarray.
+
+    Uses :func:`rioxarray.open_rasterio` (via ``rio.open``) to check that the
+    file opens and basic metadata/CRS are readable. Prints a ✓/✗ message and
+    returns ``True`` on success.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Path to a raster readable by rioxarray (e.g., GeoTIFF, Cloud-Optimized
+        GeoTIFF).
+
+    Returns
+    -------
+    bool
+        ``True`` if the raster opens successfully; ``False`` otherwise.
+
+    Raises
+    ------
+    None
+        Exceptions are caught and reported; the function returns ``False`` on
+        failure. Re-raise after logging if you prefer caller-managed retries.
+
+    Notes
+    -----
+    This check does not load full raster data. For deeper integrity tests,
+    consider reading a small window or verifying CRS/transform consistency.
+    """
+    p = Path(path).resolve()
+    is_ok: bool
+    try:
+        _ = rio.open(p)  # lightweight open
+        print(f"{p} is valid ✓")
+        is_ok = True
+    except FileNotFoundError:
+        print(f"{p} is valid ✗ (missing)")
+        is_ok = False
+    except Exception as e:
+        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        is_ok = False
+    return is_ok

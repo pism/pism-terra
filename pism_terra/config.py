@@ -806,6 +806,7 @@ class PismConfig(BaseModelWithDot):
     '200m'
     """
 
+    campaign: CampaignConfig
     run: RunConfig
     run_info: InfoConfig
     job: JobConfig
@@ -1152,3 +1153,92 @@ class StressBalanceConfig(ModelWithOptions):
     """
 
     SECTION = "stress_balance"
+
+
+class CampaignConfig(BaseModel):
+    """
+    Execution settings for a PISM run.
+
+    Provides executable/launcher options and a helper to export parameters
+    for templating. String fields that contain Jinja expressions (e.g.,
+    ``"mpirun -np {{ ntasks }}"``) are rendered using the model values.
+
+    Attributes
+    ----------
+    mpi : str
+        MPI launcher template, e.g., ``"mpirun -np {{ ntasks }}"``.
+        Defaults to ``"mpirun"``.
+    executable : str
+        Path to the PISM executable, or command name. Defaults to ``"pism"``.
+    ntasks : int
+        Total number of MPI ranks. Must be >= 1.
+
+    Notes
+    -----
+    The :meth:`as_params` method returns only non-empty fields and renders any
+    string value containing Jinja delimiters ``{{ ... }}`` using the current
+    field values (plus any extra context provided).
+
+    Examples
+    --------
+    >>> rc = RunConfig(mpi="mpirun -np {{ ntasks }}", executable="/path/pism", ntasks=56)
+    >>> rc.as_params()["mpi"]
+    'mpirun -np 56'
+    """
+
+    name: str = Field(default="hindcast")
+    climate: str = Field(default="era5")
+    dem: str = Field(default="glo_30")
+    ice_thickness: str = Field(default="millan")
+
+    def as_params(self, **extra: Any) -> dict[str, Any]:
+        """
+        Export non-empty parameters and render templated strings.
+
+        Any string field containing Jinja expressions is rendered using a
+        context composed of the model's own values plus ``extra``.
+
+        Parameters
+        ----------
+        **extra
+            Additional key/value pairs to inject into the Jinja render
+            context (these do not mutate the model).
+
+        Returns
+        -------
+        dict of str to Any
+            Dictionary of parameters suitable for template rendering.
+            Fields with ``None``/unset/default values are omitted; templated
+            strings (e.g., ``mpi``) are rendered to plain strings.
+        """
+        params = self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=False)
+        ctx = {**params, **extra}
+
+        def _render(v: Any) -> Any:
+            """
+            Render templated strings using the current context.
+
+            Parameters
+            ----------
+            v : Any
+                Candidate value to render. If `v` is a string containing Jinja
+                delimiters (``{{ ... }}``), it is rendered using the closure
+                context ``ctx``; otherwise it is returned unchanged.
+
+            Returns
+            -------
+            Any
+                The rendered string when `v` is a templated string; otherwise the
+                original value.
+
+            Raises
+            ------
+            jinja2.UndefinedError
+                If the template references an undefined variable and the Jinja
+                environment uses ``StrictUndefined``.
+            """
+            if isinstance(v, str) and "{{" in v:
+                return _JINJA.from_string(v).render(ctx)
+            return v
+
+        return {k: _render(v) for k, v in params.items()}
