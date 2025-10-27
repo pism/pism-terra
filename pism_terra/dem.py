@@ -38,6 +38,7 @@ from rasterio.merge import merge
 from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain
 from pism_terra.download import download_archive, extract_archive
+from pism_terra.observations import glacier_velocities_from_rgi_id
 from pism_terra.raster import check_overlap, reproject_file
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_rio
@@ -672,7 +673,16 @@ def boot_file_from_rgi_id(
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
 
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask])
+    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
+    v = v.rio.reproject_match(surface)
+
+    tillwat = xr.zeros_like(surface)
+    tillwat.name = "tillwat"
+    del tillwat.attrs["standard_name"]
+    tillwat.attrs.update({"units": "m"})
+
+    tillwat = tillwat.where(v["v"].fillna(0) < 100.0, 2)
+    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, v])
     ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
     ds.rio.write_crs(dst_crs, inplace=True)
     return ds

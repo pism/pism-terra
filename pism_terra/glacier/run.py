@@ -27,7 +27,7 @@ import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import geopandas as gpd
 import numpy as np
@@ -36,24 +36,15 @@ import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel
 from pyfiglet import Figlet
-from shapely.geometry import Polygon
 
-from pism_terra.climate import era5, pmip4
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
-from pism_terra.dem import boot_file_from_rgi_id
-from pism_terra.domain import create_grid
-
-# from pism_terra.observations import glacier_velocities_from_rgi_id
-from pism_terra.raster import apply_perimeter_band
+from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import create_samples
-from pism_terra.vector import get_glacier_from_rgi_id
 
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
 T = TypeVar("T", bound=BaseModel)
-
-CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5}
 
 
 def _merge_model(base_model: T, **overrides: Any) -> T:
@@ -567,182 +558,6 @@ def dict2str(d: dict) -> str:
     return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
 
 
-def stage_glacier(
-    config: dict,
-    rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
-    path: str | Path = "input_files",
-    resolution: float = 50.0,
-) -> pd.DataFrame:
-    """
-    Stage glacier inputs (boot, grid, outline, climate) and return a file index.
-
-    For the glacier identified by ``rgi_id``, this function:
-    (1) reads/loads the glacier geometry from an RGI GeoDataFrame or file,
-    (2) generates a boot (DEM-derived) dataset and target model grid,
-    (3) applies small perimeter masks/cleanups,
-    (4) writes boot and grid NetCDFs plus an outline/domain file,
-    (5) fetches and writes climate forcing using the configured climate builder,
-    and (6) returns a tidy table (one row per climate file) with absolute paths.
-
-    Parameters
-    ----------
-    config : dict
-        Configuration mapping. Must contain at least:
-        - ``"dem"`` : str
-            Name of the DEM source to use in ``boot_file_from_rgi_id``.
-        - ``"climate"`` : str
-            Key for the climate builder in ``CLIMATE`` (e.g., ``"pmip4"``).
-    rgi_id : str
-        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
-    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
-        Either an in-memory RGI GeoDataFrame, or path to a GeoPackage/shape
-        readable by :func:`geopandas.read_file`.
-    path : str or pathlib.Path, default ``"input_files"``
-        Output directory. Created if missing. Files are written here.
-    resolution : float, default ``50.0``
-        Target grid resolution (meters) used to name outputs and guide grid
-        generation where applicable.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Table with one row per produced **climate** file and columns:
-        ``rgi_id``, ``outline`` (gpkg), ``boot_file`` (nc),
-        ``grid_file`` (nc), ``climate_file`` (nc). All paths are absolute.
-
-    Raises
-    ------
-    KeyError
-        If required keys (e.g., ``"dem"``, ``"climate"``) are missing in ``config``.
-    FileNotFoundError
-        If the provided RGI path does not exist.
-    ValueError
-        If ``rgi_id`` is not found in the provided RGI layer.
-    Exception
-        Propagated from helper functions (e.g., I/O or projection errors).
-
-    See Also
-    --------
-    boot_file_from_rgi_id :
-        Builds the boot (DEM/thickness/bed) dataset around the glacier.
-    create_grid :
-        Creates the target model grid and bounds.
-    CLIMATE :
-        Mapping from climate name (e.g., ``"pmip4"``) to a function that
-        generates climate NetCDF(s) for the glacier/bounds.
-
-    Notes
-    -----
-    - Applies a perimeter band via :func:`apply_perimeter_band` to clean edges.
-    - Ensures bed is below surface and thickness is non-negative.
-    - The returned DataFrame is convenient for downstream workflow fan-out.
-
-    Examples
-    --------
-    >>> cfg = {"dem": "cop30", "climate": "pmip4"}
-    >>> df = stage_glacier(cfg, "RGI2000-v7.0-C-06-00014", path="inputs", resolution=100)
-    >>> df[["boot_file", "grid_file", "climate_file"]].head()
-    """
-    # Banner
-    f = Figlet(font="standard")
-    banner = f.renderText("pism-terra")
-    print("=" * 80)
-    print(banner)
-    print("=" * 80)
-    print(f"Stage Glacier {rgi_id}")
-    print("-" * 80)
-    print("")
-
-    # Outputs dir
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
-
-    # Load RGI (accept GeoDataFrame or file path)
-    if isinstance(rgi, (str, Path)):
-        rgi = gpd.read_file(rgi)
-
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
-    if glacier.empty:
-        raise ValueError(f"RGI ID not found: {rgi_id}")
-
-    glacier_filename = path / f"rgi_{rgi_id}.gpkg"
-    glacier_series = glacier.iloc[0]
-    crs = glacier_series["epsg"]
-    glacier.to_file(glacier_filename)
-
-    # Output filenames
-    boot_filename = path / f"bootfile_g{int(resolution)}m_{rgi_id}.nc"
-    grid_filename = path / f"grid_g{int(resolution)}m_{rgi_id}.nc"
-
-    # Build boot dataset (DEM/thickness/bed)
-    boot_ds = boot_file_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, dem_name=config["dem"])
-
-    # Grid & bounds
-    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=2500.0)
-    bounds = [
-        grid_ds["x_bnds"].values[0][0],
-        grid_ds["y_bnds"].values[0][0],
-        grid_ds["x_bnds"].values[0][1],
-        grid_ds["y_bnds"].values[0][1],
-    ]
-
-    # Edge cleanup and simple physical constraints
-    for v in ["bed", "thickness", "surface"]:
-        boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds)
-    boot_ds["thickness"] = boot_ds["thickness"].where(boot_ds["thickness"] > 0.0, 0.0)
-    boot_ds["bed"] = boot_ds["bed"].where(boot_ds["surface"] > 0.0, -1000.0)
-    boot_ds.rio.write_crs(crs, inplace=True)
-    boot_ds.to_netcdf(boot_filename)
-
-    grid_ds.attrs.update({"domain": rgi_id})
-    grid_ds.to_netcdf(grid_filename, engine="h5netcdf")
-
-    # Save domain polygon as a GPKG
-    x_point_list = [
-        grid_ds.x_bnds[0][0],
-        grid_ds.x_bnds[0][0],
-        grid_ds.x_bnds[0][1],
-        grid_ds.x_bnds[0][1],
-        grid_ds.x_bnds[0][0],
-    ]
-    y_point_list = [
-        grid_ds.y_bnds[0][0],
-        grid_ds.y_bnds[0][1],
-        grid_ds.y_bnds[0][1],
-        grid_ds.y_bnds[0][0],
-        grid_ds.y_bnds[0][0],
-    ]
-    polygon_geom = Polygon(zip(x_point_list, y_point_list))
-    polygon = gpd.GeoDataFrame(index=[0], crs=crs, geometry=[polygon_geom])
-    polygon_filename = path / f"domain_{rgi_id}.gpkg"
-    polygon.to_file(polygon_filename)
-
-    # Climate forcing
-    climate_from_rgi = CLIMATE[config["climate"]]
-    responses = climate_from_rgi(rgi_id=rgi_id, rgi=rgi, output_path=path)  # list[Path]
-    # Normalize to list[Path]
-    if isinstance(responses, (str, Path)):
-        responses = [Path(responses)]
-    else:
-        responses = [Path(p) for p in responses]
-
-    # Build file index (one row per climate file)
-    files_dict = {
-        "rgi_id": rgi_id,
-        "outline": glacier_filename.absolute(),
-        "boot_file": boot_filename.absolute(),
-        "grid_file": grid_filename.absolute(),
-    }
-    dfs: list[pd.DataFrame] = []
-    for fpath in responses:
-        row = {**files_dict, "climate_file": Path(fpath).absolute()}
-        dfs.append(pd.DataFrame.from_dict([row]))
-
-    df = pd.concat(dfs).reset_index(drop=True)
-    return df
-
-
 def run_single():
     """
     Run single glacier.
@@ -884,7 +699,7 @@ def run_ensemble():
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Stage RGI Glacier."
+    parser.description = "Run RGI Glacier Ensemble."
     parser.add_argument(
         "--output_path",
         help="""Base path to save all files data/rgi_id/output. Default="data".""",

@@ -17,7 +17,11 @@ nodes = 1
 
 [campaign]
 
-setup = "Hindcast"
+name = "ERA Hindcast"
+climate = "era5"
+dem = "glo_30"
+ice_thickness = "millan"
+velocity = "none"
 
 [climate]
 

@@ -22,8 +22,10 @@ Staging.
 """
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable
 
 import cf_xarray
 import geopandas as gpd
@@ -34,58 +36,94 @@ from prefect import flow
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
-from pism_terra.climate import era5_reanalysis_from_rgi_id, jif_cosipy, pmip4
-from pism_terra.dem import add_malaspina_bed, glacier_dem_from_rgi_id
+from pism_terra.climate import era5, pmip4
+from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
-from pism_terra.observations import glacier_velocities_from_rgi_id
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_dataset, check_xr
 
+CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5}
 
-@flow
+
 def stage_glacier(
+    config: dict,
     rgi_id: str,
-    rgi: str | Path = "rgi/rgi.gpkg",
+    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     path: str | Path = "input_files",
     resolution: float = 50.0,
 ) -> pd.DataFrame:
     """
-    Generate and save a glacier DEM and related variables to a NetCDF file.
+    Stage glacier inputs (boot, grid, outline, climate) and return a file index.
 
-    This function stages a glacier dataset for use in modeling or analysis.
-    It retrieves a glacier DEM, ice thickness, and bed topography based on a given
-    RGI ID, and saves the resulting dataset as a NetCDF file in a specified directory.
+    For the glacier identified by ``rgi_id``, this function:
+    (1) reads/loads the glacier geometry from an RGI GeoDataFrame or file,
+    (2) generates a boot (DEM-derived) dataset and target model grid,
+    (3) applies small perimeter masks/cleanups,
+    (4) writes boot and grid NetCDFs plus an outline/domain file,
+    (5) fetches and writes climate forcing using the configured climate builder,
+    and (6) returns a tidy table (one row per climate file) with absolute paths.
 
     Parameters
     ----------
+    config : dict
+        Configuration mapping. Must contain at least:
+        - ``"dem"`` : str
+            Name of the DEM source to use in ``boot_file_from_rgi_id``.
+        - ``"climate"`` : str
+            Key for the climate builder in ``CLIMATE`` (e.g., ``"pmip4"``).
     rgi_id : str
-        The RGI ID of the glacier to stage (e.g., "RGI2000-v7.0-C-06-00014").
-    rgi : str or Path, optional
-        Path to the RGI file (GeoPackage or shapefile). Default is "rgi/rgi.gpkg".
-    path : str or Path, optional
-        Directory where the staged NetCDF file will be saved. Created if it doesn't exist.
-        Default is "boot_file".
-    resolution : float, optional
-        Resolution (in meters) for the target grid. Passed to the DEM generation function.
-        Default is 50.0.
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
+    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
+        Either an in-memory RGI GeoDataFrame, or path to a GeoPackage/shape
+        readable by :func:`geopandas.read_file`.
+    path : str or pathlib.Path, default ``"input_files"``
+        Output directory. Created if missing. Files are written here.
+    resolution : float, default ``50.0``
+        Target grid resolution (meters) used to name outputs and guide grid
+        generation where applicable.
 
     Returns
     -------
-    str
-        Path to file.
+    pandas.DataFrame
+        Table with one row per produced **climate** file and columns:
+        ``rgi_id``, ``outline`` (gpkg), ``boot_file`` (nc),
+        ``grid_file`` (nc), ``climate_file`` (nc). All paths are absolute.
+
+    Raises
+    ------
+    KeyError
+        If required keys (e.g., ``"dem"``, ``"climate"``) are missing in ``config``.
+    FileNotFoundError
+        If the provided RGI path does not exist.
+    ValueError
+        If ``rgi_id`` is not found in the provided RGI layer.
+    Exception
+        Propagated from helper functions (e.g., I/O or projection errors).
 
     See Also
     --------
-    glacier_dem_from_rgi_id : Generates the glacier dataset with DEM, thickness, and bed.
+    boot_file_from_rgi_id :
+        Builds the boot (DEM/thickness/bed) dataset around the glacier.
+    create_grid :
+        Creates the target model grid and bounds.
+    CLIMATE :
+        Mapping from climate name (e.g., ``"pmip4"``) to a function that
+        generates climate NetCDF(s) for the glacier/bounds.
 
     Notes
     -----
-    - Output dataset includes variables: `surface`, `thickness`, `bed`, and
-      `land_ice_area_fraction_retreat`.
-    - The staging directory is created if it doesn't exist.
-    """
+    - Applies a perimeter band via :func:`apply_perimeter_band` to clean edges.
+    - Ensures bed is below surface and thickness is non-negative.
+    - The returned DataFrame is convenient for downstream workflow fan-out.
 
+    Examples
+    --------
+    >>> cfg = {"dem": "cop30", "climate": "pmip4"}
+    >>> df = stage_glacier(cfg, "RGI2000-v7.0-C-06-00014", path="inputs", resolution=100)
+    >>> df[["boot_file", "grid_file", "climate_file"]].head()
+    """
+    # Banner
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
     print("=" * 80)
@@ -95,114 +133,92 @@ def stage_glacier(
     print("-" * 80)
     print("")
 
+    # Outputs dir
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
-    boot_filename = path / Path(f"bootfile_g{int(resolution)}m_{rgi_id}.nc")
-
-    dem = glacier_dem_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
-    crs = dem.rio.crs
-
-    v_filename = path / Path(f"obs_velocities_g{int(resolution)}m_{rgi_id}.nc")
-    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
-    v = v.rio.reproject_match(dem)
-    check_dataset(v)
-    v.to_netcdf(v_filename)
-
-    tillwat = xr.zeros_like(dem["surface"])
-    tillwat.name = "tillwat"
-    del tillwat.attrs["standard_name"]
-    tillwat.attrs.update({"units": "m"})
-
-    dem["tillwat"] = tillwat.where(v["v"].fillna(0) < 100.0, 2)
+    # Load RGI (accept GeoDataFrame or file path)
+    if isinstance(rgi, (str, Path)):
+        rgi = gpd.read_file(rgi)
 
     glacier = get_glacier_from_rgi_id(rgi, rgi_id)
-    glacier_filename = path / Path(f"rgi_{rgi_id}.gpkg")
+    if glacier.empty:
+        raise ValueError(f"RGI ID not found: {rgi_id}")
+
+    glacier_filename = path / f"rgi_{rgi_id}.gpkg"
+    glacier_series = glacier.iloc[0]
+    crs = glacier_series["epsg"]
     glacier.to_file(glacier_filename)
 
-    grid = create_grid(glacier, dem, crs=crs, buffer_distance=2500.0)
+    # Output filenames
+    boot_filename = path / f"bootfile_g{int(resolution)}m_{rgi_id}.nc"
+    grid_filename = path / f"grid_g{int(resolution)}m_{rgi_id}.nc"
+
+    # Build boot dataset (DEM/thickness/bed)
+    boot_ds = boot_file_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, dem_name=config["dem"])
+
+    # Grid & bounds
+    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=2500.0)
     bounds = [
-        grid["x_bnds"].values[0][0],
-        grid["y_bnds"].values[0][0],
-        grid["x_bnds"].values[0][1],
-        grid["y_bnds"].values[0][1],
+        grid_ds["x_bnds"].values[0][0],
+        grid_ds["y_bnds"].values[0][0],
+        grid_ds["x_bnds"].values[0][1],
+        grid_ds["y_bnds"].values[0][1],
     ]
 
+    # Edge cleanup and simple physical constraints
     for v in ["bed", "thickness", "surface"]:
-        dem[v] = apply_perimeter_band(dem[v], bounds=bounds)
-    dem["thickness"] = dem["thickness"].where(dem["thickness"] > 0.0, 0.0)
-    dem["bed"] = dem["bed"].where(dem["surface"] > 0.0, -1000.0)
-    if rgi_id == "RGI2000-v7.0-C-01-09429-A":
-        dem = add_malaspina_bed(dem, target_crs=crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
-    dem.rio.write_crs(crs, inplace=True)
-    check_dataset(dem)
-    dem.to_netcdf(boot_filename)
+        boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds)
+    boot_ds["thickness"] = boot_ds["thickness"].where(boot_ds["thickness"] > 0.0, 0.0)
+    boot_ds["bed"] = boot_ds["bed"].where(boot_ds["surface"] > 0.0, -1000.0)
+    boot_ds.rio.write_crs(crs, inplace=True)
+    boot_ds.to_netcdf(boot_filename)
 
-    grid.attrs.update({"domain": rgi_id})
-    grid_filename = path / Path(f"grid_g{int(resolution)}m_{rgi_id}.nc")
-    grid.to_netcdf(grid_filename, engine="h5netcdf")
+    grid_ds.attrs.update({"domain": rgi_id})
+    grid_ds.to_netcdf(grid_filename, engine="h5netcdf")
 
+    # Save domain extent polygon as a GPKG
     x_point_list = [
-        grid.x_bnds[0][0],
-        grid.x_bnds[0][0],
-        grid.x_bnds[0][1],
-        grid.x_bnds[0][1],
-        grid.x_bnds[0][0],
+        grid_ds.x_bnds[0][0],
+        grid_ds.x_bnds[0][0],
+        grid_ds.x_bnds[0][1],
+        grid_ds.x_bnds[0][1],
+        grid_ds.x_bnds[0][0],
     ]
     y_point_list = [
-        grid.y_bnds[0][0],
-        grid.y_bnds[0][1],
-        grid.y_bnds[0][1],
-        grid.y_bnds[0][0],
-        grid.y_bnds[0][0],
+        grid_ds.y_bnds[0][0],
+        grid_ds.y_bnds[0][1],
+        grid_ds.y_bnds[0][1],
+        grid_ds.y_bnds[0][0],
+        grid_ds.y_bnds[0][0],
     ]
-    polygon_geom = Polygon(zip(x_point_list, y_point_list))
-    polygon = gpd.GeoDataFrame(index=[0], crs=crs, geometry=[polygon_geom])
-    polygon_filename = path / Path(f"domain_{rgi_id}.gpkg")
-    polygon.to_file(polygon_filename)
+    domain_bounds_geom = Polygon(zip(x_point_list, y_point_list))
+    domain_bounds = gpd.GeoDataFrame(index=[0], crs=crs, geometry=[domain_bounds_geom])
+    domain_bounds_filename = path / f"domain_{rgi_id}.gpkg"
+    domain_bounds.to_file(domain_bounds_filename)
 
-    era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
-    era5 = era5_reanalysis_from_rgi_id(rgi_id, rgi, buffer_distance=0.2, dataset="reanalysis-era5-land-monthly-means")
-    print(f"Saving {era5_filename}")
-    check_dataset(era5)
-    era5.to_netcdf(era5_filename)
+    # Climate forcing
+    climate_from_rgi = CLIMATE[config["climate"]]
+    responses = climate_from_rgi(rgi_id=rgi_id, rgi=rgi, path=path)  # list[Path]
+    # Normalize to list[Path]
+    if isinstance(responses, (str, Path)):
+        responses = [Path(responses)]
+    else:
+        responses = [Path(p) for p in responses]
 
-    responses = pmip4(rgi_id=rgi_id, rgi=rgi, output_path=path)
-    for response in responses:
-        check_xr(response)
-
+    # Build file index (one row per climate file)
     files_dict = {
         "rgi_id": rgi_id,
         "outline": glacier_filename.absolute(),
         "boot_file": boot_filename.absolute(),
-        "historical_climate_file": era5_filename.absolute(),
         "grid_file": grid_filename.absolute(),
     }
-    dfs = []
-    for f in responses:
-        files_dict.update({"pmip_file": f})
-        df = pd.DataFrame.from_dict([files_dict])
-        dfs.append(df)
-
-    # Define which climate to add somewhere else.
-
-    # if rgi_id == "RGI2000-v7.0-C-01-12784":
-    #     dfs = []
-    #     responses = []
-    #     for dataset, years in zip(["CCSM", "CFSR", "GFDL"], ["1980_2010", "1980_2019", "1980_2010"]):
-    #         filename = path / Path(f"{dataset}_wgs84_{rgi_id}.nc")
-    #         fn = f"cosipy_output_{dataset}_JIF_{years}.nc"
-    #         url = f"https://zenodo.org/records/13912616/files/{fn}"
-    #         fnp = path / Path(fn)
-    #         jif_cosipy(url, fnp, filename)
-    #         responses.append(filename.absolute())
-    #     for f in responses:
-    #         files_dict.update({"cosipy_file": f})
-    #         df = pd.DataFrame.from_dict([files_dict])
-    #         dfs.append(df)
+    dfs: list[pd.DataFrame] = []
+    for fpath in responses:
+        row = {**files_dict, "climate_file": Path(fpath).absolute()}
+        dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)
-
     return df
 
 

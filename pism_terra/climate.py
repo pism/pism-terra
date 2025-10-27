@@ -16,14 +16,16 @@
 # along with PISM; if not, write to the Free Software
 
 # mypy: disable-error-code="call-overload"
-# pylint: disable=unused-import
+# pylint: disable=unused-import,too-many-positional-arguments
 
 
 """
 Prepare Climate.
 """
 
-from collections.abc import Iterable
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import cdsapi
@@ -39,70 +41,89 @@ import xarray as xr
 from pism_terra.dem import get_glacier_from_rgi_id
 from pism_terra.download import download_netcdf, extract_archive
 from pism_terra.raster import add_time_bounds
-from pism_terra.workflow import check_xr
+from pism_terra.workflow import check_xr, check_xr_sampled
 
 
 def era5(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
-    years: list | Iterable = range(1980, 2025),
+    years: list[int] | Iterable[int] = range(1980, 2025),
     dataset: str = "reanalysis-era5-single-levels-monthly-means",
     buffer_distance: float = 0.1,
-) -> xr.Dataset:
+    path: Path | str = "era5.nc",
+) -> Path:
     """
-    Download and return ERA5-Land monthly reanalysis data for a glacier bounding box.
+    Download monthly ERA5 reanalysis over a glacier bbox and write a NetCDF.
 
-    This function extracts the bounding box of a glacier identified by its RGI ID,
-    then queries and downloads monthly mean reanalysis data (2m temperature and total
-    precipitation) from the ERA5-Land dataset using the Copernicus Climate Data Store (CDS) API.
+    Given a glacier ``rgi_id``, this function:
+    (1) loads the glacier geometry (GeoDataFrame or GPKG),
+    (2) builds a buffered lon/lat bounding box (WGS84),
+    (3) requests ERA5 monthly means (2 m air temperature and total precipitation),
+    (4) optionally fills missing values from the global product,
+    (5) adds a representative geopotential (converted to meters),
+    (6) writes a CF-compliant NetCDF to ``path`` and returns its absolute path.
 
     Parameters
     ----------
     rgi_id : str
-        The RGI ID of the glacier (e.g., "RGI2000-v7.0-C-01-10853").
-
-    rgi : geopandas.GeoDataFrame or str or Path, optional
-        The RGI dataset as a GeoDataFrame or a file path to a GeoPackage (GPKG).
-        If a string or Path is provided, it is read using `geopandas.read_file`.
-        Default is "rgi/rgi.gpkg".
-
-    years : list or Iterable of int, optional
-        Sequence of years to request data for. Default is `range(1980, 2025)`.
-
-    dataset : str, optional
-        The ERA5 CDS dataset name to use for the query.
-        Default is "reanalysis-era5-single-levels-monthly-means".
-
-    buffer_distance : float, optional
-        Buffer distance (in degrees) to expand the glacier bounding box before querying.
-        Default is 0.02 degrees.
+        Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``.
+    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
+        In-memory RGI table or a path to a GeoPackage readable by
+        :func:`geopandas.read_file`.
+    years : list of int or Iterable of int, default ``range(1980, 2025)``
+        Years to request from ERA5.
+    dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
+        CDS dataset name for monthly single-level means (ERA5). Adjust if you
+        intend to query ERA5-Land or other products.
+    buffer_distance : float, default ``0.1``
+        Buffer (degrees) applied to the glacier footprint before subsetting.
+    path : str or pathlib.Path, default ``"era5.nc"``
+        Output directory or filename base. The function writes a file named
+        ``era5_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory,
+        otherwise adapts accordingly.
 
     Returns
     -------
-    xarray.Dataset
-        A dataset containing monthly mean ERA5-Land variables over the glacier bounding box:
-        - `air_temp`: 2-meter air temperature [K]
-        - `precipitation`: total precipitation [kg m^-2 month^-1]
-        Includes a `time` coordinate and `time_bounds` following CF conventions.
+    pathlib.Path
+        Absolute path to the written NetCDF file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the provided RGI path is missing.
+    ValueError
+        If the glacier ID cannot be found or the geometry is invalid.
+    Exception
+        Any errors propagated from the CDS request, reprojection, or I/O.
 
     See Also
     --------
-    cdsapi.Client : CDS API Python client for data access.
-    geopandas.read_file : Reads geospatial vector files such as GeoPackages.
-    xarray.open_dataset : Opens NetCDF files into xarray Datasets.
+    download_request
+        Helper that performs the CDS API query and returns an xarray object.
+    geopandas.read_file
+        Load the RGI vector layer from disk.
+    xarray.Dataset.rio.write_crs
+        Record CRS on xarray objects via rioxarray.
 
     Notes
     -----
-    - Requires a valid CDS API key configured in `~/.cdsapirc`.
-    - The bounding box is rounded to 0.1° precision for compatibility with CDS queries.
-    - Time bounds are added using `cf_xarray` for CF-compliant time axes.
+    - Output variables:
+      - ``air_temp`` (K) from ERA5 ``t2m``.
+      - ``precipitation`` (kg m^-2 day^-1) from ERA5 ``tp`` (converted).
+      - ``surface`` (m) derived from ERA5 ``z`` / 9.80665 (geopotential to meters).
+    - ``time_bounds`` are added for CF-style climatological metadata.
+    - If missing values are detected in the regional subset, the function
+      optionally patches them from the global reanalysis (same period).
     """
+    path = Path(path)
 
     print("")
     print("Generate historical climate")
     print("-" * 80)
 
-    if isinstance(rgi, str | Path):
+    era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
+
+    if isinstance(rgi, (str, Path)):
         rgi = gpd.read_file(rgi)
 
     years = list(years)
@@ -118,10 +139,18 @@ def era5(
 
     print(f"Bounding box {area}")
 
-    ds = download_request(dataset, area, years)
+    era5_files = []
+    era5_filename_1 = path / Path(f"era5_wgs84_{rgi_id}_tmp_1.nc")
+    era5_files.append(era5_filename_1)
+    ds = download_request(dataset, area, years, path=era5_filename_1)
     ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
     ds.rio.write_crs("EPSG:4326", inplace=True)
-    ds_geo = download_request(dataset, area, [2013], variable=["geopotential"]).mean(dim="time")
+
+    era5_filename_2 = path / Path(f"era5_wgs84_{rgi_id}_tmp_2.nc")
+    era5_files.append(era5_filename_2)
+    ds_geo = download_request(dataset, area, [2013], variable=["geopotential"], path=era5_filename_2).mean(
+        dim="valid_time"
+    )
     ds_geo_ = ds_geo.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
 
     lon_attrs = ds["longitude"].attrs
@@ -129,7 +158,9 @@ def era5(
 
     if ("GRIB_missingValue" or "missing_value" or "_FillValue") in (ds["tp"].attrs or ds["t2m"].attrs):
         print("Missing values detected, filling with global reanalysis")
-        ds_global = download_request("reanalysis-era5-single-levels-monthly-means", area, years)
+        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
+        era5_files.append(era5_filename_3)
+        ds_global = download_request("reanalysis-era5-single-levels-monthly-means", area, years, path=era5_filename_3)
         ds_global_ = (
             ds_global.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
         )
@@ -149,11 +180,13 @@ def era5(
     ds["longitude"].attrs = lon_attrs
     ds["latitude"].attrs = lat_attrs
     ds.rio.write_crs("EPSG:4326", inplace=True)
+    ds = add_time_bounds(ds)
+    ds.to_netcdf(era5_filename)
 
-    return add_time_bounds(ds)
+    return era5_filename
 
 
-def jif_cosipy(url: str, download_path: Path | str, output_path: Path | str) -> None:
+def jif_cosipy(url: str, download_path: Path | str, path: Path | str) -> None:
     """
     Download and prepare COSIPY.
 
@@ -163,7 +196,7 @@ def jif_cosipy(url: str, download_path: Path | str, output_path: Path | str) -> 
         The URL to download.
     download_path : str, Path
         The path to the original file.
-    output_path : str, Path
+    path : str, Path
         The path to the processed file.
 
     Returns
@@ -208,88 +241,117 @@ def jif_cosipy(url: str, download_path: Path | str, output_path: Path | str) -> 
     ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
     ds.rio.write_crs("EPSG:4326", inplace=True)
     ds = add_time_bounds(ds)
-    ds.to_netcdf(output_path)
+    ds.to_netcdf(path)
 
 
 def download_request(
     dataset: str = "reanalysis-era5-single-levels-monthly-means",
-    area: list[float] = [90, -90, 45, 90],
-    years: list | Iterable = range(1980, 2025),
-    variable: list = ["2m_temperature", "total_precipitation"],
+    area: Sequence[float] = (90.0, -90.0, 45.0, 90.0),
+    years: Iterable[int] = range(1980, 2025),
+    variable: Sequence[str] = ("2m_temperature", "total_precipitation"),
+    path: Path | str = "tmp.nc",
 ) -> xr.Dataset:
     """
-    Download ERA5 monthly reanalysis data from the Copernicus Climate Data Store (CDS).
+    Download monthly ERA5 reanalysis from the CDS and return it as an xarray Dataset.
 
-    This function sends a request to the CDS API to retrieve monthly mean 2m temperature
-    and total precipitation data for a specified spatial domain and time range.
-    The downloaded data are returned as an xarray Dataset.
+    Sends a request to the Copernicus Climate Data Store (CDS) API for monthly
+    averages of one or more single-level variables over a given bounding box and
+    range of years. If the CDS returns multiple NetCDFs (e.g., one per year),
+    they are opened and merged. The merged dataset is cached to ``path`` and
+    re-used on subsequent calls.
 
     Parameters
     ----------
-    dataset : str, optional
-        The CDS dataset identifier. Defaults to "reanalysis-era5-single-levels-monthly-means".
-    area : list of float, optional
-        Bounding box [North, West, South, East] in degrees. Defaults to [90, -90, 45, 90].
-    years : list or iterable, optional
-        List or range of years to download. Defaults to range(1980, 2025).
-    variable : list, optional
-        List of variables to download.
+    dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
+        CDS dataset identifier to retrieve. Use ERA5-Land or other collections
+        by passing a different dataset name if desired.
+    area : sequence of float, default ``(90, -90, 45, 90)``
+        Geographic bounding box **[North, West, South, East]** in degrees
+        (WGS84). Note the order follows CDS convention.
+    years : iterable of int, default ``range(1980, 2025)``
+        Years to request (e.g., ``range(1980, 2025)`` or ``[1990, 1991, 1992]``).
+    variable : sequence of str, default ``("2m_temperature", "total_precipitation")``
+        ERA5 variable names to download (e.g., ``"2m_temperature"``,
+        ``"total_precipitation"``, ``"geopotential"``). Variable availability
+        depends on the chosen ``dataset``.
+    path : str or pathlib.Path, default ``"tmp.nc"``
+        Cache file. If it exists and opens cleanly, it is re-used; otherwise,
+        a fresh download is performed and written to this path.
 
     Returns
     -------
-    xr.Dataset
-        An xarray Dataset containing the merged ERA5 monthly data. The variables include:
-        - `t2m` : 2-meter air temperature [K]
-        - `tp` : total precipitation [m]
-        If multiple NetCDF files are returned, they are merged into a single dataset.
+    xarray.Dataset
+        Dataset containing the requested monthly means. Typical variables include:
+        - ``t2m`` : 2 m air temperature [K]
+        - ``tp`` : total precipitation [m]
+        Coordinates include a monthly ``valid_time`` (renamed or floored below)
+        depending on the product.
+
+    Raises
+    ------
+    cdsapi.api.ClientError
+        If the CDS request fails (authentication/parameters/quota).
+    OSError
+        If the downloaded file cannot be opened or written.
+    ValueError
+        If the returned files are incompatible for merging.
+    Exception
+        Any other error from I/O/decoding during dataset assembly.
 
     Notes
     -----
-    - Requires a valid CDS API key in `~/.cdsapirc`.
-    - Uses the `cdsapi` client to perform the download.
-    - If the data is delivered as a ZIP archive, the contents are extracted before loading.
-    - The `valid_time` field is floored to daily resolution.
+    - Requires a valid CDS API key in ``~/.cdsapirc``.
+    - The request uses: ``product_type="monthly_averaged_reanalysis"``,
+      all months (``"01"``–``"12"``), and time ``"00:00"``.
+    - If CDS delivers a ZIP, contents are extracted prior to loading and then merged.
+    - ``valid_time`` (if present) is floored to daily resolution.
+
+    Examples
+    --------
+    >>> ds = download_request(
+    ...     dataset="reanalysis-era5-single-levels-monthly-means",
+    ...     area=(63.9, 214.1, 59.0, 219.7),  # [N, W, S, E]
+    ...     years=range(1980, 1985),
+    ...     variable=("2m_temperature", "total_precipitation"),
+    ...     path="era5_subset.nc",
+    ... )
+    >>> list(ds.data_vars)
+    ['t2m', 'tp']
     """
+    path = Path(path)
     client = cdsapi.Client()
 
     request = {
         "product_type": ["monthly_averaged_reanalysis"],
-        "variable": variable,
-        "year": years,
-        "month": [
-            "01",
-            "02",
-            "03",
-            "04",
-            "05",
-            "06",
-            "07",
-            "08",
-            "09",
-            "10",
-            "11",
-            "12",
-        ],
+        "variable": list(variable),
+        "year": list(years),
+        "month": [f"{m:02d}" for m in range(1, 13)],
         "time": ["00:00"],
         "data_format": "netcdf",
         "download_format": "unarchived",
-        "area": area,
+        "area": list(area),  # [N, W, S, E]
     }
 
-    f = client.retrieve(dataset, request).download()
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if f.endswith("zip"):
-        era_files = extract_archive(f)
-        dss = []
-        for era_file in era_files:
-            ds = xr.open_dataset(era_file, decode_times=time_coder, decode_timedelta=True)
-            if "valid_time" in ds.coords:
-                ds["valid_time"] = ds["valid_time"].dt.floor("D")
-            dss.append(ds)
-        ds = xr.merge(dss)
+    if not check_xr(path):
+        f = client.retrieve(dataset, request).download()
+
+        if f.endswith(".zip"):
+            era_files = extract_archive(f)
+            dss = []
+            for era_file in era_files:
+                ds_part = xr.open_dataset(era_file, decode_times=time_coder, decode_timedelta=True)
+                if "valid_time" in ds_part.coords:
+                    ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
+                dss.append(ds_part)
+            ds = xr.merge(dss)
+        else:
+            ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True)
+
+        ds.to_netcdf(path)
     else:
-        ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True)
+        ds = xr.open_dataset(path, decode_times=time_coder, decode_timedelta=True)
 
     return ds
 
@@ -298,7 +360,7 @@ def pmip4(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     buffer_distance: float = 2.0,
-    output_path: Path | str = ".",
+    path: Path | str = ".",
 ) -> list[Path]:
     """
     Build a PMIP4 LGM monthly climatology for a glacier bounding box and save it.
@@ -309,7 +371,7 @@ def pmip4(
     (3) pulls PMIP4/CMIP6 LGM data (tas, pr) from the pangeo-cmip6 S3 catalog,
     (4) subsets to the bounding box,
     (5) computes a monthly climatology (mean over the final 2,400 months),
-    and (6) writes one NetCDF per model into ``<output_path>/pmip4``.
+    and (6) writes one NetCDF per model into ``<path>/pmip4``.
 
     Parameters
     ----------
@@ -321,9 +383,9 @@ def pmip4(
     buffer_distance : float, default ``2.0``
         Buffer applied to the glacier footprint (in degrees) before subsetting
         the PMIP4 fields.
-    output_path : str or pathlib.Path, default ``"."``
+    path : str or pathlib.Path, default ``"."``
         Base directory for outputs. Files are written to
-        ``<output_path>/pmip4/{source_id}_rgi_id_{rgi_id}.nc``.
+        ``<path>/pmip4/{source_id}_rgi_id_{rgi_id}.nc``.
 
     Returns
     -------
@@ -357,8 +419,8 @@ def pmip4(
 
     responses = []
     for source_id, df in lgm_df.groupby(by="source_id"):
-        output_path = Path(output_path)
-        p = output_path / f"{source_id}_rgi_id_{rgi_id}.nc"
+        path = Path(path)
+        p = path / f"{source_id}_rgi_id_{rgi_id}.nc"
 
         if not check_xr(p):
             dss = []
