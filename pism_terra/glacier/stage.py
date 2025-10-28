@@ -50,7 +50,7 @@ CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5}
 def stage_glacier(
     config: dict,
     rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
+    rgi: gpd.GeoDataFrame | str | Path,
     path: str | Path = "input_files",
     resolution: float = 50.0,
     force_overwrite: bool = False,
