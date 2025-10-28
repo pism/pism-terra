@@ -37,6 +37,7 @@ from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
 from pism_terra.climate import era5, pmip4
+from pism_terra.config import load_config
 from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.raster import apply_perimeter_band
@@ -231,12 +232,6 @@ def main():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
     parser.add_argument(
-        "--rgi_file",
-        help="""Path to RGI file. Default="data/rgi/rgi.gpkg".""",
-        type=str,
-        default="data/rgi/rgi.gpkg",
-    )
-    parser.add_argument(
         "--output_path",
         help="""Path to save all files. Default="data".""",
         type=str,
@@ -247,11 +242,25 @@ def main():
         help="""RGI ID.""",
         nargs=1,
     )
+    parser.add_argument(
+        "RGI_FILE",
+        help="""RGI.""",
+        nargs=1,
+    )
+    parser.add_argument(
+        "CONFIG_FILE",
+        help="""CONFIG TOML.""",
+        nargs=1,
+    )
 
     options, unknown = parser.parse_known_args()
     path = options.output_path
-    rgi = options.rgi_file
+    config_file = options.CONFIG_FILE[0]
+    rgi_file = options.RGI_FILE[0]
     rgi_id = options.RGI_ID[0]
+
+    cfg = load_config(config_file)
+    config = cfg.campaign.as_params()
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -261,7 +270,7 @@ def main():
     input_path = glacier_path / Path("input")
     input_path.mkdir(parents=True, exist_ok=True)
 
-    glacier_df = stage_glacier(rgi_id, rgi, path=input_path)
+    glacier_df = stage_glacier(config, rgi_id, rgi_file, path=glacier_path)
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
 
 
