@@ -30,8 +30,8 @@ from rasterio.transform import from_origin
 from shapely.geometry import box
 
 from pism_terra.dem import (
+    boot_file_from_rgi_id,
     get_glacier_from_rgi_id,
-    glacier_dem_from_rgi_id,
 )
 from pism_terra.raster import raster_overlaps_glacier
 
@@ -49,7 +49,7 @@ def fixture_read_rgi() -> gpd.GeoDataFrame:
     return gpd.read_file("tests/rgi_test.gpkg")
 
 
-def test_glacier_dem_from_rgi_id(rgi):
+def test_boot_file_from_rgi_id(rgi):
     """
     Test the `glacier_dem_from_rgi_id` function for successful dataset creation.
 
@@ -72,7 +72,7 @@ def test_glacier_dem_from_rgi_id(rgi):
 
     rgi_id = "RGI2000-v7.0-C-01-10853"
     resolution = 100.0
-    ds = glacier_dem_from_rgi_id(rgi_id, rgi, resolution=resolution)
+    ds = boot_file_from_rgi_id(rgi_id, rgi, resolution=resolution)
     assert isinstance(ds, xr.Dataset)
     assert "surface" in ds
     assert "thickness" in ds

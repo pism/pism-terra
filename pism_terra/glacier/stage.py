@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=unused-import,unused-variable,broad-exception-caught
+# pylint: disable=unused-import,unused-variable,broad-exception-caught,too-many-positional-arguments
 
 """
 Staging.
@@ -53,78 +53,80 @@ def stage_glacier(
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     path: str | Path = "input_files",
     resolution: float = 50.0,
+    force_overwrite: bool = False,
 ) -> pd.DataFrame:
     """
     Stage glacier inputs (boot, grid, outline, climate) and return a file index.
 
     For the glacier identified by ``rgi_id``, this function:
-    (1) reads/loads the glacier geometry from an RGI GeoDataFrame or file,
-    (2) generates a boot (DEM-derived) dataset and target model grid,
-    (3) applies small perimeter masks/cleanups,
-    (4) writes boot and grid NetCDFs plus an outline/domain file,
-    (5) fetches and writes climate forcing using the configured climate builder,
-    and (6) returns a tidy table (one row per climate file) with absolute paths.
+    (1) loads the glacier geometry (GeoDataFrame or GPKG),
+    (2) builds a DEM/thickness/bed “boot” dataset,
+    (3) creates a target model grid and derives simple perimeter masks,
+    (4) writes the boot and grid NetCDF files and the glacier outline/domain bounds as GPKG,
+    (5) generates climate forcing files using the configured climate builder,
+    and (6) returns a tidy table (one row per **climate** file) with absolute paths.
 
     Parameters
     ----------
     config : dict
         Configuration mapping. Must contain at least:
         - ``"dem"`` : str
-            Name of the DEM source to use in ``boot_file_from_rgi_id``.
+            DEM source passed to :func:`boot_file_from_rgi_id`.
         - ``"climate"`` : str
-            Key for the climate builder in ``CLIMATE`` (e.g., ``"pmip4"``).
+            Key in :data:`CLIMATE` (e.g., ``"pmip4"``) selecting the climate builder.
     rgi_id : str
         Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
     rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
-        Either an in-memory RGI GeoDataFrame, or path to a GeoPackage/shape
-        readable by :func:`geopandas.read_file`.
+        In-memory RGI GeoDataFrame or a path to a GeoPackage/shape readable by
+        :func:`geopandas.read_file`.
     path : str or pathlib.Path, default ``"input_files"``
-        Output directory. Created if missing. Files are written here.
+        Output directory. Created if missing. All staged artifacts are written here.
     resolution : float, default ``50.0``
-        Target grid resolution (meters) used to name outputs and guide grid
-        generation where applicable.
+        Target grid resolution (meters), used both for grid construction and in
+        output filenames.
+    force_overwrite : bool, default ``False``
+        If ``True``, downstream helpers may regenerate intermediate/final artifacts
+        even if cache files exist (e.g., passed to :func:`boot_file_from_rgi_id`
+        and to the selected climate builder via :data:`CLIMATE`).
 
     Returns
     -------
     pandas.DataFrame
-        Table with one row per produced **climate** file and columns:
-        ``rgi_id``, ``outline`` (gpkg), ``boot_file`` (nc),
-        ``grid_file`` (nc), ``climate_file`` (nc). All paths are absolute.
+        One row per produced **climate** file, with absolute-path columns:
+        ``rgi_id``, ``outline`` (GPKG), ``boot_file`` (NetCDF),
+        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF).
 
     Raises
     ------
     KeyError
         If required keys (e.g., ``"dem"``, ``"climate"``) are missing in ``config``.
     FileNotFoundError
-        If the provided RGI path does not exist.
+        If an RGI path is provided and does not exist.
     ValueError
-        If ``rgi_id`` is not found in the provided RGI layer.
+        If ``rgi_id`` is not found in the RGI layer or geometry/CRS is invalid.
     Exception
-        Propagated from helper functions (e.g., I/O or projection errors).
+        Propagated errors from DEM/thickness preparation, reprojection, or I/O.
 
     See Also
     --------
-    boot_file_from_rgi_id :
-        Builds the boot (DEM/thickness/bed) dataset around the glacier.
-    create_grid :
+    boot_file_from_rgi_id
+        Builds the boot (DEM, thickness, bed, masks) dataset around the glacier.
+    create_grid
         Creates the target model grid and bounds.
-    CLIMATE :
-        Mapping from climate name (e.g., ``"pmip4"``) to a function that
-        generates climate NetCDF(s) for the glacier/bounds.
+    CLIMATE
+        Mapping from climate name (e.g., ``"pmip4"``) to a function that generates
+        climate NetCDF file(s) for the glacier domain.
 
     Notes
     -----
-    - Applies a perimeter band via :func:`apply_perimeter_band` to clean edges.
-    - Ensures bed is below surface and thickness is non-negative.
-    - The returned DataFrame is convenient for downstream workflow fan-out.
-
-    Examples
-    --------
-    >>> cfg = {"dem": "cop30", "climate": "pmip4"}
-    >>> df = stage_glacier(cfg, "RGI2000-v7.0-C-06-00014", path="inputs", resolution=100)
-    >>> df[["boot_file", "grid_file", "climate_file"]].head()
+    - Applies :func:`apply_perimeter_band` to clean DEM edges.
+    - Enforces simple constraints (non-negative thickness; bed below surface).
+    - Writes two vector layers:
+        - Glacier outline: ``rgi_{rgi_id}.gpkg`` (same CRS as RGI entry).
+        - Domain bounds polygon: ``domain_{rgi_id}.gpkg``.
+    - The returned DataFrame is convenient for downstream orchestration/fan-out.
     """
-    # Banner
+
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
     print("=" * 80)
@@ -156,7 +158,9 @@ def stage_glacier(
     grid_filename = path / f"grid_g{int(resolution)}m_{rgi_id}.nc"
 
     # Build boot dataset (DEM/thickness/bed)
-    boot_ds = boot_file_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, dem_name=config["dem"])
+    boot_ds = boot_file_from_rgi_id(
+        rgi_id, rgi, buffer_distance=5000.0, dem_name=config["dem"], force_overwrite=force_overwrite
+    )
 
     # Grid & bounds
     grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=2500.0)
@@ -200,7 +204,7 @@ def stage_glacier(
 
     # Climate forcing
     climate_from_rgi = CLIMATE[config["climate"]]
-    responses = climate_from_rgi(rgi_id=rgi_id, rgi=rgi, path=path)  # list[Path]
+    responses = climate_from_rgi(rgi_id=rgi_id, rgi=rgi, path=path, force_overwrite=force_overwrite)  # list[Path]
     # Normalize to list[Path]
     if isinstance(responses, (str, Path)):
         responses = [Path(responses)]
@@ -238,6 +242,12 @@ def main():
         default="data",
     )
     parser.add_argument(
+        "--force_overwrite",
+        help="""Force downloading all files. Default=False.""",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "RGI_ID",
         help="""RGI ID.""",
         nargs=1,
@@ -256,6 +266,7 @@ def main():
     options, unknown = parser.parse_known_args()
     path = options.output_path
     config_file = options.CONFIG_FILE[0]
+    force_overwrite = options.force_overwrite
     rgi_file = options.RGI_FILE[0]
     rgi_id = options.RGI_ID[0]
 
@@ -269,8 +280,7 @@ def main():
 
     input_path = glacier_path / Path("input")
     input_path.mkdir(parents=True, exist_ok=True)
-
-    glacier_df = stage_glacier(config, rgi_id, rgi_file, path=glacier_path)
+    glacier_df = stage_glacier(config, rgi_id, rgi_file, path=glacier_path, force_overwrite=force_overwrite)
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
 
 

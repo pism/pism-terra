@@ -567,6 +567,12 @@ def run_single():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
     parser.add_argument(
+        "--force_overwrite",
+        help="""Force downloading all files. Default=False.""",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "--output_path",
         help="""Base path to save all files data/rgi_id/output. Default="data".""",
         type=str,
@@ -630,6 +636,7 @@ def run_single():
     )
 
     options, _ = parser.parse_known_args()
+    force_overwrite = options.force_overwrite
     path = options.output_path
     rgi_id = options.RGI_ID[0]
     rgi_file = options.RGI_FILE[0]
@@ -655,7 +662,7 @@ def run_single():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path)
+    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
@@ -743,6 +750,12 @@ def run_ensemble():
         default=False,
     )
     parser.add_argument(
+        "--force_overwrite",
+        help="""Force downloading all files. Default=False.""",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "RGI_ID",
         help="""RGI ID.""",
         nargs=1,
@@ -769,6 +782,7 @@ def run_ensemble():
     )
 
     options, _ = parser.parse_known_args()
+    force_overwrite = options.force_overwrite
     path = options.output_path
     rgi_id = options.RGI_ID[0]
     rgi_file = options.RGI_FILE[0]
@@ -795,7 +809,7 @@ def run_ensemble():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path)
+    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],

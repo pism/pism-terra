@@ -48,25 +48,29 @@ def get_surface_dem_by_bounds(
     bounds: tuple[float, float, float, float],
     dem_name: str = "glo_30",
     path: str | Path = "input",
+    force_overwrite: bool = False,
 ) -> Path:
     """
     Create (or reuse) a surface DEM GeoTIFF for a geographic bounding box.
 
-    This function mosaics/exports a DEM over the given bounds using
-    :func:`stitch_dem`, writes a single-band GeoTIFF with appropriate tags,
-    and returns the output file path. If a DEM with the expected name already
-    exists at ``path`` and opens successfully via :func:`check_rio`, it is
-    reused.
+    Mosaics/exports a DEM over ``bounds`` via :func:`stitch_dem`, writes a
+    single-band GeoTIFF with appropriate tags, and returns the output path.
+    If a file with the expected name already exists under ``path`` and opens
+    successfully via :func:`check_rio`, that file is reused unless
+    ``force_overwrite=True``.
 
     Parameters
     ----------
     bounds : tuple of float
         Geographic bounding box ``(minx, miny, maxx, maxy)`` in degrees (WGS84).
     dem_name : str, default ``"glo_30"``
-        DEM source identifier understood by :func:`stitch_dem`
+        DEM source identifier recognized by :func:`stitch_dem`
         (e.g., ``"glo_30"``, ``"arcticdem"``).
     path : str or pathlib.Path, default ``"input"``
-        Output directory for the DEM. Created if it does not exist.
+        Output directory for the GeoTIFF. Created if it does not exist.
+    force_overwrite : bool, default ``False``
+        If ``True``, skip cache reuse and regenerate the DEM even if a readable
+        file already exists at the target location.
 
     Returns
     -------
@@ -76,7 +80,7 @@ def get_surface_dem_by_bounds(
     Raises
     ------
     FileNotFoundError
-        If underlying DEM tiles cannot be fetched/assembled.
+        If required DEM tiles cannot be fetched/assembled.
     ValueError
         If the stitched DEM/profile is invalid or incompatible with GeoTIFF.
     rasterio.errors.RasterioIOError
@@ -84,27 +88,32 @@ def get_surface_dem_by_bounds(
     Exception
         Any other error propagated by :func:`stitch_dem` or I/O routines.
 
+    See Also
+    --------
+    stitch_dem
+        Assemble a DEM mosaic and return the array and raster profile.
+    check_rio
+        Lightweight validity check for raster files readable by rioxarray.
+
     Notes
     -----
-    - The resulting GeoTIFF is a **single-band** file, tagged with
-      ``AREA_OR_POINT="Point"``.
-    - Heights are written according to the profile returned by
-      :func:`stitch_dem` (``dst_ellipsoidal_height=False`` here implies
-      orthometric heights if the source supports it).
+    - Output is a **single-band** GeoTIFF tagged with ``AREA_OR_POINT="Point"``.
+    - Heights follow the profile from :func:`stitch_dem`
+      (here ``dst_ellipsoidal_height=False`` typically implies orthometric heights).
     - The file is **not** deleted automatically; callers manage lifecycle.
 
     Examples
     --------
-    >>> tif = get_surface_dem_by_bounds((214.1, 59.0, 219.7, 63.9), dem_name="glo_30", path="input")
+    >>> tif = get_surface_dem_by_bounds((214.1, 59.0, 219.7, 63.9),
+    ...                                 dem_name="glo_30", path="input")
     >>> tif.exists()
     True
     """
     out_dir = Path(path)
     out_dir.mkdir(parents=True, exist_ok=True)
     geoid_file = out_dir / f"{dem_name}.tif"
-
     # Reuse if present and readable
-    if not check_rio(geoid_file):
+    if (not check_rio(geoid_file)) or force_overwrite:
         X, p = stitch_dem(
             bounds,
             dem_name=dem_name,
@@ -288,118 +297,6 @@ def prepare_ice_thickness_farinotti(glacier):
         dest.write(mosaic)
 
 
-def glacier_dem_from_rgi_id(
-    rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
-    dem_name: str = "glo_30",
-    buffer_distance: float = 5000.0,
-    resolution: float = 50.0,
-) -> xr.Dataset:
-    """
-    Generate a glacier DEM, ice thickness, and bedrock topography from an RGI ID.
-
-    This function extracts a glacier geometry from an RGI dataset, creates a buffered
-    bounding box around it, stitches and reprojects a DEM over that region, interpolates
-    it to a regular target grid, and derives ice thickness and bed elevation fields.
-
-    Parameters
-    ----------
-    rgi_id : str
-        The RGI ID of the target glacier (e.g., "RGI2000-v7.0-C-06-00014").
-    rgi : geopandas.GeoDataFrame or str or Path, optional
-        Either a pre-loaded RGI GeoDataFrame or the path to the RGI file (e.g., a GeoPackage).
-        Default is "rgi/rgi.gpkg".
-    dem_name : str, optional
-        The name of the DEM source to use (e.g., "glo_30", "arcticdem"). Default is "glo_30".
-    buffer_distance : float, optional
-        Buffer distance in meters applied around the glacier geometry for DEM coverage.
-        Default is 2000.0.
-    resolution : float, optional
-        Target spatial resolution (in meters) for the interpolated DEM and thickness fields.
-        Default is 50.0.
-
-    Returns
-    -------
-    xarray.Dataset
-        A dataset containing the following variables on a regular 2D grid:
-
-        - `surface` : Surface elevation (DEM) in meters
-        - `thickness` : Ice thickness in meters
-        - `bed` : Bedrock elevation (surface - thickness) in meters
-        - `land_ice_area_fraction_retreat` : Boolean mask where ice may retreat (1 if ice-free in DEM)
-
-    See Also
-    --------
-    get_glacier_from_rgi_id : Extract a glacier geometry by RGI ID.
-    get_surface_dem_by_bounds : Download and mosaic a DEM from bounding box.
-    reproject_file : Reproject and resample a raster to a target CRS and resolution.
-    prepare_ice_thickness : Interpolate glacier ice thickness data to a target grid.
-    create_domain : Create a regular xarray grid with specified bounds and resolution.
-
-    Notes
-    -----
-    - This function assumes that the RGI entry contains a valid `epsg` code.
-    - All raster reprojection and interpolation is done using `rasterio` and `rioxarray`.
-    - The glacier is buffered in projected coordinates before reprojecting to geographic CRS.
-    - The result is not written to disk — it is returned as an in-memory xarray.Dataset.
-    - The mask `land_ice_area_fraction_retreat` is derived from missing values in the clipped DEM.
-    """
-
-    print("")
-    print("Generate DEM")
-    print("-" * 80)
-
-    if isinstance(rgi, str | Path):
-        rgi = gpd.read_file(rgi)
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
-    glacier_series = glacier.iloc[0]
-    dst_crs = glacier_series["epsg"]
-
-    glacier_projected = glacier.to_crs(dst_crs)
-    geometry_buffered_projected = glacier_projected.geometry.buffer(buffer_distance)
-    geometry_buffered_geoid = geometry_buffered_projected.to_crs("EPSG:4326").iloc[0]
-
-    bounds_geoid_buffered = geometry_buffered_geoid.bounds
-
-    geoid_file = get_surface_dem_by_bounds(bounds_geoid_buffered, dem_name=dem_name)
-    projected_file = reproject_file(geoid_file, dst_crs, resolution)
-
-    surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
-    surface.name = "surface"
-    surface.attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
-    x_min = np.ceil((surface.x.min()) / 100) * 100
-    x_max = np.floor((surface.x.max()) / 100) * 100
-    y_min = np.ceil((surface.y.min()) / 100) * 100
-    y_max = np.floor((surface.y.max()) / 100) * 100
-    target_grid = create_domain([x_min, x_max], [y_min, y_max], resolution=resolution, crs=dst_crs)
-
-    surface = surface.interp_like(target_grid).fillna(0)
-
-    ice_thickness = prepare_ice_thickness(glacier, target_grid=target_grid, target_crs=dst_crs)
-    ice_thickness.attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
-
-    bed = surface - ice_thickness
-    bed.name = "bed"
-    bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
-
-    liafr = surface.rio.clip(glacier_projected.geometry, drop=False)
-    liafr = xr.where(liafr.isnull(), 0, 1)
-    liafr.name = "land_ice_area_fraction_retreat"
-    liafr.attrs.update({"units": "1"})
-    liafr = liafr.astype("bool")
-
-    ftt_mask = surface.rio.clip(glacier_projected.geometry, drop=False)
-    ftt_mask = xr.where(ftt_mask.isnull(), 1, 0)
-    ftt_mask.name = "ftt_mask"
-    ftt_mask.attrs.update({"units": "1"})
-    ftt_mask = ftt_mask.astype("bool")
-
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask])
-    ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
-    ds.rio.write_crs(dst_crs, inplace=True)
-    return ds
-
-
 def add_malaspina_bed(
     ds: xr.Dataset,
     target_crs: str,
@@ -468,14 +365,15 @@ def prepare_surface(
     dem_name: str = "glo_30",
     path: str | Path = "input_files",
     resolution: float = 50.0,
+    **kwargs,
 ) -> tuple[Path, Path]:
     """
-    Prepare a surface DEM and matching target grid over a buffered glacier extent.
+    Prepare a surface DEM and matching target grid over a glacier extent.
 
     Workflow:
     (1) Download/mosaic a DEM over ``bounds`` (geographic),
     (2) reproject/resample it to ``crs`` at ``resolution``,
-    (3) crop to a rounded 100 m-aligned box,
+    (3) crop to a 100 m–aligned box in projected coordinates,
     (4) generate a regular target grid covering that box, and
     (5) write both the surface (NetCDF) and the target grid (NetCDF) to ``path``.
 
@@ -484,13 +382,17 @@ def prepare_surface(
     bounds : tuple of float
         Geographic bounding box as ``(minx, miny, maxx, maxy)`` in WGS84 degrees.
     crs : str
-        Target coordinate reference system, e.g., ``"EPSG:32606"``.
+        Target coordinate reference system (e.g., ``"EPSG:32606"``).
     dem_name : str, default ``"glo_30"``
         DEM source identifier passed to :func:`get_surface_dem_by_bounds`.
     path : str or pathlib.Path, default ``"input_files"``
-        Output directory for generated files. Created by callers if missing.
+        Output directory for generated files. Created if missing.
     resolution : float, default ``50.0``
         Target grid spacing (meters) used during reprojection and grid creation.
+    **kwargs
+        Additional keyword arguments forwarded to :func:`get_surface_dem_by_bounds`
+        (e.g., ``force_overwrite=True``). These do not affect the reprojection
+        or grid creation steps directly.
 
     Returns
     -------
@@ -502,7 +404,7 @@ def prepare_surface(
     Raises
     ------
     FileNotFoundError
-        If underlying DEM retrieval fails to produce an output file.
+        If DEM retrieval fails to produce an output file.
     ValueError
         On invalid bounds/CRS or reprojection issues.
     Exception
@@ -512,11 +414,11 @@ def prepare_surface(
     -----
     - The surface variable is named ``"surface"`` with
       ``standard_name="land_ice_elevation"`` and ``units="m"``.
-    - The cropping aligns the domain to multiples of 100 m in projected x/y:
+    - Cropping aligns the domain to multiples of 100 m in projected x/y:
       ``x_min = ceil(min(x)/100)*100`` and ``x_max = floor(max(x)/100)*100``
       (similarly for y).
-    - Missing values after interpolation are filled with 0. Adjust if your
-      downstream tooling expects masked NaNs instead.
+    - After interpolation to the target grid, missing values are filled with 0.
+      Adjust if downstream tooling expects masked NaNs instead.
 
     Examples
     --------
@@ -526,9 +428,11 @@ def prepare_surface(
     ...     dem_name="glo_30",
     ...     path="input_files",
     ...     resolution=50.0,
+    ...     force_overwrite=True,  # forwarded via **kwargs
     ... )
     """
-    geoid_file = get_surface_dem_by_bounds(bounds, dem_name=dem_name, path=path)
+
+    geoid_file = get_surface_dem_by_bounds(bounds, dem_name=dem_name, path=path, **kwargs)
     projected_file = reproject_file(geoid_file, crs, resolution)
 
     surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
@@ -561,77 +465,90 @@ def boot_file_from_rgi_id(
     buffer_distance: float = 5000.0,
     path: str | Path = "input_files",
     resolution: float = 50.0,
+    **kwargs,
 ) -> xr.Dataset:
     """
-    Build a glacier "boot" dataset (surface, thickness, bed, masks) from an RGI ID.
+    Build a glacier “boot” dataset (surface, thickness, bed, masks, aux vars) from an RGI ID.
 
-    The function:
-    (1) locates the glacier geometry by ``rgi_id`` from an RGI GeoDataFrame or file,
-    (2) buffers the glacier polygon in its native projected CRS,
-    (3) mosaics/reprojects a DEM over the buffered extent at the requested resolution,
-    (4) interpolates glacier ice thickness to the target grid,
-    (5) derives bedrock elevation and simple masks,
-    and returns a regular 2-D xarray dataset in the glacier's projected CRS.
+    Steps:
+    (1) Locate the glacier geometry by ``rgi_id`` (GeoDataFrame or file-based RGI).
+    (2) Buffer the glacier polygon in its native projected CRS (meters).
+    (3) Mosaic/reproject a DEM over the buffered extent at ``resolution``.
+    (4) Interpolate glacier ice thickness onto the target grid.
+    (5) Derive bed elevation and boolean masks from DEM clipping.
+    (6) Optionally fetch observed velocities and create a simple ``tillwat`` field.
+    Returns a regular 2-D xarray Dataset in the glacier’s projected CRS.
 
     Parameters
     ----------
     rgi_id : str
-        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
+        Glacier identifier, e.g., ``"RGI2000-v7.0-C-06-00014"``.
     rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
-        Either an in-memory RGI table or a path to a GeoPackage/shape readable by
-        :func:`geopandas.read_file`. Must contain a feature with the given ``rgi_id``
-        and an ``epsg`` attribute for the glacier CRS.
+        In-memory RGI table or a path to a GeoPackage/shape readable by
+        :func:`geopandas.read_file`. Must contain a row with ``rgi_id`` and an
+        ``epsg`` column specifying the glacier CRS.
     dem_name : str, default ``"glo_30"``
-        DEM source to use when preparing the surface (e.g., ``"glo_30"``, ``"arcticdem"``).
+        DEM source for surface preparation (e.g., ``"glo_30"``, ``"arcticdem"``).
     buffer_distance : float, default ``5000.0``
-        Buffer distance **in meters** applied to the glacier polygon (performed in the
-        glacier's projected CRS) to define the DEM/ice-thickness working extent.
+        Buffer distance **in meters** applied to the glacier polygon in the projected CRS
+        to define the working extent for DEM/thickness.
     path : str or pathlib.Path, default ``"input_files"``
-        Working directory used by helper routines to cache or write intermediate rasters/grids.
+        Working directory used by helper routines to cache/write intermediate rasters/grids.
     resolution : float, default ``50.0``
-        Target grid resolution in meters for reprojection/resampling.
+        Target grid spacing (meters) for reprojection/resampling.
+    **kwargs
+        Forwarded to :func:`prepare_surface` (e.g., ``force_overwrite=True``) and any
+        downstream helpers it calls. Does not alter variable naming/semantics.
 
     Returns
     -------
     xarray.Dataset
-        Regular 2-D dataset (dimensions typically ``y``, ``x``) in the glacier's CRS,
-        with at least the following data variables:
+        Regular 2-D dataset (dims typically ``y``, ``x``) in the glacier CRS with at least:
+        - ``surface`` : float32, m — DEM surface elevation.
+        - ``thickness`` : float32, m — ice thickness on the target grid.
+        - ``bed`` : float32, m — bedrock elevation (``surface - thickness``).
+        - ``land_ice_area_fraction_retreat`` : bool — 1 where DEM is ice-free after clipping.
+        - ``ftt_mask`` : bool — complementary outside-footprint mask (1 outside).
+        - ``tillwat`` : float32, m — simple basal water proxy (here ``0`` or ``2`` m based on speed).
+        - ``v`` and related velocity fields (from :func:`glacier_velocities_from_rgi_id`), reprojected
+          to the surface grid, if available.
 
-        - ``surface`` : float32, meters — DEM surface elevation.
-        - ``thickness`` : float32, meters — ice thickness on the target grid.
-        - ``bed`` : float32, meters — bedrock elevation (``surface - thickness``).
-        - ``land_ice_area_fraction_retreat`` : bool — mask (1/True where the DEM is ice-free after clipping).
-        - ``ftt_mask`` : bool — complementary mask used internally (1/True outside the glacier footprint).
-
-        CRS is recorded via the rioxarray accessor (``.rio.crs``) and spatial dims are set
-        with ``.rio.set_spatial_dims(x_dim="x", y_dim="y")``.
+        CRS is recorded via the rioxarray accessor (``.rio.crs``); spatial dims are set with
+        ``.rio.set_spatial_dims(x_dim="x", y_dim="y")``.
 
     Raises
     ------
     FileNotFoundError
         If the supplied RGI path does not exist or required inputs are missing.
     ValueError
-        If ``rgi_id`` is not found in the RGI layer or CRS information is invalid.
+        If ``rgi_id`` is not found or CRS information is invalid.
     Exception
-        Any I/O/projection/decoding errors propagated from helper functions such as
-        DEM/thickness preparation or reprojection.
+        Propagated I/O/projection/decoding errors from DEM/thickness/velocity preparation.
 
     See Also
     --------
-    get_glacier_from_rgi_id : Extract a glacier feature by RGI ID from an RGI table.
-    prepare_surface : Mosaic/reproject a DEM over a geographic bounding box.
-    prepare_ice_thickness : Interpolate glacier ice thickness onto a target grid.
-    create_domain : Create a regular xarray grid with specified bounds and resolution.
+    get_glacier_from_rgi_id
+        Extract a glacier feature by RGI ID from an RGI table.
+    prepare_surface
+        Mosaic/reproject a DEM over a geographic bounding box and build the target grid.
+    prepare_ice_thickness
+        Interpolate glacier ice thickness onto a target grid.
+    create_domain
+        Create a regular xarray grid with specified bounds and resolution.
+    glacier_velocities_from_rgi_id
+        Retrieve observed surface velocities for the glacier domain.
 
     Notes
     -----
-    - Buffering occurs in the glacier's projected CRS (``epsg`` from the RGI entry) and
-      the buffered geometry is converted to WGS84 (EPSG:4326) only to compute geographic
-      bounds for surface preparation.
-    - The boolean masks are derived from DEM clipping results to mark likely ice-free
-      or outside-footprint regions; they are simplistic and may be refined downstream.
+    - Buffering is done in the glacier’s projected CRS (meters). The buffered geometry is
+      converted to WGS84 only to derive geographic bounds for DEM staging.
+    - ``land_ice_area_fraction_retreat`` and ``ftt_mask`` are derived from DEM clipping and
+      are intentionally simple; refine as needed for your application.
+    - ``tillwat`` is a coarse proxy here: set to ``2 m`` where reprojected speed ``v >= 100 m/yr``,
+      else ``0 m``. Adjust the threshold and values per your physics.
     - The function returns an **in-memory** dataset; it does not write to disk.
     """
+
     print("")
     print("Generate DEM")
     print("-" * 80)
@@ -650,7 +567,7 @@ def boot_file_from_rgi_id(
 
     bounds_geoid_buffered = geometry_buffered_geoid.bounds
     surface_file, target_grid_file = prepare_surface(
-        bounds_geoid_buffered, dst_crs, dem_name=dem_name, path=path, resolution=resolution
+        bounds_geoid_buffered, dst_crs, dem_name=dem_name, path=path, resolution=resolution, **kwargs
     )
     surface = xr.open_dataarray(surface_file)
     target_grid = xr.open_dataset(target_grid_file)

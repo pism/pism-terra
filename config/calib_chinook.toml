@@ -17,11 +17,11 @@ nodes = 1
 
 [campaign]
 
-setup = "training"
-
-[climate]
-
-dataset = "reanalysis-era5-land-monthly-means"
+name = "Calibration"
+climate = "era5"
+dem = "glo_30"
+ice_thickness = "millan"
+velocity = "none"
 
 [time]
 
@@ -112,6 +112,8 @@ bp_mg_coarse_pc_type = "lu"
 bp_pc_mg_levels = 3
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
+bp_snes_rtol = 1e-3
+bp_ksp_rtol = 1e-3
 
 [stress_balance.options.hybrid]
 
