@@ -236,30 +236,30 @@ def main():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
     parser.add_argument(
-        "--output_path",
-        help="""Path to save all files. Default="data".""",
+        "--output-path",
+        help="Path to save all files.",
         type=str,
         default="data",
     )
     parser.add_argument(
-        "--force_overwrite",
-        help="""Force downloading all files. Default=False.""",
+        "--force-overwrite",
+        help="Force downloading all files.",
         action="store_true",
         default=False,
     )
     parser.add_argument(
         "RGI_ID",
-        help="""RGI ID.""",
+        help="RGI ID.",
         nargs=1,
     )
     parser.add_argument(
         "RGI_FILE",
-        help="""RGI.""",
+        help="RGI.",
         nargs=1,
     )
     parser.add_argument(
         "CONFIG_FILE",
-        help="""CONFIG TOML.""",
+        help="CONFIG TOML.",
         nargs=1,
     )
 
