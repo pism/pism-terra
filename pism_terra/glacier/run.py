@@ -659,7 +659,6 @@ def run_single():
     input_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
-    print(input_path)
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()

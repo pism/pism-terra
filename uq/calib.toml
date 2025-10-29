@@ -33,7 +33,7 @@ distribution = "uniform"
 ['stress_balance.blatter.Glen_exponent']
 
 loc = 3.0
-scale = 1.0
-a = -1.0
-b = 1.0
+scale = 0.5
+a = -2
+b = 2
 distribution = "truncnorm"

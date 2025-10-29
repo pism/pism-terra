@@ -22,6 +22,7 @@ pism-glacier-stage = "pism_terra.glacier.stage:main"
 pism-glacier-run = "pism_terra.glacier.run:run_single"
 pism-glacier-run-ensemble = "pism_terra.glacier.run:run_ensemble"
 pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
+combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
 
 [tool.setuptools.packages.find]
 include = ["pism_terra*"]

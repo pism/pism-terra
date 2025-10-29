@@ -593,13 +593,12 @@ def boot_file_from_rgi_id(
 
     v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
     v = v.rio.reproject_match(surface)
+    _v = v["v"].fillna(0)
 
-    tillwat = xr.zeros_like(surface)
+    tillwat = xr.where(_v < 100, 0, xr.where(_v > 500, 2, 1 + (_v - 100) / (500 - 100)))
     tillwat.name = "tillwat"
-    del tillwat.attrs["standard_name"]
     tillwat.attrs.update({"units": "m"})
 
-    tillwat = tillwat.where(v["v"].fillna(0) < 100.0, 2)
     ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, v])
     ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
     ds.rio.write_crs(dst_crs, inplace=True)

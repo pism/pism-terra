@@ -47,7 +47,7 @@ from pism_terra.workflow import check_xr, check_xr_sampled
 def era5(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
-    years: list[int] | Iterable[int] = range(1980, 2025),
+    years: list[int] | Iterable[int] = range(1978, 2025),
     dataset: str = "reanalysis-era5-single-levels-monthly-means",
     buffer_distance: float = 0.1,
     path: Path | str = ".",
