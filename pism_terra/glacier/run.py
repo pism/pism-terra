@@ -659,6 +659,7 @@ def run_single():
     input_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
+    print(input_path)
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
@@ -809,6 +810,7 @@ def run_ensemble():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
+    print(input_path)
     df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
 
     default = {

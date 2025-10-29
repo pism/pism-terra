@@ -50,7 +50,7 @@ def era5(
     years: list[int] | Iterable[int] = range(1980, 2025),
     dataset: str = "reanalysis-era5-single-levels-monthly-means",
     buffer_distance: float = 0.1,
-    path: Path | str = "era5.nc",
+    path: Path | str = ".",
     **kwargs,
 ) -> Path:
     """
