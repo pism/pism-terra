@@ -136,7 +136,7 @@ def main():
     parser.description = "Postprocess RGI Glacier."
     parser.add_argument(
         "RUN_FILE",
-        help="""CONFIG TOML.""",
+        help="CONFIG TOML.",
         nargs=1,
     )
 

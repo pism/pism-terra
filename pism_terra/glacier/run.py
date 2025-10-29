@@ -567,71 +567,71 @@ def run_single():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
     parser.add_argument(
-        "--force_overwrite",
-        help="""Force downloading all files. Default=False.""",
+        "--force-overwrite",
+        help="Force downloading all files.",
         action="store_true",
         default=False,
     )
     parser.add_argument(
-        "--output_path",
-        help="""Base path to save all files data/rgi_id/output. Default="data".""",
+        "--output-path",
+        help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
         default="data",
     )
     parser.add_argument(
         "--queue",
-        help="""Overrides queue in config file. Default=None.""",
+        help="Overrides queue in config file.",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--ntasks",
-        help="""Overrides ntatsks in config file. Default=None.""",
+        help="Overrides ntatsks in config file.",
         type=int,
         default=None,
     )
     parser.add_argument(
         "--nodes",
-        help="""Overrides nodes in config file. Default=None.""",
+        help="Overrides nodes in config file.",
         type=int,
         default=None,
     )
     parser.add_argument(
         "--walltime",
-        help="""Overrides walltime in config file. Default=None.""",
+        help="Overrides walltime in config file.",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--resolution",
-        help="""Override horizontal grid resolution. Default is None.""",
+        help="Override horizontal grid resolution.",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--debug",
-        help="""Debug or testing mode, do not write template, just the run command. Default is False.""",
+        help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
         default=False,
     )
     parser.add_argument(
         "RGI_ID",
-        help="""RGI ID.""",
+        help="RGI ID.",
         nargs=1,
     )
     parser.add_argument(
         "RGI_FILE",
-        help="""RGI.""",
+        help="RGI.",
         nargs=1,
     )
     parser.add_argument(
         "CONFIG_FILE",
-        help="""CONFIG TOML.""",
+        help="CONFIG TOML.",
         nargs=1,
     )
     parser.add_argument(
         "TEMPLATE_FILE",
-        help="""TEMPLATE J2.""",
+        help="TEMPLATE J2.",
         nargs=1,
     )
 
@@ -708,76 +708,76 @@ def run_ensemble():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Run RGI Glacier Ensemble."
     parser.add_argument(
-        "--output_path",
-        help="""Base path to save all files data/rgi_id/output. Default="data".""",
+        "--output-path",
+        help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
         default="data",
     )
     parser.add_argument(
         "--queue",
-        help="""Overrides queue in config file. Default=None.""",
+        help="Overrides queue in config file.",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--ntasks",
-        help="""Overrides ntatsks in config file. Default=None.""",
+        help="Overrides ntatsks in config file.",
         type=int,
         default=None,
     )
     parser.add_argument(
         "--nodes",
-        help="""Overrides nodes in config file. Default=None.""",
+        help="Overrides nodes in config file.",
         type=int,
         default=None,
     )
     parser.add_argument(
         "--walltime",
-        help="""Overrides walltime in config file. Default=None.""",
+        help="Overrides walltime in config file.",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--resolution",
-        help="""Override horizontal grid resolution. Default is None.""",
+        help="Override horizontal grid resolution.",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--debug",
-        help="""Debug or testing mode, do not write template, just the run command. Default is False.""",
+        help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
         default=False,
     )
     parser.add_argument(
-        "--force_overwrite",
-        help="""Force downloading all files. Default=False.""",
+        "--force-overwrite",
+        help="Force downloading all files.",
         action="store_true",
         default=False,
     )
     parser.add_argument(
         "RGI_ID",
-        help="""RGI ID.""",
+        help="RGI ID.",
         nargs=1,
     )
     parser.add_argument(
         "RGI_FILE",
-        help="""RGI.""",
+        help="RGI.",
         nargs=1,
     )
     parser.add_argument(
         "CONFIG_FILE",
-        help="""CONFIG TOML.""",
+        help="CONFIG TOML.",
         nargs=1,
     )
     parser.add_argument(
         "TEMPLATE_FILE",
-        help="""TEMPLATE J2.""",
+        help="TEMPLATE J2.",
         nargs=1,
     )
     parser.add_argument(
         "UQ_FILE",
-        help="""UQ TOML.""",
+        help="UQ TOML.",
         nargs=1,
     )
 
