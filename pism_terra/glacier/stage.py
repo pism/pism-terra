@@ -236,12 +236,6 @@ def main():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
     parser.add_argument(
-        "--rgi-file",
-        help="Path to RGI file.",
-        type=str,
-        default="data/rgi/rgi.gpkg",
-    )
-    parser.add_argument(
         "--output-path",
         help="Path to save all files.",
         type=str,
