@@ -252,7 +252,7 @@ def reproject_file(src_file: str | Path, dst_crs: str | dict, resolution: float)
         kwargs = src.meta.copy()
         kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
 
-        with NamedTemporaryFile(suffix=".tif", delete=False, delete_on_close=False) as projected_file:
+        with NamedTemporaryFile(suffix=".tif", delete=False) as projected_file:
             with rasterio.open(projected_file.name, "w", **kwargs) as dst:
                 for i in range(1, src.count + 1):
                     reproject(

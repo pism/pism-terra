@@ -813,7 +813,6 @@ def run_ensemble():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    print(input_path)
     df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
 
     default = {
