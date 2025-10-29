@@ -62,7 +62,7 @@ velocity = "none"
 
 [grid]
 
-resolution = "200m"
+resolution = "250m"
 'grid.Lbz' = 0
 'grid.Lz' = 2000
 'grid.Mbz' = 1
