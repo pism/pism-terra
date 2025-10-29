@@ -429,7 +429,11 @@ def run_glacier(
     params.update(run_params)
     mpi_str = run_params["mpi"]  # guaranteed consistent with ntasks override
 
-    job_kwargs = {k: v for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes}.items() if v is not None}
+    job_kwargs = {
+        k: v
+        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes, "output_path": output_path}.items()
+        if v is not None
+    }
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
