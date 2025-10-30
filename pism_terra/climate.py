@@ -336,7 +336,7 @@ def download_request(
     if (not check_xr_sampled(path)) or force_overwrite:
 
         path = Path(path)
-        path.unlink()
+        path.unlink(missing_ok=True)
 
         f = client.retrieve(dataset, request).download()
 

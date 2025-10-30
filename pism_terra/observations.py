@@ -16,7 +16,7 @@
 # along with PISM; if not, write to the Free Software
 
 # mypy: disable-error-code="call-overload"
-# pylint: disable=unused-import
+# pylint: disable=unused-import,too-many-positional-arguments
 
 
 """
@@ -32,6 +32,7 @@ import xarray as xr
 from pyproj import Transformer
 
 from pism_terra.vector import get_glacier_from_rgi_id
+from pism_terra.workflow import check_xr_sampled
 
 
 def get_velocities_by_bounds(
@@ -140,50 +141,71 @@ def glacier_velocities_from_rgi_id(
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     product_name: str = "its_live",
     buffer_distance: float = 2000.0,
+    path: Path | str = "tmp.nc",
+    force_overwrite: bool = False,
 ) -> xr.Dataset:
     """
-    Generate a observed glacier velocities from an RGI ID.
+    Generate observed glacier surface velocities for a glacier by RGI ID.
 
-    This function extracts a glacier geometry from an RGI dataset, creates a buffered
-    bounding box around it, stitches and reprojects velocities over that region.
+    Extracts the glacier geometry, builds a buffered extent, fetches a velocity
+    product (e.g., ITS_LIVE) over that region, clips it to the glacier outline,
+    and returns the result as an xarray dataset. A cached NetCDF at ``path`` is
+    reused unless ``force_overwrite=True``.
 
     Parameters
     ----------
     rgi_id : str
-        The RGI ID of the target glacier (e.g., "RGI2000-v7.0-C-06-00014").
-    rgi : geopandas.GeoDataFrame or str or Path, optional
-        Either a pre-loaded RGI GeoDataFrame or the path to the RGI file (e.g., a GeoPackage).
-        Default is "rgi/rgi.gpkg".
-    product_name : str, optional
-        The name of the DEM source to use (e.g., "its_live"). Default is "its_live".
-    buffer_distance : float, optional
-        Buffer distance in meters applied around the glacier geometry for DEM coverage.
-        Default is 2000.0.
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
+    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
+        In-memory RGI table or a path to a GeoPackage/shape readable by
+        :func:`geopandas.read_file`. Must contain the feature with ``rgi_id``
+        and an ``epsg`` column for the glacier CRS.
+    product_name : str, default ``"its_live"``
+        Velocity product to retrieve (e.g., ``"its_live"``). Passed to
+        :func:`get_velocities_by_bounds`.
+    buffer_distance : float, default ``2000.0``
+        Buffer (meters) applied to the glacier polygon in its projected CRS to
+        form the query extent for the velocity product.
+    path : str or pathlib.Path, default ``"tmp.nc"``
+        Cache file for the clipped velocity dataset. When present and valid
+        (per :func:`check_xr_sampled`), it is opened instead of re-downloading.
+    force_overwrite : bool, default ``False``
+        If ``True``, ignore any existing cache at ``path`` and regenerate.
 
     Returns
     -------
     xarray.Dataset
-        A dataset containing the following variables on a regular 2D grid:
+        Velocity dataset clipped to the glacier outline. Variable names depend
+        on the source product but typically include components (e.g., ``u``,
+        ``v`` or ``vx``, ``vy``) and possibly speed (e.g., ``v``). CRS is
+        recorded via :mod:`rioxarray`.
 
-        - `surface` : Surface elevation (DEM) in meters
-        - `thickness` : Ice thickness in meters
-        - `bed` : Bedrock elevation (surface - thickness) in meters
-        - `land_ice_area_fraction_retreat` : Boolean mask where ice may retreat (1 if ice-free in DEM)
+    Raises
+    ------
+    FileNotFoundError
+        If the provided RGI path does not exist.
+    ValueError
+        If ``rgi_id`` is missing from the RGI layer or CRS info is invalid.
+    Exception
+        Propagated I/O, reprojection, or decoding errors from helper functions.
 
     See Also
     --------
-    get_glacier_from_rgi_id : Extract a glacier geometry by RGI ID.
-    get_surface_dem_by_bounds : Download and mosaic a DEM from bounding box.
-    reproject_file : Reproject and resample a raster to a target CRS and resolution.
-    create_domain : Create a regular xarray grid with specified bounds and resolution.
+    get_glacier_from_rgi_id
+        Look up the glacier feature/CRS from the RGI table.
+    get_velocities_by_bounds
+        Fetch velocity data for a geographic bounding box.
+    check_xr_sampled
+        Lightweight validity check for an on-disk xarray dataset.
 
     Notes
     -----
-    - This function assumes that the RGI entry contains a valid `epsg` code.
-    - All raster reprojection and interpolation is done using `rasterio` and `rioxarray`.
-    - The glacier is buffered in projected coordinates before reprojecting to geographic CRS.
-    - The result is not written to disk — it is returned as an in-memory xarray.Dataset.
-    - The mask `land_ice_area_fraction_retreat` is derived from missing values in the clipped DEM.
+    - Buffering is performed in the glacier’s projected CRS (meters) and the
+      buffered geometry is reprojected to WGS84 only to compute geographic
+      bounds for the velocity query.
+    - On cache reuse, the code sets the dataset CRS to the glacier CRS; on a
+      fresh download, CRS comes from the source product. If you require a
+      specific target CRS, reproject with ``.rio.reproject_match(...)``.
     """
 
     print("")
@@ -196,15 +218,24 @@ def glacier_velocities_from_rgi_id(
     glacier_series = glacier.iloc[0]
     dst_crs = glacier_series["epsg"]
 
-    glacier_projected = glacier.to_crs(dst_crs)
-    geometry_buffered_projected = glacier_projected.geometry.buffer(buffer_distance)
-    geometry_buffered_geoid = geometry_buffered_projected.to_crs("EPSG:4326").iloc[0]
+    if (not check_xr_sampled(path)) or force_overwrite:
 
-    bounds = geometry_buffered_geoid.bounds
+        path = Path(path)
+        path.unlink(missing_ok=True)
 
-    ds = get_velocities_by_bounds(bounds, product_name=product_name)
-    crs = ds.rio.crs
-    glacier_projected = glacier.to_crs(crs)
-    ds_clipped = ds.rio.clip(glacier_projected.geometry)
+        glacier_projected = glacier.to_crs(dst_crs)
+        geometry_buffered_projected = glacier_projected.geometry.buffer(buffer_distance)
+        geometry_buffered_geoid = geometry_buffered_projected.to_crs("EPSG:4326").iloc[0]
 
+        bounds = geometry_buffered_geoid.bounds
+
+        ds = get_velocities_by_bounds(bounds, product_name=product_name)
+        crs = ds.rio.crs
+        glacier_projected = glacier.to_crs(crs)
+        ds_clipped = ds.rio.clip(glacier_projected.geometry)
+        ds_clipped.to_netcdf(path)
+
+    else:
+        ds_clipped = xr.open_dataset(path)
+        ds_clipped.rio.write_crs(dst_crs, inplace=True)
     return ds_clipped

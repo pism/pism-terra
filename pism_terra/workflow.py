@@ -291,8 +291,6 @@ def check_dataset_sampled(
             arr = sub.load().values
             if arr.size == 0:
                 raise ValueError(f"{name}: sampled window is empty for selection {w}")
-            if not np.isfinite(arr).any():
-                raise ValueError(f"{name}: sampled window has no finite values ({w})")
 
     # Optional: quick global metadata sanity
     if ds.attrs.get("Conventions", "").lower().startswith("cf"):

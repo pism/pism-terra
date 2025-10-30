@@ -590,7 +590,8 @@ def boot_file_from_rgi_id(
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
 
-    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0)
+    v_filename = path / Path(f"obs_{rgi_id}.nc")
+    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, path=v_filename, **kwargs)
     v = v.rio.reproject_match(surface)
     _v = v["v"].fillna(0)
 
