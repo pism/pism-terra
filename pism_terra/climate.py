@@ -175,7 +175,7 @@ def era5(
         ds = xr.where(np.isnan(ds), ds_global_, ds)
 
     ds = xr.merge([ds, ds_geo_])
-    ds = ds.rename({"valid_time": "time"}).drop_vars(["number", "expver"])
+    ds = ds.rename({"valid_time": "time"})
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
     ds["surface"] /= 9.80665
@@ -334,6 +334,10 @@ def download_request(
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
     if (not check_xr_sampled(path)) or force_overwrite:
+
+        path = Path(path)
+        path.unlink()
+
         f = client.retrieve(dataset, request).download()
 
         if f.endswith(".zip"):
@@ -344,9 +348,11 @@ def download_request(
                 if "valid_time" in ds_part.coords:
                     ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
                 dss.append(ds_part)
-            ds = xr.merge(dss)
+            ds = xr.merge(dss).drop_vars(["number", "expver"], errors="ignore")
         else:
-            ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True)
+            ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True).drop_vars(
+                ["number", "expver"], errors="ignore"
+            )
 
         ds.to_netcdf(path)
     else:

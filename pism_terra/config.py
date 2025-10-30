@@ -700,6 +700,7 @@ class JobConfig(BaseModelWithDot):
     queue: str | None = None
     walltime: str | None = None
     nodes: int | None = Field(default=None, ge=1)
+    output_path: str | Path | None = None
 
     @field_validator("walltime")
     @classmethod

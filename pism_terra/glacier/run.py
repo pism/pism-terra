@@ -394,8 +394,8 @@ def run_glacier(
     state_file = state_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     run.update(
         {
-            "output.file": state_file.absolute(),
-            "output.extra.file": spatial_file.absolute(),
+            "output.file": state_file.resolve(),
+            "output.extra.file": spatial_file.resolve(),
         }
     )
 
@@ -438,10 +438,10 @@ def run_glacier(
         params.update(JobConfig(**job_kwargs).as_params())
 
     run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.absolute())},
+        "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.resolve())},
         "output": {
-            "spatial": str(spatial_file.absolute()),
-            "state": str(state_file.absolute()),
+            "spatial": str(spatial_file.resolve()),
+            "state": str(state_file.resolve()),
         },
         "config": run,
     }
@@ -462,8 +462,8 @@ def run_glacier(
     # Save or print the output
     run_script.write_text(rendered_script)
 
-    print(f"\nSLURM script written to {run_script.absolute()}\n")
-    print(f"Postprocessing script written to {run_file.absolute()}\n")
+    print(f"\nSLURM script written to {run_script.resolve()}\n")
+    print(f"Postprocessing script written to {run_file.resolve()}\n")
 
 
 def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
