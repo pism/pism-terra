@@ -213,13 +213,13 @@ def stage_glacier(
     # Build file index (one row per climate file)
     files_dict = {
         "rgi_id": rgi_id,
-        "outline": glacier_filename.absolute(),
-        "boot_file": boot_filename.absolute(),
-        "grid_file": grid_filename.absolute(),
+        "outline": glacier_filename.resolve(),
+        "boot_file": boot_filename.resolve(),
+        "grid_file": grid_filename.resolve(),
     }
     dfs: list[pd.DataFrame] = []
     for fpath in responses:
-        row = {**files_dict, "climate_file": Path(fpath).absolute()}
+        row = {**files_dict, "climate_file": Path(fpath).resolve()}
         dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)

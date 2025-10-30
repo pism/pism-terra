@@ -431,7 +431,7 @@ def run_glacier(
 
     job_kwargs = {
         k: v
-        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes, "output_path": output_path}.items()
+        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes, "output_path": output_path.resolve()}.items()
         if v is not None
     }
     if job_kwargs:

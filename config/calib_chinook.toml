@@ -2,13 +2,13 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 80
+ntasks = 40
 
 [job]
 
 queue = "t2small"
 walltime = "48:00:00"
-nodes = 2
+nodes = 1
 
 [run_info]
 
@@ -62,7 +62,7 @@ velocity = "none"
 
 [grid]
 
-resolution = "250m"
+resolution = "500m"
 'grid.Lbz' = 0
 'grid.Lz' = 2000
 'grid.Mbz' = 1

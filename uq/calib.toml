@@ -21,7 +21,7 @@ distribution = "uniform"
 ['basal_yield_stress.mohr_coulomb.till_phi_default']
 
 loc = 5
-scale = 30
+scale = 40
 distribution = "uniform"
 
 ['stress_balance.blatter.enhancement_factor']
@@ -33,7 +33,7 @@ distribution = "uniform"
 ['stress_balance.blatter.Glen_exponent']
 
 loc = 3.0
-scale = 0.5
-a = -2
-b = 2
+scale = 0.4
+a = -2.5
+b = 2.5
 distribution = "truncnorm"
