@@ -6,7 +6,7 @@
 #SBATCH --mail-type=BEGIN
 #SBATCH --mail-type=END
 #SBATCH --mail-type=FAIL
-#SBATCH --output=pism.%j
+#SBATCH --output="{{ output_path }}/pism.%j"
 
 module list
 

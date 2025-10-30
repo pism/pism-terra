@@ -176,7 +176,11 @@ def stage_glacier(
     boot_ds["thickness"] = boot_ds["thickness"].where(boot_ds["thickness"] > 0.0, 0.0)
     boot_ds["bed"] = boot_ds["bed"].where(boot_ds["surface"] > 0.0, -1000.0)
     boot_ds.rio.write_crs(crs, inplace=True)
-    boot_ds.to_netcdf(boot_filename)
+    encoding = {
+        v: {"_FillValue": None}
+        for v in ["x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"]
+    }
+    boot_ds.to_netcdf(boot_filename, encoding=encoding)
 
     grid_ds.attrs.update({"domain": rgi_id})
     grid_ds.to_netcdf(grid_filename, engine="h5netcdf")
