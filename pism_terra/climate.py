@@ -333,7 +333,7 @@ def download_request(
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if (not check_xr(path)) and force_overwrite:
+    if (not check_xr_sampled(path)) or force_overwrite:
         f = client.retrieve(dataset, request).download()
 
         if f.endswith(".zip"):
@@ -449,7 +449,7 @@ def pmip4(
         path = Path(path)
         p = path / f"{source_id}_rgi_id_{rgi_id}.nc"
 
-        if (not check_xr(p)) and force_overwrite:
+        if (not check_xr(p)) or force_overwrite:
             dss = []
             for v in ["tas", "pr"]:
                 zstore = df[df["variable_id"] == v].zstore.values[0]

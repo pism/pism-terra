@@ -695,7 +695,7 @@ class JobConfig(BaseModelWithDot):
     {'queue': 'normal', 'walltime': '04:00:00', 'nodes': 2}
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict()
 
     queue: str | None = None
     walltime: str | None = None

@@ -553,7 +553,6 @@ def boot_file_from_rgi_id(
     print("Generate DEM")
     print("-" * 80)
 
-    print(path)
     # Accept GeoDataFrame or a path to the RGI layer
     if isinstance(rgi, (str, Path)):
         rgi = gpd.read_file(rgi)
