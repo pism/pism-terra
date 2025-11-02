@@ -15,23 +15,91 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=consider-using-with
+# pylint: disable=consider-using-with,too-many-positional-arguments
 """
 Module for data processing.
 """
 
+from __future__ import annotations
+
+import os
+import re
 import tarfile
+import tempfile
 import zipfile
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import NamedTuple
 
+import cdsapi
 import earthaccess
 import numpy as np
 import requests
 import xarray as xr
 from tqdm.auto import tqdm
+
+from pism_terra.workflow import check_xr_sampled
+
+
+class FileInfo(NamedTuple):
+    """
+    FileInfo class.
+    """
+
+    variable: str
+    units: str
+    month: str
+    year: str
+
+
+def parse_filename(path: str) -> FileInfo:
+    """
+    Extract variable name, units, month, and year from a climate file path.
+
+    The filename is expected to follow a structure like:
+    ``archive/<var>/<var>_<descriptor>_<units>_<source>_<experiment>_<month>_<year>.tif``
+
+    Parameters
+    ----------
+    path : str
+        Full path or filename (e.g., ``"archive/pr/pr_total_mm_CRU_TS40_historical_01_1901.tif"``).
+
+    Returns
+    -------
+    FileInfo
+        Named tuple containing:
+        - ``variable`` : str
+          Variable short name (e.g., ``"pr"``)
+        - ``units`` : str
+          Units substring (e.g., ``"mm"``)
+        - ``month`` : str
+          Two-digit month string (e.g., ``"01"``)
+        - ``year`` : str
+          Four-digit year string (e.g., ``"1901"``)
+
+    Raises
+    ------
+    ValueError
+        If the filename does not match the expected pattern.
+
+    Examples
+    --------
+    >>> parse_filename("archive/pr/pr_total_mm_CRU_TS40_historical_01_1901.tif")
+    FileInfo(variable='pr', units='mm', month='01', year='1901')
+    """
+    pattern = (
+        r".*/(?P<variable>[a-zA-Z0-9]+)/"
+        r"(?P=variable)_[A-Za-z0-9_]*_(?P<units>[A-Za-z]+)_[A-Za-z0-9_]+_"
+        r"(?P<month>\d{2})_(?P<year>\d{4})\.tif$"
+    )
+
+    m = re.match(pattern, path)
+    if not m:
+        raise ValueError(f"Filename pattern not recognized: {path}")
+    return FileInfo(**m.groupdict())
 
 
 def unzip_files(
@@ -102,7 +170,9 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
 
 
 def extract_archive(
-    archive: tarfile.TarFile | zipfile.ZipFile, extract_to: str | Path = Path("archive"), overwrite: bool = True
+    archive: tarfile.TarFile | zipfile.ZipFile | str | Path,
+    extract_to: str | Path = Path("archive"),
+    force_overwrite: bool = False,
 ) -> list[str]:
     """
     Extract a ZIP or TAR archive to a specified directory with a progress bar.
@@ -117,8 +187,8 @@ def extract_archive(
         Path to the archive file or an already opened archive object.
     extract_to : str or Path, optional
         Directory to extract the archive contents into. Defaults to "archive".
-    overwrite : bool, optional
-        Whether to overwrite existing files. Defaults to True.
+    force_overwrite : bool, optional
+        Whether to overwrite existing files. Defaults to False.
 
     Returns
     -------
@@ -159,17 +229,17 @@ def extract_archive(
         members = archive.namelist()
         for member in tqdm(members, desc="Extracting files", unit="file"):
             file_path = extract_to / member
-            if not file_path.exists() or overwrite:
+            if (not file_path.exists()) or force_overwrite:
                 archive.extract(member, path=extract_to)
-                extracted_files.append(str(file_path))
+            extracted_files.append(str(file_path))
 
     elif isinstance(archive, tarfile.TarFile):
         members = archive.getmembers()
         for member in tqdm(members, desc="Extracting files", unit="file"):
             file_path = extract_to / member.name
-            if not file_path.exists() or overwrite:
+            if (not file_path.exists()) or force_overwrite:
                 archive.extract(member, path=extract_to)
-                extracted_files.append(str(file_path))
+            extracted_files.append(str(file_path))
 
     else:
         raise ValueError(f"Unsupported archive object: {type(archive)}")
@@ -178,6 +248,115 @@ def extract_archive(
         archive.close()
 
     return extracted_files
+
+
+def download_request(
+    dataset: str = "reanalysis-era5-single-levels-monthly-means",
+    area: Sequence[float] = (90.0, -90.0, 45.0, 90.0),
+    years: Iterable[int] = range(1980, 2025),
+    variable: Sequence[str] = ("2m_temperature", "total_precipitation"),
+    path: Path | str = "tmp.nc",
+    force_overwrite: bool = False,
+) -> xr.Dataset:
+    """
+    Download monthly ERA5 reanalysis from CDS and return it as an xarray Dataset.
+
+    Sends a request to the Copernicus Climate Data Store (CDS) API for monthly
+    averages of the specified single-level variables over ``area`` and ``years``.
+    If CDS returns multiple NetCDF files (e.g., one per year), they are opened
+    and merged into a single dataset. The merged dataset is cached at ``path`` and
+    re-used on subsequent calls unless ``force_overwrite=True``.
+
+    Parameters
+    ----------
+    dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
+        CDS dataset identifier to retrieve. Use a different name to target
+        ERA5-Land or other collections.
+    area : sequence of float, default ``(90, -90, 45, 90)``
+        Geographic bounding box **[North, West, South, East]** in degrees (WGS84).
+        Note the CDS-specific ordering.
+    years : iterable of int, default ``range(1980, 2025)``
+        Years to request (e.g., ``range(1980, 2025)`` or ``[1990, 1991]``).
+    variable : sequence of str, default ``("2m_temperature", "total_precipitation")``
+        ERA5 variable names to download (e.g., ``"2m_temperature"``,
+        ``"total_precipitation"``, ``"geopotential"``). Availability depends on
+        the chosen ``dataset``.
+    path : str or pathlib.Path, default ``"tmp.nc"``
+        Cache file. If it exists and opens successfully, it is re-used unless
+        ``force_overwrite`` is set.
+    force_overwrite : bool, default ``False``
+        If ``True``, ignore any existing cache at ``path`` and perform a fresh
+        download.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset containing requested monthly means. Typical variables include:
+        - ``t2m`` : 2-m air temperature [K]
+        - ``tp`` : total precipitation [m]
+        Coordinates may include a monthly ``valid_time``; when present it is
+        floored to daily resolution.
+
+    Raises
+    ------
+    cdsapi.api.ClientError
+        CDS request/authentication/parameter failures.
+    OSError
+        Problems opening/writing downloaded files.
+    ValueError
+        Incompatible files for merge.
+    Exception
+        Other I/O/decoding errors during assembly.
+
+    Notes
+    -----
+    - Requires a valid CDS API key in ``~/.cdsapirc``.
+    - The request uses ``product_type="monthly_averaged_reanalysis"``,
+      months ``"01"``–``"12"``, and time ``"00:00"``.
+    - If CDS provides a ZIP, contents are extracted before loading/merging.
+    """
+    path = Path(path)
+    client = cdsapi.Client()
+
+    request = {
+        "product_type": ["monthly_averaged_reanalysis"],
+        "variable": list(variable),
+        "year": list(years),
+        "month": [f"{m:02d}" for m in range(1, 13)],
+        "time": ["00:00"],
+        "data_format": "netcdf",
+        "download_format": "unarchived",
+        "area": list(area),  # [N, W, S, E]
+    }
+
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
+
+    if (not check_xr_sampled(path)) or force_overwrite:
+
+        path = Path(path)
+        path.unlink(missing_ok=True)
+
+        f = client.retrieve(dataset, request).download()
+
+        if f.endswith(".zip"):
+            era_files = extract_archive(f)
+            dss = []
+            for era_file in era_files:
+                ds_part = xr.open_dataset(era_file, decode_times=time_coder, decode_timedelta=True)
+                if "valid_time" in ds_part.coords:
+                    ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
+                dss.append(ds_part)
+            ds = xr.merge(dss).drop_vars(["number", "expver"], errors="ignore")
+        else:
+            ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True).drop_vars(
+                ["number", "expver"], errors="ignore"
+            )
+
+        ds.to_netcdf(path)
+    else:
+        ds = xr.open_dataset(path, decode_times=time_coder, decode_timedelta=True)
+
+    return ds
 
 
 def save_netcdf(
@@ -260,6 +439,81 @@ def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
         return zipfile.ZipFile(buffer)
     else:
         raise ValueError("Unsupported archive format: must end with .zip or .tar.gz")
+
+
+def download_file(url: str, output_path: Path | str, force_overwrite: bool = False) -> str:
+    """
+    Download a file from a URL and write it to ``output_path``.
+
+    The function streams the response, displays a progress bar when the
+    content length is known, and writes atomically by first saving to a
+    temporary file and then renaming it into place.
+
+    Parameters
+    ----------
+    url : str
+        HTTP(S) URL to download.
+    output_path : str or pathlib.Path
+        Destination file path. Parent directories are created if missing.
+    force_overwrite : bool, default False
+        If ``True``, download and overwrite even when ``output_path`` exists.
+        If ``False``, an existing file short-circuits and is returned as-is.
+
+    Returns
+    -------
+    str
+        Absolute path to the downloaded file.
+
+    Raises
+    ------
+    requests.HTTPError
+        If the server responds with an error status.
+    requests.RequestException
+        On connection/timeouts or other request-related failures.
+    OSError
+        If writing the file to disk fails.
+
+    Notes
+    -----
+    - Uses streamed download with chunked writes (8 KiB).
+    - If the server does not provide ``Content-Length``, the progress bar
+      still updates by bytes received, but without a total.
+    """
+    dest = Path(output_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if dest.exists() and not force_overwrite:
+        return str(dest.resolve())
+
+    # Stream the response to avoid loading the whole file in memory.
+    with requests.get(url, stream=True, timeout=30) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("Content-Length", 0))
+
+        # Write atomically: temp file in same directory, then rename.
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=str(dest.parent), delete=False, prefix=dest.name + ".", suffix=".part"
+        ) as tmp:
+            tmp_name = tmp.name
+            with tqdm(
+                total=total if total > 0 else None,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=f"Downloading {dest.name}",
+            ) as pbar:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if not chunk:
+                        continue
+                    tmp.write(chunk)
+                    pbar.update(len(chunk))
+            tmp.flush()
+            os.fsync(tmp.fileno())
+
+    # Move temp file into place
+    Path(tmp_name).replace(dest)
+
+    return str(dest.resolve())
 
 
 def download_earthaccess(filter_str: str | None = None, result_dir: Path | str = ".", **kwargs) -> list:

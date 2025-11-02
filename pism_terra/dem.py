@@ -573,6 +573,7 @@ def boot_file_from_rgi_id(
     target_grid = xr.open_dataset(target_grid_file)
 
     ice_thickness = prepare_ice_thickness(glacier, target_grid=target_grid, target_crs=dst_crs)
+    ice_thickness = ice_thickness.rio.clip(glacier_projected.geometry, drop=False).fillna(0)
 
     bed = surface - ice_thickness
     bed.name = "bed"

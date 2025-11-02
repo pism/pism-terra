@@ -7,28 +7,28 @@ ntasks = 40
 [job]
 
 queue = "t2small"
-walltime = "48:00:00"
+walltime = "72:00:00"
 nodes = 1
 
 [run_info]
 
 'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA Calibration Run"
+'run_info.title' = "PISM-TERRA LGM"
 
 [campaign]
 
-name = "Calibration"
-climate = "era5"
+name = "LGM"
+climate = "snap"
 dem = "glo_30"
 ice_thickness = "millan"
 velocity = "none"
 
 [time]
 
-'time.start' = "1980-01-01"
-'time.end' =  "1985-01-01"
-'time.calendar' =  "standard"
-'time.reference_date' = "1980-01-01"
+'time.start' = "01-01-01"
+'time.end' =  "5000-01-01"
+'time.calendar' =  "365_day"
+'time.reference_date' = "01-01-01"
 
 [time_stepping]
 
@@ -53,21 +53,21 @@ velocity = "none"
 'output.format' = "netcdf4_parallel"
 'output.compression_level'= 2
 'output.size' = "medium"
-'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
+'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
 'output.extra.file' = "none"
-'output.extra.times' = "monthly"
-'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
+'output.extra.times' = 100
+'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 
 [grid]
 
-resolution = "500m"
-'grid.Lbz' = 0
-'grid.Lz' = 2000
-'grid.Mbz' = 1
-'grid.Mz' = 101
-'grid.registration' = "center"
+resolution = "1000m"
+grid.Lbz = 0
+grid.Lz = 5000
+grid.Mbz = 1
+grid.Mz = 251
+grid.registration = "center"
 
 [energy]
 
@@ -99,8 +99,6 @@ model = 'blatter'
 'stress_balance.blatter.coarsening_factor' = 4
 'stress_balance.blatter.use_eta_transform' = 'yes'
 'stress_balance.calving_front_stress_bc' = 'yes'
-'stress_balance.sia.surface_gradient_method' = 'eta'
-'stress_balance.sia.max_diffusivity' = 100000.0
 bp_ksp_monitor =  ""
 bp_ksp_view_singularvalues = ""
 bp_snes_monitor_ratio = ""
@@ -112,12 +110,18 @@ bp_mg_coarse_pc_type = "lu"
 bp_pc_mg_levels = 3
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
-bp_snes_rtol = 1e-3
-bp_ksp_rtol = 1e-3
 
 [stress_balance.options.hybrid]
 
 'stress_balance.model' = "ssa+sia"
+'stress_balance.ssa.method' = "fd"
+'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.sia.surface_gradient_method' = 'eta'
+'stress_balance.sia.max_diffusivity' = 100000.0
+
+[stress_balance.options.sia]
+
+'stress_balance.model' = "sia"
 'stress_balance.ssa.method' = "fd"
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.surface_gradient_method' = 'eta'
@@ -138,15 +142,13 @@ bp_ksp_rtol = 1e-3
 
 model = "pdd"
 
-[surface.options.cosipy]
-
-'surface.models' = "given,forcing"
-
 [surface.options.pdd]
 
-'surface.models' = "pdd,forcing"
+'surface.models' = 'pdd'
 
 [calving]
+
+'calving.methods' = 'float_kill'
 
 [atmosphere]
 
@@ -154,8 +156,9 @@ model = "given"
 
 [atmosphere.options.given]
 
-'atmosphere.models' = "given,elevation_change"
+'atmosphere.models' = "given"
 'atmosphere.given.file' = "none"
+'atmosphere.given.periodic' = ""
 'atmosphere.elevation_change.temperature_lapse_rate' = 6
 'atmosphere.elevation_change.file' = "none"
 

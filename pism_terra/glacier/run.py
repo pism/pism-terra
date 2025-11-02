@@ -445,12 +445,15 @@ def run_glacier(
         },
         "config": run,
     }
-    run_file = output_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
-    with open(run_file, "w", encoding="utf-8") as toml_file:
+    post_path = output_path / Path("post_processing")
+    post_path.mkdir(parents=True, exist_ok=True)
+
+    post_file = post_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
+    with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
     prefix = f"{mpi_str} {cfg.run.executable} "
-    postfix = f"pism-glacier-postprocess {run_file}"
+    postfix = f"pism-glacier-postprocess {post_file}"
     rendered_script = "" if debug else template.render(params)
     rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
 
@@ -463,7 +466,7 @@ def run_glacier(
     run_script.write_text(rendered_script)
 
     print(f"\nSLURM script written to {run_script.resolve()}\n")
-    print(f"Postprocessing script written to {run_file.resolve()}\n")
+    print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
 def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:

@@ -34,14 +34,207 @@ import cftime
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import rioxarray
+import rioxarray as rxr
 import s3fs
 import xarray as xr
+from dask.diagnostics import ProgressBar
+from tqdm.auto import tqdm
 
 from pism_terra.dem import get_glacier_from_rgi_id
-from pism_terra.download import download_netcdf, extract_archive
+from pism_terra.download import (
+    FileInfo,
+    download_archive,
+    download_file,
+    download_netcdf,
+    download_request,
+    extract_archive,
+    parse_filename,
+)
 from pism_terra.raster import add_time_bounds
 from pism_terra.workflow import check_xr, check_xr_sampled
+
+xr.set_options(keep_attrs=True)
+
+
+def snap(
+    rgi_id: str,
+    path: Path | str = ".",
+    **kwargs,
+) -> list[Path]:
+    """
+    Build SNAP-derived monthly climate files and 30-year climatologies.
+
+    Downloads SNAP IEM monthly precipitation and temperature archives,
+    extracts and converts each GeoTIFF into NetCDF with a monthly time
+    coordinate, merges variables (and DEM-derived surface altitude),
+    and writes both the full historical stack and three 30-year weighted
+    climatologies (1920–1949, 1950–1979, 1980–2009).
+
+    Parameters
+    ----------
+    rgi_id : str
+        Glacier identifier (currently unused in this workflow, kept for
+        interface parity).
+    path : str or pathlib.Path, default ``"."``
+        Output directory. Intermediate and final NetCDFs are written here.
+    **kwargs
+        Forwarded to :func:`download_file` and :func:`extract_archive`
+        (e.g., ``force_overwrite=True``).
+
+    Returns
+    -------
+    list[pathlib.Path]
+        Paths to the three 30-year climatology NetCDF files:
+        ``snap_1920_1949.nc``, ``snap_1950_1979.nc``, ``snap_1980_2009.nc``.
+        Additionally, the full stack ``snap_1900_2015.nc`` is written in
+        ``path`` as a side effect.
+
+    Raises
+    ------
+    requests.HTTPError
+        If SNAP URLs fail to download.
+    OSError
+        On file I/O errors during extraction or NetCDF writing.
+    ValueError
+        If extracted files do not match the expected filename pattern.
+    Exception
+        Propagated errors from xarray/rioxarray/cftime routines.
+
+    Notes
+    -----
+    - Variables are renamed to:
+      ``precipitation`` (kg m^-2 year^-1), ``air_temp`` (celsius),
+      and ``surface`` (m).
+    - CRS is written as ``EPSG:3338``. Per-variable CF linkage
+      (``grid_mapping="spatial_ref"``) is restored for the output climatologies.
+    - The 30-year climatologies are month-wise weighted means using calendar
+      month lengths within each window.
+    - ``_FillValue`` is suppressed on core variables and coordinates at
+      write-time via ``encoding={...: {'_FillValue': None}}``.
+
+    Examples
+    --------
+    >>> out_paths = snap("RGI2000-v7.0-C-01-04374", path="snap_outputs", force_overwrite=True)
+    >>> [p.name for p in out_paths]
+    ['snap_1920_1949.nc', 'snap_1950_1979.nc', 'snap_1980_2009.nc']
+    """
+
+    print("")
+    print("Generate SNAP climate")
+    print("-" * 80)
+
+    force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
+
+    path = Path(path)
+    dss = []
+
+    for url in [
+        "http://data.snap.uaf.edu/data/IEM/Inputs/historical/precipitation/pr_total_mm_iem_cru_TS40_1901_2015.zip",
+        "http://data.snap.uaf.edu/data/IEM/Inputs/historical/temperature/tas_mean_C_iem_cru_TS40_1901_2015.zip",
+    ]:
+        f = Path(url).name
+        f_path = path / Path(f)
+        _ = download_file(url, f_path, **kwargs)
+        response = extract_archive(f_path, force_overwrite=force_overwrite)
+        response_clean = [r for r in sorted(response) if r.endswith("tif")]
+
+        items = []
+        for p in tqdm(response_clean, desc="Processing files"):
+            fi = parse_filename(str(p))
+            # Build a cftime "standard/gregorian" datetime (day = 1)
+            t = cftime.DatetimeGregorian(int(fi.year), int(fi.month), 1)
+
+            da = rxr.open_rasterio(p).squeeze(drop=True)  # drop 'band' if present
+            da.name = fi.variable
+            da.attrs.update({"units": fi.units})
+
+            # add a time dimension
+            da = da.expand_dims(time=[t]).drop_vars("spatial_ref", errors="ignore")
+            p = path / Path(f"{fi.variable}_{fi.year}_{fi.month}.nc")
+            p.unlink(missing_ok=True)
+            da.to_netcdf(p)
+
+            items.append(p)
+
+        # Concatenate along time and sort (in case paths are unordered)
+        out = xr.open_mfdataset(items, parallel=False)
+        dss.append(out)
+
+    url = "http://data.snap.uaf.edu/data/IEM/Inputs/ancillary/elevation/iem_prism_dem_1km.tif"
+    dem_path = Path(path) / Path("iem_prism_dem_1km.tif")
+    _ = download_file(url, dem_path, **kwargs)
+    da = rxr.open_rasterio(dem_path).squeeze(drop=True)  # drop 'band' if present
+    da = da.where(da > 0, 0).fillna(0)
+    da.name = "surface"
+    da.attrs.update({"units": "m", "standard_name": "surface_altitude"})
+    dem = da.interp_like(out)
+    dss.append(dem)
+
+    ds = xr.merge(dss).rio.write_crs("EPSG:3338").fillna(0)
+    ds = ds.rename_vars({"pr": "precipitation", "tas": "air_temp"})
+    ds["precipitation"] *= 12
+    ds["precipitation"].attrs.update({"units": "kg m^-2 year^-1"})
+    ds["air_temp"].attrs.update({"units": "celsius"})
+    p = path / Path("snap_1900_2015.nc")
+    p.unlink(missing_ok=True)
+    ds.to_netcdf(p)
+
+    ps = []
+    for y in [1920, 1950, 1980]:
+
+        start = str(y)
+        end = str(y + 29)
+
+        p = path / Path(f"snap_{rgi_id}_{start}_{end}.nc")
+        if (not check_xr_sampled(p)) or force_overwrite:
+            p.unlink(missing_ok=True)
+
+            ds_sub = ds.sel({"time": slice(start, end)})
+            month_length = ds_sub.time.dt.days_in_month
+
+            # Calculate the weights by grouping by 'time.season'.
+            weights = month_length.groupby("time.month") / month_length.groupby("time.month").sum()
+
+            # Calculate the weighted average
+            ds_weighted = (ds_sub * weights).groupby("time.month").sum(dim="time").rename({"month": "time"})
+            for c, axis, stdname in (("x", "X", "projection_x_coordinate"), ("y", "Y", "projection_y_coordinate")):
+                attrs = {
+                    "units": "m",
+                    "axis": axis,
+                    "standard_name": stdname,
+                    "long_name": f"{c}-coordinate in projected coordinate system",
+                }
+                ds_weighted[c].attrs.update({k: v for k, v in attrs.items() if v is not None})
+
+            base_year = 1
+            start_date = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
+            # Assign coordinates and bounds
+
+            ds_weighted = ds_weighted.assign_coords(time=("time", start_date))
+            ds_weighted["time"].attrs.update(
+                {
+                    "standard_name": "time",
+                    "long_name": "climatological time (mid-month)",
+                    "bounds": "time_bounds",
+                }
+            )
+            ds_weighted["time"].attrs.pop("calendar", None)
+
+            # Put calendar/units ONLY in encoding (CF-compliant, and prevents the error)
+            enc = {"units": "days since 0001-01-01", "calendar": "365_day"}
+            ds_weighted.time.encoding.update(enc)
+            ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")
+            ds_weighted.rio.write_crs("EPSG:3338", inplace=True)
+            for v in ("precipitation", "air_temp", "surface"):
+                if v in ds_weighted:
+                    ds_weighted[v].attrs["grid_mapping"] = "spatial_ref"
+            ds_weighted = add_time_bounds(ds_weighted)
+
+            encoding = {v: {"_FillValue": None} for v in ["x", "y", "surface", "air_temp", "precipitation"]}
+            with ProgressBar():
+                ds_weighted.to_netcdf(p, encoding=encoding)
+        ps.append(p)
+    return ps
 
 
 def era5(
@@ -250,115 +443,6 @@ def jif_cosipy(url: str, download_path: Path | str, path: Path | str) -> None:
     ds.rio.write_crs("EPSG:4326", inplace=True)
     ds = add_time_bounds(ds)
     ds.to_netcdf(path)
-
-
-def download_request(
-    dataset: str = "reanalysis-era5-single-levels-monthly-means",
-    area: Sequence[float] = (90.0, -90.0, 45.0, 90.0),
-    years: Iterable[int] = range(1980, 2025),
-    variable: Sequence[str] = ("2m_temperature", "total_precipitation"),
-    path: Path | str = "tmp.nc",
-    force_overwrite: bool = False,
-) -> xr.Dataset:
-    """
-    Download monthly ERA5 reanalysis from CDS and return it as an xarray Dataset.
-
-    Sends a request to the Copernicus Climate Data Store (CDS) API for monthly
-    averages of the specified single-level variables over ``area`` and ``years``.
-    If CDS returns multiple NetCDF files (e.g., one per year), they are opened
-    and merged into a single dataset. The merged dataset is cached at ``path`` and
-    re-used on subsequent calls unless ``force_overwrite=True``.
-
-    Parameters
-    ----------
-    dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
-        CDS dataset identifier to retrieve. Use a different name to target
-        ERA5-Land or other collections.
-    area : sequence of float, default ``(90, -90, 45, 90)``
-        Geographic bounding box **[North, West, South, East]** in degrees (WGS84).
-        Note the CDS-specific ordering.
-    years : iterable of int, default ``range(1980, 2025)``
-        Years to request (e.g., ``range(1980, 2025)`` or ``[1990, 1991]``).
-    variable : sequence of str, default ``("2m_temperature", "total_precipitation")``
-        ERA5 variable names to download (e.g., ``"2m_temperature"``,
-        ``"total_precipitation"``, ``"geopotential"``). Availability depends on
-        the chosen ``dataset``.
-    path : str or pathlib.Path, default ``"tmp.nc"``
-        Cache file. If it exists and opens successfully, it is re-used unless
-        ``force_overwrite`` is set.
-    force_overwrite : bool, default ``False``
-        If ``True``, ignore any existing cache at ``path`` and perform a fresh
-        download.
-
-    Returns
-    -------
-    xarray.Dataset
-        Dataset containing requested monthly means. Typical variables include:
-        - ``t2m`` : 2-m air temperature [K]
-        - ``tp`` : total precipitation [m]
-        Coordinates may include a monthly ``valid_time``; when present it is
-        floored to daily resolution.
-
-    Raises
-    ------
-    cdsapi.api.ClientError
-        CDS request/authentication/parameter failures.
-    OSError
-        Problems opening/writing downloaded files.
-    ValueError
-        Incompatible files for merge.
-    Exception
-        Other I/O/decoding errors during assembly.
-
-    Notes
-    -----
-    - Requires a valid CDS API key in ``~/.cdsapirc``.
-    - The request uses ``product_type="monthly_averaged_reanalysis"``,
-      months ``"01"``–``"12"``, and time ``"00:00"``.
-    - If CDS provides a ZIP, contents are extracted before loading/merging.
-    """
-    path = Path(path)
-    client = cdsapi.Client()
-
-    request = {
-        "product_type": ["monthly_averaged_reanalysis"],
-        "variable": list(variable),
-        "year": list(years),
-        "month": [f"{m:02d}" for m in range(1, 13)],
-        "time": ["00:00"],
-        "data_format": "netcdf",
-        "download_format": "unarchived",
-        "area": list(area),  # [N, W, S, E]
-    }
-
-    time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
-
-    if (not check_xr_sampled(path)) or force_overwrite:
-
-        path = Path(path)
-        path.unlink(missing_ok=True)
-
-        f = client.retrieve(dataset, request).download()
-
-        if f.endswith(".zip"):
-            era_files = extract_archive(f)
-            dss = []
-            for era_file in era_files:
-                ds_part = xr.open_dataset(era_file, decode_times=time_coder, decode_timedelta=True)
-                if "valid_time" in ds_part.coords:
-                    ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
-                dss.append(ds_part)
-            ds = xr.merge(dss).drop_vars(["number", "expver"], errors="ignore")
-        else:
-            ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True).drop_vars(
-                ["number", "expver"], errors="ignore"
-            )
-
-        ds.to_netcdf(path)
-    else:
-        ds = xr.open_dataset(path, decode_times=time_coder, decode_timedelta=True)
-
-    return ds
 
 
 def pmip4(

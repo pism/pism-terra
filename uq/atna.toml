@@ -1,0 +1,25 @@
+samples = 9
+mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
+
+['atmosphere.given.file']
+
+low = 0
+high = 4
+distribution = "randint"
+
+['surface.pdd.factor_ice']
+
+loc = 0.008791208791208791
+scale = 0.004395604395604396
+a = -1
+b = 1
+
+distribution = "truncnorm"
+
+['surface.pdd.factor_snow']
+
+loc = 0.004395604395604396
+scale = 0.0016483516483516484
+a = -1.2
+b = 1.2
+distribution = "truncnorm"

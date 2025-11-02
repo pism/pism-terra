@@ -1,6 +1,6 @@
 [project]
 name = "pism-terra"
-version = "0.0.1"
+version = "0.0.2"
 maintainers = [{name = "Andy Aschwanden", email = "andy.aschwanden@gmail.com"}]
 description = """Global PISM"""
 readme = "README.md"
