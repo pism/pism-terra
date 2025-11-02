@@ -49,6 +49,7 @@ from pism_terra.download import (
     download_request,
     extract_archive,
     parse_filename,
+    save_netcdf,
 )
 from pism_terra.raster import add_time_bounds
 from pism_terra.workflow import check_xr, check_xr_sampled
@@ -134,7 +135,7 @@ def snap(
     ]:
         f = Path(url).name
         f_path = path / Path(f)
-        _ = download_file(url, f_path, **kwargs)
+        _ = download_file(url, f_path, force_overwrite=force_overwrite)
         response = extract_archive(f_path, force_overwrite=force_overwrite)
         response_clean = [r for r in sorted(response) if r.endswith("tif")]
 
@@ -162,7 +163,7 @@ def snap(
 
     url = "http://data.snap.uaf.edu/data/IEM/Inputs/ancillary/elevation/iem_prism_dem_1km.tif"
     dem_path = Path(path) / Path("iem_prism_dem_1km.tif")
-    _ = download_file(url, dem_path, **kwargs)
+    _ = download_file(url, dem_path, force_overwrite=force_overwrite)
     da = rxr.open_rasterio(dem_path).squeeze(drop=True)  # drop 'band' if present
     da = da.where(da > 0, 0).fillna(0)
     da.name = "surface"
@@ -175,9 +176,11 @@ def snap(
     ds["precipitation"] *= 12
     ds["precipitation"].attrs.update({"units": "kg m^-2 year^-1"})
     ds["air_temp"].attrs.update({"units": "celsius"})
-    p = path / Path("snap_1900_2015.nc")
+    p = path / Path(f"snap_{rgi_id}_1900_2015.nc")
     p.unlink(missing_ok=True)
-    ds.to_netcdf(p)
+    with ProgressBar():
+        print(f"Saving {p.resolve()}")
+        save_netcdf(ds, p)
 
     ps = []
     for y in [1920, 1950, 1980]:

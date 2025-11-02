@@ -64,9 +64,9 @@ velocity = "none"
 
 resolution = "1000m"
 grid.Lbz = 0
-grid.Lz = 5000
+grid.Lz = 2500
 grid.Mbz = 1
-grid.Mz = 251
+grid.Mz = 126
 grid.registration = "center"
 
 [energy]

@@ -481,7 +481,6 @@ def download_file(url: str, output_path: Path | str, force_overwrite: bool = Fal
     """
     dest = Path(output_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-
     if dest.exists() and not force_overwrite:
         return str(dest.resolve())
 
