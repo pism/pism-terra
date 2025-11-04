@@ -1,0 +1,31 @@
+samples = 15
+
+['basal_resistance.pseudo_plastic.q']
+
+loc = 0.25
+scale = 0.75
+distribution = "uniform"
+
+['basal_yield_stress.mohr_coulomb.till_effective_fraction_overburden']
+
+loc = 0.01
+scale = 0.03
+distribution = "uniform"
+
+['basal_resistance.pseudo_plastic.u_threshold']
+
+loc = 50
+scale = 150
+distribution = "uniform"
+
+['basal_yield_stress.mohr_coulomb.till_phi_default']
+
+loc = 10
+scale = 30
+distribution = "uniform"
+
+['stress_balance.blatter.enhancement_factor']
+
+loc = 1.0
+scale = 3.0
+distribution = "uniform"

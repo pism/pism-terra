@@ -37,6 +37,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel
 from pyfiglet import Figlet
 
+from pism_terra.climate import create_offset_file
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import create_samples
@@ -399,18 +400,6 @@ def run_glacier(
         }
     )
 
-    # print("Checking files")
-    # print("-" * 80)
-    # input_files = {k: v for k, v in run.items() if k.endswith(".file") and not k.startswith("output.")}
-    # for k, v in input_files.items():
-    #     p = Path(v)
-    #     try:
-    #         check_xr(p)
-    #         print(f"{k}: {v} is valid ✓")
-    #     except FileNotFoundError as e:
-    #         print(f"{k}: {v} is valid ✗")
-    # print("-" * 80)
-
     run_str = dict2str(sort_dict_by_key(run))
 
     run_opts = RunConfig(**cfg.run.model_dump())
@@ -675,8 +664,10 @@ def run_single():
         "input.file": df["boot_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
         "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
+        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
+        "atmosphere.fract_P.file": df["scalar_offset_file"].iloc[0],
+        "atmosphere.given.file": df["climate_file"].iloc[0],
     }
     outline_file = df["outline"].iloc[0]
 
@@ -822,8 +813,10 @@ def run_ensemble():
         "input.file": df["boot_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
         "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
+        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
+        "atmosphere.fract_P.file": df["scalar_offset_file"].iloc[0],
+        "atmosphere.given.file": df["climate_file"].iloc[0],
     }
     outline_file = df["outline"].iloc[0]
 
@@ -845,6 +838,12 @@ def run_ensemble():
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
     for idx, row in uq_df.iterrows():
+        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
+        delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
+        frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
+        create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
+        row["atmosphere.delta_T.file"] = scalar_offset_file
+        row["atmosphere.precip_scaling.file"] = scalar_offset_file
         default.update(row)
         run_glacier(
             rgi_id,

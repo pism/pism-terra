@@ -57,6 +57,50 @@ from pism_terra.workflow import check_xr, check_xr_sampled
 xr.set_options(keep_attrs=True)
 
 
+def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: float = 1.0):
+    """
+    Generate offset file using xarray.
+
+    Parameters
+    ----------
+    file_name : str
+        The name of the file to create.
+    delta_T : float, optional
+        The temperature offset, by default 0.0.
+    frac_P : float, optional
+        The precipitation fraction, by default 1.0.
+    """
+
+    file_name = Path(file_name)
+    dT = [delta_T]
+    fP = [frac_P]
+    time = [0]
+    time_bounds = [[-1, 1]]
+
+    ds = xr.Dataset(
+        data_vars={
+            "delta_T": (["time"], dT, {"units": "K"}),
+            "frac_P": (["time"], fP, {"units": "1"}),
+            "time_bounds": (["time", "bnds"], time_bounds, {}),
+        },
+        coords={
+            "time": (
+                "time",
+                time,
+                {
+                    "units": "seconds since 01-01-01",
+                    "axis": "T",
+                    "calendar": "365_day",
+                    "bounds": "time_bounds",
+                },
+            )
+        },
+    )
+    encoding = {v: {"_FillValue": None} for v in ["delta_T", "frac_P"]}
+
+    ds.to_netcdf(file_name, encoding=encoding)
+
+
 def snap(
     rgi_id: str,
     path: Path | str = ".",
@@ -135,6 +179,7 @@ def snap(
     ]:
         f = Path(url).name
         f_path = path / Path(f)
+        print(f"Processing {f_path.resolve()}")
         _ = download_file(url, f_path, force_overwrite=force_overwrite)
         response = extract_archive(f_path, force_overwrite=force_overwrite)
         response_clean = [r for r in sorted(response) if r.endswith("tif")]
@@ -158,7 +203,7 @@ def snap(
             items.append(p)
 
         # Concatenate along time and sort (in case paths are unordered)
-        out = xr.open_mfdataset(items, parallel=False)
+        out = xr.open_mfdataset(items, parallel=True, chunks="auto", engine="h5netcdf")
         dss.append(out)
 
     url = "http://data.snap.uaf.edu/data/IEM/Inputs/ancillary/elevation/iem_prism_dem_1km.tif"
@@ -176,11 +221,11 @@ def snap(
     ds["precipitation"] *= 12
     ds["precipitation"].attrs.update({"units": "kg m^-2 year^-1"})
     ds["air_temp"].attrs.update({"units": "celsius"})
-    p = path / Path(f"snap_{rgi_id}_1900_2015.nc")
-    p.unlink(missing_ok=True)
-    with ProgressBar():
-        print(f"Saving {p.resolve()}")
-        save_netcdf(ds, p)
+    # p = path / Path(f"snap_{rgi_id}_1900_2015.nc")
+    # p.unlink(missing_ok=True)
+    # with ProgressBar():
+    #     print(f"Saving {p.resolve()}")
+    #     save_netcdf(ds, p)
 
     ps = []
     for y in [1920, 1950, 1980]:

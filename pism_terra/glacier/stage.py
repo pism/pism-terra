@@ -35,7 +35,7 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
-from pism_terra.climate import era5, pmip4, snap
+from pism_terra.climate import create_offset_file, era5, pmip4, snap
 from pism_terra.config import load_config
 from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
@@ -147,14 +147,14 @@ def stage_glacier(
     if glacier.empty:
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
-    glacier_filename = path / f"rgi_{rgi_id}.gpkg"
+    glacier_file = path / f"rgi_{rgi_id}.gpkg"
     glacier_series = glacier.iloc[0]
     crs = glacier_series["epsg"]
-    glacier.to_file(glacier_filename)
+    glacier.to_file(glacier_file)
 
     # Output filenames
-    boot_filename = path / f"bootfile_g{int(resolution)}m_{rgi_id}.nc"
-    grid_filename = path / f"grid_g{int(resolution)}m_{rgi_id}.nc"
+    boot_file = path / f"bootfile_g{int(resolution)}m_{rgi_id}.nc"
+    grid_file = path / f"grid_g{int(resolution)}m_{rgi_id}.nc"
 
     # Build boot dataset (DEM/thickness/bed)
     boot_ds = boot_file_from_rgi_id(
@@ -180,10 +180,10 @@ def stage_glacier(
         v: {"_FillValue": None}
         for v in ["x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"]
     }
-    boot_ds.to_netcdf(boot_filename, encoding=encoding)
+    boot_ds.to_netcdf(boot_file, encoding=encoding)
 
     grid_ds.attrs.update({"domain": rgi_id})
-    grid_ds.to_netcdf(grid_filename, engine="h5netcdf")
+    grid_ds.to_netcdf(grid_file, engine="h5netcdf")
 
     # Save domain extent polygon as a GPKG
     x_point_list = [
@@ -202,8 +202,11 @@ def stage_glacier(
     ]
     domain_bounds_geom = Polygon(zip(x_point_list, y_point_list))
     domain_bounds = gpd.GeoDataFrame(index=[0], crs=crs, geometry=[domain_bounds_geom])
-    domain_bounds_filename = path / f"domain_{rgi_id}.gpkg"
-    domain_bounds.to_file(domain_bounds_filename)
+    domain_bounds_file = path / f"domain_{rgi_id}.gpkg"
+    domain_bounds.to_file(domain_bounds_file)
+
+    scalar_offset_file = path / Path(f"scalar_offset_{rgi_id}_id_0.nc")
+    create_offset_file(scalar_offset_file, delta_T=0.0, frac_P=0.0)
 
     # Climate forcing
     climate_from_rgi = CLIMATE[config["climate"]]
@@ -217,9 +220,10 @@ def stage_glacier(
     # Build file index (one row per climate file)
     files_dict = {
         "rgi_id": rgi_id,
-        "outline": glacier_filename.resolve(),
-        "boot_file": boot_filename.resolve(),
-        "grid_file": grid_filename.resolve(),
+        "outline": glacier_file.resolve(),
+        "boot_file": boot_file.resolve(),
+        "grid_file": grid_file.resolve(),
+        "scalar_offset_file": scalar_offset_file.resolve(),
     }
     dfs: list[pd.DataFrame] = []
     for fpath in responses:

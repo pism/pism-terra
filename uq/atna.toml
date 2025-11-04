@@ -1,11 +1,23 @@
 samples = 9
 mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
 
+['atmosphere.delta_T']
+
+loc = -5
+scale = 5
+distribution = "uniform"
+
 ['atmosphere.given.file']
 
 low = 0
-high = 4
+high = 2
 distribution = "randint"
+
+['atmosphere.precip_exponential_factor_for_temperature']
+
+loc = 0.05
+scale = 0.03
+distribution = "uniform"
 
 ['surface.pdd.factor_ice']
 
