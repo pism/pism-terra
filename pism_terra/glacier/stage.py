@@ -175,6 +175,7 @@ def stage_glacier(
         boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds)
     boot_ds["thickness"] = boot_ds["thickness"].where(boot_ds["thickness"] > 0.0, 0.0)
     boot_ds["bed"] = boot_ds["bed"].where(boot_ds["surface"] > 0.0, -1000.0)
+    boot_ds = boot_ds.filna(0)
     boot_ds.rio.write_crs(crs, inplace=True)
     encoding = {
         v: {"_FillValue": None}
