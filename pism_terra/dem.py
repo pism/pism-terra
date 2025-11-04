@@ -43,6 +43,8 @@ from pism_terra.raster import check_overlap, reproject_file
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_rio
 
+xr.set_options(keep_attrs=True)
+
 
 def get_surface_dem_by_bounds(
     bounds: tuple[float, float, float, float],
@@ -228,6 +230,7 @@ def prepare_ice_thickness_millan(glacier, target_grid: xr.Dataset | xr.DataArray
             projected_file = reproject_file(path, dst_crs=kwargs["target_crs"], resolution=50)
             da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
             thickness = da.interp_like(target_grid)
+            thickness.rio.write_nodata(None, inplace=True)
             thickness.name = "thickness"
             thickness["raster"] = k
             thicknesses.append(thickness)
@@ -570,10 +573,12 @@ def boot_file_from_rgi_id(
         bounds_geoid_buffered, dst_crs, dem_name=dem_name, path=path, resolution=resolution, **kwargs
     )
     surface = xr.open_dataarray(surface_file)
+    surface = surface.where(surface > 0.0, 0.0)
     target_grid = xr.open_dataset(target_grid_file)
 
     ice_thickness = prepare_ice_thickness(glacier, target_grid=target_grid, target_crs=dst_crs)
     ice_thickness = ice_thickness.rio.clip(glacier_projected.geometry, drop=False).fillna(0)
+    ice_thickness = ice_thickness.where(ice_thickness > 0.0, 0.0)
 
     bed = surface - ice_thickness
     bed.name = "bed"
@@ -600,7 +605,7 @@ def boot_file_from_rgi_id(
     tillwat.name = "tillwat"
     tillwat.attrs.update({"units": "m"})
 
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, v])
+    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, _v])
     ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
     ds.rio.write_crs(dst_crs, inplace=True)
-    return ds
+    return ds.fillna(0)
