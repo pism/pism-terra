@@ -429,8 +429,11 @@ def era5(
     ds["longitude"].attrs = lon_attrs
     ds["latitude"].attrs = lat_attrs
     ds.rio.write_crs("EPSG:4326", inplace=True)
+    encoding = {
+        v: {"_FillValue": None} for v in ["latitude", "longitude", "surface", "precipitation", "air_temp"] if v in ds
+    }
     ds = add_time_bounds(ds)
-    ds.to_netcdf(era5_filename)
+    ds.to_netcdf(era5_filename, encoding=encoding)
 
     return era5_filename
 
