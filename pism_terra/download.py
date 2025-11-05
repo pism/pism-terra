@@ -316,7 +316,6 @@ def download_request(
     - If CDS provides a ZIP, contents are extracted before loading/merging.
     """
     path = Path(path)
-    client = cdsapi.Client()
 
     request = {
         "product_type": ["monthly_averaged_reanalysis"],
@@ -332,6 +331,7 @@ def download_request(
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
     if (not check_xr_sampled(path)) or force_overwrite:
+        client = cdsapi.Client()
 
         path = Path(path)
         path.unlink(missing_ok=True)
@@ -352,9 +352,13 @@ def download_request(
                 ["number", "expver"], errors="ignore"
             )
 
+        ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
+        ds.rio.write_crs("EPSG:4326", inplace=True)
         ds.to_netcdf(path)
     else:
         ds = xr.open_dataset(path, decode_times=time_coder, decode_timedelta=True)
+        ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
+        ds.rio.write_crs("EPSG:4326", inplace=True)
 
     return ds
 

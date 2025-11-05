@@ -289,7 +289,7 @@ def era5(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     years: list[int] | Iterable[int] = range(1978, 2025),
-    dataset: str = "reanalysis-era5-single-levels-monthly-means",
+    dataset: str = "reanalysis-era5-land-monthly-means",
     buffer_distance: float = 0.1,
     path: Path | str = ".",
     **kwargs,
@@ -390,20 +390,20 @@ def era5(
     era5_filename_1 = path / Path(f"era5_wgs84_{rgi_id}_tmp_1.nc")
     era5_files.append(era5_filename_1)
     ds = download_request(dataset, area, years, path=era5_filename_1, **kwargs)
-    ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
-    ds.rio.write_crs("EPSG:4326", inplace=True)
 
     era5_filename_2 = path / Path(f"era5_wgs84_{rgi_id}_tmp_2.nc")
     era5_files.append(era5_filename_2)
-    ds_geo = download_request(dataset, area, [2013], variable=["geopotential"], path=era5_filename_2, **kwargs).mean(
-        dim="valid_time"
+    ds_geo = (
+        download_request(dataset, area, [2013], variable=["geopotential"], path=era5_filename_2, **kwargs)
+        .squeeze()
+        .drop_vars("time", errors="ignore")
     )
     ds_geo_ = ds_geo.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
 
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if ("GRIB_missingValue" or "missing_value" or "_FillValue") in (ds["tp"].attrs or ds["t2m"].attrs):
+    if bool(ds.to_array().isnull().any().item()):
         print("Missing values detected, filling with global reanalysis")
         era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
         era5_files.append(era5_filename_3)
@@ -415,7 +415,7 @@ def era5(
         )
         ds = xr.where(np.isnan(ds), ds_global_, ds)
 
-    ds = xr.merge([ds, ds_geo_])
+    ds = xr.merge([ds, ds_geo_], combine_attrs="override")
     ds = ds.rename({"valid_time": "time"})
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
@@ -428,12 +428,14 @@ def era5(
     ds["time"].encoding["calendar"] = "standard"
     ds["longitude"].attrs = lon_attrs
     ds["latitude"].attrs = lat_attrs
-    ds.rio.write_crs("EPSG:4326", inplace=True)
-    encoding = {
-        v: {"_FillValue": None} for v in ["latitude", "longitude", "surface", "precipitation", "air_temp"] if v in ds
-    }
+    ds = ds.sortby("latitude")
+    ds["latitude"].attrs["stored_direction"] = "increasing"
+    for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
+        if name in ds:
+            ds[name].encoding.update({"_FillValue": None})
+
     ds = add_time_bounds(ds)
-    ds.to_netcdf(era5_filename, encoding=encoding)
+    ds.to_netcdf(era5_filename)
 
     return era5_filename
 
