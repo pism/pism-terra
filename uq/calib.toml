@@ -34,6 +34,5 @@ distribution = "uniform"
 
 loc = 3.0
 scale = 0.2
-a = -5
-b = 5
+c = 1
 distribution = "loggamma"
