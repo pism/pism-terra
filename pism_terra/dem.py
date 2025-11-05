@@ -252,7 +252,7 @@ def prepare_ice_thickness_millan(
         thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
         thickness.to_netcdf(thickness_file)
     else:
-        thickness = xr.open_dataset(thickness_file)
+        thickness = xr.open_dataarray(thickness_file)
 
     return thickness
 
