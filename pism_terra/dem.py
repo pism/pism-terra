@@ -606,6 +606,5 @@ def boot_file_from_rgi_id(
     tillwat.attrs.update({"units": "m"})
 
     ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, _v])
-    ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
-    ds.rio.write_crs(dst_crs, inplace=True)
+    ds.to_netcdf("m.nc")
     return ds.fillna(0)
