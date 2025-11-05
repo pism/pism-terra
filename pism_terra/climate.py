@@ -423,6 +423,7 @@ def era5(
     ds["time"].encoding["calendar"] = "standard"
     ds["longitude"].attrs = lon_attrs
     ds["latitude"].attrs = lat_attrs
+    ds.rio.write_crs("EPSG:4326", inplace=True)
     for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
         if name in ds:
             ds[name].encoding.update({"_FillValue": None})
