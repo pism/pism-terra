@@ -230,7 +230,7 @@ def prepare_ice_thickness_millan(
 
     if (not check_xr_sampled(thickness_file)) or force_overwrite:
 
-        thickness_file.unlink()
+        thickness_file.unlink(missing_ok=True)
         s3_to_local(bucket, prefix="millan", dest_dir="data/ice_thickness")
 
         with ThreadPoolExecutor() as executor:
