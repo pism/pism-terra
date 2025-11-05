@@ -255,7 +255,7 @@ def download_request(
     area: Sequence[float] = (90.0, -90.0, 45.0, 90.0),
     years: Iterable[int] = range(1980, 2025),
     variable: Sequence[str] = ("2m_temperature", "total_precipitation"),
-    path: Path | str = "tmp.nc",
+    file_path: Path | str = "tmp.nc",
     force_overwrite: bool = False,
 ) -> xr.Dataset:
     """
@@ -281,7 +281,7 @@ def download_request(
         ERA5 variable names to download (e.g., ``"2m_temperature"``,
         ``"total_precipitation"``, ``"geopotential"``). Availability depends on
         the chosen ``dataset``.
-    path : str or pathlib.Path, default ``"tmp.nc"``
+    file_path : str or pathlib.Path, default ``"tmp.nc"``
         Cache file. If it exists and opens successfully, it is re-used unless
         ``force_overwrite`` is set.
     force_overwrite : bool, default ``False``
@@ -315,7 +315,8 @@ def download_request(
       months ``"01"``–``"12"``, and time ``"00:00"``.
     - If CDS provides a ZIP, contents are extracted before loading/merging.
     """
-    path = Path(path)
+
+    file_path = Path(file_path)
 
     request = {
         "product_type": ["monthly_averaged_reanalysis"],
@@ -330,16 +331,23 @@ def download_request(
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if (not check_xr_sampled(path)) or force_overwrite:
+    if (not check_xr_sampled(file_path)) or force_overwrite:
         client = cdsapi.Client()
 
-        path = Path(path)
-        path.unlink(missing_ok=True)
+        path = file_path.parent
+        file_path.unlink(missing_ok=True)
 
-        f = client.retrieve(dataset, request).download()
+        g = client.retrieve(dataset, request)
 
-        if f.endswith(".zip"):
-            era_files = extract_archive(f)
+        if g.asset["type"] == "application/zip":
+            p = path / f"archive_{file_path.stem}.zip"
+        else:
+            p = path / f"archive_{file_path.stem}.nc"
+
+        f = client.retrieve(dataset, request).download(p)
+
+        if str(f).endswith(".zip"):
+            era_files = extract_archive(f, extract_to=path, force_overwrite=force_overwrite)
             dss = []
             for era_file in era_files:
                 ds_part = xr.open_dataset(era_file, decode_times=time_coder, decode_timedelta=True)
@@ -352,11 +360,13 @@ def download_request(
                 ["number", "expver"], errors="ignore"
             )
 
+        ds = ds.sortby("latitude")
+        ds["latitude"].attrs["stored_direction"] = "increasing"
         ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
         ds.rio.write_crs("EPSG:4326", inplace=True)
-        ds.to_netcdf(path)
+        ds.to_netcdf(file_path)
     else:
-        ds = xr.open_dataset(path, decode_times=time_coder, decode_timedelta=True)
+        ds = xr.open_dataset(file_path, decode_times=time_coder, decode_timedelta=True)
         ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
         ds.rio.write_crs("EPSG:4326", inplace=True)
 

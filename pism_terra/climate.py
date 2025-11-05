@@ -221,11 +221,6 @@ def snap(
     ds["precipitation"] *= 12
     ds["precipitation"].attrs.update({"units": "kg m^-2 year^-1"})
     ds["air_temp"].attrs.update({"units": "celsius"})
-    # p = path / Path(f"snap_{rgi_id}_1900_2015.nc")
-    # p.unlink(missing_ok=True)
-    # with ProgressBar():
-    #     print(f"Saving {p.resolve()}")
-    #     save_netcdf(ds, p)
 
     ps = []
     for y in [1920, 1950, 1980]:
@@ -389,12 +384,12 @@ def era5(
     era5_files = []
     era5_filename_1 = path / Path(f"era5_wgs84_{rgi_id}_tmp_1.nc")
     era5_files.append(era5_filename_1)
-    ds = download_request(dataset, area, years, path=era5_filename_1, **kwargs)
+    ds = download_request(dataset, area, years, file_path=era5_filename_1, **kwargs)
 
     era5_filename_2 = path / Path(f"era5_wgs84_{rgi_id}_tmp_2.nc")
     era5_files.append(era5_filename_2)
     ds_geo = (
-        download_request(dataset, area, [2013], variable=["geopotential"], path=era5_filename_2, **kwargs)
+        download_request(dataset, area, [2013], variable=["geopotential"], file_path=era5_filename_2, **kwargs)
         .squeeze()
         .drop_vars("time", errors="ignore")
     )
@@ -408,7 +403,7 @@ def era5(
         era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
         era5_files.append(era5_filename_3)
         ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means", area, years, path=era5_filename_3, **kwargs
+            "reanalysis-era5-single-levels-monthly-means", area, years, file_path=era5_filename_3, **kwargs
         )
         ds_global_ = (
             ds_global.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
@@ -428,8 +423,6 @@ def era5(
     ds["time"].encoding["calendar"] = "standard"
     ds["longitude"].attrs = lon_attrs
     ds["latitude"].attrs = lat_attrs
-    ds = ds.sortby("latitude")
-    ds["latitude"].attrs["stored_direction"] = "increasing"
     for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
         if name in ds:
             ds[name].encoding.update({"_FillValue": None})
