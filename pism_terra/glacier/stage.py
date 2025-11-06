@@ -183,9 +183,6 @@ def stage_glacier(
     for name in ("x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
         if name in boot_ds:
             boot_ds[name].encoding.update({"_FillValue": None})
-    # for name in ("bed", "surface", "thickness", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
-    #     if name in boot_ds:
-    #         boot_ds[name].attrs["grid_mapping"] = "spatial_ref"
 
     print("")
     print("Saving bootfile")

@@ -336,6 +336,8 @@ def run_glacier(
     glacier_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
+    log_path = output_path / Path("logs")
+    log_path.mkdir(parents=True, exist_ok=True)
     spatial_path = output_path / Path("spatial")
     spatial_path.mkdir(parents=True, exist_ok=True)
     state_path = output_path / Path("state")
@@ -420,7 +422,7 @@ def run_glacier(
 
     job_kwargs = {
         k: v
-        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes, "output_path": output_path.resolve()}.items()
+        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes, "output_path": log_path.resolve()}.items()
         if v is not None
     }
     if job_kwargs:
