@@ -175,22 +175,23 @@ def stage_glacier(
     # Edge cleanup and simple physical constraints
     for v in ["bed"]:
         boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds)
+    for v in ["surface"]:
+        boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds, value=0.0)
     boot_ds["thickness"] = boot_ds["thickness"].where(boot_ds["thickness"] > 0.0, 0.0)
     boot_ds.rio.write_crs(crs, inplace=True)
     boot_ds.rio.write_grid_mapping(inplace=True)
-    encoding = {
-        v: {"_FillValue": None}
-        for v in ["x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"]
-    }
-    for v in ("bed", "surface", "thickness", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
-        if v in boot_ds:
-            boot_ds[v].attrs["grid_mapping"] = "spatial_ref"
+    for name in ("x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
+        if name in boot_ds:
+            boot_ds[name].encoding.update({"_FillValue": None})
+    # for name in ("bed", "surface", "thickness", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
+    #     if name in boot_ds:
+    #         boot_ds[name].attrs["grid_mapping"] = "spatial_ref"
 
     print("")
     print("Saving bootfile")
     print("-" * 80)
-    print(f"to {boot_file.resolve()}")
-    boot_ds.to_netcdf(boot_file, encoding=encoding)
+    print(boot_file.resolve())
+    boot_ds.to_netcdf(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})
     grid_ds.to_netcdf(grid_file, engine="h5netcdf")
