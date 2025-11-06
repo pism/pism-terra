@@ -179,7 +179,8 @@ def stage_glacier(
         boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds, value=0.0)
     boot_ds["thickness"] = boot_ds["thickness"].where(boot_ds["thickness"] > 0.0, 0.0)
     boot_ds.rio.write_crs(crs, inplace=True)
-    boot_ds.rio.write_grid_mapping(inplace=True)
+    if hasattr(boot_ds["spatial_ref"], "GeoTransform"):
+        del boot_ds["spatial_ref"].attrs["GeoTransform"]
     for name in ("x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
         if name in boot_ds:
             boot_ds[name].encoding.update({"_FillValue": None})
