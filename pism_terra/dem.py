@@ -231,7 +231,6 @@ def prepare_ice_thickness_millan(
     if (not check_xr_sampled(thickness_file)) or force_overwrite:
 
         thickness_file.unlink(missing_ok=True)
-        # TODO: Could tweak this to only pull the relevant regions instead of all of it
         s3_to_local(bucket, prefix="millan", dest_dir="data/ice_thickness/millan")
 
         with ThreadPoolExecutor() as executor:

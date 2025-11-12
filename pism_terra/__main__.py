@@ -1,5 +1,5 @@
 """
-pism-terra entrypoint dispatcher for PISM-Cloud
+Pism-terra entrypoint dispatcher for PISM-Cloud.
 """
 
 import argparse
@@ -8,6 +8,9 @@ from importlib.metadata import entry_points
 
 
 def main():
+    """
+    Pism-terra entrypoint dispatcher for PISM-Cloud.
+    """
     parser = argparse.ArgumentParser(prefix_chars="+", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
         "++process",
