@@ -49,7 +49,7 @@ def fixture_read_rgi() -> gpd.GeoDataFrame:
     return gpd.read_file("tests/rgi_test.gpkg")
 
 
-def test_boot_file_from_rgi_id(rgi):
+def test_boot_file_from_rgi_id(rgi, tmp_path):
     """
     Test the `glacier_dem_from_rgi_id` function for successful dataset creation.
 
@@ -69,10 +69,12 @@ def test_boot_file_from_rgi_id(rgi):
     - The selected RGI ID ("RGI2000-v7.0-C-01-10853") should correspond to a valid glacier
       present in the provided RGI dataset.
     """
+    path = tmp_path / 'test_boot_file_from_rgi_id'
+    path.mkdir(parents=True, exist_ok=True)
 
     rgi_id = "RGI2000-v7.0-C-01-10853"
     resolution = 100.0
-    ds = boot_file_from_rgi_id(rgi_id, rgi, resolution=resolution)
+    ds = boot_file_from_rgi_id(rgi_id, rgi, resolution=resolution, path=path)
     assert isinstance(ds, xr.Dataset)
     assert "surface" in ds
     assert "thickness" in ds
