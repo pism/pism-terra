@@ -2,13 +2,14 @@ name: pism-terra
 channels:
   - conda-forge
 dependencies:
+  - python=3.12.6
+  - pip
   - black
   - cdo
   - ncview
   - pre-commit
-  - python=3.12.6
   - pylint
   - pytest
-  - pip
+  - setuptools_scm>=6.2
   - pip:
       - -r requirements.txt
