@@ -13,7 +13,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `Dockerfile` to build a pism-terra container image
 - `pism_terra/etc/entrypoint.sh` script to serve as the container entrypoint
 - `pism_terra.__main__` package entrypoint to support containerized runs in PISM-Cloud
-- GitHub actions to support, building container images, ensuring this changelog is updated, testing, and releasing pism-terra.
+- GitHub Actions workflows to support, building container images, ensuring this changelog is updated, testing, and releasing pism-terra.
 
 ### Changed
 - `pism-terra` now uses `setuptools_scm` to dynamically compute a version number from the git history 

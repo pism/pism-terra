@@ -207,6 +207,7 @@ def raster_overlaps_glacier(
         if len(glacier) != 1:
             raise ValueError("Expected exactly one geometry in glacier input.")
         glacier = gpd.GeoSeries([glacier.iloc[0]], crs=glacier_crs)
+        # FIXME: likely needs to have the glacier.to_crs(raster_crs) here...
     else:
         geometry = glacier.geometry
         glacier = gpd.GeoSeries([geometry], crs=glacier_crs)
