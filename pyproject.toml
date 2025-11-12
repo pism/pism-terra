@@ -127,6 +127,10 @@ disable = """
 [tool.pylint.format]
 max-line-length = 120
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = "integration"
+
 [tool.numpydoc_validation]
 checks = [
     "all",   # report on all checks, except the below
