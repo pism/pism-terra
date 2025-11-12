@@ -26,12 +26,8 @@ or using Mamba instead:
 
 Install pism-terra:
 
-    $ pip install .
+    $ python -m pip install .
 
-To install the dev version, replace
+To install the dev version, replace the previous command with
 
-    $ mamba env create -f environment.yml
-
-with
-
-    $ mamba env create -f environment-dev.yml
+    $ python -m pip install -e .

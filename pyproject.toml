@@ -1,13 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "pism-terra"
-version = "0.0.2"
-maintainers = [{name = "Andy Aschwanden", email = "andy.aschwanden@gmail.com"}]
+maintainers = [
+    {name = "Andy Aschwanden", email = "andy.aschwanden@gmail.com"},
+    {name = "Joseph H. kennedy", email = "me@jhkennedy.org"},
+]
 description = """Global PISM"""
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "GPL 3.0"}
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 classifiers = [
-        "License :: OSI Approved :: Apache Software License",
         "Natural Language :: English",
         "Operating System :: MacOS :: MacOS X",
         "Operating System :: Microsoft :: Windows",
@@ -15,7 +21,7 @@ classifiers = [
         "Programming Language :: Python :: 3.10",
         "Topic :: Scientific/Engineering :: Postprocessing",
         ]
-dynamic = ["dependencies"]
+dynamic = ["dependencies", "version"]
 
 [project.scripts]
 pism-glacier-stage = "pism_terra.glacier.stage:main"
@@ -30,15 +36,13 @@ include = ["pism_terra*"]
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 
-[build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
-
 [tool.setuptools]
 py-modules = ["pism_terra"]
 
 [tool.setuptools.package-data]
 "pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml']
+
+[tool.setuptools_scm]
 
 [tool.flake8]
 # https://pep8.readthedocs.io/en/latest/intro.html#error-codes
@@ -53,7 +57,7 @@ ignore = """
     E402,
     F722,
     """
-# Max width of Github code review is 119 characters
+# Max width of GitHub code review is 119 characters
 max-line-length = 119
 max-complexity = 18
 exclude = [
