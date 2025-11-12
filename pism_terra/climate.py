@@ -187,20 +187,23 @@ def snap(
         items = []
         for p in tqdm(response_clean, desc="Processing files"):
             fi = parse_filename(str(p))
-            # Build a cftime "standard/gregorian" datetime (day = 1)
-            t = cftime.DatetimeGregorian(int(fi.year), int(fi.month), 1)
+            output_path = path / Path(f"{fi.variable}_{fi.year}_{fi.month}.nc")
 
-            da = rxr.open_rasterio(p).squeeze(drop=True)  # drop 'band' if present
-            da.name = fi.variable
-            da.attrs.update({"units": fi.units})
+            if (not check_xr_sampled(output_path)) or force_overwrite:
+                output_path.unlink(missing_ok=True)
 
-            # add a time dimension
-            da = da.expand_dims(time=[t]).drop_vars("spatial_ref", errors="ignore")
-            p = path / Path(f"{fi.variable}_{fi.year}_{fi.month}.nc")
-            p.unlink(missing_ok=True)
-            da.to_netcdf(p)
+                # Build a cftime "standard/gregorian" datetime (day = 1)
+                t = cftime.DatetimeGregorian(int(fi.year), int(fi.month), 1)
 
-            items.append(p)
+                da = rxr.open_rasterio(p).squeeze(drop=True)  # drop 'band' if present
+                da.name = fi.variable
+                da.attrs.update({"units": fi.units})
+
+                # add a time dimension
+                da = da.expand_dims(time=[t]).drop_vars("spatial_ref", errors="ignore")
+                da.to_netcdf(output_path)
+
+            items.append(output_path)
 
         # Concatenate along time and sort (in case paths are unordered)
         out = xr.open_mfdataset(items, parallel=True, chunks="auto", engine="h5netcdf")
