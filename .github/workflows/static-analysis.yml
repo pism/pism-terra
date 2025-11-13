@@ -31,4 +31,4 @@ jobs:
       - name: run pylint
         shell: bash -el {0}
         run: |
-          pylint -rn -sn --extension-pkg-whitelist=scipy $(git ls-files '*.py')
+          pylint -v --extension-pkg-whitelist=scipy $(git ls-files '*.py')
