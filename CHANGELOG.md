@@ -16,7 +16,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - GitHub Actions workflows to support, building container images, ensuring this changelog is updated, testing, and releasing pism-terra.
 
 ### Changed
-- `pism-terra` now uses `setuptools_scm` to dynamically compute a version number from the git history 
+- `pism-terra` now uses `setuptools_scm` to dynamically compute a version number from the git history
 
 ## [0.0.2]
 

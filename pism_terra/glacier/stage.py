@@ -252,14 +252,11 @@ def main():
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
+    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
     parser.add_argument(
-        "--bucket",
-        help="AWS S3 Bucket to upload output files to"
-    )
-    parser.add_argument(
-        '--bucket-prefix',
-        help='AWS prefix (location in bucket) to add to product files',
-        default='',
+        "--bucket-prefix",
+        help="AWS prefix (location in bucket) to add to product files",
+        default="",
     )
     parser.add_argument(
         "--output-path",
@@ -309,8 +306,9 @@ def main():
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
 
     if options.bucket:
-        prefix = f'{options.bucket_prefix}/{rgi_id}' if options.bucket_prefix else rgi_id
+        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
         local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
+
 
 if __name__ == "__main__":
     __spec__ = None  # type: ignore
