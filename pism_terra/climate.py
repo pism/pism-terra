@@ -382,9 +382,12 @@ def snap(
             if c in ds_weighted.coords:
                 ds_weighted[c].attrs.update(attrs)
 
-        # CF-style 12-month climatology axis (no-leap year)
+        units = "days since 0001-01-01"
+        calendar = "365_day"
+
         base_year = 1
         start_date = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
+
         ds_weighted = ds_weighted.assign_coords(time=("time", start_date))
         ds_weighted["time"].attrs.update(
             {
@@ -395,7 +398,14 @@ def snap(
         )
         # keep calendar only in encoding to avoid xarray overwrite error
         ds_weighted["time"].attrs.pop("calendar", None)
-        ds_weighted.time.encoding.update({"units": "days since 0001-01-01", "calendar": "365_day"})
+        ds_weighted.time.encoding.update({"units": units, "calendar": calendar})
+
+        time_num = cftime.date2num(ds_weighted.time.values, units=units, calendar=calendar).astype("float64")
+
+        ds_weighted = ds_weighted.assign_coords(time=("time", time_num))
+        ds_weighted["time"].attrs.update({"units": units, "calendar": calendar})
+
+        ds_weighted = ds_weighted.cf.add_bounds("time")
 
         # CRS + spatial dims + grid_mapping tags
         ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")
@@ -404,12 +414,11 @@ def snap(
             if v in ds_weighted:
                 ds_weighted[v].attrs["grid_mapping"] = "spatial_ref"
 
-        # time bounds
-        ds_weighted = add_time_bounds(ds_weighted)
-
         # encoding: remove _FillValue without nuking other encodings
         encoding = {
-            v: {"_FillValue": None} for v in ("x", "y", "surface", "air_temp", "precipitation") if v in ds_weighted
+            v: {"_FillValue": None}
+            for v in ("x", "y", "surface", "air_temp", "precipitation", "time", "time_bounds")
+            if v in ds_weighted
         }
 
         # schedule a lazy NetCDF write for this period
