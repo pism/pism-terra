@@ -105,7 +105,10 @@ def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | Non
     True
     """
     fi = parse_filename(str(p))
-    output_path = outdir / f"{fi.variable}_{fi.year}_{fi.month}.nc"
+    snapdir = outdir / Path("snap")
+    snapdir.mkdir(parents=True, exist_ok=True)
+
+    output_path = snapdir / f"{fi.variable}_{fi.year}_{fi.month}.nc"
 
     try:
         if (not check_xr_sampled(output_path)) or force_overwrite:
@@ -120,6 +123,8 @@ def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | Non
 
             da = da.expand_dims(time=[t]).drop_vars("spatial_ref", errors="ignore")
             da.encoding["_FillValue"] = None  # optional: avoid _FillValue in output
+            da.encoding.update({"zlib": True, "complevel": 2})
+
             da.to_netcdf(output_path)
 
         return output_path if output_path.exists() else None
@@ -238,7 +243,6 @@ def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: floa
         },
     )
     encoding = {v: {"_FillValue": None} for v in ["delta_T", "frac_P"]}
-
     ds.to_netcdf(file_name, encoding=encoding)
 
 
