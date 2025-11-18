@@ -12,8 +12,8 @@ nodes = 1
 
 [run_info]
 
-'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA Atna"
+'run_info.institution' = "University of Idaho"
+'run_info.title' = "PISM-TERRA Wrangell Mountains"
 
 [campaign]
 
