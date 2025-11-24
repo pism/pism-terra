@@ -37,6 +37,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel
 from pyfiglet import Figlet
 
+from pism_terra.aws import local_to_s3
 from pism_terra.climate import create_offset_file
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.glacier.stage import stage_glacier
@@ -564,17 +565,23 @@ def run_single():
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
+    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
     parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
+        "--bucket-prefix",
+        help="AWS prefix (location in bucket) to add to product files",
+        default="",
     )
     parser.add_argument(
         "--output-path",
         help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
         default="data",
+    )
+    parser.add_argument(
+        "--force-overwrite",
+        help="Force downloading all files.",
+        action="store_true",
+        default=False,
     )
     parser.add_argument(
         "--queue",
@@ -698,6 +705,10 @@ def run_single():
             sample=int(row["sample"]) if "sample" in row else idx,
         )
 
+    if options.bucket:
+        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
+        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
+
 
 def run_ensemble():
     """
@@ -707,11 +718,23 @@ def run_ensemble():
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Run RGI Glacier Ensemble."
+    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
+    parser.add_argument(
+        "--bucket-prefix",
+        help="AWS prefix (location in bucket) to add to product files",
+        default="",
+    )
     parser.add_argument(
         "--output-path",
         help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
         default="data",
+    )
+    parser.add_argument(
+        "--force-overwrite",
+        help="Force downloading all files.",
+        action="store_true",
+        default=False,
     )
     parser.add_argument(
         "--queue",
@@ -746,12 +769,6 @@ def run_ensemble():
     parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
         action="store_true",
         default=False,
     )
@@ -862,6 +879,11 @@ def run_ensemble():
             uq=default,
             sample=int(row["sample"]) if "sample" in row else idx,
         )
+
+    if options.bucket:
+        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
+        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
+
 
 
 if __name__ == "__main__":
