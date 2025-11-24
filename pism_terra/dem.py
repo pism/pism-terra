@@ -226,12 +226,12 @@ def prepare_ice_thickness_millan(
     bucket: str = "pism-cloud-data"
     out_dir = Path(path)
     thickness_file = out_dir / "thickness.nc"
-    ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
 
     if (not check_xr_sampled(thickness_file)) or force_overwrite:
 
         thickness_file.unlink(missing_ok=True)
         s3_to_local(bucket, prefix="millan", dest_dir="data/ice_thickness/millan")
+        ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
 
         with ThreadPoolExecutor() as executor:
             futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
@@ -251,8 +251,8 @@ def prepare_ice_thickness_millan(
 
         thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
         thickness.to_netcdf(thickness_file)
-    else:
-        thickness = xr.open_dataarray(thickness_file)
+
+    thickness = xr.open_dataarray(thickness_file)
 
     return thickness
 
