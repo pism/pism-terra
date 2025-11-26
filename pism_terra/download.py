@@ -459,6 +459,7 @@ def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
 # TODO: tests, docs
 def file_localizer(file_path: str, dest_dir: str | Path = Path.cwd()) -> Path:
     dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
     if Path(file_path).exists():
         return Path(file_path).resolve()
