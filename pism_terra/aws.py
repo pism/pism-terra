@@ -26,10 +26,12 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+
 
 # ---------------------------
 # AWS CLI wrappers (simple)
@@ -101,6 +103,19 @@ def s3_sync_from_local(src: str | Path, s3_uri: str, *, delete: bool = False) ->
 # -----------------------------------------
 # Pure boto3 implementation (one-way syncs)
 # -----------------------------------------
+
+
+def download_from_s3(s3_uri: str, dest: str | Path) -> Path:
+    dest = Path(dest)
+
+    parsed_url = urlparse(s3_uri)
+    bucket = parsed_url.netloc
+    prefix = parsed_url.path.lstrip('/')
+
+    s3 = boto3.client("s3")
+    s3.download_file(bucket, prefix, str(dest))
+
+    return dest
 
 
 def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
