@@ -456,8 +456,26 @@ def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
         raise ValueError("Unsupported archive format: must end with .zip or .tar.gz")
 
 
-# TODO: tests, docs
+# TODO: tests
 def file_localizer(file_path: str, dest_dir: str | Path = Path.cwd()) -> Path:
+    """
+    Localize files to the ``dest_dir`` directory if the don't already exist on the local filesystem.
+
+    This function will ensure files are available in a local directory, either by downloading the HTTP/S3 file, or
+    finding an appropriate file bundled with the pism-terra package.
+
+    Parameters
+    ----------
+    file_path : str
+        URI, local path, or path within pism-terra to a file.
+    dest_dir : str or Path, optional
+        If a file is localized, place it in this directory. Defaults to the current working directory.
+
+    Returns
+    -------
+    Path
+        Localized file path.
+    """
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 

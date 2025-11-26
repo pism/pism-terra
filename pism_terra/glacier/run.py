@@ -37,7 +37,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel
 from pyfiglet import Figlet
 
-from pism_terra.aws import download_from_s3, local_to_s3
+from pism_terra.aws import local_to_s3
 from pism_terra.climate import create_offset_file
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.download import file_localizer
@@ -883,7 +883,6 @@ def run_ensemble():
     if options.bucket:
         prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
         local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
-
 
 
 if __name__ == "__main__":
