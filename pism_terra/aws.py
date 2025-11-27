@@ -379,7 +379,8 @@ def local_to_s3(
         if need_upload:
             print("UPLOAD", path, "→", f"s3://{bucket}/{key}")
             if not dry_run:
-                s3.upload_file(str(path), bucket, key, Config=txconf)
+                s3.upload_file(str(path), bucket, key, Config=txconf, ExtraArgs={"Tagging": "file_type=product"})
+
 
     # Delete extras on S3 if requested
     if delete_extra:
