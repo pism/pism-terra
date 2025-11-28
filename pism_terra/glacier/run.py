@@ -448,7 +448,8 @@ def run_glacier(
     prefix = f"{mpi_str} {cfg.run.executable} "
     postfix = f"pism-glacier-postprocess {post_file}"
     rendered_script = "" if debug else template.render(params)
-    rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
+    # FIXME: postprocessing requires pism-terra to be installed, but it's not currently installed the ec2 flow
+    rendered_script += f"\n\n{prefix}{run_str}\n\n# {postfix}"
 
     run_script_path = glacier_path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
