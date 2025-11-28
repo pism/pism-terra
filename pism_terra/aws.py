@@ -381,7 +381,6 @@ def local_to_s3(
             if not dry_run:
                 s3.upload_file(str(path), bucket, key, Config=txconf, ExtraArgs={"Tagging": "file_type=product"})
 
-
     # Delete extras on S3 if requested
     if delete_extra:
         want_keys = {f"{prefix.rstrip('/')}/{k}" for k in local_files}

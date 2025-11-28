@@ -22,27 +22,27 @@ ENV PYTHONDONTWRITEBYTECODE=true
 RUN apt-get update && apt-get install -y --no-install-recommends unzip vim && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-ARG CONDA_UID=1000
-ARG CONDA_GID=1000
+ARG WORKER_UID=1000
+ARG WORKER_GID=1000
 
-RUN groupadd -g "${CONDA_GID}" --system conda && \
-    useradd -l -u "${CONDA_UID}" -g "${CONDA_GID}" --system -d /home/conda -m  -s /bin/bash conda && \
-    chown -R conda:conda /opt && \
-    echo ". /opt/conda/etc/profile.d/conda.sh" >> /home/conda/.profile && \
-    echo "conda activate base" >> /home/conda/.profile
+RUN groupadd -g "${WORKER_GID}" --system worker && \
+    useradd -l -u "${WORKER_UID}" -g "${WORKER_GID}" --system -d /home/worker -m  -s /bin/bash worker && \
+    chown -R worker:worker /opt
 
-
-USER ${CONDA_UID}
+USER ${WORKER_UID}
 SHELL ["/bin/bash", "-l", "-c"]
-WORKDIR /home/conda/
+WORKDIR /home/worker
 
-COPY --chown=${CONDA_UID}:${CONDA_GID} . /pism-terra/
+COPY --chown=${WORKER_UID}:${WORKER_GID} . /pism-terra/
 
 RUN mamba env create -f /pism-terra/environment.yml && \
     conda clean -afy && \
-    conda activate pism-terra && \
-    sed -i 's/conda activate base/conda activate pism-terra/g' /home/conda/.profile && \
+    echo ". /opt/conda/etc/profile.d/conda.sh" >> /home/worker/.profile && \
+    echo "conda activate pism-terra" >> /home/worker/.profile
+
+RUN conda activate pism-terra && \
     python -m pip install --no-cache-dir /pism-terra
+
 
 ENTRYPOINT ["/pism-terra/pism_terra/etc/entrypoint.sh"]
 CMD ["-h"]

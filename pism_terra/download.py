@@ -456,7 +456,6 @@ def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
         raise ValueError("Unsupported archive format: must end with .zip or .tar.gz")
 
 
-# TODO: tests
 def file_localizer(file_path: str, dest_dir: str | Path = Path.cwd()) -> Path:
     """
     Localize files to the ``dest_dir`` directory if the don't already exist on the local filesystem.

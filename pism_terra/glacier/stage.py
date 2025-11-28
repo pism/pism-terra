@@ -303,7 +303,6 @@ def main():
     input_path = glacier_path / Path("input")
     input_path.mkdir(parents=True, exist_ok=True)
     glacier_df = stage_glacier(config, rgi_id, rgi_file, path=input_path, force_overwrite=force_overwrite)
-    # TODO: Needed? Not written by run_single or run_ensemble
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
 
     if options.bucket:
