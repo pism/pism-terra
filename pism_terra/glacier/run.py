@@ -41,6 +41,7 @@ from pism_terra.aws import local_to_s3
 from pism_terra.climate import create_offset_file
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.download import file_localizer
+from pism_terra.execute import execute
 from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import create_samples
 
@@ -448,8 +449,7 @@ def run_glacier(
     prefix = f"{mpi_str} {cfg.run.executable} "
     postfix = f"pism-glacier-postprocess {post_file}"
     rendered_script = "" if debug else template.render(params)
-    # FIXME: postprocessing requires pism-terra to be installed, but it's not currently installed the ec2 flow # pylint: disable=W0511
-    rendered_script += f"\n\n{prefix}{run_str}\n\n# {postfix}"
+    rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
 
     run_script_path = glacier_path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
@@ -616,6 +616,11 @@ def run_single():
         default=None,
     )
     parser.add_argument(
+        "--execute",
+        help="Execute the pism run script immediately. Ignored if `--debug` is provided.",
+        action="store_true",
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
@@ -705,6 +710,9 @@ def run_single():
             uq=default,
             sample=int(row["sample"]) if "sample" in row else idx,
         )
+
+    if options.execute and not options.debug:
+        execute(path / rgi_id)
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id

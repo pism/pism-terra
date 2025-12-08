@@ -1,39 +1,89 @@
-FROM condaforge/mambaforge:latest
+# FIXME: better tag
+ARG PISM_TAG=cloud-test
+FROM ghcr.io/pism/pism:${PISM_TAG} AS runtime
 
-# For opencontainers label definitions, see:
-#    https://github.com/opencontainers/image-spec/blob/master/annotations.md
-LABEL org.opencontainers.image.title="pism-terra"
-LABEL org.opencontainers.image.description="Global PISM"
-LABEL org.opencontainers.image.vendor="Geophysical Institute, University of Alaska Fairbanks"
-LABEL org.opencontainers.image.authors="Andy Ascwanden <andy.aschwanden@gmail.com>, Joseph H. Kennedy <me@jhkennedy.org>"
-LABEL org.opencontainers.image.licenses="BSD-3-Clause"
-LABEL org.opencontainers.image.url="https://github.com/pism/pism-terra"
-LABEL org.opencontainers.image.source="https://github.com/pism/pism-terra"
-LABEL org.opencontainers.image.documentation="https://github.com/pism/pism-terra"
-
-# Dynamic lables to define at build time via `docker build --label`
-# LABEL org.opencontainers.image.created=""
-# LABEL org.opencontainers.image.version=""
-# LABEL org.opencontainers.image.revision=""
-
+FROM runtime AS build
 ARG DEBIAN_FRONTEND=noninteractive
-ENV PYTHONDONTWRITEBYTECODE=true
+ARG ONEAPI_VERSION=2025.3
+ARG IMPI_VERSION=2021.17
 
-RUN apt-get update && apt-get install -y --no-install-recommends unzip vim && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+USER root
+RUN <<EOF
+    echo "Install build tools"
 
-ARG WORKER_UID=1000
-ARG WORKER_GID=1000
+    set -e
+    set -u
+    set -x
 
-RUN groupadd -g "${WORKER_GID}" --system worker && \
-    useradd -l -u "${WORKER_UID}" -g "${WORKER_GID}" --system -d /home/worker -m  -s /bin/bash worker && \
-    chown -R worker:worker /opt
+    apt-get update
 
-USER ${WORKER_UID}
-SHELL ["/bin/bash", "-l", "-c"]
+    apt-get install -y --no-install-recommends \
+    autoconf \
+    automake \
+    git \
+    libtool \
+    make \
+    intel-oneapi-compiler-dpcpp-cpp-${ONEAPI_VERSION} \
+    intel-oneapi-compiler-fortran-${ONEAPI_VERSION} \
+    intel-oneapi-mpi-devel-${IMPI_VERSION} \
+    ""
+
+    rm -rf /var/lib/apt/lists/*
+EOF
+
+RUN <<EOF
+    echo "Install NCAR/peak_memusage"
+
+    set -e
+    set -u
+    set -x
+
+    build_dir=/var/tmp/build/peak_memusage
+    prefix=/opt/peak_memusage
+
+    mkdir -p ${build_dir}
+    cd ${build_dir}
+
+    git clone --depth=1 https://github.com/NCAR/peak_memusage.git .
+
+    ./autogen.sh
+
+    ./configure CC=mpiicx CXX=mpiicpx FC=mpiifx \
+    --disable-nvml \
+    --disable-fortran \
+    --disable-openmp \
+    --enable-mpi \
+    --prefix=${prefix} || (cat config.log && exit 1)
+
+    make all && make install
+
+    rm -rf ${build_dir}
+EOF
+
+FROM runtime
+
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git unzip vim \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /opt/peak_memusage/ /opt/peak_memusage
+
+RUN chown -R worker /opt/
+
+USER worker
 WORKDIR /home/worker
 
-COPY --chown=${WORKER_UID}:${WORKER_GID} . /pism-terra/
+ENV PATH=/opt/peak_memusage/bin:$PATH
+
+RUN curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh" && \
+    bash Miniforge3-$(uname)-$(uname -m).sh -b -p /opt/conda && \
+    rm Miniforge3-$(uname)-$(uname -m).sh
+
+ENV PATH=/opt/conda/bin:$PATH
+SHELL ["/bin/bash", "-l", "-c"]
+
+COPY --chown=worker . /pism-terra/
 
 RUN mamba env create -f /pism-terra/environment.yml && \
     conda clean -afy && \
