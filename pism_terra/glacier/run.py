@@ -721,12 +721,12 @@ def run_single():
 
 def run_ensemble():
     """
-    Run single glacier.
+    Run single glacier ensemble.
     """
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Run RGI Glacier Ensemble."
+    parser.description = "Stage RGI Glacier Ensemble."
     parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
     parser.add_argument(
         "--bucket-prefix",
@@ -784,37 +784,46 @@ def run_ensemble():
     parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
-        nargs=1,
+        nargs="?",
     )
     parser.add_argument(
         "RGI_FILE",
         help="RGI.",
-        nargs=1,
+        nargs="?",
     )
     parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
-        nargs=1,
+        nargs="?",
     )
     parser.add_argument(
         "TEMPLATE_FILE",
         help="TEMPLATE J2.",
-        nargs=1,
+        nargs="?",
     )
     parser.add_argument(
         "UQ_FILE",
         help="UQ TOML.",
-        nargs=1,
+        nargs="?",
     )
 
-    options, _ = parser.parse_known_args()
+    options = parser.parse_args()
     force_overwrite = options.force_overwrite
-    path = options.output_path
-    rgi_id = options.RGI_ID[0]
-    rgi_file = options.RGI_FILE[0]
-    config_file = options.CONFIG_FILE[0]
-    template_file = options.TEMPLATE_FILE[0]
-    uq_file = options.UQ_FILE[0]
+
+    path = Path(options.output_path)
+    rgi_id = options.RGI_ID
+    glacier_path = path / rgi_id
+
+    input_path = glacier_path / "input"
+    input_path.mkdir(parents=True, exist_ok=True)
+    output_path = glacier_path / "output"
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    rgi_file = file_localizer(options.RGI_FILE, path / "rgi")
+    config_file = file_localizer(options.CONFIG_FILE, path / "config")
+    template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
+    uq_file = file_localizer(options.UQ_FILE, path / "uq")
+
     resolution = options.resolution
     debug = options.debug
     queue = options.queue
@@ -823,16 +832,6 @@ def run_ensemble():
     walltime = options.walltime
 
     rgi = gpd.read_file(rgi_file)
-
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
-    glacier_path = path / Path(rgi_id)
-    glacier_path.mkdir(parents=True, exist_ok=True)
-    input_path = glacier_path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
-    output_path = glacier_path / Path("output")
-    output_path.mkdir(parents=True, exist_ok=True)
-
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
     df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
