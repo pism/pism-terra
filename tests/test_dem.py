@@ -38,25 +38,32 @@ from pism_terra.raster import raster_overlaps_glacier
 @pytest.mark.integration
 def test_boot_file_from_rgi_id(rgi, tmp_path):
     """
-    Test the `glacier_dem_from_rgi_id` function for successful dataset creation.
+    Test ``boot_file_from_rgi_id`` for successful boot dataset creation.
 
-    This test ensures that the glacier DEM and associated variables can be successfully
-    generated from a given RGI ID and RGI dataset. It verifies that the returned object
-    is a valid `xarray.Dataset` and implicitly tests core functionality like DEM stitching,
-    reprojection, and ice thickness interpolation.
+    This test verifies that a glacier "boot" dataset (surface, thickness, bed)
+    can be generated for a given RGI ID and RGI dataset. It checks that:
+
+    * the returned object is an :class:`xarray.Dataset`,
+    * expected core variables (``surface``, ``thickness``, ``bed``) are present, and
+    * the horizontal spacing of the x-coordinate matches the requested resolution.
+
+    Together, this implicitly exercises DEM stitching, reprojection, thickness
+    interpolation, and grid construction.
 
     Parameters
     ----------
     rgi : geopandas.GeoDataFrame
-        Pre-loaded RGI dataset fixture or input, typically provided via a pytest fixture.
+        Pre-loaded RGI dataset (typically provided by a pytest fixture) that
+        contains a feature with the test ``rgi_id``.
     tmp_path : pathlib.Path
-        Temporary path fixture provided by PyTest.
+        Pytest-provided temporary directory used to store intermediate and
+        output files during the test run.
 
     Notes
     -----
-    - This test is intended to be run inside a test suite (e.g., with pytest).
-    - The selected RGI ID ("RGI2000-v7.0-C-01-10853") should correspond to a valid glacier
-      present in the provided RGI dataset.
+    - This test is intended to run within a pytest test suite.
+    - The hard-coded RGI ID (``"RGI2000-v7.0-C-01-10853"``) must be present in
+      the ``rgi`` fixture for the test to be meaningful.
     """
     path = tmp_path / "test_boot_file_from_rgi_id"
     path.mkdir(parents=True, exist_ok=True)

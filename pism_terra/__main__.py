@@ -1,5 +1,5 @@
 """
-Pism-terra entrypoint dispatcher for PISM-Cloud.
+PISM-TERRA entrypoint dispatcher for PISM-Cloud.
 """
 
 import argparse
@@ -12,7 +12,7 @@ from pathlib import Path
 
 def main():
     """
-    Pism-terra entrypoint dispatcher for PISM-Cloud.
+    PISM-TERRA entrypoint dispatcher for PISM-Cloud.
     """
     parser = argparse.ArgumentParser(prefix_chars="+", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(

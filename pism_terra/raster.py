@@ -210,7 +210,7 @@ def raster_overlaps_glacier(
     else:
         geometry = glacier.geometry
         glacier = gpd.GeoSeries([geometry], crs=glacier_crs)
-        glacier = glacier.to_crs(raster_crs)
+    glacier = glacier.to_crs(raster_crs)
 
     # Compare bounding boxes
     glacier_box = box(*glacier.total_bounds)

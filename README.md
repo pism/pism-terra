@@ -5,7 +5,7 @@
 
 # pism-terra
 
-Repository for work related to NASA ROSES award 80NSSC21K0748 (2021-24).
+Simulate any glacier complex in the world based on their RGI7 ID.
 
 ## Installation
 
