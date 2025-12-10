@@ -11,23 +11,27 @@ Simulate any glacier complex in the world based on their RGI7 ID.
 
 Get pism-terra source from GitHub:
 
-    $ git clone git@github.com:pism/pism-terra.git
-    $ cd pism-terra
+    git clone git@github.com:pism/pism-terra.git
+    cd pism-terra
 
 Optionally create Conda environment named *pism-terra*:
 
-    $ conda env create -f environment.yml
-    $ conda activate pism-terra
+    conda env create -f environment.yml
+    conda activate pism-terra
 
 or using Mamba instead:
 
-    $ mamba env create -f environment.yml
-    $ mamba activate pism-terra
+    mamba env create -f environment.yml
+    mamba activate pism-terra
 
 Install pism-terra:
 
-    $ python -m pip install .
+    python -m pip install .
 
 To install the dev version, replace the previous command with
 
-    $ python -m pip install -e .
+    python -m pip install -e .
+
+For rapid development and without internet, you can also run
+
+    python -m pip install . --no-deps --no-build-isolation
