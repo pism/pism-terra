@@ -85,6 +85,10 @@ def main():
         default="",
     )
     parser.add_argument(
+        "--job-id",
+        help="PISM_TERRA_PREP_ENSEMBLE to stage glacier run files from.",
+    )
+    parser.add_argument(
         "RUN_SCRIPT",
         help="Path to the PISM run script to execute. If you've provided ``--bucket`` and ``--bucket-prefix``, "
         "this path will need to be relative to ``f's3://{bucket}/{bucket_prefix}/'``.",
@@ -98,7 +102,7 @@ def main():
     if args.bucket:
         # FIXME: pism-terra produces hard-coded absolute paths, so things _must_ end up in ${HOME}/data  # pylint: disable=W0511
         work_dir /= "data"
-        s3_to_local(args.bucket, args.bucket_prefix, work_dir)
+        s3_to_local(args.bucket, args.job_id, work_dir)
 
     run_script = args.work_dir / args.RUN_SCRIPT
     ensure_pism_terra_structure(run_script)
