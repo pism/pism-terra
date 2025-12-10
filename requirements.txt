@@ -4,6 +4,7 @@ cdsapi
 cf_xarray
 cf_units
 cftime
+cmcrameri
 dask[distributed,dataframe]
 dem_stitcher
 earthaccess
