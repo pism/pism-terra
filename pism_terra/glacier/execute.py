@@ -6,7 +6,7 @@ import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
-from pism_cloud.aws import local_to_s3, s3_to_local
+from pism_terra.aws import local_to_s3, s3_to_local
 
 
 def find_first_and_execute(work_dir: Path = Path.cwd()):
