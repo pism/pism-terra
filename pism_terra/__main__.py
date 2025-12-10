@@ -21,6 +21,7 @@ def main():
             "pism-glacier-stage",
             "pism-glacier-run",
             "pism-glacier-run-ensemble",
+            "pism-glacier-execute",
             "pism-glacier-postprocess",
             "combine-crameri-colormaps",
         ],

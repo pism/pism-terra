@@ -41,7 +41,7 @@ from pism_terra.aws import local_to_s3
 from pism_terra.climate import create_offset_file
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.download import file_localizer
-from pism_terra.execute import execute
+from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import create_samples
 
@@ -712,7 +712,7 @@ def run_single():
         )
 
     if options.execute and not options.debug:
-        execute(path / rgi_id)
+        find_first_and_execute(path / rgi_id)
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
