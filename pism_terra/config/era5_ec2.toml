@@ -52,7 +52,7 @@ velocity = "none"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.extra.file' = "none"
 'output.extra.times' = "monthly"
-'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
+'output.extra.vars' = "ice_mass,mass_fluxes,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 
