@@ -104,7 +104,7 @@ def main():
         work_dir /= "data"
         s3_to_local(args.bucket, args.job_id, work_dir)
 
-    run_script = args.work_dir / args.RUN_SCRIPT
+    run_script = work_dir / args.RUN_SCRIPT
     ensure_pism_terra_structure(run_script)
 
     execute(run_script)
