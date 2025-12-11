@@ -593,7 +593,7 @@ def run_single():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntatsks in config file.",
+        help="Overrides ntasks in config file.",
         type=int,
         default=None,
     )
@@ -753,7 +753,7 @@ def run_ensemble():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntatsks in config file.",
+        help="Overrides ntasks in config file.",
         type=int,
         default=None,
     )
