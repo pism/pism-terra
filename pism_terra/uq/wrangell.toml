@@ -3,7 +3,7 @@ mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "clima
 
 ['atmosphere.delta_T']
 
-loc = -3
+loc = -2
 scale = 4
 distribution = "uniform"
 

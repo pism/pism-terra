@@ -26,7 +26,6 @@ import rasterio
 import xarray as xr
 from numpy.testing import assert_array_almost_equal
 from rasterio.io import MemoryFile
-from rasterio.transform import from_origin
 from shapely.geometry import box
 
 from pism_terra.dem import (
@@ -36,43 +35,42 @@ from pism_terra.dem import (
 from pism_terra.raster import raster_overlaps_glacier
 
 
-@pytest.fixture(name="rgi")
-def fixture_read_rgi() -> gpd.GeoDataFrame:
+@pytest.mark.integration
+def test_boot_file_from_rgi_id(rgi, tmp_path):
     """
-    Fixture to read test RGI.
+    Test ``boot_file_from_rgi_id`` for successful boot dataset creation.
 
-    Returns
-    -------
-    gpd.GeoDataFrame
-        RGI test.
-    """
-    return gpd.read_file("tests/rgi_test.gpkg")
+    This test verifies that a glacier "boot" dataset (surface, thickness, bed)
+    can be generated for a given RGI ID and RGI dataset. It checks that:
 
+    * the returned object is an :class:`xarray.Dataset`,
+    * expected core variables (``surface``, ``thickness``, ``bed``) are present, and
+    * the horizontal spacing of the x-coordinate matches the requested resolution.
 
-def test_boot_file_from_rgi_id(rgi):
-    """
-    Test the `glacier_dem_from_rgi_id` function for successful dataset creation.
-
-    This test ensures that the glacier DEM and associated variables can be successfully
-    generated from a given RGI ID and RGI dataset. It verifies that the returned object
-    is a valid `xarray.Dataset` and implicitly tests core functionality like DEM stitching,
-    reprojection, and ice thickness interpolation.
+    Together, this implicitly exercises DEM stitching, reprojection, thickness
+    interpolation, and grid construction.
 
     Parameters
     ----------
     rgi : geopandas.GeoDataFrame
-        Pre-loaded RGI dataset fixture or input, typically provided via a pytest fixture.
+        Pre-loaded RGI dataset (typically provided by a pytest fixture) that
+        contains a feature with the test ``rgi_id``.
+    tmp_path : pathlib.Path
+        Pytest-provided temporary directory used to store intermediate and
+        output files during the test run.
 
     Notes
     -----
-    - This test is intended to be run inside a test suite (e.g., with pytest).
-    - The selected RGI ID ("RGI2000-v7.0-C-01-10853") should correspond to a valid glacier
-      present in the provided RGI dataset.
+    - This test is intended to run within a pytest test suite.
+    - The hard-coded RGI ID (``"RGI2000-v7.0-C-01-10853"``) must be present in
+      the ``rgi`` fixture for the test to be meaningful.
     """
+    path = tmp_path / "test_boot_file_from_rgi_id"
+    path.mkdir(parents=True, exist_ok=True)
 
     rgi_id = "RGI2000-v7.0-C-01-10853"
     resolution = 100.0
-    ds = boot_file_from_rgi_id(rgi_id, rgi, resolution=resolution)
+    ds = boot_file_from_rgi_id(rgi_id, rgi, resolution=resolution, path=path)
     assert isinstance(ds, xr.Dataset)
     assert "surface" in ds
     assert "thickness" in ds
@@ -109,101 +107,6 @@ def test_get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame):
     center_true = np.array([-129.73625986215418, 56.197765000000004])
     center = np.array([glacier["cenlon"], glacier["cenlat"]])
     assert_array_almost_equal(center, center_true)
-
-
-@pytest.fixture(name="in_memory_raster")
-def in_memory_raster():
-    """
-    Create an in-memory single-band raster dataset for testing.
-
-    This fixture generates a small 10x10 raster using `rasterio.MemoryFile` with:
-    - 1-meter resolution
-    - Upper-left origin at (0, 10)
-    - CRS: EPSG:32633 (UTM zone 33N)
-    - Data filled with constant value 1
-
-    The raster is written with a basic GeoTIFF profile suitable for unit tests that
-    require spatially referenced raster data without writing to disk.
-
-    Returns
-    -------
-    rasterio.io.MemoryFile
-        A `MemoryFile` object containing the test raster. Use `.open()` to get a dataset.
-
-    Examples
-    --------
-    def test_something(in_memory_raster):
-        with in_memory_raster.open() as dataset:
-            assert dataset.read(1).shape == (10, 10)
-    """
-    width = height = 10
-    transform = from_origin(0, 10, 1, 1)  # (left, top, xres, yres)
-    data = np.ones((1, height, width), dtype="uint8")
-
-    profile = {
-        "driver": "GTiff",
-        "height": height,
-        "width": width,
-        "count": 1,
-        "dtype": "uint8",
-        "crs": "EPSG:32633",
-        "transform": transform,
-    }
-
-    memfile = MemoryFile()
-    with memfile.open(**profile) as dataset:
-        dataset.write(data)
-
-    return memfile
-
-
-@pytest.fixture(name="dataset")
-def in_memory_raster_da():
-    """
-    Create and return an open in-memory single-band raster dataset for testing.
-
-    This fixture generates a small 10x10 raster with:
-    - Constant value 1
-    - 1-meter resolution
-    - Top-left origin at (0, 10)
-    - CRS: EPSG:32633 (UTM zone 33N)
-
-    The raster is created in memory using `rasterio.MemoryFile` and returned as
-    an open dataset ready for testing.
-
-    Yields
-    ------
-    rasterio.io.DatasetReader
-        An open rasterio dataset backed by an in-memory file. Automatically closed
-        after the test completes.
-
-    Examples
-    --------
-    def test_read_data(in_memory_raster):
-        assert in_memory_raster.read(1).shape == (10, 10)
-        assert in_memory_raster.crs.to_epsg() == 32633
-    """
-    width = height = 10
-    transform = from_origin(0, 10, 1, 1)
-    data = np.ones((1, height, width), dtype="uint8")
-    profile = {
-        "driver": "GTiff",
-        "height": height,
-        "width": width,
-        "count": 1,
-        "dtype": "uint8",
-        "crs": "EPSG:32633",
-        "transform": transform,
-    }
-
-    memfile = MemoryFile()
-    dataset = memfile.open(**profile)
-    dataset.write(data)
-
-    yield dataset
-
-    dataset.close()
-    memfile.close()
 
 
 def test_raster_overlaps_true(in_memory_raster: MemoryFile):

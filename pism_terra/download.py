@@ -41,6 +41,7 @@ import requests
 import xarray as xr
 from tqdm.auto import tqdm
 
+from pism_terra.aws import download_from_s3
 from pism_terra.workflow import check_xr_sampled
 
 
@@ -453,6 +454,40 @@ def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
         return zipfile.ZipFile(buffer)
     else:
         raise ValueError("Unsupported archive format: must end with .zip or .tar.gz")
+
+
+def file_localizer(file_path: str, dest_dir: str | Path = Path.cwd()) -> Path:
+    """
+    Localize files to the ``dest_dir`` directory if the don't already exist on the local filesystem.
+
+    This function will ensure files are available in a local directory, either by downloading the HTTP/S3 file, or
+    finding an appropriate file bundled with the pism-terra package.
+
+    Parameters
+    ----------
+    file_path : str
+        URI, local path, or path within pism-terra to a file.
+    dest_dir : str or Path, optional
+        If a file is localized, place it in this directory. Defaults to the current working directory.
+
+    Returns
+    -------
+    Path
+        Localized file path.
+    """
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    if Path(file_path).exists():
+        return Path(file_path).resolve()
+    elif (package_path := Path(__file__).parent / Path(file_path)).exists():
+        return package_path.resolve()
+    elif file_path.startswith("s3://"):
+        return download_from_s3(file_path, dest_dir / Path(file_path).name)
+    elif file_path.startswith("https://") or file_path.startswith("http://"):
+        return Path(download_file(file_path, dest_dir / Path(file_path).name))
+
+    raise ValueError(f"Unable to find local path to {file_path}")
 
 
 def download_file(url: str, output_path: Path | str, force_overwrite: bool = False) -> str:
