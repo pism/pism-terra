@@ -22,25 +22,9 @@ Test staging functions.
 # import tempfile
 # from pathlib import Path
 
-import geopandas as gpd
-import pytest
-
 # import xarray as xr
 
 # from pism_terra.stage import stage_glacier
-
-
-@pytest.fixture(name="rgi")
-def fixture_read_rgi() -> gpd.GeoDataFrame:
-    """
-    Fixture to read test RGI.
-
-    Returns
-    -------
-    gpd.GeoDataFrame
-        RGI test.
-    """
-    return gpd.read_file("tests/rgi_test.gpkg")
 
 
 # @pytest.mark.parametrize("rgi_id", ["RGI2000-v7.0-C-01-10853"])

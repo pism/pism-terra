@@ -35,6 +35,7 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
+from pism_terra.aws import local_to_s3
 from pism_terra.climate import create_offset_file, era5, pmip4, snap
 from pism_terra.config import load_config
 from pism_terra.dem import boot_file_from_rgi_id
@@ -251,11 +252,17 @@ def main():
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
+    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
+    parser.add_argument(
+        "--bucket-prefix",
+        help="AWS prefix (location in bucket) to add to product files",
+        default="",
+    )
     parser.add_argument(
         "--output-path",
         help="Path to save all files.",
-        type=str,
-        default="data",
+        type=Path,
+        default=Path("data"),
     )
     parser.add_argument(
         "--force-overwrite",
@@ -289,15 +296,18 @@ def main():
     cfg = load_config(config_file)
     config = cfg.campaign.as_params()
 
-    path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     glacier_path = path / Path(rgi_id)
     glacier_path.mkdir(parents=True, exist_ok=True)
 
     input_path = glacier_path / Path("input")
     input_path.mkdir(parents=True, exist_ok=True)
-    glacier_df = stage_glacier(config, rgi_id, rgi_file, path=glacier_path, force_overwrite=force_overwrite)
+    glacier_df = stage_glacier(config, rgi_id, rgi_file, path=input_path, force_overwrite=force_overwrite)
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
+
+    if options.bucket:
+        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
+        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
 
 
 if __name__ == "__main__":
