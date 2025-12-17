@@ -32,7 +32,7 @@ velocity = "none"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 250
+'time_stepping.adaptive_ratio' = 500
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -163,3 +163,9 @@ model = "given"
 
 'ocean.constant.melt_rate' = 0.0
 'ocean.models' = 'constant'
+
+[hydrology]
+
+model = "null"
+
+[hydrology.options.null]
