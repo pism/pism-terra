@@ -782,6 +782,8 @@ class PismConfig(BaseModelWithDot):
         Calving-related options to pass through. Defaults to ``{}``.
     iceflow : dict of str to Any, optional
         Ice-flow-related options to pass through. Defaults to ``{}``.
+    hydrology : dict of str to Any, optional
+        Hydrology-related options to pass through. Defaults to ``{}``.
     surface : dict of str to Any, optional
         Surface-related options to pass through. Defaults to ``{}``.
     reporting : dict of str to Any, optional
@@ -817,6 +819,7 @@ class PismConfig(BaseModelWithDot):
     grid: GridConfig
     atmosphere: AtmosphereConfig
     surface: SurfaceConfig
+    hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
     ocean: dict[str, Any] = {}
     calving: dict[str, Any] = {}
@@ -1144,6 +1147,16 @@ class EnergyConfig(ModelWithOptions):
     """
 
     SECTION = "energy"
+
+
+class HydrologyConfig(ModelWithOptions):
+    """
+    Hydrology model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "hydrology"
 
 
 class StressBalanceConfig(ModelWithOptions):
