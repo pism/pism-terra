@@ -1,0 +1,18 @@
+ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rate", "tas" = "ice_surface_temp", "TF" = "theta_ocean"}
+
+[forcing]
+
+climate = {fields = ["acabf", "runoff", "tas"], short_hand = "SDBN1"}
+ocean = {fields = ["TF"], short_hand = "none"}
+
+[historical]
+
+start_year = 1980
+end_year = 1982
+gcms = ["CESM2-WACCM"]
+version = 1
+
+[Projection]
+
+start_year = 2015
+end_year = 2100
