@@ -59,6 +59,7 @@ dependencies:
   - myst-parser
   - numpydoc
   # for notebooks and convenience
+  - cdo
   - ncview
   - cmcrameri
   - bokeh
