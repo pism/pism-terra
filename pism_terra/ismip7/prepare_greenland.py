@@ -31,6 +31,7 @@ import xarray as xr
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
 
+from pism_terra.domain import create_domain
 from pism_terra.download import download_earthaccess, download_netcdf
 
 version = "1.3"
@@ -94,6 +95,14 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("")
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
+
+    # ISMIP6 grid
+    resolution = 1000.0
+    x_bnds = [-720000.0 - resolution / 2, 960000.0 + resolution / 2]
+    y_bnds = [-3450000.0 - resolution / 2, -570000.0 + resolution / 2]
+    grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution)
+    grid_file = output_path / Path("ismip7_grid.nc")
+    grid_ds.to_netcdf(grid_file)
 
     climate(data_path, output_path, config)
 
