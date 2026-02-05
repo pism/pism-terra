@@ -872,7 +872,7 @@ class InfoConfig(BaseModelWithDot):
             String to quote.
 
         Returns
-        ----------
+        -------
         str
             String in quotes.
         """
@@ -1171,39 +1171,50 @@ class StressBalanceConfig(ModelWithOptions):
 
 class CampaignConfig(BaseModel):
     """
-    Execution settings for a PISM run.
+    Campaign-level metadata describing the simulation experiment.
 
-    Provides executable/launcher options and a helper to export parameters
-    for templating. String fields that contain Jinja expressions (e.g.,
-    ``"mpirun -np {{ ntasks }}"``) are rendered using the model values.
+    Holds high-level identifiers for the data sources, forcing scenario,
+    and file references that define a simulation campaign. Fields are
+    optional so the same model can serve both glacier-scale and ice-sheet
+    (e.g., ISMIP7) workflows.
 
     Attributes
     ----------
-    mpi : str
-        MPI launcher template, e.g., ``"mpirun -np {{ ntasks }}"``.
-        Defaults to ``"mpirun"``.
-    executable : str
-        Path to the PISM executable, or command name. Defaults to ``"pism"``.
-    ntasks : int
-        Total number of MPI ranks. Must be >= 1.
-
-    Notes
-    -----
-    The :meth:`as_params` method returns only non-empty fields and renders any
-    string value containing Jinja delimiters ``{{ ... }}`` using the current
-    field values (plus any extra context provided).
-
-    Examples
-    --------
-    >>> rc = RunConfig(mpi="mpirun -np {{ ntasks }}", executable="/path/pism", ntasks=56)
-    >>> rc.as_params()["mpi"]
-    'mpirun -np 56'
+    name : str or None
+        Human-readable campaign name.
+    climate : str or None
+        Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
+    dem : str or None
+        DEM data source identifier (e.g., ``"copernicus"``).
+    ice_thickness : str or None
+        Ice thickness data source identifier (e.g., ``"millan2022"``).
+    gcm : str, list, or None
+        GCM model name(s) used for climate forcing.
+    grid_file : str or None
+        Path to the grid NetCDF file (relative to the input directory).
+    boot_file : str or None
+        Path to the boot NetCDF file (relative to the input directory).
+    start_year : str, float, or None
+        Start year of the forcing period.
+    end_year : str, float, or None
+        End year of the forcing period.
+    version : str or None
+        Dataset or experiment version string.
+    pathway : str or None
+        Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     """
 
-    name: str = Field(default="hindcast")
-    climate: str = Field(default="era5")
-    dem: str = Field(default="glo_30")
-    ice_thickness: str = Field(default="millan")
+    name: str | None = Field(default=None)
+    climate: str | None = Field(default=None)
+    dem: str | None = Field(default=None)
+    ice_thickness: str | None = Field(default=None)
+    gcm: str | list | None = Field(default=None)
+    grid_file: str | None = Field(default=None)
+    boot_file: str | None = Field(default=None)
+    start_year: str | float | None = Field(default=None)
+    end_year: str | float | None = Field(default=None)
+    version: str | None = Field(default=None)
+    pathway: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """

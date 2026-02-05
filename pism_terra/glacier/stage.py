@@ -42,7 +42,7 @@ from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_dataset, check_xr
+from pism_terra.workflow import check_dataset_fully
 
 xr.set_options(keep_attrs=True)
 

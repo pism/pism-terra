@@ -41,7 +41,7 @@ from pism_terra.download import download_archive, extract_archive
 from pism_terra.observations import glacier_velocities_from_rgi_id
 from pism_terra.raster import check_overlap, reproject_file
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_rio, check_xr_sampled
+from pism_terra.workflow import check_rio, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
@@ -227,9 +227,10 @@ def prepare_ice_thickness_millan(
     out_dir = Path(path)
     thickness_file = out_dir / "thickness.nc"
 
-    if (not check_xr_sampled(thickness_file)) or force_overwrite:
+    if (not check_xr_lazy(thickness_file)) or force_overwrite:
 
         thickness_file.unlink(missing_ok=True)
+        # Could tweak this to only pull the relevant regions instead of all of it
         s3_to_local(bucket, prefix="millan", dest_dir="data/ice_thickness/millan")
         ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
 

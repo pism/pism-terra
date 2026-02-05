@@ -42,7 +42,7 @@ import xarray as xr
 from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3
-from pism_terra.workflow import check_xr_sampled
+from pism_terra.workflow import check_xr_lazy
 
 
 class FileInfo(NamedTuple):
@@ -332,7 +332,7 @@ def download_request(
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if (not check_xr_sampled(file_path)) or force_overwrite:
+    if (not check_xr_lazy(file_path)) or force_overwrite:
         client = cdsapi.Client()
 
         path = file_path.parent

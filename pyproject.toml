@@ -36,6 +36,7 @@ dependencies = [
     "h5netcdf",
     "jinja2",
     "matplotlib",
+    "netCDf4",
     "numpy",
     "pandas",
     "pint-xarray",
@@ -56,6 +57,7 @@ dependencies = [
     "toml",
     "tqdm",
     "xarray",
+    "xarray-regrid",
     "zarr",
 ]
 
@@ -84,7 +86,8 @@ pism-glacier-run = "pism_terra.glacier.run:run_single"
 pism-glacier-run-ensemble = "pism_terra.glacier.run:run_ensemble"
 pism-glacier-execute = "pism_terra.glacier.execute:main"
 pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
-pism-ismip7-prepare-greenland = "pism_terra.ismip7.prepare_greenland:main"
+pism-ismip7-greenland-prepare = "pism_terra.ismip7.greenland.prepare:main"
+pism-ismip7-greenland-stage = "pism_terra.ismip7.greenland.stage:main"
 combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
 
 [tool.setuptools.packages.find]

@@ -18,6 +18,7 @@ dependencies:
   - h5netcdf
   - jinja2
   - matplotlib
+  - netCDF4
   - numpy
   - pandas
   - pint-xarray
@@ -38,6 +39,7 @@ dependencies:
   - toml
   - tqdm
   - xarray
+  - xarray-regrid
   - zarr
   # for development and testing
   - black
