@@ -16,7 +16,7 @@
 # along with PISM; if not, write to the Free Software
 
 # mypy: disable-error-code="call-overload"
-# pylint: disable=unused-import,too-many-positional-arguments
+# pylint: disable=unused-import,too-many-positional-arguments,broad-exception-caught
 
 
 """
@@ -25,12 +25,15 @@ Prepare Climate.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import cdsapi
 import cf_xarray
 import cftime
+import dask
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -55,6 +58,149 @@ from pism_terra.raster import add_time_bounds
 from pism_terra.workflow import check_xr, check_xr_sampled
 
 xr.set_options(keep_attrs=True)
+
+
+def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | None:
+    """
+    Convert a single GeoTIFF to a time-stamped NetCDF, returning the output path.
+
+    The input filename is parsed (via :func:`parse_filename`) to extract
+    ``variable``, ``year``, and ``month``. The raster is opened with
+    ``rioxarray``, a time dimension is added using a CF/Gregorian date
+    (day = 1), and the result is written as NetCDF into ``outdir``.
+
+    If a matching NetCDF already exists and opens successfully (checked with
+    :func:`check_xr_sampled`) and ``force_overwrite`` is False, the file is
+    reused and simply returned.
+
+    Parameters
+    ----------
+    p : pathlib.Path
+        Path to the source GeoTIFF.
+    outdir : pathlib.Path
+        Output directory for the generated NetCDF file.
+    force_overwrite : bool
+        If True, overwrite any existing output file. If False, reuse a
+        valid existing file when possible.
+
+    Returns
+    -------
+    pathlib.Path or None
+        Absolute path to the produced (or reused) NetCDF, or ``None`` if
+        an error occurred and the file was skipped.
+
+    Notes
+    -----
+    - The function sets ``_FillValue`` to ``None`` on the DataArray encoding
+      to avoid writing a fill value in the output variable.
+    - The helper :func:`parse_filename` is expected to provide fields
+      ``variable``, ``year``, ``month``, and ``units``.
+    - Any exception is caught and results in ``None`` being returned (so the
+      caller can skip that entry without failing the whole batch).
+
+    Examples
+    --------
+    >>> out = _process_one_tif(Path("tas_1990_01.tif"), Path("out"), False)
+    >>> out.name.endswith(".nc")
+    True
+    """
+    fi = parse_filename(str(p))
+    snapdir = outdir / Path("snap")
+    snapdir.mkdir(parents=True, exist_ok=True)
+
+    output_path = snapdir / f"{fi.variable}_{fi.year}_{fi.month}.nc"
+
+    try:
+        if (not check_xr_sampled(output_path)) or force_overwrite:
+            output_path.unlink(missing_ok=True)
+
+            # Build a cftime "standard/gregorian" datetime (day = 1)
+            t = cftime.DatetimeGregorian(int(fi.year), int(fi.month), 1)
+
+            da = rxr.open_rasterio(p).squeeze(drop=True)  # drop 'band' if present
+            da.name = fi.variable
+            da.attrs.update({"units": fi.units})
+
+            da = da.expand_dims(time=[t]).drop_vars("spatial_ref", errors="ignore")
+            da.encoding["_FillValue"] = None  # optional: avoid _FillValue in output
+            da.encoding.update({"zlib": True, "complevel": 2})
+
+            da.to_netcdf(output_path)
+
+        return output_path if output_path.exists() else None
+    except Exception:
+        return None
+
+
+def convert_many_tifs_concurrent(
+    tifs: Iterable[Path],
+    outdir: Path,
+    force_overwrite: bool = False,
+    max_workers: int | None = None,
+) -> list[Path]:
+    """
+    Convert many GeoTIFFs to NetCDF in parallel using a process pool.
+
+    Each input is handled by :func:`_process_one_tif`. Existing outputs are
+    reused unless ``force_overwrite`` is True. Progress is shown with ``tqdm``
+    if available.
+
+    Parameters
+    ----------
+    tifs : iterable of pathlib.Path
+        Collection of input GeoTIFF paths to process.
+    outdir : pathlib.Path
+        Directory where NetCDF outputs will be written. Created if missing.
+    force_overwrite : bool, optional
+        Overwrite existing outputs if True. Default is False.
+    max_workers : int or None, optional
+        Number of worker processes. If ``None`` (default), use ``cpu_count()-1``
+        (but at least 1).
+
+    Returns
+    -------
+    list of pathlib.Path
+        Paths of NetCDF files that were successfully produced or reused.
+        Only existing files are returned.
+
+    Notes
+    -----
+    - Uses :class:`concurrent.futures.ProcessPoolExecutor`; make sure that any
+      objects used inside :func:`_process_one_tif` are pickleable and safe for
+      multiprocessing on your platform.
+    - Errors for individual files are caught inside :func:`_process_one_tif`
+      and reported as ``None`` results, so the batch continues.
+
+    Examples
+    --------
+    >>> outs = convert_many_tifs_concurrent(
+    ...     [Path("tas_1990_01.tif"), Path("tas_1990_02.tif")],
+    ...     Path("out"),
+    ...     force_overwrite=False,
+    ... )
+    >>> len(outs) >= 1
+    True
+    """
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    max_workers = max_workers or max(1, (os.cpu_count() or 2) - 1)
+
+    rets: list[Path] = []
+    with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        futs = [ex.submit(_process_one_tif, Path(p), outdir, force_overwrite) for p in tifs]
+        try:
+
+            for fut in tqdm(as_completed(futs), total=len(futs), desc="Processing files (parallel)"):
+                out = fut.result()
+                if out is not None:
+                    rets.append(out)
+        except ImportError:
+            for fut in as_completed(futs):
+                out = fut.result()
+                if out is not None:
+                    rets.append(out)
+
+    return [p for p in rets if p.exists()]
 
 
 def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: float = 1.0):
@@ -97,7 +243,6 @@ def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: floa
         },
     )
     encoding = {v: {"_FillValue": None} for v in ["delta_T", "frac_P"]}
-
     ds.to_netcdf(file_name, encoding=encoding)
 
 
@@ -182,28 +327,14 @@ def snap(
         print(f"Processing {f_path.resolve()}")
         _ = download_file(url, f_path, force_overwrite=force_overwrite)
         response = extract_archive(f_path, force_overwrite=force_overwrite)
-        response_clean = [r for r in sorted(response) if r.endswith("tif")]
+        response_clean = [Path(r) for r in sorted(response) if str(r).endswith("tif")]
+        results = convert_many_tifs_concurrent(response_clean, path, force_overwrite=force_overwrite)
 
-        items = []
-        for p in tqdm(response_clean, desc="Processing files"):
-            fi = parse_filename(str(p))
-            # Build a cftime "standard/gregorian" datetime (day = 1)
-            t = cftime.DatetimeGregorian(int(fi.year), int(fi.month), 1)
-
-            da = rxr.open_rasterio(p).squeeze(drop=True)  # drop 'band' if present
-            da.name = fi.variable
-            da.attrs.update({"units": fi.units})
-
-            # add a time dimension
-            da = da.expand_dims(time=[t]).drop_vars("spatial_ref", errors="ignore")
-            p = path / Path(f"{fi.variable}_{fi.year}_{fi.month}.nc")
-            p.unlink(missing_ok=True)
-            da.to_netcdf(p)
-
-            items.append(p)
+        if not results:
+            raise RuntimeError("No NetCDF outputs were produced or found; cannot build SNAP dataset.")
 
         # Concatenate along time and sort (in case paths are unordered)
-        out = xr.open_mfdataset(items, parallel=True, chunks="auto", engine="h5netcdf")
+        out = xr.open_mfdataset(results, parallel=True, chunks="auto", engine="h5netcdf")
         dss.append(out)
 
     url = "http://data.snap.uaf.edu/data/IEM/Inputs/ancillary/elevation/iem_prism_dem_1km.tif"
@@ -222,61 +353,87 @@ def snap(
     ds["precipitation"].attrs.update({"units": "kg m^-2 year^-1"})
     ds["air_temp"].attrs.update({"units": "celsius"})
 
-    ps = []
-    for y in [1920, 1950, 1980]:
+    period_starts = [1920, 1950, 1980]
+    ps: list[Path] = []
+    delayed_writes = []
 
+    for y in period_starts:
         start = str(y)
         end = str(y + 29)
 
-        p = path / Path(f"snap_{rgi_id}_{start}_{end}.nc")
-        if (not check_xr_sampled(p)) or force_overwrite:
-            p.unlink(missing_ok=True)
-
-            ds_sub = ds.sel({"time": slice(start, end)})
-            month_length = ds_sub.time.dt.days_in_month
-
-            # Calculate the weights by grouping by 'time.season'.
-            weights = month_length.groupby("time.month") / month_length.groupby("time.month").sum()
-
-            # Calculate the weighted average
-            ds_weighted = (ds_sub * weights).groupby("time.month").sum(dim="time").rename({"month": "time"})
-            for c, axis, stdname in (("x", "X", "projection_x_coordinate"), ("y", "Y", "projection_y_coordinate")):
-                attrs = {
-                    "units": "m",
-                    "axis": axis,
-                    "standard_name": stdname,
-                    "long_name": f"{c}-coordinate in projected coordinate system",
-                }
-                ds_weighted[c].attrs.update({k: v for k, v in attrs.items() if v is not None})
-
-            base_year = 1
-            start_date = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
-            # Assign coordinates and bounds
-
-            ds_weighted = ds_weighted.assign_coords(time=("time", start_date))
-            ds_weighted["time"].attrs.update(
-                {
-                    "standard_name": "time",
-                    "long_name": "climatological time (mid-month)",
-                    "bounds": "time_bounds",
-                }
-            )
-            ds_weighted["time"].attrs.pop("calendar", None)
-
-            # Put calendar/units ONLY in encoding (CF-compliant, and prevents the error)
-            enc = {"units": "days since 0001-01-01", "calendar": "365_day"}
-            ds_weighted.time.encoding.update(enc)
-            ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")
-            ds_weighted.rio.write_crs("EPSG:3338", inplace=True)
-            for v in ("precipitation", "air_temp", "surface"):
-                if v in ds_weighted:
-                    ds_weighted[v].attrs["grid_mapping"] = "spatial_ref"
-            ds_weighted = add_time_bounds(ds_weighted)
-
-            encoding = {v: {"_FillValue": None} for v in ["x", "y", "surface", "air_temp", "precipitation"]}
-            with ProgressBar():
-                ds_weighted.to_netcdf(p, encoding=encoding)
+        p = Path(path) / f"snap_{rgi_id}_{start}_{end}.nc"
         ps.append(p)
+
+        if check_xr_sampled(p) and not force_overwrite:
+            # Reuse existing file; no work scheduled
+            continue
+
+        # --- compute weighted monthly climatology for this period (all lazy) ---
+        ds_sub = ds.sel(time=slice(start, end))
+        month_length = ds_sub.time.dt.days_in_month
+        weights = month_length.groupby("time.month") / month_length.groupby("time.month").sum()
+
+        ds_weighted = (ds_sub * weights).groupby("time.month").sum(dim="time").rename({"month": "time"})
+
+        # coordinate metadata on x/y
+        for c, axis, stdname in (("x", "X", "projection_x_coordinate"), ("y", "Y", "projection_y_coordinate")):
+            attrs = {
+                "units": "m",
+                "axis": axis,
+                "standard_name": stdname,
+                "long_name": f"{c}-coordinate in projected coordinate system",
+            }
+            if c in ds_weighted.coords:
+                ds_weighted[c].attrs.update(attrs)
+
+        units = "days since 0001-01-01"
+        calendar = "365_day"
+
+        base_year = 1
+        start_date = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
+
+        ds_weighted = ds_weighted.assign_coords(time=("time", start_date))
+        ds_weighted["time"].attrs.update(
+            {
+                "standard_name": "time",
+                "long_name": "climatological time (mid-month)",
+                "bounds": "time_bounds",
+            }
+        )
+        # keep calendar only in encoding to avoid xarray overwrite error
+        ds_weighted["time"].attrs.pop("calendar", None)
+        ds_weighted.time.encoding.update({"units": units, "calendar": calendar})
+
+        time_num = cftime.date2num(ds_weighted.time.values, units=units, calendar=calendar).astype("float64")
+
+        ds_weighted = ds_weighted.assign_coords(time=("time", time_num))
+        ds_weighted["time"].attrs.update({"units": units, "calendar": calendar})
+
+        ds_weighted = ds_weighted.cf.add_bounds("time")
+
+        # CRS + spatial dims + grid_mapping tags
+        ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")
+        ds_weighted.rio.write_crs("EPSG:3338", inplace=True)
+        for v in ("precipitation", "air_temp", "surface"):
+            if v in ds_weighted:
+                ds_weighted[v].attrs["grid_mapping"] = "spatial_ref"
+
+        # encoding: remove _FillValue without nuking other encodings
+        encoding = {
+            v: {"_FillValue": None}
+            for v in ("x", "y", "surface", "air_temp", "precipitation", "time", "time_bounds")
+            if v in ds_weighted
+        }
+
+        # schedule a lazy NetCDF write for this period
+        p.unlink(missing_ok=True)
+        delayed_writes.append(ds_weighted.to_netcdf(p, encoding=encoding, compute=False))
+
+    # Kick off all writes in parallel (plus internal dask parallelism)
+    if delayed_writes:
+        with ProgressBar():
+            dask.compute(*delayed_writes)
+
     return ps
 
 

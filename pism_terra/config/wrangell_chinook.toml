@@ -12,8 +12,8 @@ nodes = 1
 
 [run_info]
 
-'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA Atna"
+'run_info.institution' = "University of Idaho"
+'run_info.title' = "PISM-TERRA Wrangell Mountains"
 
 [campaign]
 
@@ -55,7 +55,7 @@ velocity = "none"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
 'output.extra.file' = "none"
-'output.extra.times' = 10
+'output.extra.times' = 1
 'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'

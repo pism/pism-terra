@@ -4,5 +4,13 @@ channels:
 dependencies:
   - python=3.12.6
   - pip
+  - black
+  - cdo
+  - ncview
+  - pre-commit
+  - pylint
+  - pytest
+  - pytest-cov
+  - setuptools_scm>=6.2
   - pip:
       - -r requirements.txt

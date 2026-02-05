@@ -1,0 +1,34 @@
+name: Static analysis
+
+on: push
+
+jobs:
+  call-secrets-analysis-workflow:
+    # Docs: https://github.com/ASFHyP3/actions
+    uses: ASFHyP3/actions/.github/workflows/reusable-secrets-analysis.yml@v0.21.0
+    permissions:
+      contents: read
+
+  pre-commit:
+    runs-on: ubuntu-latest
+    env:
+      SKIP: pylint
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v3
+    - uses: pre-commit/action@v3.0.1
+
+  pylint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          init-shell: bash
+
+      - name: run pylint
+        shell: bash -el {0}
+        run: |
+          pylint -v --extension-pkg-whitelist=scipy $(git ls-files '*.py')
