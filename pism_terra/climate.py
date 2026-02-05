@@ -279,7 +279,7 @@ def snap_cloud(
 
         snap_file = out_dir / sn
 
-        if (not check_xr_sampled(snap_file)) or force_overwrite:
+        if (not check_xr_lazy(snap_file)) or force_overwrite:
 
             snap_file.unlink(missing_ok=True)
             s3_to_local(bucket, prefix="snap", dest_dir=path)

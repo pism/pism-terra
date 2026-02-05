@@ -109,7 +109,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
-    resolution = config["domain"]["resolution"]
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
