@@ -24,6 +24,7 @@ Vector Functions.
 from pathlib import Path
 
 import geopandas as gpd
+import xarray as xr
 
 
 def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:
