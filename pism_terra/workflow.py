@@ -23,15 +23,18 @@ Workflow management.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any, Iterable, TypeVar
 
+import joblib
 import numpy as np
 import pandas as pd
 import rasterio as rio
 import rioxarray  # noqa: F401
 import xarray as xr
 from pydantic import BaseModel
+from tqdm.auto import tqdm
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -725,3 +728,50 @@ def check_rio(path: Path | str) -> bool:
         print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
         is_ok = False
     return is_ok
+
+
+@contextlib.contextmanager
+def tqdm_joblib(tqdm_object):
+    """
+    Context manager to patch joblib to report into tqdm progress bar given as argument.
+
+    Parameters
+    ----------
+    tqdm_object : tqdm.tqdm
+        The tqdm progress bar object to use for reporting progress.
+    """
+    # ...existing code...
+
+    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+        """
+        TQDM Callback.
+
+        This callback updates the tqdm progress bar with the batch size.
+        """
+
+        def __call__(self, *args, **kwargs):
+            """
+            Call the TQDM callback.
+
+            Parameters
+            ----------
+            *args : tuple
+                Positional arguments.
+            **kwargs : dict
+                Keyword arguments.
+
+            Returns
+            -------
+            Any
+                The result of the super class __call__ method.
+            """
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    old_batch_callback = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+    try:
+        yield tqdm_object
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_batch_callback
+        tqdm_object.close()

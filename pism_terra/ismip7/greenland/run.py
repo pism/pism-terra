@@ -381,6 +381,7 @@ def run_single():
 
     default = {
         "input.file": df["boot_file"].iloc[0],
+        "input.regrid.file": df["regrid_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
         "surface.given.file": df["climate_file"].iloc[0],
@@ -395,7 +396,6 @@ def run_single():
     print("Generate Run for ISMIP7")
     print("-" * 80)
     for idx, row in df.iterrows():
-        default.update(row)
         run_greenland(
             config_file,
             template_file,
@@ -514,11 +514,9 @@ def run_ensemble():
 
     default = {
         "input.file": df["boot_file"].iloc[0],
+        "input.regrid.file": df["regrid_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
         "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.fract_P.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
     }
 
@@ -540,7 +538,6 @@ def run_ensemble():
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
     for idx, row in uq_df.iterrows():
-        default.update(row)
         run_greenland(
             config_file,
             template_file,

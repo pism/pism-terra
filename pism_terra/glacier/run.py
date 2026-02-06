@@ -440,7 +440,6 @@ def run_single():
     print(f"Generate Run for Glacier {rgi_id}")
     print("-" * 80)
     for idx, row in df.iterrows():
-        default.update(row)
         run_glacier(
             rgi_id,
             config_file,
@@ -617,7 +616,6 @@ def run_ensemble():
         create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
         row["atmosphere.delta_T.file"] = scalar_offset_file
         row["atmosphere.precip_scaling.file"] = scalar_offset_file
-        default.update(row)
         run_glacier(
             rgi_id,
             config_file,

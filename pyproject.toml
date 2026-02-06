@@ -32,6 +32,7 @@ dependencies = [
     "dask[distributed,dataframe]",
     "dem_stitcher",
     "earthaccess",
+    "geocube",
     "geopandas",
     "h5netcdf",
     "jinja2",

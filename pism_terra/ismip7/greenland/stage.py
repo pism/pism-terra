@@ -149,6 +149,9 @@ def stage_greenland(
     boot_file = input_path / Path(config["boot_file"])
     check_xr_lazy(boot_file)
 
+    regrid_file = input_path / Path(config["regrid_file"])
+    check_xr_lazy(regrid_file)
+
     pathway = config["pathway"]
     gcm = config["gcm"]
     version = config["version"]
@@ -159,6 +162,7 @@ def stage_greenland(
     files_dict = {
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
+        "regrid_file": regrid_file.resolve(),
     }
     for forcing in ["climate", "ocean"]:
         forcing_file = input_path / Path(

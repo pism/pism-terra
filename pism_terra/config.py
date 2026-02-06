@@ -1211,6 +1211,7 @@ class CampaignConfig(BaseModel):
     gcm: str | list | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     boot_file: str | None = Field(default=None)
+    regrid_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
     end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
