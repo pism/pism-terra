@@ -146,11 +146,15 @@ def stage_greenland(
 
     grid_file = input_path / Path(config["grid_file"])
     check_xr_fully(grid_file)
+
     boot_file = input_path / Path(config["boot_file"])
     check_xr_lazy(boot_file)
 
     regrid_file = input_path / Path(config["regrid_file"])
     check_xr_lazy(regrid_file)
+
+    retreat_file = input_path / Path(config["retreat_file"])
+    check_xr_lazy(retreat_file)
 
     pathway = config["pathway"]
     gcm = config["gcm"]
@@ -163,6 +167,7 @@ def stage_greenland(
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
         "regrid_file": regrid_file.resolve(),
+        "retreat_file": retreat_file.resolve(),
     }
     for forcing in ["climate", "ocean"]:
         forcing_file = input_path / Path(

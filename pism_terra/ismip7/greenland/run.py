@@ -378,10 +378,12 @@ def run_single():
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
     df = stage_greenland(campaign_config, path=path, force_overwrite=force_overwrite)
+    print(df)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
         "input.regrid.file": df["regrid_file"].iloc[0],
+        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
         "surface.given.file": df["climate_file"].iloc[0],
@@ -515,9 +517,11 @@ def run_ensemble():
     default = {
         "input.file": df["boot_file"].iloc[0],
         "input.regrid.file": df["regrid_file"].iloc[0],
+        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
-        "surface.force_to_thickness.file": df["boot_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
+        "surface.given.file": df["climate_file"].iloc[0],
+        "ocean.th.file": df["ocean_file"].iloc[0],
     }
 
     uq = load_uq(uq_file)

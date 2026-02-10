@@ -913,6 +913,7 @@ class GridConfig(BaseModelWithDot):
     Lz: int | float | None = Field(default=None, alias="grid.Lz")
     Mbz: int | None = Field(default=None, alias="grid.Mbz")
     Mz: int | None = Field(default=None, alias="grid.Mz")
+    extrapolation: str | None = Field(default=None, alias="grid.allow_extrapolation")
     registration: str | None = Field(default=None, alias="grid.registration")
 
     # derived / optionally provided:
@@ -1192,6 +1193,8 @@ class CampaignConfig(BaseModel):
         GCM model name(s) used for climate forcing.
     grid_file : str or None
         Path to the grid NetCDF file (relative to the input directory).
+    retreat_file : str or None
+        Path to the retreat NetCDF file (relative to the input directory).
     boot_file : str or None
         Path to the boot NetCDF file (relative to the input directory).
     start_year : str, float, or None
@@ -1212,6 +1215,7 @@ class CampaignConfig(BaseModel):
     grid_file: str | None = Field(default=None)
     boot_file: str | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
+    retreat_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
     end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)

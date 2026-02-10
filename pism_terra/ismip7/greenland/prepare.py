@@ -121,7 +121,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("Calfin Glacier Fronts File")
     print("-" * 120)
 
-    calfin_file = prepare_calfin(output_path, resolution=600)
+    retreat_file = prepare_calfin(output_path, resolution=600, force_overwrite=force_overwrite)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     print("-" * 120)
@@ -135,7 +135,13 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     forcing_files = prepare_forcing(data_path, output_path, config)
 
-    return {"config": config, "grid_file": grid_file, "boot_file": boot_file, "forcing_files": forcing_files}
+    return {
+        "config": config,
+        "grid_file": grid_file,
+        "boot_file": boot_file,
+        "forcing_files": forcing_files,
+        "retreat_file": retreat_file,
+    }
 
 
 def _process_single_forcing(
@@ -205,12 +211,15 @@ def _process_single_forcing(
             parallel=True,
             decode_times=time_coder,
             engine="h5netcdf",
-            chunks={"time": 12, "y": -1, "x": -1},
+            chunks={"time": 120, "y": -1, "x": -1},
             data_vars="minimal",
         ).sel({"time": slice(str(start_year), str(end_year))})
         dss.append(ds)
 
     ds = xr.merge(dss)
+    if "tas" in ds.data_vars:
+        ds["tas"] = ds["tas"].where(ds["tas"] != 0, 273.15)
+
     ds = ds.rename_vars({k: v for k, v in ismip7_to_pism.items() if k in ds})
     ds.rio.write_crs("EPSG:3413", inplace=True).rio.write_coordinate_system(inplace=True)
 
@@ -226,7 +235,7 @@ def _process_single_forcing(
     ds["time"].encoding.update({"units": "days since 1850-01-01", "_FillValue": None, "dtype": float})
     ds["time_bounds"].encoding.update({"units": "days since 1850-01-01", "_FillValue": None, "dtype": float})
 
-    encoding = {}
+    encoding: dict[str, dict[str, Any]] = {}
     for var in ds.data_vars:
         encoding[var] = {"_FillValue": None}
         if var not in ("spatial_ref", "time", "time_bounds"):
@@ -301,7 +310,9 @@ def prepare_observations(
     return obs_file
 
 
-def prepare_calfin(output_path: Path | str, resolution: int = 150, n_workers: int = 4) -> str | Path:
+def prepare_calfin(
+    output_path: Path | str, resolution: int = 150, freq: str = "ME", force_overwrite: bool = False, n_workers: int = 4
+) -> str | Path:
     """
     Prepare CALFIN glacier front retreat data as a gridded NetCDF.
 
@@ -314,6 +325,10 @@ def prepare_calfin(output_path: Path | str, resolution: int = 150, n_workers: in
         Directory for output files.
     resolution : int, default 150
         Grid resolution in meters.
+    freq : str, default "ME"
+        Pandas frequency string for temporal grouping.
+    force_overwrite : bool, default False
+        If True, reprocess even if the output file already exists.
     n_workers : int, default 4
         Number of parallel workers.
 
@@ -322,8 +337,8 @@ def prepare_calfin(output_path: Path | str, resolution: int = 150, n_workers: in
     Path
         Path to the output NetCDF file.
     """
-    x_min, x_max = -653000, 879700
-    y_min, y_max = -632750, -3384350
+    x_min, x_max = -656150.0, 882850.0 
+    y_min, y_max = -631550.0, -3385550.0
     geom = {
         "type": "Polygon",
         "crs": {"properties": {"name": "EPSG:3413"}},
@@ -332,68 +347,69 @@ def prepare_calfin(output_path: Path | str, resolution: int = 150, n_workers: in
     }
 
     output_path = Path(output_path)
-    tmp_path = output_path.parent / Path(output_path.name + "_tmp")
-
-    # Download CALFIN data
-    calfin_files = download_earthaccess(
-        doi="10.5067/7FILV218JZA2", filter_str="Greenland_polygons", result_dir=tmp_path
-    )
-    calfin_file = next(f for f in calfin_files if f.suffix == ".shp")
-
-    crs = "EPSG:3413"
-
-    # Load reference data and CALFIN
-    imbie = gpd.read_file("s3://pism-cloud-data/ismip7_extra/GRE_Basins_IMBIE2_v1.3_w_shelves.gpkg").to_crs(crs)
-    calfin = gpd.read_file(calfin_file).to_crs(crs)
-
-    # Prepare CALFIN timestamps and geometry
-    calfin["Date"] = pd.DatetimeIndex(calfin["Date"])
-    calfin = calfin.set_index("Date").sort_index()
-    calfin.geometry = calfin.geometry.make_valid()
-
-    # Create base union geometry
-    imbie_gis = imbie[imbie["SUBREGION1"] == "GIS"].dissolve()
-    imbie_union = imbie_gis.union(calfin.dissolve())
-
-    freq = "ME"
-
-    # Step 1: Group by month and dissolve each group
-    groups = [(date, df) for date, df in calfin.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
-    with tqdm_joblib(tqdm(desc="Grouping geometries", total=len(groups))):
-        grouped_results = Parallel(n_jobs=n_workers)(delayed(dissolve)(df, date) for date, df in groups)
-    calfin_grouped = pd.concat(grouped_results).reset_index()
-
-    # Step 2: Cumulative union (O(n) instead of O(n²))
-    print("Computing cumulative unions...")
-    cumulative_geoms = []
-    cumulative = None
-    for idx, row in tqdm(calfin_grouped.iterrows(), total=len(calfin_grouped), desc="Cumulative dissolve"):
-        if cumulative is None:
-            cumulative = row.geometry
-        else:
-            cumulative = cumulative.union(row.geometry)
-        cumulative_geoms.append({"Date": row["Date"], "geometry": cumulative})
-
-    calfin_aggregated = gpd.GeoDataFrame(cumulative_geoms[1:], crs=crs).set_index("Date")
-
-    # Step 3: Rasterize to grid
-    agg_groups = [(date, df) for date, df in calfin_aggregated.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
-    with tqdm_joblib(tqdm(desc="Rasterizing geometries", total=len(agg_groups))):
-        raster_results = Parallel(n_jobs=n_workers)(
-            delayed(create_ds)(date, df, imbie_union, geom=geom, resolution=resolution) for date, df in agg_groups
-        )
-
-    result_filtered = [r for r in raster_results if r is not None]
-
-    # Merge and save
     p_fn = output_path / Path(f"pism_g{resolution}m_frontretreat_calfin_1972_2019_{freq}.nc")
-    print(f"Merging datasets and saving to {p_fn.absolute()}")
 
-    ds = xr.open_mfdataset(result_filtered).load()
-    ds = ds.cf.add_bounds("time")
-    ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-    ds.rio.write_crs(crs, inplace=True)
-    ds.to_netcdf(p_fn)
+    if (not check_xr_lazy(p_fn)) or force_overwrite:
+
+        tmp_path = output_path.parent / Path(output_path.name + "_tmp")
+
+        # Download CALFIN data
+        retreat_files = download_earthaccess(
+            doi="10.5067/7FILV218JZA2", filter_str="Greenland_polygons", result_dir=tmp_path
+        )
+        retreat_file = next(f for f in retreat_files if f.suffix == ".shp")
+
+        crs = "EPSG:3413"
+
+        # Load reference data and CALFIN
+        imbie = gpd.read_file("s3://pism-cloud-data/ismip7_extra/GRE_Basins_IMBIE2_v1.3_w_shelves.gpkg").to_crs(crs)
+        calfin = gpd.read_file(retreat_file).to_crs(crs)
+
+        # Prepare CALFIN timestamps and geometry
+        calfin["Date"] = pd.DatetimeIndex(calfin["Date"])
+        calfin = calfin.set_index("Date").sort_index()
+        calfin.geometry = calfin.geometry.make_valid()
+
+        # Create base union geometry
+        imbie_gis = imbie[imbie["SUBREGION1"] == "GIS"].dissolve()
+        imbie_union = imbie_gis.union(calfin.dissolve())
+
+        # Step 1: Group by month and dissolve each group
+        groups = [(date, df) for date, df in calfin.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
+        with tqdm_joblib(tqdm(desc="Grouping geometries", total=len(groups))):
+            grouped_results = Parallel(n_jobs=n_workers)(delayed(dissolve)(df, date) for date, df in groups)
+        calfin_grouped = pd.concat(grouped_results).reset_index()
+
+        # Step 2: Cumulative union (O(n) instead of O(n²))
+        print("Computing cumulative unions...")
+        cumulative_geoms = []
+        cumulative = None
+        for idx, row in tqdm(calfin_grouped.iterrows(), total=len(calfin_grouped), desc="Cumulative dissolve"):
+            if cumulative is None:
+                cumulative = row.geometry
+            else:
+                cumulative = cumulative.union(row.geometry)
+            cumulative_geoms.append({"Date": row["Date"], "geometry": cumulative})
+
+        calfin_aggregated = gpd.GeoDataFrame(cumulative_geoms[1:], crs=crs).set_index("Date")
+
+        # Step 3: Rasterize to grid
+        agg_groups = [(date, df) for date, df in calfin_aggregated.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
+        with tqdm_joblib(tqdm(desc="Rasterizing geometries", total=len(agg_groups))):
+            raster_results = Parallel(n_jobs=n_workers)(
+                delayed(create_ds)(date, df, imbie_union, geom=geom, resolution=resolution) for date, df in agg_groups
+            )
+
+        result_filtered = [r for r in raster_results if r is not None]
+
+        # Merge and save
+        print(f"Merging datasets and saving to {p_fn.absolute()}")
+
+        ds = xr.open_mfdataset(result_filtered).load()
+        ds = ds.cf.add_bounds("time")
+        ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
+        ds.rio.write_crs(crs, inplace=True)
+        ds.to_netcdf(p_fn)
 
     return p_fn
 
