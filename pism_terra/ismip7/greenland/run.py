@@ -378,7 +378,6 @@ def run_single():
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
     df = stage_greenland(campaign_config, path=path, force_overwrite=force_overwrite)
-    print(df)
 
     default = {
         "input.file": df["boot_file"].iloc[0],

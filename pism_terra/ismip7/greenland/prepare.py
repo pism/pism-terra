@@ -16,7 +16,7 @@
 # along with PISM; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-positional-arguments,unused-import
 """
 Prepare ISMIP7 Greenland data sets.
 """
@@ -34,15 +34,14 @@ import toml
 import xarray as xr
 import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from dask.distributed import Client, as_completed
-from joblib import Parallel, delayed
 from pyfiglet import Figlet
 from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
 from pism_terra.download import download_earthaccess, download_netcdf
 from pism_terra.raster import create_ds
-from pism_terra.vector import aggregate, dissolve
-from pism_terra.workflow import check_xr_fully, check_xr_lazy, tqdm_joblib
+from pism_terra.vector import dissolve
+from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
@@ -121,7 +120,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("Calfin Glacier Fronts File")
     print("-" * 120)
 
-    retreat_file = prepare_calfin(output_path, resolution=600, force_overwrite=force_overwrite)
+    retreat_file = prepare_calfin(output_path, resolution=450, force_overwrite=force_overwrite)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     print("-" * 120)
@@ -304,6 +303,8 @@ def prepare_observations(
         ds_bm_regridded = ds_bm
     ds = xr.merge([ds_bm_regridded, da_1km, ds["mapping"]])
 
+    ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
+
     ds = ds.rename_vars({k: v for k, v in config.items() if k in ds})
     obs_file = output_path / Path("boot_GreenlandObsISMIP7-v1.3.nc")
     ds.to_netcdf(obs_file)
@@ -337,7 +338,7 @@ def prepare_calfin(
     Path
         Path to the output NetCDF file.
     """
-    x_min, x_max = -656150.0, 882850.0 
+    x_min, x_max = -656150.0, 882850.0
     y_min, y_max = -631550.0, -3385550.0
     geom = {
         "type": "Polygon",
@@ -362,29 +363,39 @@ def prepare_calfin(
         crs = "EPSG:3413"
 
         # Load reference data and CALFIN
-        imbie = gpd.read_file("s3://pism-cloud-data/ismip7_extra/GRE_Basins_IMBIE2_v1.3_w_shelves.gpkg").to_crs(crs)
+        imbie = gpd.read_file(
+            "s3://pism-cloud-data/ismip7_greenland_extra/GRE_Basins_IMBIE2_v1.3_w_shelves.gpkg"
+        ).to_crs(crs)
         calfin = gpd.read_file(retreat_file).to_crs(crs)
 
         # Prepare CALFIN timestamps and geometry
         calfin["Date"] = pd.DatetimeIndex(calfin["Date"])
         calfin = calfin.set_index("Date").sort_index()
         calfin.geometry = calfin.geometry.make_valid()
+        calfin_dissolved = calfin.dissolve()
 
         # Create base union geometry
-        imbie_gis = imbie[imbie["SUBREGION1"] == "GIS"].dissolve()
-        imbie_union = imbie_gis.union(calfin.dissolve())
+        imbie_dissolved = imbie.dissolve()
+        imbie_union = imbie_dissolved.union(calfin_dissolved)
 
         # Step 1: Group by month and dissolve each group
         groups = [(date, df) for date, df in calfin.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
-        with tqdm_joblib(tqdm(desc="Grouping geometries", total=len(groups))):
-            grouped_results = Parallel(n_jobs=n_workers)(delayed(dissolve)(df, date) for date, df in groups)
+
+        with Client(n_workers=n_workers, threads_per_worker=1) as client:
+            print(f"Dask dashboard: {client.dashboard_link}")
+
+            futures = [client.submit(dissolve, df, date) for date, df in groups]
+            grouped_results = []
+            for future in tqdm(as_completed(futures), desc="Grouping geometries", total=len(futures)):
+                grouped_results.append(future.result())
+
         calfin_grouped = pd.concat(grouped_results).reset_index()
 
         # Step 2: Cumulative union (O(n) instead of O(n²))
         print("Computing cumulative unions...")
         cumulative_geoms = []
         cumulative = None
-        for idx, row in tqdm(calfin_grouped.iterrows(), total=len(calfin_grouped), desc="Cumulative dissolve"):
+        for _, row in tqdm(calfin_grouped.iterrows(), total=len(calfin_grouped), desc="Cumulative dissolve"):
             if cumulative is None:
                 cumulative = row.geometry
             else:
@@ -395,17 +406,26 @@ def prepare_calfin(
 
         # Step 3: Rasterize to grid
         agg_groups = [(date, df) for date, df in calfin_aggregated.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
-        with tqdm_joblib(tqdm(desc="Rasterizing geometries", total=len(agg_groups))):
-            raster_results = Parallel(n_jobs=n_workers)(
-                delayed(create_ds)(date, df, imbie_union, geom=geom, resolution=resolution) for date, df in agg_groups
-            )
+
+        with Client(n_workers=n_workers, threads_per_worker=1) as client:
+            print(f"Dask dashboard: {client.dashboard_link}")
+
+            futures = [
+                client.submit(
+                    create_ds, date, df, imbie_union, geom=geom, resolution=resolution, force_overwrite=force_overwrite
+                )
+                for date, df in agg_groups
+            ]
+            raster_results = []
+            for future in tqdm(as_completed(futures), desc="Rasterizing geometries", total=len(futures)):
+                raster_results.append(future.result())
 
         result_filtered = [r for r in raster_results if r is not None]
 
         # Merge and save
         print(f"Merging datasets and saving to {p_fn.absolute()}")
 
-        ds = xr.open_mfdataset(result_filtered).load()
+        ds = xr.open_mfdataset(result_filtered, engine="netcdf4")
         ds = ds.cf.add_bounds("time")
         ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
         ds.rio.write_crs(crs, inplace=True)
