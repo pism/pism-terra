@@ -435,10 +435,11 @@ def prepare_calfin(
         # Merge and save
         print(f"Merging datasets and saving to {p_fn.absolute()}")
 
-        ds = xr.open_mfdataset(result_filtered, engine="netcdf4")
+        ds = xr.open_mfdataset(result_filtered)
         ds = ds.cf.add_bounds("time")
         ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-        ds.rio.write_crs(crs, inplace=True)
+        ds.rio.write_crs(crs, inplace=True).rio.write_coordinate_system(inplace=True)
+
         ds.to_netcdf(p_fn)
 
     return p_fn

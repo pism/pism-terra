@@ -631,10 +631,10 @@ def check_xr_lazy(path: Path | str) -> bool:
         print(f"{p} is valid ✓")
         is_ok = True
     except FileNotFoundError:
-        print(f"{p} is valid ✗ (missing)")
+        print(f"{p} is not valid ✗")
         is_ok = False
     except Exception as e:
-        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        print(f"{p} is not valid ✗ ({type(e).__name__}: {e})")
         is_ok = False
     return is_ok
 
@@ -677,10 +677,10 @@ def check_xr_fully(path: Path | str) -> bool:
         print(f"{p} is valid ✓")
         is_ok = True
     except FileNotFoundError:
-        print(f"{p} is valid ✗ (missing)")
+        print(f"{p} is not valid ✗")
         is_ok = False
     except Exception as e:
-        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        print(f"{p} is not valid ✗ ({type(e).__name__}: {e})")
         is_ok = False
     return is_ok
 
@@ -722,10 +722,10 @@ def check_rio(path: Path | str) -> bool:
         print(f"{p} is valid ✓")
         is_ok = True
     except FileNotFoundError:
-        print(f"{p} is valid ✗ (missing)")
+        print(f"{p} is not valid ✗")
         is_ok = False
     except Exception as e:
-        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        print(f"{p} is not valid ✗ ({type(e).__name__}: {e})")
         is_ok = False
     return is_ok
 
