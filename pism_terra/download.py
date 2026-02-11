@@ -641,3 +641,70 @@ def download_netcdf(
     with NamedTemporaryFile(suffix=".nc", delete=False) as xr_file:
         # Open the downloaded file with xarray
         return xr.open_dataset(xr_file)
+
+
+def download_gebco(
+    url: str = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2025/ice_surface_elevation/netcdf/gebco_2025.zip?download=1",
+    target_dir: os.PathLike | str = ".",
+) -> Path:
+    """
+    Download and extract GEBCO 2025 ice surface elevation NetCDF if needed.
+
+    Parameters
+    ----------
+    url : str, optional
+        URL to the GEBCO 2025 ZIP archive.
+    target_dir : str or PathLike, optional
+        Directory where the ZIP and NetCDF file should be stored.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the extracted NetCDF file.
+
+    Notes
+    -----
+    - If a valid NetCDF file already exists in `target_dir`, it is returned
+      without re-downloading.
+    - The function searches for any ``*.nc`` file in `target_dir` and uses
+      the first valid one.
+    """
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    # 1. Check for existing valid NetCDF in target_dir
+    existing_nc_files = sorted(target_dir.glob("GEBCO*.nc"))
+    for nc_path in existing_nc_files:
+        if check_xr_lazy(nc_path):
+            return nc_path
+    # 2. No valid NetCDF found, download ZIP
+    zip_path = target_dir / "gebco_2025.zip"
+    with requests.get(url, stream=True, timeout=300) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("Content-Length", 0))
+        chunk_size = 1024 * 1024  # 1 MB
+        with (
+            open(zip_path, "wb") as f,
+            tqdm(
+                total=total,
+                unit="B",
+                unit_scale=True,
+                desc="Downloading gebco_2025.zip",
+            ) as pbar,
+        ):
+            for chunk in r.iter_content(chunk_size=chunk_size):
+                if chunk:  # filter out keep-alive chunks
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+    # 3. Extract ZIP
+    print(f"Extracting {zip_path} to {target_dir}")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(target_dir)
+    # 4. Find NetCDF file in target_dir
+    nc_files = sorted(target_dir.glob("*.nc"))
+    if not nc_files:
+        raise FileNotFoundError(f"No NetCDF (*.nc) files found in {target_dir} after extracting {zip_path}")
+    # Prefer the first valid one
+    for nc_path in nc_files:
+        if check_xr_lazy(nc_path):
+            return nc_path
+    raise RuntimeError(f"Found NetCDF files in {target_dir}, but none could be opened successfully.")

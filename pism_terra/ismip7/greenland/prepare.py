@@ -38,7 +38,7 @@ from pyfiglet import Figlet
 from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
-from pism_terra.download import download_earthaccess, download_netcdf
+from pism_terra.download import download_earthaccess, download_gebco, download_netcdf
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -102,14 +102,13 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
 
-    # ISMIP6 grid
-    resolution = 1000.0
-    x_bnds = [-720000.0 - resolution / 2, 960000.0 + resolution / 2]
-    y_bnds = [-3450000.0 - resolution / 2, -570000.0 + resolution / 2]
-
     print("-" * 120)
     print("Grid File")
     print("-" * 120)
+
+    x_bnds = config["domain"]["x_bounds"]
+    y_bnds = config["domain"]["y_bounds"]
+    resolution = config["domain"]["resolution"]
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
@@ -296,16 +295,27 @@ def prepare_observations(
     da_1km = ds["geothermal_heat_flux1"]
     da_1km = da_1km.where(da_1km != -9999, 0.042)
 
+    gebco_p = download_gebco(target_dir=input_path)
+    gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
+
     if thin > 1:
         target_da = ds_bm.thin({"x": thin, "y": thin})
         ds_bm_regridded = ds_bm.regrid.conservative(target_da)
     else:
         ds_bm_regridded = ds_bm
+
+    gebco_bm_regridded = gebco.rio.reproject_match(ds_bm_regridded.rio.write_crs("EPSG:3413")).compute()
+
+    ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(
+        ds_bm_regridded["bed"].notnull(), gebco_bm_regridded["elevation"]
+    )
+    ds_bm_regridded = ds_bm_regridded.fillna(0)
+
     ds = xr.merge([ds_bm_regridded, da_1km, ds["mapping"]])
 
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
 
-    ds = ds.rename_vars({k: v for k, v in config.items() if k in ds})
+    ds = ds.rename_vars({k: v for k, v in config.items() if k in ds}).drop_vars("crs", errors="ignore")
     obs_file = output_path / Path("boot_GreenlandObsISMIP7-v1.3.nc")
     ds.to_netcdf(obs_file)
     return obs_file

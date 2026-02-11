@@ -51,14 +51,14 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 390
+'input.forcing.buffer_size' = 13
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk"
 
 [reporting]
 
 'output.format' = "netcdf4_serial"
-'output.compression_level'= 2
+'output.compression_level' = 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.extra.file' = "none"
