@@ -33,6 +33,7 @@ import rioxarray  # pylint: disable=unused-import
 import toml
 import xarray as xr
 import xarray_regrid.methods.conservative  # pylint: disable=unused-import
+from cdo import Cdo
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
 from tqdm.auto import tqdm
@@ -209,7 +210,7 @@ def _process_single_forcing(
             parallel=True,
             decode_times=time_coder,
             engine="h5netcdf",
-            chunks={"time": 120, "y": -1, "x": -1},
+            chunks={"time": 240, "y": -1, "x": -1},
             data_vars="minimal",
         ).sel({"time": slice(str(start_year), str(end_year))})
         dss.append(ds)
@@ -422,7 +423,13 @@ def prepare_calfin(
 
             futures = [
                 client.submit(
-                    create_ds, date, df, imbie_union, geom=geom, resolution=resolution, force_overwrite=force_overwrite
+                    create_ds,
+                    tmp_path / f"frontretreat_g{resolution}m_{date.year}-{date.month}-{date.day}.nc",
+                    date,
+                    df,
+                    imbie_union,
+                    geom=geom,
+                    resolution=resolution,
                 )
                 for date, df in agg_groups
             ]
@@ -433,15 +440,15 @@ def prepare_calfin(
         result_filtered = [r for r in raster_results if r is not None]
 
         # Merge and save
-        print(f"Merging datasets and saving to {p_fn.absolute()}")
+        print(f"Merging datasets and saving to {p_fn.resolve()}")
 
-        ds = xr.open_mfdataset(result_filtered)
-        ds = ds.cf.add_bounds("time")
-        ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-        ds.rio.write_crs(crs, inplace=True).rio.write_coordinate_system(inplace=True)
-
-        ds.to_netcdf(p_fn)
-
+        cdo = Cdo()
+        cdo.settbounds(
+            "1mon",
+            input="-mergetime " + " ".join(str(f) for f in result_filtered),
+            output=str(p_fn.resolve()),
+            options="-f nc4 -z zip_2",
+        )
     return p_fn
 
 

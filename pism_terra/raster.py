@@ -1,4 +1,4 @@
-# Copyright (C) 2025 Andy Aschwanden
+# Copyright (C) 2025, 2026 Andy Aschwanden
 #
 # This file is part of pism-terra.
 #
@@ -39,21 +39,22 @@ from pism_terra.workflow import check_xr_lazy
 
 
 def create_ds(
+    output_file: Path | str,
     date: pd.Timestamp,
     ds1: gpd.GeoDataFrame,
     ds2: gpd.GeoDataFrame,
     geom: dict,
     resolution: float = 450,
     crs: str = "EPSG:3413",
-    result_dir: Path | str = "front_retreat",
     encoding_time: dict = {"time": {"units": "hours since 1972-01-01 00:00:00", "calendar": "standard"}},
-    force_overwrite: bool = False,
-) -> Path:
+) -> Path | str:
     """
     Create a dataset representing land ice area fraction retreat and save it to a NetCDF file.
 
     Parameters
     ----------
+    output_file : Path or str
+        The path to the output NetCDF file.
     date : pd.Timestamp
         The date for which the dataset is created.
     ds1 : gpd.GeoDataFrame
@@ -66,12 +67,8 @@ def create_ds(
         The resolution of the geocube, by default 450.
     crs : str, optional
         The coordinate reference system, by default "EPSG:3413".
-    result_dir : Union[Path, str], optional
-        The directory where the result NetCDF file will be saved, by default "front_retreat".
     encoding_time : dict, optional
         The encoding settings for the time variable, by default {"time": {"units": "hours since 1972-01-01 00:00:00", "calendar": "standard"}}.
-    force_overwrite : bool, optional
-        Overwrite existing outputs if True. Default is False.
 
     Returns
     -------
@@ -93,33 +90,27 @@ def create_ds(
 
     start = date.replace(day=1)
 
-    p = Path(result_dir)
-    p.mkdir(parents=True, exist_ok=True)
-    fn = p / Path(f"frontretreat_g{resolution}m_{start.year}-{start.month}-{start.day}.nc")
+    ds = gpd.GeoDataFrame(ds1, crs=crs)
+    geom_valid = ds.geometry.make_valid()
+    ds.geometry = geom_valid
+    ds_dissolved = ds.dissolve()
+    diff = ds2.difference(ds_dissolved.buffer(5))
+    n = len(diff)
+    diff_df = {"land_ice_area_fraction_retreat": np.ones(n)}
+    diff_gp = gpd.GeoDataFrame(data=diff_df, geometry=diff, crs=crs)
+    ds = make_geocube(vector_data=diff_gp, geom=geom, resolution=(resolution, resolution))
+    ds = ds.fillna(0)
+    ds["land_ice_area_fraction_retreat"].attrs["units"] = "1"
+    ds["land_ice_area_fraction_retreat"].attrs.pop("coordinates", None)
+    ds["land_ice_area_fraction_retreat"].attrs["grid_mapping"] = "spatial_ref"
+    ds = ds.expand_dims(time=[start])
+    comp = {"zlib": True, "complevel": 2}
+    encoding = {var: comp for var in ds.data_vars}
+    encoding.update(encoding_time)
 
-    if (not check_xr_lazy(fn)) or force_overwrite:
+    ds.to_netcdf(output_file, encoding=encoding)
 
-        ds = gpd.GeoDataFrame(ds1, crs=crs)
-        geom_valid = ds.geometry.make_valid()
-        ds.geometry = geom_valid
-        ds_dissolved = ds.dissolve()
-        diff = ds2.difference(ds_dissolved.buffer(5))
-        n = len(diff)
-        diff_df = {"land_ice_area_fraction_retreat": np.ones(n)}
-        diff_gp = gpd.GeoDataFrame(data=diff_df, geometry=diff, crs=crs)
-        ds = make_geocube(vector_data=diff_gp, geom=geom, resolution=(resolution, resolution))
-        ds = ds.fillna(0)
-        ds["land_ice_area_fraction_retreat"].attrs["units"] = "1"
-        ds = ds.expand_dims(time=[start])
-
-        comp = {"zlib": True, "complevel": 2}
-        encoding = {var: comp for var in ds.data_vars}
-        encoding.update(encoding_time)
-
-        ds.to_netcdf(fn, encoding=encoding)
-        ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-        ds.rio.write_crs(crs, inplace=True)
-    return fn
+    return output_file
 
 
 def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:

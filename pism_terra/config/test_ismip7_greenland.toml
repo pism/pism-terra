@@ -1,6 +1,12 @@
 ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rate", "tas" = "ice_surface_temp", "TF" = "theta_ocean"}
 gcms = ["CESM2-WACCM"]
 
+[domain]
+
+x_bounds = [-654500, 894500]
+y_bounds = [-504500, -3515500]
+resolution = 1000
+
 [pathway]
 
 historical = {"start_year" = 2014, "end_year" = 2015, version = 1}
