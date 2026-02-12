@@ -35,7 +35,7 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
-from pism_terra.aws import local_to_s3, s3_sync_to_local
+from pism_terra.aws import local_to_s3, s3_to_local
 from pism_terra.config import load_config
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
@@ -142,7 +142,7 @@ def stage_greenland(
     input_path.mkdir(parents=True, exist_ok=True)
 
     s3_uri = f"s3://{bucket}/ismip7_greenland_input"
-    s3_sync_to_local(s3_uri, dest=input_path)
+    s3_to_local(s3_uri, dest=input_path)
 
     grid_file = input_path / Path(config["grid_file"])
     check_xr_fully(grid_file)
