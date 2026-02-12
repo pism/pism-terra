@@ -4,13 +4,64 @@ channels:
 dependencies:
   - python=3.12.6
   - pip
+  # runtime requirements
+  - boto3
+  - botocore
+  - cdsapi
+  - cf_units
+  - cf_xarray
+  - cftime
+  - dask[distributed,dataframe]
+  - dem_stitcher
+  - earthaccess
+  - geopandas
+  - h5netcdf
+  - jinja2
+  - matplotlib
+  - numpy
+  - pandas
+  - pint-xarray
+  - pyamg
+  - pyarrow
+  - pydantic
+  - pyfiglet
+  - pyogrio
+  - pyproj
+  - pytest
+  - rasterio
+  - requests
+  - rioxarray
+  - s3fs
+  - scikit-learn
+  - scipy
+  - shapely
+  - toml
+  - tqdm
+  - xarray
+  - zarr
+  # for development and testing
   - black
-  - cdo
-  - ncview
   - pre-commit
   - pylint
   - pytest
   - pytest-cov
   - setuptools_scm>=6.2
-  - pip:
-      - -r requirements.txt
+  # for docs
+  - furo
+  - sphinx
+  - sphinx-autodoc-typehints
+  - sphinx-copybutton
+  - myst-parser
+  - numpydoc
+  # for convenience
+  - cdo
+  - ncview
+  - cmcrameri
+  - bokeh
+  - cartopy
+  - flox  # FIXME: possibly a runtime requirement for xarray/dask performance
+  - hyp3_sdk
+  - joblib
+  - jupyter
+  - jupyter-server-proxy
+  - seaborn

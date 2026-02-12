@@ -21,7 +21,62 @@ classifiers = [
         "Programming Language :: Python :: 3.10",
         "Topic :: Scientific/Engineering :: Postprocessing",
         ]
-dynamic = ["dependencies", "version"]
+dynamic = ["version"]
+dependencies = [
+    "boto3",
+    "botocore",
+    "cdsapi",
+    "cf-units",
+    "cf_xarray",
+    "cftime",
+    "dask[distributed,dataframe]",
+    "dem_stitcher",
+    "earthaccess",
+    "geopandas",
+    "h5netcdf",
+    "jinja2",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "pint-xarray",
+    "pyamg",
+    "pyarrow",
+    "pydantic",
+    "pyfiglet",
+    "pyogrio",
+    "pyproj",
+    "pytest",
+    "rasterio",
+    "requests",
+    "rioxarray",
+    "s3fs",
+    "scikit-learn",
+    "scipy",
+    "shapely",
+    "toml",
+    "tqdm",
+    "xarray",
+    "zarr",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "pre-commit",
+    "pylint",
+    "pytest",
+    "pytest-cov",
+    "setuptools_scm>=6.2",
+]
+
+docs = [
+    "furo",
+    "sphinx",
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+    "myst-parser",
+    "numpydoc",
+]
 
 [project.scripts]
 pism-glacier-stage = "pism_terra.glacier.stage:main"
@@ -34,8 +89,6 @@ combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
 [tool.setuptools.packages.find]
 include = ["pism_terra*"]
 
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools]
 py-modules = ["pism_terra"]
