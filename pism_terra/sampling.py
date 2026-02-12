@@ -158,7 +158,7 @@ def create_samples(d: dict[str, dict[str, Any]], n_samples: int = 10, seed: int 
     U = engine.random(n_samples)
 
     # clip away exactly 0 or 1 so ppf is well-defined
-    eps = np.finfo(float).eps
+    eps = np.finfo(float).eps  # pylint: disable=no-member
     U = np.clip(U, eps, 1 - eps)
 
     # Transform each dimension with that variable's inverse CDF (PPF)
