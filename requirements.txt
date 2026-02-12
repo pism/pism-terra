@@ -1,4 +1,5 @@
 bokeh
+boto3
 cartopy
 cdsapi
 cf_xarray
@@ -12,6 +13,7 @@ flox
 furo
 geopandas
 h5netcdf
+hyp3_sdk
 joblib
 jupyter
 jupyter-server-proxy
@@ -26,6 +28,7 @@ pyfiglet
 pyarrow
 pyogrio
 rioxarray
+s3fs
 scikit-learn
 scipy
 seaborn
