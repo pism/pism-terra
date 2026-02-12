@@ -1,0 +1,21 @@
+#!/bin/sh
+#SBATCH --partition={{ queue }}
+#SBATCH --ntasks={{ ntasks }}
+#SBATCH --tasks-per-node=16
+#SBATCH --time={{ walltime }}
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH --mail-type=FAIL
+#SBATCH --output="{{ output_path }}/pism.%j"
+
+module list
+
+umask 007
+
+cd $SLURM_SUBMIT_DIR
+
+srun -l /bin/hostname | sort -n | awk '{print $2}' > ./nodes_$SLURM_JOBID
+
+ulimit -l unlimited
+ulimit -s unlimited
+ulimit

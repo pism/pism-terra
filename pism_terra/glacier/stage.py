@@ -35,13 +35,16 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
-from pism_terra.climate import era5, pmip4, snap
+from pism_terra.aws import local_to_s3
+from pism_terra.climate import create_offset_file, era5, pmip4, snap
 from pism_terra.config import load_config
 from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_dataset, check_xr
+
+xr.set_options(keep_attrs=True)
 
 CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap}
 
@@ -147,14 +150,14 @@ def stage_glacier(
     if glacier.empty:
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
-    glacier_filename = path / f"rgi_{rgi_id}.gpkg"
+    glacier_file = path / f"rgi_{rgi_id}.gpkg"
     glacier_series = glacier.iloc[0]
     crs = glacier_series["epsg"]
-    glacier.to_file(glacier_filename)
+    glacier.to_file(glacier_file)
 
     # Output filenames
-    boot_filename = path / f"bootfile_g{int(resolution)}m_{rgi_id}.nc"
-    grid_filename = path / f"grid_g{int(resolution)}m_{rgi_id}.nc"
+    boot_file = path / f"bootfile_g{int(resolution)}m_{rgi_id}.nc"
+    grid_file = path / f"grid_g{int(resolution)}m_{rgi_id}.nc"
 
     # Build boot dataset (DEM/thickness/bed)
     boot_ds = boot_file_from_rgi_id(
@@ -171,19 +174,26 @@ def stage_glacier(
     ]
 
     # Edge cleanup and simple physical constraints
-    for v in ["bed", "thickness", "surface"]:
+    for v in ["bed"]:
         boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds)
+    for v in ["surface"]:
+        boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds, value=0.0)
     boot_ds["thickness"] = boot_ds["thickness"].where(boot_ds["thickness"] > 0.0, 0.0)
-    boot_ds["bed"] = boot_ds["bed"].where(boot_ds["surface"] > 0.0, -1000.0)
     boot_ds.rio.write_crs(crs, inplace=True)
-    encoding = {
-        v: {"_FillValue": None}
-        for v in ["x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"]
-    }
-    boot_ds.to_netcdf(boot_filename, encoding=encoding)
+    if hasattr(boot_ds["spatial_ref"], "GeoTransform"):
+        del boot_ds["spatial_ref"].attrs["GeoTransform"]
+    for name in ("x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
+        if name in boot_ds:
+            boot_ds[name].encoding.update({"_FillValue": None})
+
+    print("")
+    print("Saving bootfile")
+    print("-" * 80)
+    print(boot_file.resolve())
+    boot_ds.to_netcdf(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})
-    grid_ds.to_netcdf(grid_filename, engine="h5netcdf")
+    grid_ds.to_netcdf(grid_file, engine="h5netcdf")
 
     # Save domain extent polygon as a GPKG
     x_point_list = [
@@ -202,8 +212,11 @@ def stage_glacier(
     ]
     domain_bounds_geom = Polygon(zip(x_point_list, y_point_list))
     domain_bounds = gpd.GeoDataFrame(index=[0], crs=crs, geometry=[domain_bounds_geom])
-    domain_bounds_filename = path / f"domain_{rgi_id}.gpkg"
-    domain_bounds.to_file(domain_bounds_filename)
+    domain_bounds_file = path / f"domain_{rgi_id}.gpkg"
+    domain_bounds.to_file(domain_bounds_file)
+
+    scalar_offset_file = path / Path(f"scalar_offset_{rgi_id}_id_0.nc")
+    create_offset_file(scalar_offset_file, delta_T=0.0, frac_P=0.0)
 
     # Climate forcing
     climate_from_rgi = CLIMATE[config["climate"]]
@@ -217,9 +230,10 @@ def stage_glacier(
     # Build file index (one row per climate file)
     files_dict = {
         "rgi_id": rgi_id,
-        "outline": glacier_filename.resolve(),
-        "boot_file": boot_filename.resolve(),
-        "grid_file": grid_filename.resolve(),
+        "outline": glacier_file.resolve(),
+        "boot_file": boot_file.resolve(),
+        "grid_file": grid_file.resolve(),
+        "scalar_offset_file": scalar_offset_file.resolve(),
     }
     dfs: list[pd.DataFrame] = []
     for fpath in responses:
@@ -238,11 +252,17 @@ def main():
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Stage RGI Glacier."
+    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
+    parser.add_argument(
+        "--bucket-prefix",
+        help="AWS prefix (location in bucket) to add to product files",
+        default="",
+    )
     parser.add_argument(
         "--output-path",
         help="Path to save all files.",
-        type=str,
-        default="data",
+        type=Path,
+        default=Path("data"),
     )
     parser.add_argument(
         "--force-overwrite",
@@ -276,15 +296,18 @@ def main():
     cfg = load_config(config_file)
     config = cfg.campaign.as_params()
 
-    path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     glacier_path = path / Path(rgi_id)
     glacier_path.mkdir(parents=True, exist_ok=True)
 
     input_path = glacier_path / Path("input")
     input_path.mkdir(parents=True, exist_ok=True)
-    glacier_df = stage_glacier(config, rgi_id, rgi_file, path=glacier_path, force_overwrite=force_overwrite)
+    glacier_df = stage_glacier(config, rgi_id, rgi_file, path=input_path, force_overwrite=force_overwrite)
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
+
+    if options.bucket:
+        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
+        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
 
 
 if __name__ == "__main__":

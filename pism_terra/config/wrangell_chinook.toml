@@ -12,8 +12,8 @@ nodes = 1
 
 [run_info]
 
-'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA LGM"
+'run_info.institution' = "University of Idaho"
+'run_info.title' = "PISM-TERRA Wrangell Mountains"
 
 [campaign]
 
@@ -26,7 +26,7 @@ velocity = "none"
 [time]
 
 'time.start' = "01-01-01"
-'time.end' =  "5000-01-01"
+'time.end' =  "500-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "01-01-01"
 
@@ -46,7 +46,7 @@ velocity = "none"
 
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 390
+'input.forcing.buffer_size' = 13
 
 [reporting]
 
@@ -55,14 +55,14 @@ velocity = "none"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
 'output.extra.file' = "none"
-'output.extra.times' = 100
+'output.extra.times' = 1
 'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 
 [grid]
 
-resolution = "1000m"
+resolution = "500m"
 grid.Lbz = 0
 grid.Lz = 5000
 grid.Mbz = 1
@@ -99,6 +99,7 @@ model = 'blatter'
 'stress_balance.blatter.coarsening_factor' = 4
 'stress_balance.blatter.use_eta_transform' = 'yes'
 'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.blatter.relative_convergence' = 1.0e-3
 bp_ksp_monitor =  ""
 bp_ksp_view_singularvalues = ""
 bp_snes_monitor_ratio = ""
@@ -110,6 +111,8 @@ bp_mg_coarse_pc_type = "lu"
 bp_pc_mg_levels = 3
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
+bp_snes_rtol = 1e-3
+bp_ksp_rtol = 1e-3
 
 [stress_balance.options.hybrid]
 
@@ -118,6 +121,7 @@ bp_snes_ksp_ew_version = 3
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
+'stress_balance.ssa.fd.relative_convergence' = 1.0e-3
 
 [stress_balance.options.sia]
 
@@ -156,11 +160,13 @@ model = "given"
 
 [atmosphere.options.given]
 
-'atmosphere.models' = "given"
+'atmosphere.models' = "given,delta_T,precip_scaling"
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = ""
 'atmosphere.elevation_change.temperature_lapse_rate' = 6
+'atmosphere.delta_T.file' = "none"
 'atmosphere.elevation_change.file' = "none"
+'atmosphere.frac_P.file' = "none"
 
 [ocean]
 

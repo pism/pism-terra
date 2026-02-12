@@ -1,5 +1,5 @@
 samples = 15
-mapping = {"atmosphere.given.file"= "cosipy_file", "surface.given.file"= "cosipy_file"}
+mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
 
 ['surface.pdd.factor_ice']
 

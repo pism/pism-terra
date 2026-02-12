@@ -41,7 +41,9 @@ from pism_terra.download import download_archive, extract_archive
 from pism_terra.observations import glacier_velocities_from_rgi_id
 from pism_terra.raster import check_overlap, reproject_file
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_rio
+from pism_terra.workflow import check_rio, check_xr_sampled
+
+xr.set_options(keep_attrs=True)
 
 
 def get_surface_dem_by_bounds(
@@ -139,7 +141,9 @@ def get_surface_dem_by_bounds(
     return geoid_file
 
 
-def prepare_ice_thickness(glacier, target_grid: xr.Dataset | xr.DataArray, dataset: str = "millan", **kwargs):
+def prepare_ice_thickness(
+    glacier, target_grid: xr.Dataset | xr.DataArray, dataset: str = "millan", path: str | Path = "input_files", **kwargs
+):
     """
     Prepare ice thickness data for a given glacier and target grid.
 
@@ -156,6 +160,8 @@ def prepare_ice_thickness(glacier, target_grid: xr.Dataset | xr.DataArray, datas
     dataset : str, optional
         The name of the ice thickness dataset to use. Currently only "millan" is implemented.
         Default is "millan".
+    path : str or pathlib.Path, default ``"input_files"``
+        Working directory used by helper routines to cache/write intermediate rasters/grids.
     **kwargs
         Additional keyword arguments passed to the dataset-specific function,
         e.g., `target_crs="EPSG:32641"`.
@@ -171,7 +177,7 @@ def prepare_ice_thickness(glacier, target_grid: xr.Dataset | xr.DataArray, datas
         If the specified dataset is not supported.
     """
     if dataset == "millan":
-        thickness = prepare_ice_thickness_millan(glacier, target_grid, **kwargs)
+        thickness = prepare_ice_thickness_millan(glacier, target_grid, path=path, **kwargs)
     else:
         raise NotImplementedError(f"Ice thickness dataset '{dataset}' not implemented.")
     thickness = thickness.where(thickness > 0, 0)
@@ -180,7 +186,9 @@ def prepare_ice_thickness(glacier, target_grid: xr.Dataset | xr.DataArray, datas
     return thickness
 
 
-def prepare_ice_thickness_millan(glacier, target_grid: xr.Dataset | xr.DataArray, **kwargs):
+def prepare_ice_thickness_millan(
+    glacier, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
+):
     """
     Load and interpolate Millan et al. (2022) ice thickness data to a target grid.
 
@@ -194,6 +202,8 @@ def prepare_ice_thickness_millan(glacier, target_grid: xr.Dataset | xr.DataArray
         Geometry of the glacier to extract overlapping thickness rasters.
     target_grid : xarray.Dataset or xarray.DataArray
         Target grid to which ice thickness should be interpolated.
+    path : str or pathlib.Path, default ``"input_files"``
+        Working directory used by helper routines to cache/write intermediate rasters/grids.
     **kwargs
         Additional keyword arguments. Must include:
         - target_crs : str
@@ -211,28 +221,38 @@ def prepare_ice_thickness_millan(glacier, target_grid: xr.Dataset | xr.DataArray
     - Assumes a fixed reprojected resolution of 50 meters.
     """
 
+    force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
+
     bucket: str = "pism-cloud-data"
+    out_dir = Path(path)
+    thickness_file = out_dir / "thickness.nc"
 
-    s3_to_local(bucket, prefix="millan", dest_dir="data/ice_thickness")
+    if (not check_xr_sampled(thickness_file)) or force_overwrite:
 
-    ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
+        thickness_file.unlink(missing_ok=True)
+        s3_to_local(bucket, prefix="millan", dest_dir="data/ice_thickness/millan")
+        ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
 
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
 
-        overlapping_rasters = [f.result() for f in as_completed(futures) if f.result() is not None]
+            overlapping_rasters = [f.result() for f in as_completed(futures) if f.result() is not None]
 
-    thicknesses = []
-    for k, path in enumerate(overlapping_rasters):
-        if path is not None:
-            projected_file = reproject_file(path, dst_crs=kwargs["target_crs"], resolution=50)
-            da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
-            thickness = da.interp_like(target_grid)
-            thickness.name = "thickness"
-            thickness["raster"] = k
-            thicknesses.append(thickness)
+        thicknesses = []
+        for k, p in enumerate(overlapping_rasters):
+            if p is not None:
+                projected_file = reproject_file(p, dst_crs=kwargs["target_crs"], resolution=50)
+                da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
+                thickness = da.interp_like(target_grid)
+                thickness.rio.write_nodata(None, inplace=True)
+                thickness.name = "thickness"
+                thickness["raster"] = k
+                thicknesses.append(thickness)
 
-    thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
+        thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
+        thickness.to_netcdf(thickness_file)
+
+    thickness = xr.open_dataarray(thickness_file)
 
     return thickness
 
@@ -570,10 +590,12 @@ def boot_file_from_rgi_id(
         bounds_geoid_buffered, dst_crs, dem_name=dem_name, path=path, resolution=resolution, **kwargs
     )
     surface = xr.open_dataarray(surface_file)
+    surface = surface.where(surface > 0.0, 0.0)
     target_grid = xr.open_dataset(target_grid_file)
 
-    ice_thickness = prepare_ice_thickness(glacier, target_grid=target_grid, target_crs=dst_crs)
+    ice_thickness = prepare_ice_thickness(glacier, path=path, target_grid=target_grid, target_crs=dst_crs)
     ice_thickness = ice_thickness.rio.clip(glacier_projected.geometry, drop=False).fillna(0)
+    ice_thickness = ice_thickness.where(ice_thickness > 0.0, 0.0)
 
     bed = surface - ice_thickness
     bed.name = "bed"
@@ -600,7 +622,5 @@ def boot_file_from_rgi_id(
     tillwat.name = "tillwat"
     tillwat.attrs.update({"units": "m"})
 
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, v])
-    ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
-    ds.rio.write_crs(dst_crs, inplace=True)
-    return ds
+    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, _v])
+    return ds.fillna(0)

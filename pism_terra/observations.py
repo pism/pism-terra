@@ -212,6 +212,8 @@ def glacier_velocities_from_rgi_id(
     print("Generate Velocity Observations")
     print("-" * 80)
 
+    crs = "EPSG:3857"
+
     if isinstance(rgi, str | Path):
         rgi = gpd.read_file(rgi)
     glacier = get_glacier_from_rgi_id(rgi, rgi_id)
@@ -230,12 +232,11 @@ def glacier_velocities_from_rgi_id(
         bounds = geometry_buffered_geoid.bounds
 
         ds = get_velocities_by_bounds(bounds, product_name=product_name)
-        crs = ds.rio.crs
         glacier_projected = glacier.to_crs(crs)
         ds_clipped = ds.rio.clip(glacier_projected.geometry)
         ds_clipped.to_netcdf(path)
 
     else:
         ds_clipped = xr.open_dataset(path)
-        ds_clipped.rio.write_crs(dst_crs, inplace=True)
+        ds_clipped.rio.write_crs(crs, inplace=True)
     return ds_clipped
