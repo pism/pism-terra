@@ -8,7 +8,7 @@ dependencies:
   - boto3
   - botocore
   - cdsapi
-  - cf_units
+  # - cf_units  # FIXME: Breaks this environment; doesn't appear to be needed
   - cf_xarray
   - cftime
   - dask[distributed,dataframe]

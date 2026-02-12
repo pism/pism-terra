@@ -26,7 +26,7 @@ dependencies = [
     "boto3",
     "botocore",
     "cdsapi",
-    "cf-units",
+    # "cf-units",  # FIXME: # FIXME: Breaks the conda environment; doesn't appear to be needed
     "cf_xarray",
     "cftime",
     "dask[distributed,dataframe]",
