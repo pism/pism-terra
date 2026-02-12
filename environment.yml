@@ -8,6 +8,7 @@ dependencies:
   - boto3
   - botocore
   - cdsapi
+  - python-cdo
   # - cf_units  # FIXME: Breaks this environment; doesn't appear to be needed
   - cf_xarray
   - cftime
@@ -18,6 +19,7 @@ dependencies:
   - geopandas
   - h5netcdf
   - jinja2
+  - joblib
   - matplotlib
   - netCDF4
   - numpy
@@ -56,15 +58,15 @@ dependencies:
   - sphinx-copybutton
   - myst-parser
   - numpydoc
-  # for convenience
-  - cdo
+  # for notebooks and convenience
   - ncview
   - cmcrameri
   - bokeh
   - cartopy
   - flox  # FIXME: possibly a runtime requirement for xarray/dask performance
   - hyp3_sdk
-  - joblib
   - jupyter
   - jupyter-server-proxy
+  - moviepy
+  - python-dateutil
   - seaborn
