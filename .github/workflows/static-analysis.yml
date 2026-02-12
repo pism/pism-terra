@@ -26,6 +26,8 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-file: environment.yml
+          create-args: >-
+            python=3.12.6
           init-shell: bash
 
       - name: run pylint
