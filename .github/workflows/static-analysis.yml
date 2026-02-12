@@ -27,7 +27,7 @@ jobs:
         with:
           environment-file: environment.yml
           create-args: >-
-            python=3.12.6
+            python=3.12
           init-shell: bash
 
       - name: run pylint
