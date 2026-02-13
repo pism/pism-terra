@@ -32,73 +32,6 @@ import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 
-# ---------------------------
-# AWS CLI wrappers (simple)
-# ---------------------------
-
-
-def s3_sync_to_local(s3_uri: str, dest: str | Path, *, delete: bool = False) -> None:
-    """
-    Sync an S3 prefix to a local directory using the AWS CLI.
-
-    Parameters
-    ----------
-    s3_uri : str
-        The S3 URI to sync from, e.g. ``"s3://my-bucket/path/"``.
-    dest : str or pathlib.Path
-        Local destination directory. Created if it does not exist.
-    delete : bool, default False
-        If True, delete local files that are not present at the source.
-
-    Raises
-    ------
-    subprocess.CalledProcessError
-        If the ``aws s3 sync`` command exits with a non-zero code.
-
-    Notes
-    -----
-    Requires the AWS CLI to be installed and configured (credentials, region).
-    Mirrors the behavior of ``aws s3 sync`` including multipart uploads,
-    built-in retries, and include/exclude semantics if you extend the command.
-    """
-    dest = Path(dest)
-    dest.mkdir(parents=True, exist_ok=True)
-    cmd = ["aws", "s3", "sync", s3_uri, str(dest)]
-    if delete:
-        cmd.append("--delete")
-    subprocess.run(cmd, check=True)
-
-
-def s3_sync_from_local(src: str | Path, s3_uri: str, *, delete: bool = False) -> None:
-    """
-    Sync a local directory to an S3 prefix using the AWS CLI.
-
-    Parameters
-    ----------
-    src : str or pathlib.Path
-        Local source directory to upload from.
-    s3_uri : str
-        Destination S3 URI, e.g. ``"s3://my-bucket/path/"``.
-    delete : bool, default False
-        If True, delete S3 objects at the destination that do not exist locally.
-
-    Raises
-    ------
-    subprocess.CalledProcessError
-        If the ``aws s3 sync`` command exits with a non-zero code.
-
-    Notes
-    -----
-    Requires the AWS CLI to be installed and configured (credentials, region).
-    This thin wrapper lets you orchestrate robust syncs from Python without
-    re-implementing the CLI logic.
-    """
-    cmd = ["aws", "s3", "sync", str(src), s3_uri]
-    if delete:
-        cmd.append("--delete")
-    subprocess.run(cmd, check=True)
-
-
 # -----------------------------------------
 # Pure boto3 implementation (one-way syncs)
 # -----------------------------------------
@@ -209,7 +142,7 @@ def _needs_download(local: Path, size: int, etag: str) -> bool:
 def s3_to_local(
     bucket: str,
     prefix: str,
-    dest_dir: str | Path,
+    dest: str | Path,
     *,
     exclude_keys: Iterable[str] = (),
     dry_run: bool = False,
@@ -225,14 +158,14 @@ def s3_to_local(
         Source S3 bucket name.
     prefix : str
         Source key prefix (acts like a folder). May be empty.
-    dest_dir : str or pathlib.Path
+    dest : str or pathlib.Path
         Local destination directory. Created if missing.
     exclude_keys : Iterable[str], optional
         Exact S3 keys to skip during sync.
     dry_run : bool, default False
         If True, only print planned actions; do not transfer or delete files.
     delete_extra : bool, default False
-        If True, delete local files under ``dest_dir`` that are not present
+        If True, delete local files under ``dest`` that are not present
         under ``bucket/prefix``.
     max_concurrency : int, default 8
         Maximum worker threads for concurrent transfers.
@@ -252,7 +185,7 @@ def s3_to_local(
     * Multipart uploads are considered up-to-date when sizes match.
     * Listing is paginated via ``list_objects_v2``.
     """
-    dest = Path(dest_dir)
+    dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
 
     s3 = boto3.client("s3", config=Config(retries={"max_attempts": 10}))
