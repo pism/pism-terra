@@ -3,8 +3,8 @@ gcms = ["CESM2-WACCM"]
 
 [domain]
 
-x_bounds = [-654500, 894500]
-y_bounds = [-504500, -3515500]
+x_bounds = [-653000.0, 879700.0]
+y_bounds = [-3384350.0, -632750.0]
 
 [pathway]
 

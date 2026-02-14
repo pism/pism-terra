@@ -141,8 +141,7 @@ def stage_greenland(
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)
 
-    s3_uri = f"s3://{bucket}/ismip7_greenland_input"
-    s3_to_local(s3_uri, dest=input_path)
+    s3_to_local(bucket, prefix="ismip7_greenland_input", dest=input_path)
 
     grid_file = input_path / Path(config["grid_file"])
     check_xr_fully(grid_file)

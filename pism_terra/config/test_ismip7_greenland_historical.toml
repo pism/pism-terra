@@ -2,7 +2,8 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 40
+ntasks = 6
+writer = "-n 1 python3 pism_async_writer"
 
 [job]
 
@@ -70,11 +71,11 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 
 [grid]
 
-resolution = "4km"
+resolution = "2400m"
 'grid.Lbz' = 2000
-'grid.Lz' = 4000
+'grid.Lz' = 10000
 'grid.Mbz' = 51
-'grid.Mz' = 101
+'grid.Mz' = 201
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
@@ -167,3 +168,12 @@ model = "given"
 'ocean.models' = "th"
 'ocean.th.file' = "none"
 'ocean.th.clip_salinity' = "False"
+
+[hydrology]
+
+model = "null"
+
+[hydrology.options.null]
+
+'hydrology.moel' = "null"
+'hydrology.null_diffuse_till_water' = "yes"

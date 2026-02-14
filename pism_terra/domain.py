@@ -232,11 +232,10 @@ def create_domain(
     """
 
     if resolution is not None:
-        y_step = -resolution if y_bnds[0] > y_bnds[1] else resolution
         x = np.arange(x_bnds[0] + resolution / 2, x_bnds[1], resolution)
-        y = np.arange(y_bnds[0] + y_step / 2, y_bnds[1], y_step)
+        y = np.arange(y_bnds[0] + resolution / 2, y_bnds[1], resolution)
         xb = np.arange(x_bnds[0], x_bnds[1] + resolution, resolution)
-        yb = np.arange(y_bnds[0], y_bnds[1] + y_step, y_step)
+        yb = np.arange(y_bnds[0], y_bnds[1] + resolution, resolution)
         x_bounds = np.stack([xb[:-1], xb[1:]]).T
         y_bounds = np.stack([yb[:-1], yb[1:]]).T
     else:

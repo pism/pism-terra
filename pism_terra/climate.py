@@ -282,7 +282,7 @@ def snap_cloud(
         if (not check_xr_lazy(snap_file)) or force_overwrite:
 
             snap_file.unlink(missing_ok=True)
-            s3_to_local(bucket, prefix="snap", dest_dir=path)
+            s3_to_local(bucket, prefix="snap", dest=path)
     snap_files = list(Path(path).rglob("snap_*.nc"))
     return snap_files
 

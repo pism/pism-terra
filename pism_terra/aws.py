@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse

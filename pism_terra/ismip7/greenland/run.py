@@ -187,6 +187,7 @@ def run_greenland(
     run.update(cfg.stress_balance.selected())
     run.update(cfg.atmosphere.selected())
     run.update(cfg.surface.selected())
+    run.update(cfg.hydrology.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
@@ -198,6 +199,7 @@ def run_greenland(
 
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
+    writer = cfg.model_dump()["run"]["writer"] if (cfg.model_dump()["run"]["writer"] is not None) else ""
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
@@ -232,7 +234,7 @@ def run_greenland(
         }
     )
 
-    run_str = dict2str(sort_dict_by_key(run))
+    run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
 
     run_opts = RunConfig(**cfg.run.model_dump())
     job_opts = JobConfig(**cfg.job.model_dump())

@@ -110,7 +110,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
 
-    grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution)
+    grid_ds = create_domain(x_bnds, y_bnds)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
     grid_ds.to_netcdf(grid_file)
     check_xr_fully(grid_file)
@@ -217,7 +217,7 @@ def _process_single_forcing(
     ds = xr.merge(dss)
     if "tas" in ds.data_vars:
         ds["tas"] = ds["tas"].where(ds["tas"] != 0, 273.15)
-
+    ds = ds.fillna(0)
     ds = ds.rename_vars({k: v for k, v in ismip7_to_pism.items() if k in ds})
     ds.rio.write_crs("EPSG:3413", inplace=True).rio.write_coordinate_system(inplace=True)
 
@@ -295,8 +295,8 @@ def prepare_observations(
     da_1km = ds["geothermal_heat_flux1"]
     da_1km = da_1km.where(da_1km != -9999, 0.042)
 
-    gebco_p = download_gebco(target_dir=input_path)
-    gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
+    # gebco_p = download_gebco(target_dir=input_path)
+    # gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
 
     if thin > 1:
         target_da = ds_bm.thin({"x": thin, "y": thin})
@@ -304,12 +304,12 @@ def prepare_observations(
     else:
         ds_bm_regridded = ds_bm
 
-    gebco_bm_regridded = gebco.rio.reproject_match(ds_bm_regridded.rio.write_crs("EPSG:3413")).compute()
+    # gebco_bm_regridded = gebco.rio.reproject_match(ds_bm_regridded.rio.write_crs("EPSG:3413")).compute()
 
-    ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(
-        ds_bm_regridded["bed"].notnull(), gebco_bm_regridded["elevation"]
-    )
-    ds_bm_regridded = ds_bm_regridded.fillna(0)
+    # ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(
+    #     ds_bm_regridded["bed"].notnull(), gebco_bm_regridded["elevation"]
+    # )
+    # ds_bm_regridded = ds_bm_regridded.fillna(0)
 
     ds = xr.merge([ds_bm_regridded, da_1km, ds["mapping"]])
 

@@ -69,7 +69,7 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 
 [grid]
 
-resolution = "1km"
+resolution = "900m"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 101
@@ -166,3 +166,12 @@ model = "given"
 'ocean.models' = "th"
 'ocean.th.file' = "none"
 'ocean.th.clip_salinity' = "False"
+
+[hydrology]
+
+model = "null"
+
+[hydrology.options.null]
+
+'hydrology.moel' = "null"
+'hydrology.null_diffuse_till_water' = "yes"

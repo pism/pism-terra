@@ -613,6 +613,7 @@ class RunConfig(BaseModel):
     mpi: str = Field(default="mpirun")
     executable: str = Field(default="pism")
     ntasks: int = Field(ge=1)
+    writer: str | None = None
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """
@@ -1138,6 +1139,16 @@ class SurfaceConfig(ModelWithOptions):
     """
 
     SECTION = "surface"
+
+
+class HydrologyConfig(ModelWithOptions):
+    """
+    Hydrology model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "hydrology"
 
 
 class EnergyConfig(ModelWithOptions):
