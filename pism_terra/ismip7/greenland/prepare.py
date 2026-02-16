@@ -125,7 +125,10 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     print("Boot File")
     print("-" * 120)
-    boot_file = prepare_observations(url, obs_path, output_path, config, thin=4, force_overwrite=force_overwrite)
+    surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
+    boot_file = prepare_observations(
+        url, obs_path, output_path, config, surface_dem=surface_dem, thin=4, force_overwrite=force_overwrite
+    )
     check_xr_lazy(boot_file)
 
     print("-" * 120)
@@ -250,6 +253,7 @@ def prepare_observations(
     input_path: Path | str,
     output_path: Path | str,
     config: dict,
+    surface_dem: Path | str | None = None,
     thin: int = 4,
     force_overwrite: bool = False,
 ) -> Path | str:
@@ -272,6 +276,9 @@ def prepare_observations(
     config : dict
         Configuration dictionary with variable name mappings. Keys present
         in the dataset are renamed to their corresponding values.
+    surface_dem : Path, str, or None, optional
+        URL or path to an alternative surface DEM. When provided, the
+        surface elevation is recalculated as bed + thickness using this DEM.
     thin : int
         Factor to reduce BedMachine grid (150m). thin=4 -> 600m grid.
         Interpolation is done conservatively.
@@ -284,39 +291,41 @@ def prepare_observations(
         Path to the output boot NetCDF file.
     """
 
+    resolution = f"{int(150 * thin)}m"
     name = url.split("/")[-1]
     obs_file = Path(input_path) / Path(name)
     if (not check_xr_lazy(obs_file)) or force_overwrite:
-        ds = download_netcdf(url)
+        ds_bm = download_netcdf(url)
     else:
-        ds = xr.open_dataset(obs_file)
-
-    ds_bm = ds[["bed", "thickness"]]
-    da_1km = ds["geothermal_heat_flux1"]
-    da_1km = da_1km.where(da_1km != -9999, 0.042)
-
-    # gebco_p = download_gebco(target_dir=input_path)
-    # gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
+        ds_bm = xr.open_dataset(obs_file)
 
     if thin > 1:
         target_da = ds_bm.thin({"x": thin, "y": thin})
-        ds_bm_regridded = ds_bm.regrid.conservative(target_da)
+        ds_bm_regridded = ds_bm[["bed", "thickness"]].regrid.conservative(target_da)
     else:
         ds_bm_regridded = ds_bm
 
-    # gebco_bm_regridded = gebco.rio.reproject_match(ds_bm_regridded.rio.write_crs("EPSG:3413")).compute()
+    ftt_mask = xr.where(ds_bm_regridded["thickness"] > 0, 1, 0)
+    ftt_mask.name = "ftt_mask"
+    if surface_dem is not None:
+        bed = ds_bm_regridded["bed"]
+        surface = download_netcdf(surface_dem)["surface"].regrid.conservative(target_da)
+        thickness = xr.where(surface > 0, surface - bed, 0)
+        thickness = thickness.where(thickness > 0, 0)
+        thickness.name = "thickness"
+        thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
+        boot = xr.merge([bed, ftt_mask, surface, thickness])
+    else:
+        boot = xr.merge([ds_bm_regridded[["bed", "thickness"]], ftt_mask])
+    geo = ds_bm["geothermal_heat_flux1"]
+    geo = geo.where(geo != -9999, 0.042)
 
-    # ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(
-    #     ds_bm_regridded["bed"].notnull(), gebco_bm_regridded["elevation"]
-    # )
-    # ds_bm_regridded = ds_bm_regridded.fillna(0)
-
-    ds = xr.merge([ds_bm_regridded, da_1km, ds["mapping"]])
+    ds = xr.merge([boot, geo, ds_bm["mapping"]])
 
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
 
     ds = ds.rename_vars({k: v for k, v in config.items() if k in ds}).drop_vars("crs", errors="ignore")
-    obs_file = output_path / Path("boot_GreenlandObsISMIP7-v1.3.nc")
+    obs_file = output_path / Path(f"boot_g{resolution}_GreenlandObsISMIP7-v1.3.nc")
     ds.to_netcdf(obs_file)
     return obs_file
 

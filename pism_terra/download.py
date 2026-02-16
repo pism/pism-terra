@@ -604,6 +604,8 @@ def download_netcdf(
     """
     Download a dataset from the specified URL and return it as an xarray Dataset.
 
+    Supports both HTTP(S) and S3 URLs (``s3://bucket/key``).
+
     Parameters
     ----------
     url : str, optional
@@ -621,26 +623,36 @@ def download_netcdf(
     >>> dataset = download_dataset()
     >>> print(dataset)
     """
-    # Get the file size from the headers
-    response = requests.head(url, timeout=10)
-    file_size = int(response.headers.get("content-length", 0))
+    tmp = Path(tempfile.mktemp(suffix=".nc"))
+    try:
+        if url.startswith("s3://"):
+            import boto3
 
-    # Initialize the progress bar
-    progress = tqdm(total=file_size, unit="iB", unit_scale=True)
+            parts = url.replace("s3://", "").split("/", 1)
+            bucket, key = parts[0], parts[1]
+            s3 = boto3.client("s3")
+            meta = s3.head_object(Bucket=bucket, Key=key)
+            file_size = meta["ContentLength"]
+            progress = tqdm(total=file_size, unit="iB", unit_scale=True)
+            print(f"Downloading {url}")
+            s3.download_file(bucket, key, str(tmp), Callback=progress.update)
+            progress.close()
+        else:
+            response = requests.head(url, timeout=10)
+            file_size = int(response.headers.get("content-length", 0))
+            progress = tqdm(total=file_size, unit="iB", unit_scale=True)
+            print(f"Downloading {url}")
+            with requests.get(url, stream=True, timeout=10) as r:
+                r.raise_for_status()
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        f.write(chunk)
+                        progress.update(len(chunk))
+            progress.close()
 
-    # Download the file in chunks and update the progress bar
-    print(f"Downloading {url}")
-    with requests.get(url, stream=True, timeout=10) as r:
-        r.raise_for_status()
-        with open("temp.nc", "wb") as f:
-            for chunk in r.iter_content(chunk_size=chunk_size):
-                f.write(chunk)
-                progress.update(len(chunk))
-    progress.close()
-
-    with NamedTemporaryFile(suffix=".nc", delete=False) as xr_file:
-        # Open the downloaded file with xarray
-        return xr.open_dataset(xr_file)
+        return xr.open_dataset(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def download_gebco(
