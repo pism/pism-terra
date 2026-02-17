@@ -126,10 +126,11 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("Boot File")
     print("-" * 120)
     surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
-    boot_file = prepare_observations(
+    obs_files = prepare_observations(
         url, obs_path, output_path, config, surface_dem=surface_dem, thin=4, force_overwrite=force_overwrite
     )
-    check_xr_lazy(boot_file)
+    for f in obs_files:
+        check_xr_lazy(f)
 
     print("-" * 120)
     print("Forcings")
@@ -256,7 +257,7 @@ def prepare_observations(
     surface_dem: Path | str | None = None,
     thin: int = 4,
     force_overwrite: bool = False,
-) -> Path | str:
+) -> list[Path | str]:
     """
     Download and prepare ISMIP7 Greenland observation data.
 
@@ -311,7 +312,7 @@ def prepare_observations(
         bed = ds_bm_regridded["bed"]
         surface = download_netcdf(surface_dem)["surface"].regrid.conservative(target_da)
         thickness = xr.where(surface > 0, surface - bed, 0)
-        thickness = thickness.where(thickness > 0, 0)
+        thickness = thickness.where(thickness > 10, 0)
         thickness.name = "thickness"
         thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
         boot = xr.merge([bed, ftt_mask, surface, thickness])
@@ -320,14 +321,17 @@ def prepare_observations(
     geo = ds_bm["geothermal_heat_flux1"]
     geo = geo.where(geo != -9999, 0.042)
 
-    ds = xr.merge([boot, geo, ds_bm["mapping"]])
+    ds = xr.merge([boot, ds_bm["mapping"]])
 
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
-
-    ds = ds.rename_vars({k: v for k, v in config.items() if k in ds}).drop_vars("crs", errors="ignore")
+    ds = ds.rename_vars({k: v for k, v in config["ismip7_to_pism"].items() if k in ds}).drop_vars("crs", errors="ignore")
     obs_file = output_path / Path(f"boot_g{resolution}_GreenlandObsISMIP7-v1.3.nc")
     ds.to_netcdf(obs_file)
-    return obs_file
+    geo_ds = xr.merge([geo, ds_bm["mapping"]])
+    geo_file = output_path / Path(f"heatflux_GreenlandObsISMIP7-v1.3.nc")
+    geo_ds.to_netcdf(geo_file)
+    
+    return [obs_file, geo_file]
 
 
 def prepare_calfin(

@@ -31,7 +31,7 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 [time]
 
 'time.start' = "2014-01-01"
-'time.end' =  "2014-01-04"
+'time.end' =  "2014-02-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 
@@ -64,18 +64,18 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.extra.file' = "none"
 'output.extra.times' = "daily"
-'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
+'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
-'output.ISMIP6' = "yes"
+'output.ISMIP6' = "no"
 
 [grid]
 
 resolution = "2400m"
 'grid.Lbz' = 2000
-'grid.Lz' = 10000
+'grid.Lz' = 5000
 'grid.Mbz' = 51
-'grid.Mz' = 201
+'grid.Mz' = 101
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
