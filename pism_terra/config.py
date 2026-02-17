@@ -1141,16 +1141,6 @@ class SurfaceConfig(ModelWithOptions):
     SECTION = "surface"
 
 
-class HydrologyConfig(ModelWithOptions):
-    """
-    Hydrology model configuration.
-
-    Inherits fields/behavior from :class:`ModelWithOptions`.
-    """
-
-    SECTION = "hydrology"
-
-
 class EnergyConfig(ModelWithOptions):
     """
     Energy model configuration.

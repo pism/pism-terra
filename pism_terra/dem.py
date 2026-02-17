@@ -231,7 +231,7 @@ def prepare_ice_thickness_millan(
 
         thickness_file.unlink(missing_ok=True)
         # Could tweak this to only pull the relevant regions instead of all of it
-        s3_to_local(bucket, prefix="millan", dest_dir="data/ice_thickness/millan")
+        s3_to_local(bucket, prefix="millan", dest="data/ice_thickness/millan")
         ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
 
         with ThreadPoolExecutor() as executor:

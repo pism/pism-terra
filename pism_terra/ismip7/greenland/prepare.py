@@ -140,7 +140,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     return {
         "config": config,
         "grid_file": grid_file,
-        "boot_file": boot_file,
+        "boot_file": obs_files["boot_file"],
+        "heatflux_file": obs_files["heatflux_file"],
         "forcing_files": forcing_files,
         "retreat_file": retreat_file,
     }
@@ -254,10 +255,10 @@ def prepare_observations(
     input_path: Path | str,
     output_path: Path | str,
     config: dict,
-    surface_dem: Path | str | None = None,
+    surface_dem: str | None = None,
     thin: int = 4,
     force_overwrite: bool = False,
-) -> list[Path | str]:
+) -> dict[str, Path | str]:
     """
     Download and prepare ISMIP7 Greenland observation data.
 
@@ -324,14 +325,16 @@ def prepare_observations(
     ds = xr.merge([boot, ds_bm["mapping"]])
 
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
-    ds = ds.rename_vars({k: v for k, v in config["ismip7_to_pism"].items() if k in ds}).drop_vars("crs", errors="ignore")
+    ds = ds.rename_vars({k: v for k, v in config["ismip7_to_pism"].items() if k in ds}).drop_vars(
+        "crs", errors="ignore"
+    )
     obs_file = output_path / Path(f"boot_g{resolution}_GreenlandObsISMIP7-v1.3.nc")
     ds.to_netcdf(obs_file)
     geo_ds = xr.merge([geo, ds_bm["mapping"]])
-    geo_file = output_path / Path(f"heatflux_GreenlandObsISMIP7-v1.3.nc")
+    geo_file = output_path / Path("heatflux_GreenlandObsISMIP7-v1.3.nc")
     geo_ds.to_netcdf(geo_file)
-    
-    return [obs_file, geo_file]
+
+    return {"boot_file": obs_file, "heatflux_file": geo_file}
 
 
 def prepare_calfin(
