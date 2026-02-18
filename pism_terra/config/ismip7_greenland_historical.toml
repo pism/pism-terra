@@ -50,7 +50,7 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 13
+'input.forcing.buffer_size' = 37
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk"
 
@@ -173,5 +173,5 @@ model = "null"
 
 [hydrology.options.null]
 
-'hydrology.moel' = "null"
+'hydrology.model' = "null"
 'hydrology.null_diffuse_till_water' = "yes"

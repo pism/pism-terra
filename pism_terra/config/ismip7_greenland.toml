@@ -5,6 +5,7 @@ gcms = ["CESM2-WACCM"]
 
 x_bounds = [-653000.0, 879700.0]
 y_bounds = [-3384350.0, -632750.0]
+thin = 18
 
 [pathway]
 

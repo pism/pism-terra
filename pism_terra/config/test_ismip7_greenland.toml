@@ -5,10 +5,11 @@ gcms = ["CESM2-WACCM"]
 
 x_bounds = [-653000.0, 879700.0]
 y_bounds = [-3384350.0, -632750.0]
+thin = 16
 
 [pathway]
 
-historical = {"start_year" = 2014, "end_year" = 2015, version = 1}
+historical = {"start_year" = 1980, "end_year" = 1981, version = 1}
 ssp585 = {"start_year" = 2015, "end_year" = 2016, version = 1 }
 
 [forcing]

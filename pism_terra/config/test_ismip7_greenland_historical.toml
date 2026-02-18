@@ -20,18 +20,18 @@ nodes = 1
 
 pathway = "historical"
 version = "1"
-start_year = "2014"
-end_year = "2015"
+start_year = "1980"
+end_year = "1981"
 gcm = "CESM2-WACCM"
-boot_file = "boot_g600m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_g2400m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g600m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
-retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
+regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
+retreat_file = "pism_g2400m_frontretreat_calfin_1972_2019_ME.nc"
 
 [time]
 
-'time.start' = "2014-01-01"
-'time.end' =  "2014-02-01"
+'time.start' = "1980-01-01"
+'time.end' =  "1980-02-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 
@@ -52,7 +52,7 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 13
+'input.forcing.buffer_size' = 37
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume"
 
@@ -64,7 +64,7 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.extra.file' = "none"
 'output.extra.times' = "daily"
-'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat"
+'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 'output.ISMIP6' = "no"
@@ -73,9 +73,9 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 
 resolution = "2400m"
 'grid.Lbz' = 2000
-'grid.Lz' = 5000
+'grid.Lz' = 6000
 'grid.Mbz' = 51
-'grid.Mz' = 101
+'grid.Mz' = 201
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
@@ -175,5 +175,5 @@ model = "null"
 
 [hydrology.options.null]
 
-'hydrology.moel' = "null"
+'hydrology.model' = "null"
 'hydrology.null_diffuse_till_water' = "yes"

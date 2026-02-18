@@ -21,6 +21,7 @@
 Prepare ISMIP7 Greenland data sets.
 """
 
+import os
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -39,12 +40,57 @@ from pyfiglet import Figlet
 from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
-from pism_terra.download import download_earthaccess, download_gebco, download_netcdf
+from pism_terra.download import (
+    download_earthaccess,
+    download_gebco,
+    download_netcdf,
+    file_localizer,
+)
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+
+def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version):
+    """
+    Build the resolved file path for an ISMIP7 forcing variable and year.
+
+    Parameters
+    ----------
+    year : int
+        Year of the forcing file.
+    base_path : Path
+        Root directory for the forcing data.
+    gcm : str
+        GCM name (e.g. "CESM2-WACCM").
+    pathway : str
+        Emissions pathway (e.g. "historical", "ssp585").
+    short_hand : str
+        Short-hand identifier for the forcing type, or "none".
+    m_var : str
+        Variable name (e.g. "acabf", "tas").
+    version : str
+        Version string (e.g. "v1").
+
+    Returns
+    -------
+    str
+        Resolved file path as a string.
+    """
+    p = (
+        base_path / Path(gcm) / Path(pathway) / Path(short_hand) / Path(m_var) / Path(version)
+        if short_hand != "none"
+        else base_path / Path(gcm) / Path(pathway) / Path(m_var) / Path(version)
+    )
+    v = (
+        Path(f"{m_var}_{gcm}_{pathway}_{short_hand}_{year}.nc")
+        if short_hand != "none"
+        else Path(f"{m_var}_{gcm}_{pathway}_{year}.nc")
+    )
+    url = (p / v).resolve()
+    return str(url)
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -109,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
+    thin = config["domain"]["thin"]
 
     grid_ds = create_domain(x_bnds, y_bnds)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
@@ -119,7 +166,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("Calfin Glacier Fronts File")
     print("-" * 120)
 
-    retreat_file = prepare_calfin(output_path, resolution=450, force_overwrite=force_overwrite)
+    resolution = int(150 * thin)
+    retreat_file = prepare_calfin(output_path, resolution=resolution, force_overwrite=force_overwrite)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     print("-" * 120)
@@ -127,7 +175,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
     obs_files = prepare_observations(
-        url, obs_path, output_path, config, surface_dem=surface_dem, thin=4, force_overwrite=force_overwrite
+        url, obs_path, output_path, config, surface_dem=surface_dem, thin=thin, force_overwrite=force_overwrite
     )
     for f in obs_files:
         check_xr_lazy(f)
@@ -199,53 +247,30 @@ def _process_single_forcing(
     Path
         Path to the output NetCDF file.
     """
-    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-    dss = []
+    os.environ["HDF5_LOG_LEVEL"] = "0"
+    cdo = Cdo()
+    cdo.debug = True
+
+    merge_cmds = []
     for m_var in fields:
-        p = (
-            base_path / Path(gcm) / Path(pathway) / Path(short_hand) / Path(m_var) / Path(version)
-            if short_hand != "none"
-            else base_path / Path(gcm) / Path(pathway) / Path(m_var) / Path(version)
-        )
-
-        urls = list(p.glob(f"{m_var}_{gcm}_{pathway}_*.nc"))
-        ds = xr.open_mfdataset(
-            urls,
-            parallel=True,
-            decode_times=time_coder,
-            engine="h5netcdf",
-            chunks={"time": 240, "y": -1, "x": -1},
-            data_vars="minimal",
-        ).sel({"time": slice(str(start_year), str(end_year))})
-        dss.append(ds)
-
-    ds = xr.merge(dss)
-    if "tas" in ds.data_vars:
-        ds["tas"] = ds["tas"].where(ds["tas"] != 0, 273.15)
-    ds = ds.fillna(0)
-    ds = ds.rename_vars({k: v for k, v in ismip7_to_pism.items() if k in ds})
-    ds.rio.write_crs("EPSG:3413", inplace=True).rio.write_coordinate_system(inplace=True)
-
-    time = xr.date_range(start=str(start_year), freq=freq, periods=ds.time.size + 1, use_cftime=True, calendar=calendar)
-    time_centered = time[:-1] + (time[1:] - time[:-1]) / 2
-    ds = ds.assign_coords(time=time_centered)
-    time_bounds = xr.DataArray(
-        data=list(zip(time[:-1], time[1:])),
-        dims=["time", "bnds"],
-    )
-    ds["time_bounds"] = time_bounds
-    ds["time"].attrs.update({"bounds": "time_bounds"})
-    ds["time"].encoding.update({"units": "days since 1850-01-01", "_FillValue": None, "dtype": float})
-    ds["time_bounds"].encoding.update({"units": "days since 1850-01-01", "_FillValue": None, "dtype": float})
-
-    encoding: dict[str, dict[str, Any]] = {}
-    for var in ds.data_vars:
-        encoding[var] = {"_FillValue": None}
-        if var not in ("spatial_ref", "time", "time_bounds"):
-            encoding[var].update({"zlib": True, "complevel": 2})
-
+        urls = [
+            _make_path(year, base_path, gcm, pathway, short_hand, m_var, version) for year in range(start_year, end_year)
+        ]
+        k, v = m_var, ismip7_to_pism[m_var]
+        tas_replace = "-setvals,0,273.15" if m_var == "tas" else ""
+        merge_cmd = f"-chname,{k},{v} {tas_replace} -mergetime [ " + " ".join(str(f) for f in urls) + " ]"
+        merge_cmds.append(merge_cmd)
     output_file = output_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc")
-    ds.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
+
+    grid_file = file_localizer("s3://pism-cloud-data/ismip7_extra/grid.txt", dest=output_path)
+    cdo.setgrid(
+        str(grid_file),
+        input=f"""-settbounds,1mon -setreftime,1850-01-01 -settunits,hours -settaxis,'{start_year}-01-16 12:00,,1mon' -setmisstoc,0 -merge """
+        + " ".join(merge_cmds),
+        returnXDataset=False,
+        options="-f nc4 -z zip_2",
+        output=str(output_file.resolve()),
+    )
 
     return output_file
 
@@ -471,7 +496,7 @@ def prepare_forcing(
     base_path: Path | str,
     output_path: Path | str,
     config: dict,
-    n_workers: int = 4,
+    n_workers: int = 2,
 ) -> Sequence[Path | str]:
     """
     Process forcing data for all GCMs and forcings in parallel.
@@ -485,7 +510,7 @@ def prepare_forcing(
     config : dict
         Configuration dictionary.
     n_workers : int, optional
-        Number of dask workers, by default 4.
+        Number of dask workers, by default 2.
 
     Returns
     -------
