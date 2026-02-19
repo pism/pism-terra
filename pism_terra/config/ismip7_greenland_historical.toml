@@ -62,10 +62,10 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.extra.file' = "none"
-'output.extra.times' = "daily"
+'output.extra.times' = "monthly"
 'output.extra.vars' = "lithk,orog,topg,hfgeoubed,acabf,libmassbfgr,libmassbffl,dlithkdt,velsurf,zvelsurf,velbase,zvelbase,velmean,litemptop,litempbotgr,litempbotfl,strbasemag,licalvf,lifmassbf,sftgif,sftgrf,sftflf"
 'output.timeseries.filename' = "none"
-'output.timeseries.times' = "daily"
+'output.timeseries.times' = "monthly"
 'output.timeseries.variables' = "lim,limnsw,iareagr,iareafl,tendacabf,tendlibmassbf,tendlibmassbffl,tendlicalvf,tendlifmassbf"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
@@ -74,7 +74,7 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 
 [grid]
 
-resolution = "900m"
+resolution = "1000m"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 101
