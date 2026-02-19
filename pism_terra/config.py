@@ -1198,6 +1198,8 @@ class CampaignConfig(BaseModel):
         Path to the retreat NetCDF file (relative to the input directory).
     boot_file : str or None
         Path to the boot NetCDF file (relative to the input directory).
+    heatflux_file : str or None
+        Path to the boot NetCDF file (relative to the input directory).
     start_year : str, float, or None
         Start year of the forcing period.
     end_year : str, float, or None
@@ -1215,6 +1217,7 @@ class CampaignConfig(BaseModel):
     gcm: str | list | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     boot_file: str | None = Field(default=None)
+    heatflux_file: str | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)

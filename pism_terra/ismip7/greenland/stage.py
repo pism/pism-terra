@@ -149,6 +149,9 @@ def stage_greenland(
     boot_file = input_path / Path(config["boot_file"])
     check_xr_lazy(boot_file)
 
+    heatflux_file = input_path / Path(config["heatflux_file"])
+    check_xr_lazy(heatflux_file)
+
     regrid_file = input_path / Path(config["regrid_file"])
     check_xr_lazy(regrid_file)
 
@@ -165,6 +168,7 @@ def stage_greenland(
     files_dict = {
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
+        "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
         "retreat_file": retreat_file.resolve(),
     }

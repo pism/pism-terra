@@ -26,6 +26,7 @@ boot_file = "boot_g600m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
 regrid_file = "g600m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
+heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 
 [time]
 
@@ -56,16 +57,20 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_ME.nc"
 
 [reporting]
 
-'output.format' = "netcdf4_parallel"
-'output.compression_level'= 2
+'output.format' = "netcdf4_serial"
+'output.compression_level' = 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.extra.file' = "none"
-'output.extra.times' = "monthly"
-'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
+'output.extra.times' = "daily"
+'output.extra.vars' = "lithk,orog,topg,hfgeoubed,acabf,libmassbfgr,libmassbffl,dlithkdt,velsurf,zvelsurf,velbase,zvelbase,velmean,litemptop,litempbotgr,litempbotfl,strbasemag,licalvf,lifmassbf,sftgif,sftgrf,sftflf"
+'output.timeseries.filename' = "none"
+'output.timeseries.times' = "daily"
+'output.timeseries.variables' = "lim,limnsw,iareagr,iareafl,tendacabf,tendlibmassbf,tendlibmassbffl,tendlicalvf,tendlifmassbf"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 'output.ISMIP6' = "yes"
+
 
 [grid]
 
@@ -84,6 +89,7 @@ model = "enthalpy"
 [energy.options.enthalpy]
 
 'energy.model' = "enthalpy"
+'energy.bedrock_thermal.file' = "none"
 'stress_balance.blatter.flow_law' = "gpbld"
 'stress_balance.sia.flow_law' = "gpbld"
 'stress_balance.ssa.flow_law' = "gpbld"
@@ -97,9 +103,7 @@ model = 'hybrid'
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 17
 'stress_balance.blatter.coarsening_factor' = 4
-'stress_balance.blatter.use_eta_transform' = 'yes'
 'stress_balance.calving_front_stress_bc' = 'yes'
-'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
 bp_ksp_monitor =  ""
 bp_ksp_view_singularvalues = ""
@@ -120,7 +124,6 @@ bp_ksp_rtol = 1e-3
 'stress_balance.model' = "ssa+sia"
 'stress_balance.ssa.method' = "fd"
 'stress_balance.calving_front_stress_bc' = 'yes'
-'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
 
 [iceflow]

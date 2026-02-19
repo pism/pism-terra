@@ -22,6 +22,7 @@ Prepare ISMIP7 Greenland data sets.
 """
 
 import os
+import re
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -29,6 +30,7 @@ from typing import Any, Sequence
 
 import cf_xarray
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import rioxarray  # pylint: disable=unused-import
 import toml
@@ -155,9 +157,13 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
-    thin = config["domain"]["thin"]
+    resolution_str = config["domain"]["resolution"]
+    match = re.match(r"^([\d.]+)(.+)$", resolution_str)
+    if match is None:
+        raise ValueError(f"Cannot parse resolution string: {resolution_str!r}")
+    resolution, _ = int(match.group(1)), match.group(2)
 
-    grid_ds = create_domain(x_bnds, y_bnds)
+    grid_ds = create_domain(x_bnds, y_bnds, resolution)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
     grid_ds.to_netcdf(grid_file)
     check_xr_fully(grid_file)
@@ -166,8 +172,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("Calfin Glacier Fronts File")
     print("-" * 120)
 
-    resolution = int(150 * thin)
-    retreat_file = prepare_calfin(output_path, resolution=resolution, force_overwrite=force_overwrite)
+    retreat_file = prepare_calfin(
+        output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
+    )
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     print("-" * 120)
@@ -175,7 +182,13 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
     obs_files = prepare_observations(
-        url, obs_path, output_path, config, surface_dem=surface_dem, thin=thin, force_overwrite=force_overwrite
+        url,
+        obs_path,
+        output_path,
+        config,
+        surface_dem=surface_dem,
+        target_grid=grid_ds,
+        force_overwrite=force_overwrite,
     )
     for f in obs_files:
         check_xr_lazy(f)
@@ -207,8 +220,8 @@ def _process_single_forcing(
     short_hand: str,
     fields: list[str],
     ismip7_to_pism: dict[str, str],
-    freq: str = "MS",
-    calendar: str = "noleap",
+    freq: str = "1mon",
+    calendar: str = "365_day",
 ) -> Path:
     """
     Process a single GCM/forcing combination.
@@ -238,9 +251,9 @@ def _process_single_forcing(
     ismip7_to_pism : dict[str, str]
         Variable name mapping from ISMIP7 to PISM conventions.
     freq : str, optional
-        Frequency string for date range generation. Default is "MS".
+        Frequency string for CDO time axis. Default is "1mon".
     calendar : str, optional
-        Calendar type for xarray encoding. Default is "noleap".
+        Calendar type for CDO time axis. Default is "365_day".
 
     Returns
     -------
@@ -254,7 +267,8 @@ def _process_single_forcing(
     merge_cmds = []
     for m_var in fields:
         urls = [
-            _make_path(year, base_path, gcm, pathway, short_hand, m_var, version) for year in range(start_year, end_year)
+            _make_path(year, base_path, gcm, pathway, short_hand, m_var, version)
+            for year in range(start_year, end_year)
         ]
         k, v = m_var, ismip7_to_pism[m_var]
         tas_replace = "-setvals,0,273.15" if m_var == "tas" else ""
@@ -265,7 +279,7 @@ def _process_single_forcing(
     grid_file = file_localizer("s3://pism-cloud-data/ismip7_extra/grid.txt", dest=output_path)
     cdo.setgrid(
         str(grid_file),
-        input=f"""-settbounds,1mon -setreftime,1850-01-01 -settunits,hours -settaxis,'{start_year}-01-16 12:00,,1mon' -setmisstoc,0 -merge """
+        input=f"""-settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{start_year}-01-16 12:00,,{freq}' -setmisstoc,0 -merge """
         + " ".join(merge_cmds),
         returnXDataset=False,
         options="-f nc4 -z zip_2",
@@ -281,7 +295,7 @@ def prepare_observations(
     output_path: Path | str,
     config: dict,
     surface_dem: str | None = None,
-    thin: int = 4,
+    target_grid: xr.Dataset | xr.DataArray | None = None,
     force_overwrite: bool = False,
 ) -> dict[str, Path | str]:
     """
@@ -303,22 +317,22 @@ def prepare_observations(
     config : dict
         Configuration dictionary with variable name mappings. Keys present
         in the dataset are renamed to their corresponding values.
-    surface_dem : Path, str, or None, optional
+    surface_dem : str or None, optional
         URL or path to an alternative surface DEM. When provided, the
         surface elevation is recalculated as bed + thickness using this DEM.
-    thin : int
-        Factor to reduce BedMachine grid (150m). thin=4 -> 600m grid.
-        Interpolation is done conservatively.
+    target_grid : xarray.Dataset, xarray.DataArray, or None, optional
+        Target grid for conservative regridding. When provided, bed and
+        thickness are regridded and GEBCO bathymetry fills missing bed values.
     force_overwrite : bool, default False
         If True, re-download the file even if it already exists locally.
 
     Returns
     -------
-    Path or str
-        Path to the output boot NetCDF file.
+    dict[str, Path or str]
+        Dictionary with keys ``"boot_file"`` and ``"heatflux_file"``
+        mapping to their respective output paths.
     """
 
-    resolution = f"{int(150 * thin)}m"
     name = url.split("/")[-1]
     obs_file = Path(input_path) / Path(name)
     if (not check_xr_lazy(obs_file)) or force_overwrite:
@@ -326,9 +340,15 @@ def prepare_observations(
     else:
         ds_bm = xr.open_dataset(obs_file)
 
-    if thin > 1:
-        target_da = ds_bm.thin({"x": thin, "y": thin})
-        ds_bm_regridded = ds_bm[["bed", "thickness"]].regrid.conservative(target_da)
+    if target_grid is not None:
+        ds_bm_regridded = ds_bm[["bed", "thickness"]].regrid.conservative(target_grid)
+        gebco_p = download_gebco(target_dir=input_path)
+        gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
+        gebco_bm_regridded = gebco.rio.reproject_match(ds_bm_regridded.rio.write_crs("EPSG:3413")).compute()
+        ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(
+            ds_bm_regridded["bed"].notnull(), gebco_bm_regridded["elevation"]
+        )
+        ds_bm_regridded = ds_bm_regridded.fillna(0)
     else:
         ds_bm_regridded = ds_bm
 
@@ -336,7 +356,7 @@ def prepare_observations(
     ftt_mask.name = "ftt_mask"
     if surface_dem is not None:
         bed = ds_bm_regridded["bed"]
-        surface = download_netcdf(surface_dem)["surface"].regrid.conservative(target_da)
+        surface = download_netcdf(surface_dem)["surface"].regrid.conservative(target_grid)
         thickness = xr.where(surface > 0, surface - bed, 0)
         thickness = thickness.where(thickness > 10, 0)
         thickness.name = "thickness"
@@ -346,16 +366,22 @@ def prepare_observations(
         boot = xr.merge([ds_bm_regridded[["bed", "thickness"]], ftt_mask])
     geo = ds_bm["geothermal_heat_flux1"]
     geo = geo.where(geo != -9999, 0.042)
-
     ds = xr.merge([boot, ds_bm["mapping"]])
 
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
     ds = ds.rename_vars({k: v for k, v in config["ismip7_to_pism"].items() if k in ds}).drop_vars(
         "crs", errors="ignore"
     )
-    obs_file = output_path / Path(f"boot_g{resolution}_GreenlandObsISMIP7-v1.3.nc")
+    resolution = int(ds.x[1] - ds.x[0])
+    obs_file = output_path / Path(f"boot_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
     ds.to_netcdf(obs_file)
+
     geo_ds = xr.merge([geo, ds_bm["mapping"]])
+    geo_ds = geo_ds.rename_dims({"x1km": "x", "y1km": "y"}).rename_vars(
+        {"x1km": "x", "y1km": "y", "geothermal_heat_flux1": "bheatflx"}
+    )
+    geo_ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
+    geo_ds["bheatflx"].encoding.pop("grid_mapping", None)
     geo_file = output_path / Path("heatflux_GreenlandObsISMIP7-v1.3.nc")
     geo_ds.to_netcdf(geo_file)
 
@@ -363,7 +389,13 @@ def prepare_observations(
 
 
 def prepare_calfin(
-    output_path: Path | str, resolution: int = 150, freq: str = "ME", force_overwrite: bool = False, n_workers: int = 4
+    output_path: Path | str,
+    resolution: int,
+    x_bnds: list | np.ndarray,
+    y_bnds: list | np.ndarray,
+    freq: str = "ME",
+    force_overwrite: bool = False,
+    n_workers: int = 4,
 ) -> str | Path:
     """
     Prepare CALFIN glacier front retreat data as a gridded NetCDF.
@@ -375,8 +407,12 @@ def prepare_calfin(
     ----------
     output_path : Path or str
         Directory for output files.
-    resolution : int, default 150
+    resolution : int
         Grid resolution in meters.
+    x_bnds : list or numpy.ndarray
+        A list or array containing the minimum and maximum x-coordinate boundaries.
+    y_bnds : list or numpy.ndarray
+        A list or array containing the minimum and maximum y-coordinate boundaries.
     freq : str, default "ME"
         Pandas frequency string for temporal grouping.
     force_overwrite : bool, default False
@@ -389,8 +425,8 @@ def prepare_calfin(
     Path
         Path to the output NetCDF file.
     """
-    x_min, x_max = -656150.0, 882850.0
-    y_min, y_max = -631550.0, -3385550.0
+    x_min, x_max = x_bnds[0], x_bnds[1]
+    y_min, y_max = y_bnds[1], y_bnds[0]
     geom = {
         "type": "Polygon",
         "crs": {"properties": {"name": "EPSG:3413"}},

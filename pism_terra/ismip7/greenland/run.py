@@ -168,6 +168,8 @@ def run_greenland(
     log_path.mkdir(parents=True, exist_ok=True)
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
+    scalar_path = output_path / Path("scalar")
+    scalar_path.mkdir(parents=True, exist_ok=True)
     spatial_path = output_path / Path("spatial")
     spatial_path.mkdir(parents=True, exist_ok=True)
     state_path = output_path / Path("state")
@@ -225,12 +227,14 @@ def run_greenland(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
+    scalar_file = spatial_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
     run.update(
         {
             "output.file": state_file.resolve(),
             "output.extra.file": spatial_file.resolve(),
+            "output.timeseries.filename": scalar_file.resolve(),
         }
     )
 
@@ -275,7 +279,7 @@ def run_greenland(
         toml.dump(run_toml, toml_file)
 
     prefix = f"{mpi_str} {cfg.run.executable} "
-    postfix = f"pism-glacier-postprocess {post_file}"
+    postfix = "# End of script"
     rendered_script = "" if debug else template.render(params)
     rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
 
@@ -287,8 +291,7 @@ def run_greenland(
     # Save or print the output
     run_script.write_text(rendered_script)
 
-    print(f"\nSLURM script written to {run_script.resolve()}\n")
-    print(f"Postprocessing script written to {post_file.resolve()}\n")
+    print(f"\nJob script written to {run_script.resolve()}\n")
 
 
 def run_single():
@@ -386,6 +389,7 @@ def run_single():
         "input.regrid.file": df["regrid_file"].iloc[0],
         "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
+        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
         "surface.given.file": df["climate_file"].iloc[0],
         "ocean.th.file": df["ocean_file"].iloc[0],
