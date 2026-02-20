@@ -187,6 +187,10 @@ def s3_to_local(
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
 
+    # Ensure trailing slash so "foo" doesn't also match "foo_testing"
+    if prefix and not prefix.endswith("/"):
+        prefix = prefix + "/"
+
     s3 = boto3.client("s3", config=Config(retries={"max_attempts": 10}))
     paginator = s3.get_paginator("list_objects_v2")
     txconf = TransferConfig(
