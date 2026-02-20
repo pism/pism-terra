@@ -18,6 +18,8 @@ nodes = 1
 
 [campaign]
 
+bucket = "pism-cloud-data"
+prefix = "ismip7_greenland_input_testing"
 pathway = "historical"
 version = "1"
 start_year = "1980"
@@ -172,9 +174,28 @@ model = "given"
 
 [hydrology]
 
-model = "null"
+model = "routing"
 
 [hydrology.options.null]
 
 'hydrology.model' = "null"
 'hydrology.null_diffuse_till_water' = "yes"
+
+[hydrology.options.routing]
+
+'hydrology.model' = "routing"
+'hydrology.routing.include_floating_ice' = "yes"
+'hydrology.surface_input.file' = "none"
+
+
+[frontal_melt]
+
+model = "routing"
+
+[frontal_melt.options.routing]
+
+'frontal_melt.routing.file' = "none"
+'frontal_melt.routing.parameter_a' = 3e-4
+'frontal_melt.routing.parameter_b' = 0.15
+'frontal_melt.routing.power_alpha' = 0.39
+'frontal_melt.routing.power_beta' = 1.18

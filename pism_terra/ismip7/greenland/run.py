@@ -186,13 +186,14 @@ def run_greenland(
         "time_stepping",
     ):
         run.update(getattr(cfg, section))
-    run.update(cfg.stress_balance.selected())
     run.update(cfg.atmosphere.selected())
-    run.update(cfg.surface.selected())
-    run.update(cfg.hydrology.selected())
     run.update(cfg.energy.selected())
+    run.update(cfg.frontal_melt.selected())
     run.update(cfg.grid.as_params())
+    run.update(cfg.hydrology.selected())
     run.update(cfg.run_info.as_params())
+    run.update(cfg.surface.selected())
+    run.update(cfg.stress_balance.selected())
     run.update(cfg.time.as_params())
 
     template_file = Path(template_file)
@@ -382,16 +383,22 @@ def run_single():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_greenland(campaign_config, path=path, force_overwrite=force_overwrite)
+
+    bucket = campaign_config["bucket"]
+    prefix = campaign_config["prefix"]
+
+    df = stage_greenland(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
         "input.regrid.file": df["regrid_file"].iloc[0],
+        "frontal_melt.routing.file": df["frontal_melt_file"].iloc[0],
         "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
         "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
         "surface.given.file": df["climate_file"].iloc[0],
+        "hydrology.surface_input.file": df["surface_input_file"].iloc[0],
         "ocean.th.file": df["ocean_file"].iloc[0],
     }
 
@@ -517,6 +524,7 @@ def run_ensemble():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
+    print(campaign_config)
     df = stage_greenland(campaign_config, path=input_path, force_overwrite=force_overwrite)
 
     default = {

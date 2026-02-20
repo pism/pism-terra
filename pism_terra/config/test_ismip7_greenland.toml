@@ -1,5 +1,7 @@
 ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rate", "tas" = "ice_surface_temp", "TF" = "theta_ocean", "geothermal_heat_flux1" = "bheatflx"}
 gcms = ["CESM2-WACCM"]
+bucket = "pism-cloud-data"
+prefix = "ismip7_greenland_input_testing"
 
 [domain]
 

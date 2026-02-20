@@ -364,6 +364,8 @@ def prepare_observations(
         boot = xr.merge([bed, ftt_mask, surface, thickness])
     else:
         boot = xr.merge([ds_bm_regridded[["bed", "thickness"]], ftt_mask])
+    boot = boot.fillna(0)
+
     geo = ds_bm["geothermal_heat_flux1"]
     geo = geo.where(geo != -9999, 0.042)
     ds = xr.merge([boot, ds_bm["mapping"]])
