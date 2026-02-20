@@ -2,7 +2,7 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 8
+ntasks = 80
 writer = ""
 
 [job]
@@ -19,22 +19,22 @@ nodes = 1
 [campaign]
 
 bucket = "pism-cloud-data"
-prefix = "ismip7_greenland_input_testing"
+prefix = "bedmachine_greenland_input"
 pathway = "historical"
 version = "1"
 start_year = "1980"
-end_year = "1981"
+end_year = "2015"
 gcm = "CESM2-WACCM"
-boot_file = "boot_g1000m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_g600m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g1200m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
-retreat_file = "pism_g1000m_frontretreat_calfin_1972_2019_ME.nc"
+regrid_file = "g600m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
+retreat_file = "pism_g600m_frontretreat_calfin_1972_2019_ME.nc"
 heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 
 [time]
 
 'time.start' = "1980-01-01"
-'time.end' =  "1980-01-20"
+'time.end' =  "2015-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 
@@ -76,7 +76,7 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 
 [grid]
 
-resolution = "2000m"
+resolution = "2400m"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 51
@@ -190,7 +190,9 @@ model = "routing"
 
 [frontal_melt]
 
-model = "routing"
+model = "off"
+
+[frontal_melt.options.off]
 
 [frontal_melt.options.routing]
 
