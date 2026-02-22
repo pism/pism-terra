@@ -40,7 +40,7 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 250
+'time_stepping.adaptive_ratio' = 0.12
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 

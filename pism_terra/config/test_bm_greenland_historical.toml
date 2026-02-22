@@ -34,13 +34,13 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "1980-01-01"
-'time.end' =  "1980-01-20"
+'time.end' =  "1981-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 250
+'time_stepping.adaptive_ratio' = 0.12
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -66,10 +66,10 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.extra.file' = "none"
-'output.extra.times' = "daily"
+'output.extra.times' = "monthly"
 'output.extra.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity"
 'output.timeseries.filename' = "none"
-'output.timeseries.times' = "daily"
+'output.timeseries.times' = "monthly"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 'output.ISMIP6' = "no"
