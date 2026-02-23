@@ -76,11 +76,11 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 
 [grid]
 
-resolution = "2400m"
+resolution = "900m"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 51
-'grid.Mz' = 101
+'grid.Mz' = 201
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
