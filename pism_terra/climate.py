@@ -43,6 +43,7 @@ import xarray as xr
 from dask.diagnostics import ProgressBar
 from tqdm.auto import tqdm
 
+from pism_terra.aws import s3_to_local
 from pism_terra.dem import get_glacier_from_rgi_id
 from pism_terra.download import (
     FileInfo,
@@ -246,8 +247,47 @@ def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: floa
     ds.to_netcdf(file_name, encoding=encoding)
 
 
+def snap_cloud(
+    path: Path | str = ".",
+    **kwargs,
+) -> list[Path]:
+    """
+    Download process SNAP forcing from PISM Cloud.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path, default ``"."``
+        Output directory. Intermediate and final NetCDFs are written here.
+    **kwargs
+        E.g. force_overwrite.
+
+    Returns
+    -------
+    list[pathlib.Path]
+        Paths to the three 30-year climatology NetCDF files:
+        ``snap_1920_1949.nc``, ``snap_1950_1979.nc``, ``snap_1980_2009.nc``.
+        Additionally, the full stack ``snap_1900_2015.nc`` is written in
+        ``path`` as a side effect.
+    """
+
+    force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
+
+    bucket: str = "pism-cloud-data"
+    out_dir = Path(path)
+
+    for sn in ("snap_cru_TS40_1920_1949.nc", "snap_cru_TS40_1950_1979.nc", "snap_cru_TS40_1980_2009.nc"):
+
+        snap_file = out_dir / sn
+
+        if (not check_xr_sampled(snap_file)) or force_overwrite:
+
+            snap_file.unlink(missing_ok=True)
+            s3_to_local(bucket, prefix="snap", dest_dir=path)
+    snap_files = list(Path(path).rglob("snap_*.nc"))
+    return snap_files
+
+
 def snap(
-    rgi_id: str,
     path: Path | str = ".",
     **kwargs,
 ) -> list[Path]:
@@ -262,9 +302,6 @@ def snap(
 
     Parameters
     ----------
-    rgi_id : str
-        Glacier identifier (currently unused in this workflow, kept for
-        interface parity).
     path : str or pathlib.Path, default ``"."``
         Output directory. Intermediate and final NetCDFs are written here.
     **kwargs
@@ -361,7 +398,7 @@ def snap(
         start = str(y)
         end = str(y + 29)
 
-        p = Path(path) / f"snap_{rgi_id}_{start}_{end}.nc"
+        p = Path(path) / f"snap_cru_TS40_{start}_{end}.nc"
         ps.append(p)
 
         if check_xr_sampled(p) and not force_overwrite:
