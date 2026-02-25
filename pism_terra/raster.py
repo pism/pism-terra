@@ -107,6 +107,7 @@ def create_ds(
     comp = {"zlib": True, "complevel": 2}
     encoding = {var: comp for var in ds.data_vars}
     encoding.update(encoding_time)
+    encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
 
     ds.to_netcdf(output_file, encoding=encoding)
 

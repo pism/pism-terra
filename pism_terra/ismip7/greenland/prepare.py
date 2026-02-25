@@ -165,7 +165,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
-    grid_ds.to_netcdf(grid_file)
+    encoding = {var: {"_FillValue": None} for var in list(grid_ds.data_vars) + list(grid_ds.coords)}
+    grid_ds.to_netcdf(grid_file, encoding=encoding)
     check_xr_fully(grid_file)
 
     print("-" * 120)
@@ -190,8 +191,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         target_grid=grid_ds,
         force_overwrite=force_overwrite,
     )
-    for f in obs_files:
-        check_xr_lazy(f)
+    for v in obs_files.values():
+        check_xr_lazy(v)
 
     print("-" * 120)
     print("Forcings")
@@ -271,15 +272,15 @@ def _process_single_forcing(
             for year in range(start_year, end_year)
         ]
         k, v = m_var, ismip7_to_pism[m_var]
-        tas_replace = "-setvals,0,273.15" if m_var == "tas" else ""
+        tas_replace = "-setrtoc,0,230,230 -setrtoc,303,403,303" if m_var == "tas" else ""
         merge_cmd = f"-chname,{k},{v} {tas_replace} -mergetime [ " + " ".join(str(f) for f in urls) + " ]"
         merge_cmds.append(merge_cmd)
     output_file = output_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc")
 
     grid_file = file_localizer("s3://pism-cloud-data/ismip7_extra/grid.txt", dest=output_path)
-    cdo.setgrid(
-        str(grid_file),
-        input=f"""-settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{start_year}-01-16 12:00,,{freq}' -setmisstoc,0 -merge """
+    cdo.setmisstoc(
+        0,
+        input=f"""-setgrid,{str(grid_file)} -settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{start_year}-01-16 12:00,,{freq}' -merge """
         + " ".join(merge_cmds),
         returnXDataset=False,
         options="-f nc4 -z zip_2",
@@ -365,27 +366,41 @@ def prepare_observations(
     else:
         boot = xr.merge([ds_bm_regridded[["bed", "thickness"]], ftt_mask])
     boot = boot.fillna(0)
-
-    geo = ds_bm["geothermal_heat_flux1"]
-    geo = geo.where(geo != -9999, 0.042)
     ds = xr.merge([boot, ds_bm["mapping"]])
+
+    geo = (
+        ds_bm[["geothermal_heat_flux1"]]
+        .rename_dims({"x1km": "x", "y1km": "y"})
+        .rename_vars({"x1km": "x", "y1km": "y", "geothermal_heat_flux1": "bheatflx"})
+        .regrid.conservative(target_grid)
+    )
+    geo = geo.where(geo != -9999, 0.042)
 
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
     ds = ds.rename_vars({k: v for k, v in config["ismip7_to_pism"].items() if k in ds}).drop_vars(
-        "crs", errors="ignore"
+        ["crs", "spatial_ref"], errors="ignore"
     )
+    for v in ds.data_vars:
+        ds[v].attrs.pop("coordinates", None)
+        ds[v].encoding.pop("coordinates", None)
+
     resolution = int(ds.x[1] - ds.x[0])
     obs_file = output_path / Path(f"boot_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
-    ds.to_netcdf(obs_file)
+    comp = {"zlib": True, "complevel": 2}
+    encoding = {var: comp for var in ds.data_vars}
+    encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
+    ds.to_netcdf(obs_file, encoding=encoding)
 
-    geo_ds = xr.merge([geo, ds_bm["mapping"]])
-    geo_ds = geo_ds.rename_dims({"x1km": "x", "y1km": "y"}).rename_vars(
-        {"x1km": "x", "y1km": "y", "geothermal_heat_flux1": "bheatflx"}
-    )
-    geo_ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-    geo_ds["bheatflx"].encoding.pop("grid_mapping", None)
-    geo_file = output_path / Path("heatflux_GreenlandObsISMIP7-v1.3.nc")
-    geo_ds.to_netcdf(geo_file)
+    geo["bheatflx"].attrs.pop("coordinates", None)
+    geo["bheatflx"].encoding.pop("coordinates", None)
+    geo = geo.drop_vars("spatial_ref", errors="ignore")
+    geo["mapping"] = ds_bm["mapping"]
+    for v in geo.data_vars:
+        geo[v].attrs.pop("coordinates", None)
+        geo[v].encoding.pop("coordinates", None)
+    geo_file = output_path / Path(f"heatflux_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
+    geo_encoding = {var: {"_FillValue": None} for var in list(geo.data_vars) + list(geo.coords)}
+    geo.to_netcdf(geo_file, encoding=geo_encoding)
 
     return {"boot_file": obs_file, "heatflux_file": geo_file}
 
