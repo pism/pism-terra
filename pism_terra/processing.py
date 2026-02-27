@@ -16,6 +16,8 @@
 # along with PISM; if not, write to the Free Software
 
 # mypy: disable-error-code="call-overload"
+# pylint: disable=too-many-positional-arguments
+
 
 """
 Processing Functions.
@@ -23,6 +25,8 @@ Processing Functions.
 
 import re
 from collections import OrderedDict
+from collections.abc import Hashable, Mapping
+from typing import Any
 
 import numpy as np
 import xarray as xr
@@ -89,8 +93,10 @@ def preprocess_nc(
 
 def preprocess_config(
     ds,
-    regexp: str = "id_(.+?)_",
-    dim: str = "exp_id",
+    exp_regexp: str = "id_(.+?)_",
+    rgi_regexp: str = "(RGI2000-v7\.0-C-[^/\s]+)",
+    exp_dim: str = "exp_id",
+    rgi_dim: str = "rgi_id",
     drop_vars: list[str] | None = None,
     drop_dims: list[str] = ["nv4"],
 ) -> xr.Dataset:
@@ -105,10 +111,14 @@ def preprocess_config(
     ----------
     ds : xarray.Dataset
         The input dataset to be processed.
-    regexp : str, optional
+    exp_regexp : str, optional
         The regular expression pattern to extract the experiment identifier from the filename, by default "id_(.+?)_".
-    dim : str, optional
-        The name of the new dimension to be added to the dataset, by default "exp_id".
+    rgi_regexp : str, optional
+        The regular expression pattern to extract the RGI identifier from the filename, by default "(RGI2000-v7\.0-C-[^/\s]+)".
+    exp_dim : str, optional
+        The name of the new experiment dimension to be added to the dataset, by default "exp_id".
+    rgi_dim : str, optional
+        The name of the new RGI dimension to be added to the dataset, by default "rgi_id".
     drop_vars : list[str]| None, optional
         A list of variable names to be dropped from the dataset, by default None.
     drop_dims : list[str], optional
@@ -125,18 +135,16 @@ def preprocess_config(
         If the regular expression does not match any part of the filename.
     """
 
-    if dim not in ds.dims:
-        m_id_re = re.search(regexp, ds.encoding["source"])
-        ds = ds.expand_dims(dim)
-        assert m_id_re is not None
-        m_id: str | int
-        try:
-            m_id = int(m_id_re.group(1))
-        except:
-            m_id = str(m_id_re.group(1))
-        ds[dim] = [m_id]
+    m_rgi_id_re = re.search(rgi_regexp, ds.command)
+    assert m_rgi_id_re is not None
+    m_rgi_id = m_rgi_id_re.group(1)
+
+    m_exp_id_re = re.search(exp_regexp, ds.encoding["source"])
+    assert m_exp_id_re is not None
+    m_exp_id = m_exp_id_re.group(1)
 
     p_config = ds["pism_config"]
+    ds = ds.expand_dims({rgi_dim: [m_rgi_id], exp_dim: [m_exp_id]})
 
     # List of suffixes to exclude
     suffixes_to_exclude = ["_doc", "_type", "_units", "_option", "_choices"]
@@ -152,11 +160,12 @@ def preprocess_config(
     pc_vals = np.array(list(config_sorted.values()))
 
     pism_config = xr.DataArray(
-        pc_vals.reshape(-1, 1),
-        dims=["pism_config_axis", dim],
-        coords={"pism_config_axis": pc_keys, dim: [m_id]},
+        pc_vals.reshape(-1),
+        dims=["pism_config_axis"],
+        coords={"pism_config_axis": pc_keys},
         name="pism_config",
     )
+
     ds = xr.merge(
         [
             ds.drop_vars(["pism_config"], errors="ignore").drop_dims(["pism_config_axis"], errors="ignore"),
@@ -164,3 +173,82 @@ def preprocess_config(
         ]
     )
     return ds.drop_vars(drop_vars, errors="ignore").drop_dims(drop_dims, errors="ignore")
+
+
+def normalize_cumulative_variables(
+    ds: xr.Dataset,
+    variables: str | list[str] | None = None,
+    reference_date: str = "1992-01-01",
+) -> xr.Dataset:
+    """
+    Normalize cumulative variables in an xarray Dataset by subtracting their values at a reference year.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        The xarray Dataset containing the cumulative variables to be normalized.
+    variables : str or list of str
+        The name(s) of the cumulative variables to be normalized.
+    reference_date : str, optional
+        The reference date to use for normalization. Default is "1992-01-01".
+
+    Returns
+    -------
+    xr.Dataset
+        The xarray Dataset with normalized cumulative variables.
+
+    Examples
+    --------
+    >>> import xarray as xr
+    >>> import pandas as pd
+    >>> time = pd.date_range("1990-01-01", "1995-01-01", freq="A")
+    >>> data = xr.Dataset({
+    ...     "cumulative_var": ("time", [10, 20, 30, 40, 50, 60]),
+    ... }, coords={"time": time})
+    >>> normalize_cumulative_variables(data, "cumulative_var", reference_date="1992-01-01")
+    <xarray.Dataset>
+    Dimensions:         (time: 6)
+    Coordinates:
+      * time            (time) datetime64[ns] 1990-12-31 1991-12-31 ... 1995-12-31
+    Data variables:
+        cumulative_var  (time) int64 0 10 20 30 40 50
+    """
+
+    if variables is not None:
+        ds[variables] -= ds[variables].sel(time=reference_date, method="nearest")
+    else:
+        pass
+    return ds
+
+
+def standardize_variable_names(ds: xr.Dataset, name_dict: Mapping[Any, Hashable] | None) -> xr.Dataset:
+    """
+    Standardize variable names in an xarray Dataset.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        The xarray Dataset whose variable names need to be standardized.
+    name_dict : Mapping[Any, Hashable] or None
+        A dictionary mapping the current variable names to the new standardized names.
+        If None, no renaming is performed.
+
+    Returns
+    -------
+    xr.Dataset
+        The xarray Dataset with standardized variable names.
+
+    Examples
+    --------
+    >>> import xarray as xr
+    >>> ds = xr.Dataset({'temp': ('x', [1, 2, 3]), 'precip': ('x', [4, 5, 6])})
+    >>> name_dict = {'temp': 'temperature', 'precip': 'precipitation'}
+    >>> standardize_variable_names(ds, name_dict)
+    <xarray.Dataset>
+    Dimensions:      (x: 3)
+    Dimensions without coordinates: x
+    Data variables:
+        temperature   (x) int64 1 2 3
+        precipitation (x) int64 4 5 6
+    """
+    return ds.rename_vars(name_dict)

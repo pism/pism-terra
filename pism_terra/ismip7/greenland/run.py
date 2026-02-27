@@ -1,4 +1,4 @@
-# Copyright (C) 2025 Andy Aschwanden
+# Copyright (C) 2025, 2026 Andy Aschwanden
 #
 # This file is part of pism-terra.
 #
@@ -28,18 +28,13 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
 
-import geopandas as gpd
 import pandas as pd
 import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
-from pism_terra.aws import local_to_s3
-from pism_terra.climate import create_offset_file
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
-from pism_terra.download import file_localizer
-from pism_terra.glacier.execute import find_first_and_execute
-from pism_terra.glacier.stage import stage_glacier
+from pism_terra.ismip7.greenland.stage import stage_greenland
 from pism_terra.sampling import create_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
@@ -53,11 +48,9 @@ from pism_terra.workflow import (
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
 
-def run_glacier(
-    rgi_id: str,
+def run_greenland(
     config_file: str | Path,
     template_file: Path | str,
-    outline_file: Path | str,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -80,17 +73,12 @@ def run_glacier(
 
     Parameters
     ----------
-    rgi_id : str
-        Glacier identifier (e.g., ``"RGI2000-v7.0-C-01-04374"``). Used to build
-        output directory and filenames.
     config_file : str or pathlib.Path
         Path to the PISM configuration TOML (contains ``run``, ``grid``,
         ``time``, ``surface``, ``energy``, ``stress_balance``, etc.).
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template (e.g., SLURM/LSF script). The
         context is populated from validated ``RunConfig`` and ``JobConfig``.
-    outline_file : str or pathlib.Path
-        Path to a geopandas file with the glacier outline.
     path : str or pathlib.Path, optional
         Base output directory. A subfolder ``<path>/<rgi_id>`` is created with
         ``output/`` and ``run_scripts/`` subdirectories. Default is ``"result"``.
@@ -164,7 +152,6 @@ def run_glacier(
     ... )
     """
 
-    outline_file = Path(outline_file)
     cfg = load_config(config_file)
 
     if resolution:
@@ -177,11 +164,9 @@ def run_glacier(
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    glacier_path = path / Path(rgi_id)
-    glacier_path.mkdir(parents=True, exist_ok=True)
-    log_path = glacier_path / Path("logs")
+    log_path = path / Path("logs")
     log_path.mkdir(parents=True, exist_ok=True)
-    output_path = glacier_path / Path("output")
+    output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
     spatial_path = output_path / Path("spatial")
     spatial_path.mkdir(parents=True, exist_ok=True)
@@ -238,8 +223,8 @@ def run_glacier(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
-    spatial_file = spatial_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
-    state_file = state_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
+    spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start}_{end}.nc")
+    state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
     run.update(
         {
             "output.file": state_file.resolve(),
@@ -274,7 +259,6 @@ def run_glacier(
         params.update(JobConfig(**job_kwargs).as_params())
 
     run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.resolve())},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "state": str(state_file.resolve()),
@@ -284,7 +268,7 @@ def run_glacier(
     post_path = output_path / Path("post_processing")
     post_path.mkdir(parents=True, exist_ok=True)
 
-    post_file = post_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
+    post_file = post_path / Path(f"g{resolution}_{name_options}_{start}_{end}.toml")
     with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
@@ -293,10 +277,10 @@ def run_glacier(
     rendered_script = "" if debug else template.render(params)
     rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
 
-    run_script_path = glacier_path / Path("run_scripts")
+    run_script_path = path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
 
-    run_script = run_script_path / Path(f"submit_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.sh")
+    run_script = run_script_path / Path(f"submit_g{resolution}_{name_options}_{start}_{end}.sh")
 
     # Save or print the output
     run_script.write_text(rendered_script)
@@ -312,24 +296,18 @@ def run_single():
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Stage RGI Glacier."
-    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
+    parser.description = "Run ISMIP7 Greenland."
     parser.add_argument(
-        "--bucket-prefix",
-        help="AWS prefix (location in bucket) to add to product files",
-        default="",
+        "--force-overwrite",
+        help="Force downloading all files.",
+        action="store_true",
+        default=False,
     )
     parser.add_argument(
         "--output-path",
         help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
         default="data",
-    )
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
     )
     parser.add_argument(
         "--queue",
@@ -339,7 +317,7 @@ def run_single():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntasks in config file.",
+        help="Overrides ntatsks in config file.",
         type=int,
         default=None,
     )
@@ -362,89 +340,66 @@ def run_single():
         default=None,
     )
     parser.add_argument(
-        "--execute",
-        help="Execute the pism run script immediately. Ignored if `--debug` is provided.",
-        action="store_true",
-    )
-    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
         default=False,
     )
     parser.add_argument(
-        "RGI_ID",
-        help="RGI ID.",
-        nargs="?",
-    )
-    parser.add_argument(
-        "RGI_FILE",
-        help="RGI.",
-        nargs="?",
-    )
-    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
-        nargs="?",
+        nargs=1,
     )
     parser.add_argument(
         "TEMPLATE_FILE",
         help="TEMPLATE J2.",
-        nargs="?",
+        nargs=1,
     )
 
-    options = parser.parse_args()
+    options, _ = parser.parse_known_args()
     force_overwrite = options.force_overwrite
-
-    path = Path(options.output_path)
-    rgi_id = options.RGI_ID
-    glacier_path = path / rgi_id
-
-    input_path = glacier_path / "input"
-    input_path.mkdir(parents=True, exist_ok=True)
-    output_path = glacier_path / "output"
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    rgi_file = file_localizer(options.RGI_FILE, path / "rgi")
-    config_file = file_localizer(options.CONFIG_FILE, path / "config")
-    template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
+    path = options.output_path
+    config_file = options.CONFIG_FILE[0]
+    template_file = options.TEMPLATE_FILE[0]
     resolution = options.resolution
-
     debug = options.debug
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
     walltime = options.walltime
 
-    rgi = gpd.read_file(rgi_file)
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    input_path = path / Path("input")
+    input_path.mkdir(parents=True, exist_ok=True)
+    output_path = path / Path("output")
+    output_path.mkdir(parents=True, exist_ok=True)
+
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
+    df = stage_greenland(campaign_config, path=path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
+        "input.regrid.file": df["regrid_file"].iloc[0],
+        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
-        "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.fract_P.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
+        "surface.given.file": df["climate_file"].iloc[0],
+        "ocean.th.file": df["ocean_file"].iloc[0],
     }
-    outline_file = df["outline"].iloc[0]
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
     print("=" * 80)
     print(banner)
     print("=" * 80)
-    print(f"Generate Run for Glacier {rgi_id}")
+    print("Generate Run for ISMIP7")
     print("-" * 80)
     for idx, row in df.iterrows():
-        run_glacier(
-            rgi_id,
+        run_greenland(
             config_file,
             template_file,
-            outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
@@ -456,39 +411,20 @@ def run_single():
             sample=int(row["sample"]) if "sample" in row else idx,
         )
 
-    if options.execute and not options.debug:
-        find_first_and_execute(path / rgi_id)
-
-    if options.bucket:
-        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
-        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
-
 
 def run_ensemble():
     """
-    Run single glacier ensemble.
+    Run single glacier.
     """
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Stage RGI Glacier Ensemble."
-    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
-    parser.add_argument(
-        "--bucket-prefix",
-        help="AWS prefix (location in bucket) to add to product files",
-        default="",
-    )
+    parser.description = "Run RGI Glacier Ensemble."
     parser.add_argument(
         "--output-path",
         help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
         default="data",
-    )
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
     )
     parser.add_argument(
         "--queue",
@@ -498,7 +434,7 @@ def run_ensemble():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntasks in config file.",
+        help="Overrides ntatsks in config file.",
         type=int,
         default=None,
     )
@@ -527,48 +463,38 @@ def run_ensemble():
         default=False,
     )
     parser.add_argument(
-        "RGI_ID",
-        help="RGI ID.",
-        nargs="?",
+        "--force-overwrite",
+        help="Force downloading all files.",
+        action="store_true",
+        default=False,
     )
     parser.add_argument(
-        "RGI_FILE",
-        help="RGI.",
-        nargs="?",
+        "DATA_FILE",
+        help="CSV with path to input data.",
+        nargs=1,
     )
     parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
-        nargs="?",
+        nargs=1,
     )
     parser.add_argument(
         "TEMPLATE_FILE",
         help="TEMPLATE J2.",
-        nargs="?",
+        nargs=1,
     )
     parser.add_argument(
         "UQ_FILE",
         help="UQ TOML.",
-        nargs="?",
+        nargs=1,
     )
 
-    options = parser.parse_args()
+    options, _ = parser.parse_known_args()
     force_overwrite = options.force_overwrite
-
-    path = Path(options.output_path)
-    rgi_id = options.RGI_ID
-    glacier_path = path / rgi_id
-
-    input_path = glacier_path / "input"
-    input_path.mkdir(parents=True, exist_ok=True)
-    output_path = glacier_path / "output"
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    rgi_file = file_localizer(options.RGI_FILE, path / "rgi")
-    config_file = file_localizer(options.CONFIG_FILE, path / "config")
-    template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
-    uq_file = file_localizer(options.UQ_FILE, path / "uq")
-
+    path = options.output_path
+    config_file = options.CONFIG_FILE[0]
+    template_file = options.TEMPLATE_FILE[0]
+    uq_file = options.UQ_FILE[0]
     resolution = options.resolution
     debug = options.debug
     queue = options.queue
@@ -576,21 +502,26 @@ def run_ensemble():
     nodes = options.nodes
     walltime = options.walltime
 
-    rgi = gpd.read_file(rgi_file)
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    input_path = path / Path("input")
+    input_path.mkdir(parents=True, exist_ok=True)
+    output_path = path / Path("output")
+    output_path.mkdir(parents=True, exist_ok=True)
+
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
+    df = stage_greenland(campaign_config, path=input_path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
+        "input.regrid.file": df["regrid_file"].iloc[0],
+        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
-        "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.fract_P.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
+        "surface.given.file": df["climate_file"].iloc[0],
+        "ocean.th.file": df["ocean_file"].iloc[0],
     }
-    outline_file = df["outline"].iloc[0]
 
     uq = load_uq(uq_file)
     n_samples = uq.samples
@@ -605,22 +536,14 @@ def run_ensemble():
     print("=" * 80)
     print(banner)
     print("=" * 80)
-    print(f"Generate Ensemble Runs for Glacier {rgi_id}")
+    print("Generate Ensemble Runs for Greenland")
     print("-" * 80)
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
     for idx, row in uq_df.iterrows():
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
-        delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
-        frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
-        create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        row["atmosphere.delta_T.file"] = scalar_offset_file
-        row["atmosphere.precip_scaling.file"] = scalar_offset_file
-        run_glacier(
-            rgi_id,
+        run_greenland(
             config_file,
             template_file,
-            outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
@@ -631,10 +554,6 @@ def run_ensemble():
             uq=default,
             sample=int(row["sample"]) if "sample" in row else idx,
         )
-
-    if options.bucket:
-        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
-        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
 
 
 if __name__ == "__main__":

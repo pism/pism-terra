@@ -47,3 +47,55 @@ def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> 
 
     glacier = rgi[rgi["rgi_id"] == rgi_id]
     return glacier
+
+
+def dissolve(ds, date, crs: str = "EPSG:3413"):
+    """
+    Dissolve geometries.
+
+    Parameters
+    ----------
+    ds : geopandas.GeoDataFrame
+        The GeoDataFrame containing geometries to dissolve.
+    date : pd.Timestamp
+        The date associated with the geometries.
+    crs : str, optional
+        Coordinate reference system, by default "EPSG:3413".
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        The dissolved GeoDataFrame with the date set as the index.
+    """
+    ds = gpd.GeoDataFrame(ds, crs=crs)
+    geom_valid = ds.geometry.make_valid()
+    ds.geometry = geom_valid
+    ds = ds.dissolve()
+    ds["Date"] = date
+    ds = ds.set_index("Date")
+    return ds
+
+
+def aggregate(n, df):
+    """
+    Aggregate geometries.
+
+    Parameters
+    ----------
+    n : int
+        The number of geometries to aggregate.
+    df : geopandas.GeoDataFrame
+        The GeoDataFrame containing geometries to aggregate.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        The aggregated GeoDataFrame.
+    """
+    if n == 0:
+        return df.iloc[[n]]
+    else:
+        geom = df.iloc[range(n)].unary_union
+        merged_df = df.iloc[[n]]
+        merged_df.iloc[0].geometry = geom
+        return merged_df

@@ -32,7 +32,7 @@ import xarray as xr
 from pyproj import Transformer
 
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_xr_sampled
+from pism_terra.workflow import check_xr_lazy
 
 
 def get_velocities_by_bounds(
@@ -168,7 +168,7 @@ def glacier_velocities_from_rgi_id(
         form the query extent for the velocity product.
     path : str or pathlib.Path, default ``"tmp.nc"``
         Cache file for the clipped velocity dataset. When present and valid
-        (per :func:`check_xr_sampled`), it is opened instead of re-downloading.
+        (per :func:`check_xr_lazy`), it is opened instead of re-downloading.
     force_overwrite : bool, default ``False``
         If ``True``, ignore any existing cache at ``path`` and regenerate.
 
@@ -195,7 +195,7 @@ def glacier_velocities_from_rgi_id(
         Look up the glacier feature/CRS from the RGI table.
     get_velocities_by_bounds
         Fetch velocity data for a geographic bounding box.
-    check_xr_sampled
+    check_xr_lazy
         Lightweight validity check for an on-disk xarray dataset.
 
     Notes
@@ -220,7 +220,7 @@ def glacier_velocities_from_rgi_id(
     glacier_series = glacier.iloc[0]
     dst_crs = glacier_series["epsg"]
 
-    if (not check_xr_sampled(path)) or force_overwrite:
+    if (not check_xr_lazy(path)) or force_overwrite:
 
         path = Path(path)
         path.unlink(missing_ok=True)
