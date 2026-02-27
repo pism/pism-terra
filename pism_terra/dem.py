@@ -186,6 +186,9 @@ def prepare_ice_thickness(
     return thickness
 
 
+# def prepare_ice_thickness_maffezzoli():
+
+
 def prepare_ice_thickness_millan(
     glacier, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
 ):

@@ -94,7 +94,7 @@ def preprocess_nc(
 def preprocess_config(
     ds,
     exp_regexp: str = "id_(.+?)_",
-    rgi_regexp: str = "(RGI2000-v7\.0-C-[^/\s]+)",
+    rgi_regexp: str = r"(RGI2000-v7\.0-C-[^/\s]+)",
     exp_dim: str = "exp_id",
     rgi_dim: str = "rgi_id",
     drop_vars: list[str] | None = None,
@@ -114,7 +114,7 @@ def preprocess_config(
     exp_regexp : str, optional
         The regular expression pattern to extract the experiment identifier from the filename, by default "id_(.+?)_".
     rgi_regexp : str, optional
-        The regular expression pattern to extract the RGI identifier from the filename, by default "(RGI2000-v7\.0-C-[^/\s]+)".
+        The regular expression pattern to extract the RGI identifier from the filename, by default ``r"(RGI2000-v7\\.0-C-[^/\\s]+)"``.
     exp_dim : str, optional
         The name of the new experiment dimension to be added to the dataset, by default "exp_id".
     rgi_dim : str, optional
