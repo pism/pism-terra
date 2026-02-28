@@ -36,6 +36,7 @@ import cf_xarray
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import rasterio
 import rioxarray  # pylint: disable=unused-import
 import toml
 import xarray as xr
@@ -43,9 +44,11 @@ import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from cdo import Cdo
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
+from rasterio.merge import merge
 from tqdm.auto import tqdm
 
 from pism_terra.download import download_archive, extract_archive
+from pism_terra.vector import glaciers_in_complex
 
 xr.set_options(keep_attrs=True)
 
@@ -157,7 +160,12 @@ def prepare_rgi_region(
 
 
 def prepare_ice_thickness_maffezzoli(
-    regions: list, output_path: Path, extract_to: Path | str = "ice_thickness", force_overwrite: bool = False
+    regions: list,
+    complexes: gpd.GeoDataFrame,
+    glaciers: gpd.GeoDataFrame,
+    output_path: Path,
+    extract_to: Path | str = "ice_thickness",
+    force_overwrite: bool = False,
 ):
     """
     Download, extract, and merge RGI region ice thickness.
@@ -166,6 +174,10 @@ def prepare_ice_thickness_maffezzoli(
     ----------
     regions : list
         Region codes (e.g. ``["01", "06"]``).
+    complexes : geopandas.GeoDataFrame
+        Complex outlines with an ``rgi_id`` and ``o1region`` column.
+    glaciers : geopandas.GeoDataFrame
+        Glacier outlines with ``rgi_id``, ``rgi_id_c``, and ``o1region`` columns.
     output_path : Path
         Root directory for output files.
     extract_to : Path or str, optional
@@ -208,6 +220,65 @@ def prepare_ice_thickness_maffezzoli(
                 print(f"✓ Finished ice thickness: {region}")
             except Exception as e:
                 print(f"✗ Failed ice thickness: {region} with error: {e}")
+
+    def _merge_complex(rgi_c_id, region_g, region_code):
+        """
+        Merge glacier thickness rasters for a single complex.
+
+        Parameters
+        ----------
+        rgi_c_id : str
+            The complex outline identifier.
+        region_g : geopandas.GeoDataFrame
+            Glacier outlines for the region.
+        region_code : str
+            Region code (e.g. ``"1"``).
+
+        Returns
+        -------
+        str or None
+            Path to the merged file, or ``None`` if no files found.
+        """
+        glaciers_list = glaciers_in_complex(rgi_c_id, region_g)
+        glaciers_files = [output_path / extract_to / Path(f"rgi{region_code}") / Path(f"{g}.tif") for g in glaciers_list]
+        glaciers_files = [f for f in glaciers_files if f.exists()]
+        if not glaciers_files:
+            return None
+        src_datasets = [rasterio.open(f) for f in glaciers_files]
+        mosaic, out_transform = merge(src_datasets)
+        out_meta = src_datasets[0].meta.copy()
+        out_meta.update(
+            {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
+        )
+        for src in src_datasets:
+            src.close()
+        merged_path = output_path / extract_to / Path(f"{rgi_c_id}_thickness.tif")
+        with rasterio.open(merged_path, "w", **out_meta) as dest:
+            dest.write(mosaic)
+        return str(merged_path)
+
+    # Build list of all (rgi_c_id, region_g, region_code) tasks across regions
+    merge_tasks = []
+    for region in regions:
+        region_c = complexes[complexes["o1region"] == region.zfill(2)]
+        region_g = glaciers[glaciers["o1region"] == region.zfill(2)]
+        for rgi_c_id in region_c["rgi_id"]:
+            merge_tasks.append((rgi_c_id, region_g, region))
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(merge_tasks)))) as executor:
+        futures = {
+            executor.submit(_merge_complex, rgi_c_id, region_g, region_code): rgi_c_id
+            for rgi_c_id, region_g, region_code in merge_tasks
+        }
+        failed = []
+        for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging ice thickness"):
+            rgi_c_id = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                failed.append((rgi_c_id, e))
+        for rgi_c_id, e in failed:
+            print(f"✗ Failed {rgi_c_id}: {e}")
 
 
 def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False):
@@ -379,7 +450,15 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     regions = pd.DataFrame.from_dict(config["regions"], orient="index", columns=["name"])
     regions["region"] = regions.index.astype(str).str.zfill(2) + "_" + regions["name"]
     result = prepare_rgi(regions["region"], output_path=output_path, force_overwrite=force_overwrite)
-    prepare_ice_thickness_maffezzoli(regions.index, output_path=output_path, force_overwrite=force_overwrite)
+    complexes = gpd.read_file(result["rgi_complexes"])
+    glaciers = gpd.read_file(result["rgi_glaciers"])
+    prepare_ice_thickness_maffezzoli(
+        regions.index,
+        complexes=complexes,
+        glaciers=glaciers,
+        output_path=output_path,
+        force_overwrite=force_overwrite,
+    )
 
     return result
 
