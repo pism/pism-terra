@@ -240,7 +240,9 @@ def prepare_ice_thickness_maffezzoli(
             Path to the merged file, or ``None`` if no files found.
         """
         glaciers_list = glaciers_in_complex(rgi_c_id, region_g)
-        glaciers_files = [output_path / extract_to / Path(f"rgi{region_code}") / Path(f"{g}.tif") for g in glaciers_list]
+        glaciers_files = [
+            output_path / extract_to / Path(f"rgi{region_code}") / Path(f"{g}.tif") for g in glaciers_list
+        ]
         glaciers_files = [f for f in glaciers_files if f.exists()]
         if not glaciers_files:
             return None
@@ -275,10 +277,10 @@ def prepare_ice_thickness_maffezzoli(
             rgi_c_id = futures[future]
             try:
                 future.result()
-            except Exception as e:
-                failed.append((rgi_c_id, e))
-        for rgi_c_id, e in failed:
-            print(f"✗ Failed {rgi_c_id}: {e}")
+            except Exception as exc:
+                failed.append((rgi_c_id, exc))
+        for rgi_c_id, err in failed:
+            print(f"✗ Failed {rgi_c_id}: {err}")
 
 
 def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False):
