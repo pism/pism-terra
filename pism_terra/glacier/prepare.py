@@ -45,6 +45,7 @@ from cdo import Cdo
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
 from rasterio.merge import merge
+from rasterio.warp import Resampling, calculate_default_transform, reproject
 from tqdm.auto import tqdm
 
 from pism_terra.download import download_archive, extract_archive
@@ -224,9 +225,12 @@ def prepare_ice_thickness_maffezzoli(
             except Exception as e:
                 print(f"✗ Failed ice thickness: {region} with error: {e}")
 
-    def _merge_complex(rgi_c_id, region_g, region_code):
+    def _merge_complex(rgi_c_id, region_g, region_code, dst_crs):
         """
         Merge glacier thickness rasters for a single complex.
+
+        Glacier rasters are reprojected to *dst_crs* before merging so that
+        glaciers spanning different UTM zones can be combined.
 
         Parameters
         ----------
@@ -236,6 +240,8 @@ def prepare_ice_thickness_maffezzoli(
             Glacier outlines for the region.
         region_code : str
             Region code (e.g. ``"1"``).
+        dst_crs : str
+            Target CRS for the output (e.g. ``"EPSG:32606"``).
 
         Returns
         -------
@@ -249,8 +255,35 @@ def prepare_ice_thickness_maffezzoli(
         glaciers_files = [f for f in glaciers_files if f.exists()]
         if not glaciers_files:
             return None
-        mosaic, out_transform = merge(glaciers_files)
-        with rasterio.open(glaciers_files[0]) as src:
+
+        # Reproject each glacier raster to the complex's CRS
+        reprojected = []
+        for fpath in glaciers_files:
+            with rasterio.open(fpath) as src:
+                if src.crs == rasterio.crs.CRS.from_user_input(dst_crs):
+                    reprojected.append(fpath)
+                    continue
+                transform, width, height = calculate_default_transform(
+                    src.crs, dst_crs, src.width, src.height, *src.bounds
+                )
+                meta = src.meta.copy()
+                meta.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+                tmp_path = fpath.parent / f"{fpath.stem}_reproj.tif"
+                with rasterio.open(tmp_path, "w", **meta) as dst:
+                    for band in range(1, src.count + 1):
+                        reproject(
+                            source=rasterio.band(src, band),
+                            destination=rasterio.band(dst, band),
+                            src_transform=src.transform,
+                            src_crs=src.crs,
+                            dst_transform=transform,
+                            dst_crs=dst_crs,
+                            resampling=Resampling.bilinear,
+                        )
+                reprojected.append(tmp_path)
+
+        mosaic, out_transform = merge(reprojected)
+        with rasterio.open(reprojected[0]) as src:
             out_meta = src.meta.copy()
         out_meta.update(
             {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
@@ -258,6 +291,12 @@ def prepare_ice_thickness_maffezzoli(
         merged_path = output_path / extract_to / Path(f"{rgi_c_id}_thickness.tif")
         with rasterio.open(merged_path, "w", **out_meta) as dest:
             dest.write(mosaic)
+
+        # Clean up temporary reprojected files
+        for fpath in reprojected:
+            if fpath.stem.endswith("_reproj"):
+                fpath.unlink(missing_ok=True)
+
         return str(merged_path)
 
     # Build list of all (rgi_c_id, region_g, region_code) tasks across regions
@@ -265,13 +304,15 @@ def prepare_ice_thickness_maffezzoli(
     for region in regions:
         region_c = complexes[complexes["o1region"] == region.zfill(2)]
         region_g = glaciers[glaciers["o1region"] == region.zfill(2)]
-        for rgi_c_id in region_c["rgi_id"]:
-            merge_tasks.append((rgi_c_id, region_g, region))
+        for _, row in region_c.iterrows():
+            merge_tasks.append((row["rgi_id"], region_g, region, row["epsg"]))
 
     with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(merge_tasks)))) as executor:
         futures = {
-            executor.submit(_merge_complex, rgi_c_id, region_g, region_code): rgi_c_id
-            for rgi_c_id, region_g, region_code in merge_tasks
+            executor.submit(
+                _merge_complex, rgi_c_id=rgi_c_id, region_g=region_g, region_code=region_code, dst_crs=dst_crs
+            ): rgi_c_id
+            for rgi_c_id, region_g, region_code, dst_crs in merge_tasks
         }
         failed = []
         for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging ice thickness"):
