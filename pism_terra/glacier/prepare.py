@@ -165,6 +165,7 @@ def prepare_ice_thickness_maffezzoli(
     glaciers: gpd.GeoDataFrame,
     output_path: Path,
     extract_to: Path | str = "ice_thickness",
+    ntasks: int = 8,
     force_overwrite: bool = False,
 ):
     """
@@ -183,6 +184,8 @@ def prepare_ice_thickness_maffezzoli(
     extract_to : Path or str, optional
         Subdirectory under *output_path* for extracted archives.
         Defaults to ``"ice_thickness"``.
+    ntasks : int, default 8
+        Maximum number of parallel workers.
     force_overwrite : bool, default False
         If True, re-download the file even if it already exists locally.
     """
@@ -210,7 +213,7 @@ def prepare_ice_thickness_maffezzoli(
         extract_archive(archive, output_path / extract_to, force_overwrite=force_overwrite)
         return region
 
-    MAX_WORKERS = min(8, len(regions))
+    MAX_WORKERS = min(ntasks, len(regions))
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(_download_and_extract, region): region for region in regions}
         for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Downloading ice thickness"):
@@ -265,7 +268,7 @@ def prepare_ice_thickness_maffezzoli(
         for rgi_c_id in region_c["rgi_id"]:
             merge_tasks.append((rgi_c_id, region_g, region))
 
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(merge_tasks)))) as executor:
+    with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(merge_tasks)))) as executor:
         futures = {
             executor.submit(_merge_complex, rgi_c_id, region_g, region_code): rgi_c_id
             for rgi_c_id, region_g, region_code in merge_tasks
@@ -281,7 +284,7 @@ def prepare_ice_thickness_maffezzoli(
             print(f"✗ Failed {rgi_c_id}: {err}")
 
 
-def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False):
+def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False, ntasks: int = 8):
     """
     Download, extract, and merge RGI region shapefiles for complex and glacier outlines.
 
@@ -299,6 +302,8 @@ def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False)
         inside it.
     force_overwrite : bool, default False
         If True, re-download the file even if it already exists locally.
+    ntasks : int, default 8
+        Maximum number of parallel workers.
 
     Returns
     -------
@@ -314,8 +319,8 @@ def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False)
     outline_types = ["C", "G"]
 
     # Optional: tune this
-    n_tasks = len(regions) * len(outline_types)
-    MAX_WORKERS = min(8, n_tasks)  # or os.cpu_count() if CPU-bound
+    total_tasks = len(regions) * len(outline_types)
+    MAX_WORKERS = min(ntasks, total_tasks)  # or os.cpu_count() if CPU-bound
 
     url_template = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-{outline_type}/RGI2000-v7.0-{outline_type}-{region}.zip"
 
@@ -428,12 +433,19 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--ntasks",
+        help="Parallel tasks.",
+        type=int,
+        default=8,
+    )
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config_file = args.CONFIG_FILE[0]
     force_overwrite = args.force_overwrite
+    ntasks = args.ntasks
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -449,15 +461,19 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     config = toml.loads(Path(config_file).read_text("utf-8"))
     regions = pd.DataFrame.from_dict(config["regions"], orient="index", columns=["name"])
     regions["region"] = regions.index.astype(str).str.zfill(2) + "_" + regions["name"]
+
     result = prepare_rgi(regions["region"], output_path=output_path, force_overwrite=force_overwrite)
+
     complexes = gpd.read_file(result["rgi_complexes"])
     glaciers = gpd.read_file(result["rgi_glaciers"])
+
     prepare_ice_thickness_maffezzoli(
         regions.index,
         complexes=complexes,
         glaciers=glaciers,
         output_path=output_path,
         force_overwrite=force_overwrite,
+        ntasks=ntasks,
     )
 
     return result
