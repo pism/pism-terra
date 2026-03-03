@@ -246,14 +246,12 @@ def prepare_ice_thickness_maffezzoli(
         glaciers_files = [f for f in glaciers_files if f.exists()]
         if not glaciers_files:
             return None
-        src_datasets = [rasterio.open(f) for f in glaciers_files]
-        mosaic, out_transform = merge(src_datasets)
-        out_meta = src_datasets[0].meta.copy()
+        mosaic, out_transform = merge(glaciers_files)
+        with rasterio.open(glaciers_files[0]) as src:
+            out_meta = src.meta.copy()
         out_meta.update(
             {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
         )
-        for src in src_datasets:
-            src.close()
         merged_path = output_path / extract_to / Path(f"{rgi_c_id}_thickness.tif")
         with rasterio.open(merged_path, "w", **out_meta) as dest:
             dest.write(mosaic)
@@ -267,7 +265,7 @@ def prepare_ice_thickness_maffezzoli(
         for rgi_c_id in region_c["rgi_id"]:
             merge_tasks.append((rgi_c_id, region_g, region))
 
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(merge_tasks)))) as executor:
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(merge_tasks)))) as executor:
         futures = {
             executor.submit(_merge_complex, rgi_c_id, region_g, region_code): rgi_c_id
             for rgi_c_id, region_g, region_code in merge_tasks
