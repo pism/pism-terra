@@ -166,6 +166,7 @@ def prepare_ice_thickness_maffezzoli(
     glaciers: gpd.GeoDataFrame,
     output_path: Path,
     extract_to: Path | str = "ice_thickness",
+    merge_to: Path | str = "ice_thickness_merged",
     ntasks: int = 8,
     force_overwrite: bool = False,
 ):
@@ -185,6 +186,9 @@ def prepare_ice_thickness_maffezzoli(
     extract_to : Path or str, optional
         Subdirectory under *output_path* for extracted archives.
         Defaults to ``"ice_thickness"``.
+    merge_to : Path or str, optional
+        Subdirectory under *output_path* for merged files.
+        Defaults to ``"ice_thickness_merged"``.
     ntasks : int, default 8
         Maximum number of parallel workers.
     force_overwrite : bool, default False
@@ -288,8 +292,11 @@ def prepare_ice_thickness_maffezzoli(
         out_meta.update(
             {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
         )
-        merged_path = output_path / extract_to / Path(f"{rgi_c_id}_thickness.tif")
-        with rasterio.open(merged_path, "w", **out_meta) as dest:
+        merge_path = output_path / Path(merge_to)
+        merge_path.mkdir(parents=True, exist_ok=True)
+
+        merged_file_path = merge_to / Path(f"{rgi_c_id}_thickness.tif")
+        with rasterio.open(merged_file_path, "w", **out_meta) as dest:
             dest.write(mosaic)
 
         # Clean up temporary reprojected files
