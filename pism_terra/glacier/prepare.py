@@ -292,10 +292,10 @@ def prepare_ice_thickness_maffezzoli(
         out_meta.update(
             {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
         )
-        merge_path = output_path / Path(merge_to)
-        merge_path.mkdir(parents=True, exist_ok=True)
+        merged_path = output_path / Path(merge_to) / Path(f"rgi{region_code}")
+        merged_path.mkdir(parents=True, exist_ok=True)
 
-        merged_file_path = merge_to / Path(f"{rgi_c_id}_thickness.tif")
+        merged_file_path = merged_path / Path(f"{rgi_c_id}_thickness.tif")
         with rasterio.open(merged_file_path, "w", **out_meta) as dest:
             dest.write(mosaic)
 
