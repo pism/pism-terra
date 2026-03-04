@@ -292,7 +292,7 @@ def prepare_ice_thickness_maffezzoli(
         out_meta.update(
             {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
         )
-        merged_path = output_path / Path(merge_to) / Path(f"rgi{region_code}")
+        merged_path = output_path / Path(merge_to) / Path(f"RGI2000-v7.0-C-{region_code.zfill(2)}")
         merged_path.mkdir(parents=True, exist_ok=True)
 
         merged_file_path = merged_path / Path(f"{rgi_c_id}_thickness.tif")

@@ -20,7 +20,9 @@ nodes = 1
 name = "Calibration"
 climate = "era5"
 dem = "glo_30"
-ice_thickness = "millan"
+ice_thickness = "maffezzoli"
+bucket = "pism-cloud-data"
+prefix = "glaciers"
 velocity = "none"
 
 [time]

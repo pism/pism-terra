@@ -161,7 +161,14 @@ def stage_glacier(
 
     # Build boot dataset (DEM/thickness/bed)
     boot_ds = boot_file_from_rgi_id(
-        rgi_id, rgi, buffer_distance=5000.0, dem_name=config["dem"], path=path, force_overwrite=force_overwrite
+        rgi_id,
+        rgi,
+        dem=config["dem"],
+        ice_thickness=config["ice_thickness"],
+        buffer_distance=5000.0,
+        path=path,
+        force_overwrite=force_overwrite,
+        bucket=config["bucket"],
     )
 
     # Grid & bounds

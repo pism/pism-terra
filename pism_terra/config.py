@@ -1181,6 +1181,8 @@ class CampaignConfig(BaseModel):
 
     Attributes
     ----------
+    bucket : str or None
+        S3 bucket (e.g., ``"pism-cloud7-data"``).
     name : str or None
         Human-readable campaign name.
     climate : str or None
@@ -1207,6 +1209,7 @@ class CampaignConfig(BaseModel):
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     """
 
+    bucket: str | None = Field(default=None)
     name: str | None = Field(default=None)
     climate: str | None = Field(default=None)
     dem: str | None = Field(default=None)
