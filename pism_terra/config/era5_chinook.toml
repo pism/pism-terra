@@ -165,3 +165,9 @@ model = "given"
 
 'ocean.constant.melt_rate' = 0.0
 'ocean.models' = 'constant'
+
+[hydrology]
+
+model = "null"
+
+[hydrology.options]

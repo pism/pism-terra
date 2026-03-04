@@ -193,7 +193,7 @@ def stage_glacier(
     boot_ds.to_netcdf(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})
-    grid_ds.to_netcdf(grid_file, engine="h5netcdf")
+    grid_ds.to_netcdf(grid_file)
 
     # Save domain extent polygon as a GPKG
     x_point_list = [
