@@ -163,8 +163,8 @@ def stage_glacier(
     boot_ds = boot_file_from_rgi_id(
         rgi_id,
         rgi,
-        dem=config["dem"],
-        ice_thickness=config["ice_thickness"],
+        dem_dataset=config["dem"],
+        ice_thickness_dataset=config["ice_thickness"],
         buffer_distance=5000.0,
         path=path,
         force_overwrite=force_overwrite,
@@ -197,6 +197,7 @@ def stage_glacier(
     print("Saving bootfile")
     print("-" * 80)
     print(boot_file.resolve())
+    boot_file.unlink(missing_ok=True)
     boot_ds.to_netcdf(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})

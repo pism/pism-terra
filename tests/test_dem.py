@@ -19,6 +19,7 @@
 Test DEM functions.
 """
 
+
 import geopandas as gpd
 import numpy as np
 import pytest
@@ -70,7 +71,14 @@ def test_boot_file_from_rgi_id(rgi, tmp_path):
 
     rgi_id = "RGI2000-v7.0-C-01-10853"
     resolution = 100.0
-    ds = boot_file_from_rgi_id(rgi_id, rgi, resolution=resolution, path=path)
+    ds = boot_file_from_rgi_id(
+        rgi_id,
+        rgi,
+        dem_dataset="glo_30",
+        ice_thickness_dataset="millan",
+        resolution=resolution,
+        path=path,
+    )
     assert isinstance(ds, xr.Dataset)
     assert "surface" in ds
     assert "thickness" in ds

@@ -49,7 +49,7 @@ xr.set_options(keep_attrs=True)
 
 def get_surface_dem_by_bounds(
     bounds: tuple[float, float, float, float],
-    dataset: Litera["glo_30", "arcticdem"],
+    dataset: Literal["glo_30", "arcticdem"],
     path: str | Path = "input",
     force_overwrite: bool = False,
 ) -> Path:
@@ -228,15 +228,15 @@ def prepare_ice_thickness_maffezzoli(
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
 
     out_dir = Path(path)
-    thickness_file = out_dir / "thickness.nc"
+    thickness_file = out_dir / "thickness_maffezzoli.nc"
 
     if (not check_xr_lazy(thickness_file)) or force_overwrite:
         thickness_file.unlink(missing_ok=True)
 
         rgi_id = glacier.iloc[0]["rgi_id"]
         o1region = glacier.iloc[0]["o1region"]
-        s3_uri = f"s3://{bucket}/glaciers/ice_thickness/maffezzoli/rgi{int(o1region)}/{rgi_id}_thickness.tif"
-        print(s3_uri)
+        region = f"RGI2000-v7.0-C-{o1region}"
+        s3_uri = f"s3://{bucket}/glaciers/ice_thickness/maffezzoli/{region}/{rgi_id}_thickness.tif"
         local_tif = out_dir / f"{rgi_id}_thickness.tif"
         download_from_s3(s3_uri, local_tif)
 
@@ -291,7 +291,7 @@ def prepare_ice_thickness_millan(
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
 
     out_dir = Path(path)
-    thickness_file = out_dir / "thickness.nc"
+    thickness_file = out_dir / "thickness_millan.nc"
 
     if (not check_xr_lazy(thickness_file)) or force_overwrite:
 
@@ -548,8 +548,8 @@ def prepare_surface(
 def boot_file_from_rgi_id(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path,
-    dem: Literal["glo_30", "arcticdem"],
-    ice_thickness: Literal["maffezzoli", "millan"],
+    dem_dataset: Literal["glo_30", "arcticdem"],
+    ice_thickness_dataset: Literal["maffezzoli", "millan"],
     buffer_distance: float = 5000.0,
     path: str | Path = "input_files",
     resolution: float = 50.0,
@@ -575,9 +575,9 @@ def boot_file_from_rgi_id(
         In-memory RGI table or a path to a GeoPackage/shape readable by
         :func:`geopandas.read_file`. Must contain a row with ``rgi_id`` and an
         ``epsg`` column specifying the glacier CRS.
-    dem : str, default ``"glo_30"``
+    dem_dataset : str, default ``"glo_30"``
         DEM source for surface preparation (e.g., ``"glo_30"``, ``"arcticdem"``).
-    ice_thickness : str, default ``"maffezzoli"``
+    ice_thickness_dataset : str, default ``"maffezzoli"``
         Source for ice thickness (e.g., ``"glo_30"``, ``"arcticdem"``).
     buffer_distance : float, default ``5000.0``
         Buffer distance **in meters** applied to the glacier polygon in the projected CRS
@@ -657,14 +657,14 @@ def boot_file_from_rgi_id(
 
     bounds_geoid_buffered = geometry_buffered_geoid.bounds
     surface_file, target_grid_file = prepare_surface(
-        bounds_geoid_buffered, dst_crs, dataset=dem, path=path, resolution=resolution
+        bounds_geoid_buffered, dst_crs, dataset=dem_dataset, path=path, resolution=resolution
     )
     surface = xr.open_dataarray(surface_file)
     surface = surface.where(surface > 0.0, 0.0)
     target_grid = xr.open_dataset(target_grid_file)
 
     ice_thickness = prepare_ice_thickness(
-        glacier, dataset=ice_thickness, path=path, target_grid=target_grid, target_crs=dst_crs, **kwargs
+        glacier, dataset=ice_thickness_dataset, path=path, target_grid=target_grid, target_crs=dst_crs, **kwargs
     )
     ice_thickness = ice_thickness.rio.clip(glacier_projected.geometry, drop=False).fillna(0)
     ice_thickness = ice_thickness.where(ice_thickness > 0.0, 0.0)
