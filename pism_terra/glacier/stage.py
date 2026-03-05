@@ -36,17 +36,17 @@ from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
 from pism_terra.aws import local_to_s3
-from pism_terra.climate import create_offset_file, era5, pmip4, snap
+from pism_terra.climate import create_offset_file, era5, pmip4, snap_cloud
 from pism_terra.config import load_config
 from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_dataset, check_xr
+from pism_terra.workflow import check_dataset_fully
 
 xr.set_options(keep_attrs=True)
 
-CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap}
+CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap_cloud}
 
 
 def stage_glacier(
@@ -161,7 +161,14 @@ def stage_glacier(
 
     # Build boot dataset (DEM/thickness/bed)
     boot_ds = boot_file_from_rgi_id(
-        rgi_id, rgi, buffer_distance=5000.0, dem_name=config["dem"], path=path, force_overwrite=force_overwrite
+        rgi_id,
+        rgi,
+        dem_dataset=config["dem"],
+        ice_thickness_dataset=config["ice_thickness"],
+        buffer_distance=5000.0,
+        path=path,
+        force_overwrite=force_overwrite,
+        bucket=config["bucket"],
     )
 
     # Grid & bounds
@@ -190,10 +197,11 @@ def stage_glacier(
     print("Saving bootfile")
     print("-" * 80)
     print(boot_file.resolve())
+    boot_file.unlink(missing_ok=True)
     boot_ds.to_netcdf(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})
-    grid_ds.to_netcdf(grid_file, engine="h5netcdf")
+    grid_ds.to_netcdf(grid_file)
 
     # Save domain extent polygon as a GPKG
     x_point_list = [

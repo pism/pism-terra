@@ -29,10 +29,10 @@ import tempfile
 import zipfile
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import NamedTuple
+from urllib.parse import urlparse
 
 import cdsapi
 import earthaccess
@@ -42,7 +42,7 @@ import xarray as xr
 from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3
-from pism_terra.workflow import check_xr_sampled
+from pism_terra.workflow import check_xr_lazy
 
 
 class FileInfo(NamedTuple):
@@ -332,7 +332,7 @@ def download_request(
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if (not check_xr_sampled(file_path)) or force_overwrite:
+    if (not check_xr_lazy(file_path)) or force_overwrite:
         client = cdsapi.Client()
 
         path = file_path.parent
@@ -420,40 +420,53 @@ def save_netcdf(
     ds.to_netcdf(output_filename, encoding=encoding, **kwargs)
 
 
-def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
+def download_archive(url: str, dest: Path | str | None = None, force_overwrite: bool = False) -> Path:
     """
-    Download an archive file from a URL and return it as a tarfile or ZipFile object.
+    Download an archive file from a URL and save it to disk.
+
+    If *dest* already exists and *force_overwrite* is ``False`` the download
+    is skipped and the existing path is returned immediately.
 
     Parameters
     ----------
     url : str
-        The URL of the archive file to download. The file can be either a .tar.gz or a .zip file.
+        The URL of the archive file to download.
+    dest : Path or str or None, optional
+        Local file path for the downloaded archive.  When ``None`` the
+        filename is derived from the URL and placed in the current directory.
+    force_overwrite : bool, optional
+        Re-download even when *dest* already exists.  Defaults to ``False``.
 
     Returns
     -------
-    Union[tarfile.TarFile, zipfile.ZipFile]
-        The downloaded archive file as a tarfile.TarFile object if the file is a .tar.gz,
-        or as a ZipFile object if the file is a .zip.
+    Path
+        Path to the downloaded archive file on disk.
     """
-    response = requests.get(url, stream=True, timeout=5)
+    if dest is None:
+        dest = Path(Path(urlparse(url).path).name)
+    else:
+        dest = Path(dest)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if dest.exists() and not force_overwrite:
+        print(f"Archive already exists, skipping download: {dest}")
+        return dest
+
+    response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
 
     total_size = int(response.headers.get("Content-Length", 0))
-    buffer = BytesIO()
 
-    with tqdm(total=total_size, unit="B", unit_scale=True, unit_divisor=1024, desc="Downloading archive") as pbar:
+    with (
+        open(dest, "wb") as f,
+        tqdm(total=total_size, unit="B", unit_scale=True, unit_divisor=1024, desc=f"Downloading {dest.name}") as pbar,
+    ):
         for chunk in response.iter_content(chunk_size=8192):
-            buffer.write(chunk)
+            f.write(chunk)
             pbar.update(len(chunk))
 
-    buffer.seek(0)
-
-    if url.endswith((".tar.gz", ".tgz")):
-        return tarfile.open(fileobj=buffer, mode="r:gz")
-    elif url.endswith(".zip"):
-        return zipfile.ZipFile(buffer)
-    else:
-        raise ValueError("Unsupported archive format: must end with .zip or .tar.gz")
+    return dest
 
 
 def file_localizer(file_path: str, dest_dir: str | Path = Path.cwd()) -> Path:
@@ -641,3 +654,70 @@ def download_netcdf(
     with NamedTemporaryFile(suffix=".nc", delete=False) as xr_file:
         # Open the downloaded file with xarray
         return xr.open_dataset(xr_file)
+
+
+def download_gebco(
+    url: str = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2025/ice_surface_elevation/netcdf/gebco_2025.zip?download=1",
+    target_dir: os.PathLike | str = ".",
+) -> Path:
+    """
+    Download and extract GEBCO 2025 ice surface elevation NetCDF if needed.
+
+    Parameters
+    ----------
+    url : str, optional
+        URL to the GEBCO 2025 ZIP archive.
+    target_dir : str or PathLike, optional
+        Directory where the ZIP and NetCDF file should be stored.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the extracted NetCDF file.
+
+    Notes
+    -----
+    - If a valid NetCDF file already exists in `target_dir`, it is returned
+      without re-downloading.
+    - The function searches for any ``*.nc`` file in `target_dir` and uses
+      the first valid one.
+    """
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    # 1. Check for existing valid NetCDF in target_dir
+    existing_nc_files = sorted(target_dir.glob("GEBCO*.nc"))
+    for nc_path in existing_nc_files:
+        if check_xr_lazy(nc_path):
+            return nc_path
+    # 2. No valid NetCDF found, download ZIP
+    zip_path = target_dir / "gebco_2025.zip"
+    with requests.get(url, stream=True, timeout=300) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("Content-Length", 0))
+        chunk_size = 1024 * 1024  # 1 MB
+        with (
+            open(zip_path, "wb") as f,
+            tqdm(
+                total=total,
+                unit="B",
+                unit_scale=True,
+                desc="Downloading gebco_2025.zip",
+            ) as pbar,
+        ):
+            for chunk in r.iter_content(chunk_size=chunk_size):
+                if chunk:  # filter out keep-alive chunks
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+    # 3. Extract ZIP
+    print(f"Extracting {zip_path} to {target_dir}")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(target_dir)
+    # 4. Find NetCDF file in target_dir
+    nc_files = sorted(target_dir.glob("*.nc"))
+    if not nc_files:
+        raise FileNotFoundError(f"No NetCDF (*.nc) files found in {target_dir} after extracting {zip_path}")
+    # Prefer the first valid one
+    for nc_path in nc_files:
+        if check_xr_lazy(nc_path):
+            return nc_path
+    raise RuntimeError(f"Found NetCDF files in {target_dir}, but none could be opened successfully.")
