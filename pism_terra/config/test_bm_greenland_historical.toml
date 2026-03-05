@@ -2,7 +2,7 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 8
+ntasks = 24
 writer = ""
 
 [job]
@@ -64,11 +64,11 @@ heatflux_file  = "heatflux_g2400m_GreenlandObsISMIP7-v1.3.nc"
 'output.compression_level' = 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
-'output.extra.file' = "none"
-'output.extra.times' = "monthly"
-'output.extra.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity"
-'output.timeseries.filename' = "none"
-'output.timeseries.times' = "monthly"
+'output.scalar.file' = "none"
+'output.scalar.times' = 'daily'
+'output.spatial.file' = "none"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "bmelt,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 'output.ISMIP6' = "no"

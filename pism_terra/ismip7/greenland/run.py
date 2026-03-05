@@ -234,8 +234,8 @@ def run_greenland(
     run.update(
         {
             "output.file": state_file.resolve(),
-            "output.extra.file": spatial_file.resolve(),
-            "output.timeseries.filename": scalar_file.resolve(),
+            "output.spatial.file": spatial_file.resolve(),
+            "output.scalar.file": scalar_file.resolve(),
         }
     )
 
@@ -524,7 +524,6 @@ def run_ensemble():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    print(campaign_config)
     df = stage_greenland(campaign_config, path=input_path, force_overwrite=force_overwrite)
 
     default = {
