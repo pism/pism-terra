@@ -243,7 +243,7 @@ def run_glacier(
     run.update(
         {
             "output.file": state_file.resolve(),
-            "output.extra.file": spatial_file.resolve(),
+            "output.spatial.file": spatial_file.resolve(),
         }
     )
 
