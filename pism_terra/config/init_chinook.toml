@@ -52,6 +52,7 @@ dataset = "reanalysis-era5-land-monthly-means"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
+'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
 'output.spatial.vars' = "climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"

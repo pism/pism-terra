@@ -341,6 +341,8 @@ def run_glacier(
     log_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
+    scalar_path = output_path / Path("scalar")
+    scalar_path.mkdir(parents=True, exist_ok=True)
     spatial_path = output_path / Path("spatial")
     spatial_path.mkdir(parents=True, exist_ok=True)
     state_path = output_path / Path("state")
@@ -396,11 +398,13 @@ def run_glacier(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
+    scalar_file = scalar_path / Path(f"scalar_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     run.update(
         {
             "output.file": state_file.resolve(),
+            "output.scalar.file": scalar_file.resolve(),
             "output.spatial.file": spatial_file.resolve(),
         }
     )
@@ -435,6 +439,7 @@ def run_glacier(
         "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.resolve())},
         "output": {
             "spatial": str(spatial_file.resolve()),
+            "scalar.file": scalar_file.resolve(),
             "state": str(state_file.resolve()),
         },
         "config": run,

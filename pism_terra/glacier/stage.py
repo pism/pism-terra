@@ -189,11 +189,12 @@ def stage_glacier(
     print("")
     print("Saving bootfile")
     print("-" * 80)
-    print(boot_file.resolve())
-    boot_ds.to_netcdf(boot_file)
+    boot_file.unlink(missing_ok=True)
+    boot_ds.to_netcdf(boot_file, engine="netcdf4")
 
     grid_ds.attrs.update({"domain": rgi_id})
-    grid_ds.to_netcdf(grid_file, engine="h5netcdf")
+    grid_file.unlink(missing_ok=True)
+    grid_ds.to_netcdf(grid_file, engine="netcdf4")
 
     # Save domain extent polygon as a GPKG
     x_point_list = [
