@@ -28,6 +28,7 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -542,16 +543,22 @@ def run_ensemble():
         "ocean.th.file": df["ocean_file"].iloc[0],
     }
 
+    seed = 42
+    rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
     n_samples = uq.samples
     mapping = uq.mapping
+
+    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
     if posterior_file is not None:
         posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
-        print(posterior_df)
-        choice_indices = np.random.choice(range(len(posterior_df)), n_samples)
-        posterior_sampled_df = posterior_df.iloc[choice_indices]
-
-    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=42)
+        choice_indices = rng.choice(range(len(posterior_df)), n_samples)
+        posterior_sampled_df = posterior_df.iloc[choice_indices].reset_index(drop=True)
+        duplicate_cols = list(set(uq_df.columns) & set(posterior_sampled_df.columns) - {"sample"})
+        if duplicate_cols:
+            print(f"WARNING: posterior overrides UQ for columns: {sorted(duplicate_cols)}")
+            uq_df = uq_df.drop(columns=duplicate_cols)
+        uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
     uq_file = output_path / Path("uq.csv")
     uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)

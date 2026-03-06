@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -521,6 +522,12 @@ def run_ensemble():
         default=None,
     )
     parser.add_argument(
+        "--posterior-file",
+        help="CSV file posterior parameter distributions to sample from. Default=None.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
@@ -570,6 +577,7 @@ def run_ensemble():
     uq_file = file_localizer(options.UQ_FILE, path / "uq")
 
     resolution = options.resolution
+    posterior_file = options.posterior_file
     debug = options.debug
     queue = options.queue
     ntasks = options.ntasks
@@ -592,10 +600,21 @@ def run_ensemble():
     }
     outline_file = df["outline"].iloc[0]
 
+    seed = 42
+    rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
     n_samples = uq.samples
     mapping = uq.mapping
-    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=42)
+    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
+    if posterior_file is not None:
+        posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
+        choice_indices = rng.choice(range(len(posterior_df)), n_samples)
+        posterior_sampled_df = posterior_df.iloc[choice_indices].reset_index(drop=True)
+        duplicate_cols = list(set(uq_df.columns) & set(posterior_sampled_df.columns) - {"sample"})
+        if duplicate_cols:
+            print(f"WARNING: posterior overrides UQ for columns: {sorted(duplicate_cols)}")
+            uq_df = uq_df.drop(columns=duplicate_cols)
+        uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
     uq_file = output_path / Path("uq.csv")
     uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)
