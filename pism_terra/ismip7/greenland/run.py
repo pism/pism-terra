@@ -470,6 +470,12 @@ def run_ensemble():
         default=None,
     )
     parser.add_argument(
+        "--posterior-file",
+        help="CSV file posterior parameter distributions to sample from. Default=None.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
@@ -480,11 +486,6 @@ def run_ensemble():
         help="Force downloading all files.",
         action="store_true",
         default=False,
-    )
-    parser.add_argument(
-        "DATA_FILE",
-        help="CSV with path to input data.",
-        nargs=1,
     )
     parser.add_argument(
         "CONFIG_FILE",
@@ -509,6 +510,7 @@ def run_ensemble():
     template_file = options.TEMPLATE_FILE[0]
     uq_file = options.UQ_FILE[0]
     resolution = options.resolution
+    posterior_file = options.posterior_file
     debug = options.debug
     queue = options.queue
     ntasks = options.ntasks
@@ -524,7 +526,11 @@ def run_ensemble():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_greenland(campaign_config, path=input_path, force_overwrite=force_overwrite)
+
+    bucket = campaign_config["bucket"]
+    prefix = campaign_config["prefix"]
+
+    df = stage_greenland(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
@@ -539,6 +545,12 @@ def run_ensemble():
     uq = load_uq(uq_file)
     n_samples = uq.samples
     mapping = uq.mapping
+    if posterior_file is not None:
+        posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
+        print(posterior_df)
+        choice_indices = np.random.choice(range(len(posterior_df)), n_samples)
+        posterior_sampled_df = posterior_df.iloc[choice_indices]
+
     uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=42)
 
     uq_file = output_path / Path("uq.csv")
