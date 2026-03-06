@@ -23,13 +23,277 @@ Workflow management.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, TypeVar
 
+import joblib
 import numpy as np
+import pandas as pd
 import rasterio as rio
 import rioxarray  # noqa: F401
 import xarray as xr
+from pydantic import BaseModel
+from tqdm.auto import tqdm
+
+T = TypeVar("T", bound=BaseModel)
+
+
+def merge_model(base_model: T, **overrides: Any) -> T:
+    """
+    Create a new Pydantic model instance by shallow-merging non-None overrides.
+
+    This returns a **new** instance of the same model class as ``base_model``.
+    It starts from ``base_model``'s data (via ``model_dump()``) and applies
+    values from ``overrides`` where the value is not ``None``. Unknown fields
+    or invalid values will raise a Pydantic ``ValidationError``.
+
+    Parameters
+    ----------
+    base_model : T
+        An existing Pydantic model instance to use as the base.
+    **overrides : Any
+        Field values to override on top of ``base_model``. Keys must be valid
+        field names of the model. Any key whose value is ``None`` is ignored.
+
+    Returns
+    -------
+    T
+        A **new** instance of ``type(base_model)`` with overrides applied.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If any override fails validation or refers to an unknown field,
+        depending on the model's configuration.
+    TypeError
+        If ``base_model`` is not a Pydantic ``BaseModel`` instance.
+
+    Notes
+    -----
+    * This is a **shallow** merge. Nested models or containers are replaced,
+      not deep-merged.
+    * In Pydantic v2, an equivalent (and concise) pattern is::
+
+        new_model = base_model.model_copy(
+            update={k: v for k, v in overrides.items() if v is not None}
+        )
+
+      This function mirrors that behavior while making the "skip None" rule explicit.
+
+    Examples
+    --------
+    >>> from pydantic import BaseModel
+    >>> class RunConfig(BaseModel):
+    ...     ntasks: int | None = None
+    ...     mpi: str = "srun -n {ntasks}"
+    ...
+    >>> rc = RunConfig(ntasks=16)
+    >>> new = merge_model(rc, ntasks=80, extra=None)  # 'extra' ignored; None skipped
+    >>> new.ntasks
+    80
+    >>> type(new) is type(rc)
+    True
+    """
+    if not isinstance(base_model, BaseModel):
+        raise TypeError("base_model must be a Pydantic BaseModel instance")
+
+    data = base_model.model_dump()
+    data.update({k: v for k, v in overrides.items() if v is not None})
+    return type(base_model)(**data)
+
+
+def to_python_scalar(v: Any) -> Any:
+    """
+    Convert NumPy/Pandas scalar types to built-in Python objects.
+
+    Attempts to coerce common array/scalar dtypes (e.g., ``np.int64``,
+    ``np.float32``) and pandas datetime-like scalars into plain Python types
+    suitable for TOML/JSON serialization and Jinja rendering.
+
+    Parameters
+    ----------
+    v : Any
+        Value to coerce. Supports values deriving from ``numpy.generic`` as well
+        as pandas objects exposing ``.to_pydatetime()`` or ``.to_pytimedelta()``.
+        Other types are returned unchanged.
+
+    Returns
+    -------
+    Any
+        A built-in Python scalar (e.g., ``int``, ``float``, ``bool``,
+        ``datetime.datetime``, ``datetime.timedelta``) when conversion applies;
+        otherwise the original value.
+
+    Notes
+    -----
+    - This function does **not** recurse into containers; it only converts the
+      top-level value. Use it element-wise for sequences/mappings.
+    - Any exception during the NumPy scalar probe is intentionally ignored to
+      keep the conversion path robust across environments.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> to_python_scalar(np.int64(3))
+    3
+    >>> import pandas as pd
+    >>> to_python_scalar(pd.Timestamp("2020-01-01"))
+    datetime.datetime(2020, 1, 1, 0, 0)
+    """
+    try:
+
+        if isinstance(v, (np.generic,)):
+            return v.item()
+    except Exception:
+        pass
+
+    # Pandas Timestamp/Timedelta-like
+    if hasattr(v, "to_pydatetime"):
+        return v.to_pydatetime()
+    if hasattr(v, "to_pytimedelta"):
+        return v.to_pytimedelta()
+
+    return v
+
+
+def normalize_row(row) -> dict:
+    """
+    Normalize a row-like object into a clean ``dict[str, Any]``.
+
+    Converts values to plain Python scalars via :func:`to_python_scalar`,
+    casts keys to ``str``, and drops entries whose value is ``None``. Intended
+    for preparing parameter dictionaries for TOML/JSON dumps and Jinja contexts.
+
+    Parameters
+    ----------
+    row : mapping or pandas.Series
+        A mapping-like object (e.g., ``dict``) or a ``pandas.Series`` obtained
+        from ``DataFrame.iterrows()``. Keys are interpreted as parameter names.
+
+    Returns
+    -------
+    dict
+        Dictionary with string keys and Python-native scalar values. Any items
+        with ``None`` values are omitted.
+
+    Notes
+    -----
+    - This function does **not** deep-convert nested containers; nested dicts or
+      lists are left as-is except for top-level value coercion.
+    - If ``row`` is a pandas ``Series``, its ``.to_dict()`` is used first.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> s = pd.Series({"a": pd.Timestamp("2021-01-01"), "b": None, "c": 1})
+    >>> normalize_row(s)
+    {'a': datetime.datetime(2021, 1, 1, 0, 0), 'c': 1}
+    """
+    d = row.to_dict() if hasattr(row, "to_dict") else dict(row)
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        out[str(k)] = to_python_scalar(v)
+    return out
+
+
+def sort_dict_by_key(d: dict) -> dict:
+    """
+    Sort a dictionary by its keys.
+
+    Parameters
+    ----------
+    d : dict
+        The dictionary to sort.
+
+    Returns
+    -------
+    dict
+        A new dictionary sorted by keys.
+    """
+    return {k: d[k] for k in sorted(d.keys())}
+
+
+def dict2str(d: dict) -> str:
+    """
+    Convert a dictionary into a formatted string of key-value pairs.
+
+    Parameters
+    ----------
+    d : dict
+        The dictionary to convert.
+
+    Returns
+    -------
+    str
+        A string representation of the dictionary, where each key-value pair is
+        formatted as `-key value` and pairs are separated by spaces.
+
+    Examples
+    --------
+    >>> d = {"a": 1, "b": 2}
+    >>> dict2str(d)
+    '-a 1
+     -b 2'
+    """
+    return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
+
+
+def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """
+    Replace integer choices in `uq_df` with values from `df` using a per-flag mapping.
+
+    Parameters
+    ----------
+    uq_df : pandas.DataFrame
+        DataFrame produced by your sampler (has integer-coded columns like
+        'surface.given.file', 'atmosphere.given.file', etc.).
+    df : pandas.DataFrame
+        Source DataFrame that contains the lookup columns (e.g., 'cosipy_file').
+        Row order defines the integer choices: 0 -> first row, 1 -> second row, etc.
+    mapping : dict[str, str]
+        Mapping from dotted flag name in `uq_df` to column name in `df`,
+        e.g. {"surface.given.file": "cosipy_file"}.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy of `uq_df` with the specified columns mapped to their path strings.
+    """
+    out = uq_df.copy()
+
+    if not isinstance(mapping, dict) or not mapping:
+        return out
+
+    for flag, df_col in mapping.items():
+        if flag not in out.columns:
+            # nothing to map for this flag; skip
+            continue
+        if df_col not in df.columns:
+            raise KeyError(f"Mapping for '{flag}' points to missing df column '{df_col}'")
+
+        # Build int-choice -> value mapping using the *row order* of df[df_col]
+        # Using a Series preserves integer index 0..n-1 after reset_index(drop=True)
+        choice_series = df[df_col].reset_index(drop=True)
+
+        # Ensure the source choices are integer-coded
+        out[flag] = pd.to_numeric(out[flag], errors="raise").astype("int64")
+
+        # Series.map with a Series maps by index; perfect for 0..n-1 codes
+        out[flag] = out[flag].map(choice_series)
+
+        # Optional: fail fast if any choice was out of bounds
+        if out[flag].isna().any():
+            bad = out.loc[out[flag].isna(), flag].index.tolist()
+            raise ValueError(
+                f"Found out-of-range choice(s) for '{flag}' at rows {bad}; "
+                f"valid choices are 0..{len(choice_series)-1}"
+            )
+
+    return out
+
 
 ScalarIndex = int | slice
 Selection = dict[str, ScalarIndex]  # e.g. {"x": slice(...), "y": slice(...), "time": 0}
@@ -158,7 +422,7 @@ def _windows_for(var: xr.DataArray, window: int = 32) -> Selections:
     return uniq
 
 
-def check_dataset_sampled(
+def check_dataset_lazy(
     ds: xr.Dataset,
     *,
     required_vars: Iterable[str] | None = None,
@@ -300,7 +564,7 @@ def check_dataset_sampled(
     # If we reached here, the dataset is healthy enough for downstream steps.
 
 
-def check_dataset(ds: xr.Dataset) -> None:
+def check_dataset_fully(ds: xr.Dataset) -> None:
     """
     Validate that an xarray Dataset can be fully loaded into memory.
 
@@ -325,12 +589,12 @@ def check_dataset(ds: xr.Dataset) -> None:
     _ = ds.load()
 
 
-def check_xr_sampled(path: Path | str) -> bool:
+def check_xr_lazy(path: Path | str) -> bool:
     """
     Open a dataset and run a **sampled** health check with xarray.
 
     This lazily opens the dataset at ``path`` and invokes a lightweight
-    validator (``check_dataset_sampled``) that loads only small windows
+    validator (``check_dataset_lazy``) that loads only small windows
     rather than the entire dataset. Prints a ✓/✗ message and returns
     ``True`` on success.
 
@@ -363,24 +627,24 @@ def check_xr_sampled(path: Path | str) -> bool:
     is_ok: bool
     try:
         ds = xr.open_dataset(p)
-        check_dataset_sampled(ds)  # your sampled checker
+        check_dataset_lazy(ds)  # your sampled checker
         print(f"{p} is valid ✓")
         is_ok = True
     except FileNotFoundError:
-        print(f"{p} is valid ✗ (missing)")
+        print(f"{p} is not valid ✗")
         is_ok = False
     except Exception as e:
-        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        print(f"{p} is not valid ✗ ({type(e).__name__}: {e})")
         is_ok = False
     return is_ok
 
 
-def check_xr(path: Path | str) -> bool:
+def check_xr_fully(path: Path | str) -> bool:
     """
     Open a dataset and verify it **fully loads** with xarray.
 
     This forces a full materialization using ``.load()`` via a helper
-    (``check_dataset``). Prints a ✓/✗ message and returns ``True`` on success.
+    (``check_dataset_fully``). Prints a ✓/✗ message and returns ``True`` on success.
 
     Parameters
     ----------
@@ -409,14 +673,14 @@ def check_xr(path: Path | str) -> bool:
     is_ok: bool
     try:
         ds = xr.open_dataset(p)
-        check_dataset(ds)  # your full-load checker
+        check_dataset_fully(ds)  # your full-load checker
         print(f"{p} is valid ✓")
         is_ok = True
     except FileNotFoundError:
-        print(f"{p} is valid ✗ (missing)")
+        print(f"{p} is not valid ✗")
         is_ok = False
     except Exception as e:
-        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        print(f"{p} is not valid ✗ ({type(e).__name__}: {e})")
         is_ok = False
     return is_ok
 
@@ -458,9 +722,56 @@ def check_rio(path: Path | str) -> bool:
         print(f"{p} is valid ✓")
         is_ok = True
     except FileNotFoundError:
-        print(f"{p} is valid ✗ (missing)")
+        print(f"{p} is not valid ✗")
         is_ok = False
     except Exception as e:
-        print(f"{p} is valid ✗ ({type(e).__name__}: {e})")
+        print(f"{p} is not valid ✗ ({type(e).__name__}: {e})")
         is_ok = False
     return is_ok
+
+
+@contextlib.contextmanager
+def tqdm_joblib(tqdm_object):
+    """
+    Context manager to patch joblib to report into tqdm progress bar given as argument.
+
+    Parameters
+    ----------
+    tqdm_object : tqdm.tqdm
+        The tqdm progress bar object to use for reporting progress.
+    """
+    # ...existing code...
+
+    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+        """
+        TQDM Callback.
+
+        This callback updates the tqdm progress bar with the batch size.
+        """
+
+        def __call__(self, *args, **kwargs):
+            """
+            Call the TQDM callback.
+
+            Parameters
+            ----------
+            *args : tuple
+                Positional arguments.
+            **kwargs : dict
+                Keyword arguments.
+
+            Returns
+            -------
+            Any
+                The result of the super class __call__ method.
+            """
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    old_batch_callback = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+    try:
+        yield tqdm_object
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_batch_callback
+        tqdm_object.close()

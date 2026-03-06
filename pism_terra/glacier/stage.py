@@ -42,7 +42,7 @@ from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_dataset, check_xr
+from pism_terra.workflow import check_dataset_fully
 
 xr.set_options(keep_attrs=True)
 
@@ -161,7 +161,14 @@ def stage_glacier(
 
     # Build boot dataset (DEM/thickness/bed)
     boot_ds = boot_file_from_rgi_id(
-        rgi_id, rgi, buffer_distance=5000.0, dem_name=config["dem"], path=path, force_overwrite=force_overwrite
+        rgi_id,
+        rgi,
+        dem_dataset=config["dem"],
+        ice_thickness_dataset=config["ice_thickness"],
+        buffer_distance=5000.0,
+        path=path,
+        force_overwrite=force_overwrite,
+        bucket=config["bucket"],
     )
 
     # Grid & bounds

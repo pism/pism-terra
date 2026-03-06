@@ -26,6 +26,26 @@ from pathlib import Path
 import geopandas as gpd
 
 
+def glaciers_in_complex(rgi_c_id: str, rgi_g: gpd.GeoDataFrame) -> list:
+    """
+    Return the glacier outline IDs that belong to a given complex outline.
+
+    Parameters
+    ----------
+    rgi_c_id : str
+        The complex outline identifier (e.g. ``"RGI2000-v7.0-C-01-09429"``).
+    rgi_g : geopandas.GeoDataFrame
+        Glacier outline dataframe with an ``rgi_id_c`` column mapping each
+        glacier to its parent complex.
+
+    Returns
+    -------
+    list
+        List of ``rgi_id`` strings whose ``rgi_id_c`` matches *rgi_c_id*.
+    """
+    return rgi_g.loc[rgi_g["rgi_id_c"] == rgi_c_id, "rgi_id"].tolist()
+
+
 def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:
     """
     Return the row in the GeoDataFrame matching the given RGI ID.
@@ -47,3 +67,55 @@ def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> 
 
     glacier = rgi[rgi["rgi_id"] == rgi_id]
     return glacier
+
+
+def dissolve(ds, date, crs: str = "EPSG:3413"):
+    """
+    Dissolve geometries.
+
+    Parameters
+    ----------
+    ds : geopandas.GeoDataFrame
+        The GeoDataFrame containing geometries to dissolve.
+    date : pd.Timestamp
+        The date associated with the geometries.
+    crs : str, optional
+        Coordinate reference system, by default "EPSG:3413".
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        The dissolved GeoDataFrame with the date set as the index.
+    """
+    ds = gpd.GeoDataFrame(ds, crs=crs)
+    geom_valid = ds.geometry.make_valid()
+    ds.geometry = geom_valid
+    ds = ds.dissolve()
+    ds["Date"] = date
+    ds = ds.set_index("Date")
+    return ds
+
+
+def aggregate(n, df):
+    """
+    Aggregate geometries.
+
+    Parameters
+    ----------
+    n : int
+        The number of geometries to aggregate.
+    df : geopandas.GeoDataFrame
+        The GeoDataFrame containing geometries to aggregate.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        The aggregated GeoDataFrame.
+    """
+    if n == 0:
+        return df.iloc[[n]]
+    else:
+        geom = df.iloc[range(n)].unary_union
+        merged_df = df.iloc[[n]]
+        merged_df.iloc[0].geometry = geom
+        return merged_df

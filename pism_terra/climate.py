@@ -56,7 +56,7 @@ from pism_terra.download import (
     save_netcdf,
 )
 from pism_terra.raster import add_time_bounds
-from pism_terra.workflow import check_xr, check_xr_sampled
+from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
@@ -71,7 +71,7 @@ def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | Non
     (day = 1), and the result is written as NetCDF into ``outdir``.
 
     If a matching NetCDF already exists and opens successfully (checked with
-    :func:`check_xr_sampled`) and ``force_overwrite`` is False, the file is
+    :func:`check_xr_lazy`) and ``force_overwrite`` is False, the file is
     reused and simply returned.
 
     Parameters
@@ -112,7 +112,7 @@ def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | Non
     output_path = snapdir / f"{fi.variable}_{fi.year}_{fi.month}.nc"
 
     try:
-        if (not check_xr_sampled(output_path)) or force_overwrite:
+        if (not check_xr_lazy(output_path)) or force_overwrite:
             output_path.unlink(missing_ok=True)
 
             # Build a cftime "standard/gregorian" datetime (day = 1)
@@ -279,8 +279,7 @@ def snap_cloud(
 
         snap_file = out_dir / sn
 
-        if (not check_xr_sampled(snap_file)) or force_overwrite:
-
+        if (not check_xr_lazy(snap_file)) or force_overwrite:
             snap_file.unlink(missing_ok=True)
             s3_to_local(bucket, prefix="snap", dest_dir=path)
     snap_files = list(Path(path).rglob("snap_*.nc"))
@@ -401,7 +400,7 @@ def snap(
         p = Path(path) / f"snap_cru_TS40_{start}_{end}.nc"
         ps.append(p)
 
-        if check_xr_sampled(p) and not force_overwrite:
+        if check_xr_lazy(p) and not force_overwrite:
             # Reuse existing file; no work scheduled
             continue
 
@@ -780,7 +779,7 @@ def pmip4(
         path = Path(path)
         p = path / f"{source_id}_rgi_id_{rgi_id}.nc"
 
-        if (not check_xr(p)) or force_overwrite:
+        if (not check_xr_fully(p)) or force_overwrite:
             dss = []
             for v in ["tas", "pr"]:
                 zstore = df[df["variable_id"] == v].zstore.values[0]

@@ -52,7 +52,8 @@ def get_rgi_url(url_template: str, region: str) -> str:
 
 def prepare_rgi_region(
     region: str,
-    url_template: str = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-C-{region}.zip",
+    outline_type: str = "C",
+    url_template: str = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-{outline_type}-{region}.zip",
     extract_to: Path | str = "rgi",
     area_threshold: float = 1.0,
 ):
@@ -67,6 +68,8 @@ def prepare_rgi_region(
     ----------
     region : str or None
         The region code (e.g., "01_alaska", "06_iceland") used to fill in the URL template.
+    outline_type : str, optional
+       Either C or G (complex or glacier).
     url_template : str, optional
         URL template containing a `{region}` placeholder. Defaults to the NSIDC RGI v7 template.
     extract_to : str or Path, optional
@@ -96,7 +99,7 @@ def prepare_rgi_region(
     archive = download_archive(url)
     extract_archive(archive, extract_to)
 
-    rgi = gpd.read_file(extract_to / f"RGI2000-v7.0-C-{region}.shp")
+    rgi = gpd.read_file(extract_to / f"RGI2000-v7.0-{outline_type}-{region}.shp")
     rgi = rgi[rgi["area_km2"] > area_threshold]
     rgi["epsg"] = rgi.apply(
         lambda row: f"""EPSG:{32600 + int(row["utm_zone"]) if row["cenlat"] >= 0 else 32700 + int(row["utm_zone"])}""",
@@ -116,11 +119,13 @@ rgi_archive_path.mkdir(parents=True, exist_ok=True)
 
 regions = pd.read_csv(rgi_path / "regions.csv", dtype={"id": str, "name": str})
 regions["region"] = regions["id"] + "_" + regions["name"]
+outline_types = ["C", "G"]
+
 # Optional: tune this
 MAX_WORKERS = min(8, len(regions))  # or os.cpu_count() if CPU-bound
 
 
-url_template = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-C-{region}.zip"
+url_template = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-{outline_type}/RGI2000-v7.0-{outline_type}-{region}.zip"
 wgs84 = "EPSG:4326"
 
 
