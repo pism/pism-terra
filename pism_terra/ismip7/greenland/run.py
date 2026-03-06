@@ -228,7 +228,7 @@ def run_greenland(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
-    scalar_file = spatial_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
+    scalar_file = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
     run.update(
