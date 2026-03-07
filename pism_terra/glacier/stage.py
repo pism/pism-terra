@@ -42,7 +42,7 @@ from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_dataset_fully
+from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
@@ -199,10 +199,12 @@ def stage_glacier(
     print("-" * 80)
     boot_file.unlink(missing_ok=True)
     boot_ds.to_netcdf(boot_file, engine="netcdf4")
+    check_xr_lazy(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})
     grid_file.unlink(missing_ok=True)
     grid_ds.to_netcdf(grid_file, engine="netcdf4")
+    check_xr_fully(grid_file)
 
     # Save domain extent polygon as a GPKG
     x_point_list = [
