@@ -550,6 +550,7 @@ def boot_file_from_rgi_id(
     rgi: gpd.GeoDataFrame | str | Path,
     dem_dataset: Literal["glo_30", "arcticdem"],
     ice_thickness_dataset: Literal["maffezzoli", "millan"],
+    velocity_dataset: Literal["none", "its_live"] | None,
     buffer_distance: float = 5000.0,
     path: str | Path = "input_files",
     resolution: float = 50.0,
@@ -579,6 +580,8 @@ def boot_file_from_rgi_id(
         DEM source for surface preparation (e.g., ``"glo_30"``, ``"arcticdem"``).
     ice_thickness_dataset : str, default ``"maffezzoli"``
         Source for ice thickness (e.g., ``"glo_30"``, ``"arcticdem"``).
+    velocity_dataset : str, default ``"its_live"``
+        Source for velocities (e.g., ``"none"``, ``"its_live"``).
     buffer_distance : float, default ``5000.0``
         Buffer distance **in meters** applied to the glacier polygon in the projected CRS
         to define the working extent for DEM/thickness.
@@ -685,14 +688,18 @@ def boot_file_from_rgi_id(
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
 
-    v_filename = path / Path(f"obs_{rgi_id}.nc")
-    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, path=v_filename)
-    v = v.rio.reproject_match(surface)
-    _v = v["v"].fillna(0)
-
-    tillwat = xr.where(_v < 100, 0, xr.where(_v > 500, 2, 1 + (_v - 100) / (500 - 100)))
+    tillwat = xr.zeros_like(bed)
     tillwat.name = "tillwat"
     tillwat.attrs.update({"units": "m"})
 
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, _v])
+    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
+
+    if velocity_dataset is not ("none" or None):
+        v_filename = path / Path(f"obs_{rgi_id}.nc")
+        v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, path=v_filename)
+        v = v.rio.reproject_match(surface)
+        _v = v["v"].fillna(0)
+        ds = xr.merge([ds, _v])
+        ds["tillwat"] = tillwat.where(_v < 100, 0, xr.where(_v > 500, 2, 1 + (_v - 100) / (500 - 100)))
+
     return ds.fillna(0)

@@ -165,6 +165,7 @@ def stage_glacier(
         rgi,
         dem_dataset=config["dem"],
         ice_thickness_dataset=config["ice_thickness"],
+        velocity_dataset=config["velocity"],
         buffer_distance=5000.0,
         path=path,
         force_overwrite=force_overwrite,
