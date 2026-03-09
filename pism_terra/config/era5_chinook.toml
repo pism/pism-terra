@@ -56,6 +56,7 @@ velocity = "none"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
+'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
 'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"

@@ -29,7 +29,7 @@ from numpy.testing import assert_array_almost_equal
 from rasterio.io import MemoryFile
 from shapely.geometry import box
 
-from pism_terra.dem import (
+from pism_terra.glacier.dem import (
     boot_file_from_rgi_id,
     get_glacier_from_rgi_id,
 )
@@ -76,6 +76,7 @@ def test_boot_file_from_rgi_id(rgi, tmp_path):
         rgi,
         dem_dataset="glo_30",
         ice_thickness_dataset="millan",
+        velocity_dataset="none",
         resolution=resolution,
         path=path,
     )

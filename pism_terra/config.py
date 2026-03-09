@@ -1191,6 +1191,8 @@ class CampaignConfig(BaseModel):
         DEM data source identifier (e.g., ``"copernicus"``).
     ice_thickness : str or None
         Ice thickness data source identifier (e.g., ``"millan2022"``).
+    velocity : str or None
+        Velocity data source identifier (e.g., ``"its_live"``).
     gcm : str, list, or None
         GCM model name(s) used for climate forcing.
     grid_file : str or None
@@ -1214,6 +1216,7 @@ class CampaignConfig(BaseModel):
     climate: str | None = Field(default=None)
     dem: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
+    velocity: str | None = Field(default=None)
     gcm: str | list | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     boot_file: str | None = Field(default=None)
