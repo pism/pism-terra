@@ -44,7 +44,6 @@ from dask.diagnostics import ProgressBar
 from tqdm.auto import tqdm
 
 from pism_terra.aws import s3_to_local
-from pism_terra.dem import get_glacier_from_rgi_id
 from pism_terra.download import (
     FileInfo,
     download_archive,
@@ -55,6 +54,7 @@ from pism_terra.download import (
     parse_filename,
     save_netcdf,
 )
+from pism_terra.glacier.dem import get_glacier_from_rgi_id
 from pism_terra.raster import add_time_bounds
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 

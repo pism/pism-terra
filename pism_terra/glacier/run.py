@@ -35,9 +35,9 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.aws import local_to_s3
-from pism_terra.climate import create_offset_file
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.download import file_localizer
+from pism_terra.glacier.climate import create_offset_file
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import create_samples

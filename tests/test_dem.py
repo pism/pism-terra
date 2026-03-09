@@ -29,7 +29,7 @@ from numpy.testing import assert_array_almost_equal
 from rasterio.io import MemoryFile
 from shapely.geometry import box
 
-from pism_terra.dem import (
+from pism_terra.glacier.dem import (
     boot_file_from_rgi_id,
     get_glacier_from_rgi_id,
 )
