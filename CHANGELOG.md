@@ -19,6 +19,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Switched output.{extra,timeseries} to output.{spatial,scalar}
 - This requires PISM dev >= commit dev@f4a9668ef5204145820c8ce091dcabd0174b57b4
 - Refactor {climate,dem}.py -> pism_terra/glacier/
+- Fixed caculation of bounds
 
 ## [0.1.0]
 
