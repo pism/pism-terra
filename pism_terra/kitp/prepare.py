@@ -36,16 +36,16 @@ import rioxarray  # pylint: disable=unused-import
 import toml
 import xarray as xr
 import xarray_regrid.methods.conservative  # pylint: disable=unused-import
+from cdo import Cdo
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
 from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
-from pism_terra.ismip7.greenland.forcing import (
-    prepare_calfin,
-    prepare_ismip7_forcing,
-    prepare_observations,
+from pism_terra.kitp.forcing import (
+    prepare_baseline_climatology,
 )
+from pism_terra.ismip7.greenland.forcing import prepare_observations
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -127,35 +127,25 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     grid_ds.to_netcdf(grid_file, encoding=encoding)
     check_xr_fully(grid_file)
 
-    print("-" * 120)
-    print("Calfin Glacier Fronts File")
-    print("-" * 120)
-
-    retreat_file = prepare_calfin(
-        output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
-    )
-
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     print("-" * 120)
     print("Boot File")
     print("-" * 120)
-    surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
-    obs_files = prepare_observations(
-        url,
-        obs_path,
-        output_path,
-        config,
-        surface_dem=surface_dem,
-        target_grid=grid_ds,
-        force_overwrite=force_overwrite,
-    )
-    for v in obs_files.values():
-        check_xr_lazy(v)
+    # obs_files = prepare_observations(
+    #     url,
+    #     obs_path,
+    #     output_path,
+    #     config,
+    #     target_grid=grid_ds,
+    #     force_overwrite=force_overwrite,
+    # )
+    # for v in obs_files.values():
+    #     check_xr_lazy(v)
 
     print("-" * 120)
-    print("Forcings")
+    print("Baseline Climatology")
     print("-" * 120)
-    forcing_files = prepare_forcing(data_path, output_path, config)
+    forcing_files = prepare_baseline_climatology(data_path, output_path, config)
 
     return {
         "config": config,
