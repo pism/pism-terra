@@ -23,7 +23,7 @@ dem = "glo_30"
 ice_thickness = "maffezzoli"
 bucket = "pism-cloud-data"
 prefix = "glaciers"
-velocity = "none"
+velocity = "its_live"
 
 [time]
 
@@ -153,6 +153,7 @@ model = "pdd"
 
 'calving.methods' = 'vonmises_calving'
 'calving.vonmises_calving.sigma_max' = 7.5e5
+
 [atmosphere]
 
 model = "given"

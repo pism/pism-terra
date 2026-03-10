@@ -39,7 +39,7 @@ from rasterio.merge import merge
 from pism_terra.aws import download_from_s3, s3_to_local
 from pism_terra.domain import create_domain
 from pism_terra.download import download_archive, extract_archive
-from pism_terra.observations import glacier_velocities_from_rgi_id
+from pism_terra.glacier.observations import glacier_velocities_from_rgi_id
 from pism_terra.raster import check_overlap, reproject_file
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_rio, check_xr_lazy
