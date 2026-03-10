@@ -450,7 +450,7 @@ def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False,
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
-    Prepare ISMIP7 Greenland input data sets.
+    Prepare RGI input data sets.
 
     This function is the programmatic entry point. It parses command-line style
     arguments, creates the target grid, downloads and processes observation data,
@@ -474,7 +474,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
 
     parser = ArgumentParser()
-    parser.add_argument("--obs-path", default="data/obs")
     parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",

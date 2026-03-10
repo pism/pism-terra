@@ -27,7 +27,7 @@ velocity = "its_live"
 [time]
 
 'time.start' = "01-01-01"
-'time.end' =  "05-01-01"
+'time.end' =  "100-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "01-01-01"
 

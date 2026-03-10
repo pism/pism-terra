@@ -592,7 +592,8 @@ def run_ensemble():
         "surface.force_to_thickness.file": df["boot_file"].iloc[0],
         "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.fract_P.file": df["scalar_offset_file"].iloc[0],
+        "atmosphere.frac_P.file": df["scalar_offset_file"].iloc[0],
+        "atmosphere.precip_scaling.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
     }
     outline_file = df["outline"].iloc[0]
@@ -620,6 +621,7 @@ def run_ensemble():
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
         create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
         row["atmosphere.delta_T.file"] = scalar_offset_file
+        row["atmosphere.frac_P.file"] = scalar_offset_file
         row["atmosphere.precip_scaling.file"] = scalar_offset_file
         run_glacier(
             rgi_id,
