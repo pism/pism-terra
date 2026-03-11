@@ -155,7 +155,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     print("Forcings")
     print("-" * 120)
-    forcing_files = prepare_forcing(data_path, output_path, config)
+    forcing_files = prepare_ismip7_forcing(data_path, output_path, config)
 
     return {
         "config": config,

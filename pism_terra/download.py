@@ -15,9 +15,9 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=consider-using-with,too-many-positional-arguments
+# pylint: disable=consider-using-with,too-many-positional-arguments,broad-exception-caught
 """
-Module for data processing.
+Module for downloading data.
 """
 
 from __future__ import annotations
@@ -720,107 +720,13 @@ def download_gebco(
     raise RuntimeError(f"Found NetCDF files in {target_dir}, but none could be opened successfully.")
 
 
-def download_mar(
-    base_url: str,
-    start_year: int,
-    end_year: int,
-    output_dir: Union[str, Path] = ".",
-    max_workers: int = 4,
-    year_file_pattern: str = "MARv3.14-monthly-ERA5-{year}.nc",
-) -> list[Path]:
-    """
-    Download MAR files in parallel.
-
-    Parameters
-    ----------
-    base_url : str
-        The base URL for downloading MAR data.
-    start_year : int
-        The starting year of the files to download.
-    end_year : int
-        The ending year of the files to download.
-    output_dir : Union[str, Path], optional
-        The directory where the downloaded files will be saved, by default ".".
-    max_workers : int, optional
-        The maximum number of threads to use for downloading, by default 4.
-    year_file_pattern : str, optional
-        Pattern for the file name with a {year} placeholder.
-
-    Returns
-    -------
-    list[Path]
-        List of paths to the downloaded files.
-    """
-    print(f"Downloading MAR from {base_url}")
-    responses = []
-    output_dir = Path(output_dir)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for year in range(start_year, end_year + 1):
-            year_file = year_file_pattern.format(year=year)
-            url = base_url + year_file
-            output_path = output_dir / year_file
-            futures.append(executor.submit(download_file, url, output_path))
-            responses.append(output_path)
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"An error occurred: {e}")
-
-    return responses
-
-
-def download_racmo(
-    output_dir: Union[str, Path] = ".",
-    max_workers: int = 4,
-) -> list[Path]:
-    """
-    Download RACMO files in parallel.
-
-    Parameters
-    ----------
-    output_dir : Union[str, Path], optional
-        The directory where the downloaded files will be saved, by default ".".
-    max_workers : int, optional
-        The maximum number of threads to use for downloading, by default 4.
-
-    Returns
-    -------
-    list[Path]
-        List of paths to the downloaded files.
-    """
-
-    print("Downloading RACMO")
-    responses = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for var in [
-            "precip_monthlyS_FGRN055_BN_RACMO2.3p2_ERA5_3h_1940_FGRN055_193909_202303.nc",
-            "runoff_monthlyS_FGRN055_BN_RACMO2.3p2_ERA5_3h_1940_FGRN055_193909_202303.nc",
-            "smb_monthlyS_FGRN055_BN_RACMO2.3p2_ERA5_3h_1940_FGRN055_193909_202303.nc",
-            "t2m_monthlyA_FGRN055_BN_RACMO2.3p2_ERA5_3h_1940_FGRN055_193909_202303.nc",
-        ]:
-            url = f"https://surfdrive.surf.nl/files/index.php/s/No8LoNA18eS1v72/download?path=%2FMonthly&files={var}"
-            output_path = output_dir / Path(var)
-            futures.append(executor.submit(download_file, url, output_path))
-            responses.append(output_path)
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"An error occurred: {e}")
-        return responses
-
-
 def download_hirham(
     base_url: str,
     start_year: int,
     end_year: int,
     output_dir: str | Path = ".",
     max_workers: int = 4,
-) -> List[Path]:
+) -> list[Path]:
     """
     Download HIRHAM files in parallel.
 
@@ -839,7 +745,7 @@ def download_hirham(
 
     Returns
     -------
-    List[Path]
+    list[Path]
         List of paths to the downloaded files.
     """
     print(f"Downloading HIRHAM5 from {base_url}")

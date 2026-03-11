@@ -23,6 +23,7 @@ Prepare ISMIP7 Greenland data sets.
 
 import os
 import re
+import shutil
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -42,10 +43,10 @@ from pyfiglet import Figlet
 from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
+from pism_terra.ismip7.greenland.forcing import prepare_observations
 from pism_terra.kitp.forcing import (
     prepare_baseline_climatology,
 )
-from pism_terra.ismip7.greenland.forcing import prepare_observations
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -87,16 +88,16 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         default=False,
     )
     parser.add_argument("CONFIG_FILE", nargs=1)
-    parser.add_argument("DATA_PATH", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config_file = args.CONFIG_FILE[0]
-    data_path = Path(args.DATA_PATH[0])
     force_overwrite = args.force_overwrite
     obs_path = Path(args.obs_path)
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
+    s3_output_path = output_path / Path("kitp_greenland_input")
+    s3_output_path.mkdir(parents=True, exist_ok=True)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -131,29 +132,37 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     print("Boot File")
     print("-" * 120)
-    # obs_files = prepare_observations(
-    #     url,
-    #     obs_path,
-    #     output_path,
-    #     config,
-    #     target_grid=grid_ds,
-    #     force_overwrite=force_overwrite,
-    # )
-    # for v in obs_files.values():
-    #     check_xr_lazy(v)
+    obs_files = prepare_observations(
+        url,
+        obs_path,
+        output_path,
+        config,
+        target_grid=grid_ds,
+        force_overwrite=force_overwrite,
+    )
+    for v in obs_files.values():
+        check_xr_lazy(v)
 
     print("-" * 120)
     print("Baseline Climatology")
     print("-" * 120)
-    forcing_files = prepare_baseline_climatology(data_path, output_path, config)
+    baseline_file = prepare_baseline_climatology(output_path, config)
+    input_files = [grid_file] + list(obs_files.values()) + [baseline_file]
+
+    print("-" * 120)
+    print(f"Copying input files to {s3_output_path}")
+    print("-" * 120)
+    for f in input_files:
+        dest = s3_output_path / Path(f).name
+        shutil.copy2(f, dest)
+        print(f"  {dest}")
 
     return {
         "config": config,
         "grid_file": grid_file,
         "boot_file": obs_files["boot_file"],
         "heatflux_file": obs_files["heatflux_file"],
-        "forcing_files": forcing_files,
-        "retreat_file": retreat_file,
+        "baseline_file": baseline_file,
     }
 
 
