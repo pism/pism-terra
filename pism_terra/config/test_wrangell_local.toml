@@ -27,7 +27,7 @@ velocity = "its_live"
 [time]
 
 'time.start' = "01-01-01"
-'time.end' =  "100-01-01"
+'time.end' =  "02-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "01-01-01"
 
@@ -57,14 +57,14 @@ velocity = "its_live"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
 'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
-'output.spatial.times' = 1
+'output.spatial.times' = "monthly"
 'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 
 [grid]
 
-resolution = "500m"
+resolution = "1000m"
 grid.Lbz = 0
 grid.Lz = 2000
 grid.Mbz = 1
