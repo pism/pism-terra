@@ -166,14 +166,14 @@ def stage_glacier(
         dem_dataset=config["dem"],
         ice_thickness_dataset=config["ice_thickness"],
         velocity_dataset=config["velocity"],
-        buffer_distance=2000.0,
+        buffer_distance=10000.0,
         path=path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],
     )
 
     # Grid & bounds
-    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=2000.0)
+    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=8000.0)
     bounds = [
         grid_ds["x_bnds"].values[0][0],
         grid_ds["y_bnds"].values[0][0],
