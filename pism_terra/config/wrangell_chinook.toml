@@ -1,8 +1,8 @@
 [run]
 
 executable = "pism"
-mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 40
+mpi = ""
+ntasks = 8
 
 [job]
 
@@ -17,16 +17,17 @@ nodes = 1
 
 [campaign]
 
-name = "LGM"
+name = "Equilibrium"
+bucket = "pism-cloud-data"
 climate = "snap"
 dem = "glo_30"
-ice_thickness = "millan"
-velocity = "none"
+ice_thickness = "maffezzoli"
+velocity = "its_live"
 
 [time]
 
 'time.start' = "01-01-01"
-'time.end' =  "500-01-01"
+'time.end' =  "05-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "01-01-01"
 

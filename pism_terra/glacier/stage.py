@@ -38,7 +38,7 @@ from shapely.geometry import Polygon
 from pism_terra.aws import local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_grid
-from pism_terra.glacier.climate import create_offset_file, era5, pmip4, snap_cloud
+from pism_terra.glacier.climate import create_offset_file, era5, pmip4, snap
 from pism_terra.glacier.dem import boot_file_from_rgi_id
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
@@ -46,7 +46,7 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 
 xr.set_options(keep_attrs=True)
 
-CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap_cloud}
+CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap}
 
 
 def stage_glacier(
@@ -166,14 +166,14 @@ def stage_glacier(
         dem_dataset=config["dem"],
         ice_thickness_dataset=config["ice_thickness"],
         velocity_dataset=config["velocity"],
-        buffer_distance=2000.0,
+        buffer_distance=10000.0,
         path=path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],
     )
 
     # Grid & bounds
-    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=2000.0)
+    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=8000.0)
     bounds = [
         grid_ds["x_bnds"].values[0][0],
         grid_ds["y_bnds"].values[0][0],
