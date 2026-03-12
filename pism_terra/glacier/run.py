@@ -28,7 +28,6 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
 
-import geopandas as gpd
 import numpy as np
 import pandas as pd
 import toml
@@ -384,11 +383,6 @@ def run_single():
         nargs="?",
     )
     parser.add_argument(
-        "RGI_FILE",
-        help="RGI.",
-        nargs="?",
-    )
-    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs="?",
@@ -411,7 +405,6 @@ def run_single():
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
 
-    rgi_file = file_localizer(options.RGI_FILE, path / "rgi")
     config_file = file_localizer(options.CONFIG_FILE, path / "config")
     template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
     resolution = options.resolution
@@ -422,10 +415,9 @@ def run_single():
     nodes = options.nodes
     walltime = options.walltime
 
-    rgi = gpd.read_file(rgi_file)
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
+    df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
@@ -544,11 +536,6 @@ def run_ensemble():
         nargs="?",
     )
     parser.add_argument(
-        "RGI_FILE",
-        help="RGI.",
-        nargs="?",
-    )
-    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs="?",
@@ -576,7 +563,6 @@ def run_ensemble():
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
 
-    rgi_file = file_localizer(options.RGI_FILE, path / "rgi")
     config_file = file_localizer(options.CONFIG_FILE, path / "config")
     template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
     uq_file = file_localizer(options.UQ_FILE, path / "uq")
@@ -589,10 +575,9 @@ def run_ensemble():
     nodes = options.nodes
     walltime = options.walltime
 
-    rgi = gpd.read_file(rgi_file)
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
+    df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],

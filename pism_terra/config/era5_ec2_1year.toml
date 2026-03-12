@@ -11,13 +11,14 @@ ntasks = 32
 'run_info.institution' = "University of Alaska Fairbanks"
 'run_info.title' = "PISM-TERRA Calibration Run"
 
-[campaign]
-
-name = "Calibration"
+bucket = "pism-cloud-data"
 climate = "era5"
 dem = "glo_30"
-ice_thickness = "millan"
-velocity = "none"
+ice_thickness = "maffezzoli"
+name = "Calibration"
+prefix = "glacier"
+rgi_file = "rgi_c.gpkg"
+velocity = "its_live"
 
 [time]
 
@@ -162,3 +163,15 @@ model = "given"
 
 'ocean.constant.melt_rate' = 0.0
 'ocean.models' = 'constant'
+
+[hydrology]
+
+model = "null"
+
+[hydrology.options]
+
+[frontal_melt]
+
+model = "off"
+
+[frontal_melt.options.off]

@@ -17,13 +17,14 @@ nodes = 1
 
 [campaign]
 
-name = "Calibration"
+bucket = "pism-cloud-data"
 climate = "era5"
 dem = "glo_30"
 ice_thickness = "maffezzoli"
-bucket = "pism-cloud-data"
-prefix = "glaciers"
-velocity = "none"
+name = "Calibration"
+prefix = "glacier"
+rgi_file = "rgi_c.gpkg"
+velocity = "its_live"
 
 [time]
 
@@ -52,7 +53,7 @@ velocity = "none"
 
 [reporting]
 
-'output.format' = "netcdf4_parallel"
+'output.format' = "netcdf4_serial"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
@@ -175,3 +176,9 @@ model = "given"
 model = "null"
 
 [hydrology.options]
+
+[frontal_melt]
+
+model = "off"
+
+[frontal_melt.options.off]

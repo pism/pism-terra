@@ -17,11 +17,13 @@ nodes = 1
 
 [campaign]
 
-name = "Equilibrium"
 bucket = "pism-cloud-data"
-climate = "snap"
 dem = "glo_30"
+climate = "snap"
 ice_thickness = "maffezzoli"
+name = "Equilibrium"
+prefix = "glacier"
+rgi_file = "rgi_c.gpkg"
 velocity = "its_live"
 
 [time]
@@ -180,3 +182,9 @@ model = "given"
 model = "null"
 
 [hydrology.options]
+
+[frontal_melt]
+
+model = "off"
+
+[frontal_melt.options.off]
