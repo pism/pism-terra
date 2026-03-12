@@ -21,6 +21,7 @@
 Prepare ice thickness.
 """
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
@@ -41,6 +42,8 @@ from pism_terra.download import download_archive, extract_archive
 from pism_terra.raster import check_overlap, reproject_file
 from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
+
+logger = logging.getLogger(__name__)
 
 
 def get_maffezzoli_url(url_template: str, region: str) -> str:
@@ -113,8 +116,11 @@ def prepare_ice_thickness_maffezzoli(
         """
         url = get_maffezzoli_url(url_template, region)
         archive_dest = extract_path / Path(urlparse(url).path).name
+        logger.info("Downloading ice thickness for region %s", region)
         archive = download_archive(url, dest=archive_dest, force_overwrite=force_overwrite, verbose=False)
+        logger.info("Extracting ice thickness for region %s", region)
         extract_archive(archive, extract_path, force_overwrite=force_overwrite, verbose=False)
+        logger.info("Ice thickness download complete for region %s", region)
         return region
 
     MAX_WORKERS = min(ntasks, len(regions))
@@ -131,7 +137,9 @@ def prepare_ice_thickness_maffezzoli(
                 failed.append((region, e))
                 pbar.set_postfix_str(f"region {region} ✗")
     for region, err in failed:
-        print(f"✗ Failed ice thickness: {region} with error: {err}")
+        logger.error("Failed ice thickness: region %s with error: %s", region, err)
+
+    logger.info("Starting ice thickness merging for %d regions", len(regions))
 
     def _merge_complex(rgi_c_id, region_g, region_code, dst_crs):
         """
@@ -160,7 +168,9 @@ def prepare_ice_thickness_maffezzoli(
         glaciers_files = [extract_path / Path(f"rgi{region_code}") / Path(f"{g}.tif") for g in glaciers_list]
         glaciers_files = [f for f in glaciers_files if f.exists()]
         if not glaciers_files:
+            logger.debug("No thickness files found for complex %s", rgi_c_id)
             return None
+        logger.debug("Merging %d glacier rasters for complex %s", len(glaciers_files), rgi_c_id)
 
         # Reproject each glacier raster to the complex's CRS
         reprojected = []
@@ -230,7 +240,8 @@ def prepare_ice_thickness_maffezzoli(
             except Exception as exc:
                 failed.append((rgi_c_id, exc))
         for rgi_c_id, err in failed:
-            print(f"✗ Failed {rgi_c_id}: {err}")
+            logger.error("Failed merging %s: %s", rgi_c_id, err)
+    logger.info("Ice thickness merging complete")
 
 
 def get_ice_thickness(
@@ -272,6 +283,7 @@ def get_ice_thickness(
     NotImplementedError
         If the specified dataset is not supported.
     """
+    logger.info("Getting ice thickness from dataset '%s'", dataset)
     if dataset == "maffezzoli":
         thickness = get_ice_thickness_maffezzoli(glacier, target_grid, path=path, **kwargs)
     elif dataset == "millan":
@@ -329,14 +341,20 @@ def get_ice_thickness_maffezzoli(
         region = f"RGI2000-v7.0-C-{o1region}"
         s3_uri = f"s3://{bucket}/glaciers/ice_thickness/maffezzoli/{region}/{rgi_id}_thickness.tif"
         local_tif = out_dir / f"{rgi_id}_thickness.tif"
+        logger.info("Downloading Maffezzoli thickness for %s from S3", rgi_id)
         download_from_s3(s3_uri, local_tif)
 
+        logger.info("Reprojecting thickness to %s", kwargs["target_crs"])
         projected_file = reproject_file(local_tif, dst_crs=kwargs["target_crs"], resolution=50)
         da = rxr.open_rasterio(projected_file).sel(band=1).drop_vars("band")
+        logger.info("Interpolating thickness to target grid")
         thickness = da.interp_like(target_grid)
         thickness.rio.write_nodata(None, inplace=True)
         thickness.name = "thickness"
         thickness.to_netcdf(thickness_file)
+        logger.info("Thickness saved to %s", thickness_file)
+    else:
+        logger.info("Using cached thickness file %s", thickness_file)
 
     thickness = xr.open_dataarray(thickness_file)
 
@@ -387,15 +405,18 @@ def get_ice_thickness_millan(
     if (not check_xr_lazy(thickness_file)) or force_overwrite:
 
         thickness_file.unlink(missing_ok=True)
+        logger.info("Downloading Millan thickness data from S3")
         # Could tweak this to only pull the relevant regions instead of all of it
         s3_to_local(bucket, prefix="millan", dest="data/ice_thickness/millan")
         ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
+        logger.info("Found %d Millan thickness tiles, checking overlap", len(ice_thickness_files))
 
         with ThreadPoolExecutor() as executor:
             futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
 
             overlapping_rasters = [f.result() for f in cf_as_completed(futures) if f.result() is not None]
 
+        logger.info("Found %d overlapping rasters, reprojecting and interpolating", len(overlapping_rasters))
         thicknesses = []
         for k, p in enumerate(overlapping_rasters):
             if p is not None:
@@ -409,6 +430,9 @@ def get_ice_thickness_millan(
 
         thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
         thickness.to_netcdf(thickness_file)
+        logger.info("Millan thickness saved to %s", thickness_file)
+    else:
+        logger.info("Using cached thickness file %s", thickness_file)
 
     thickness = xr.open_dataarray(thickness_file)
 

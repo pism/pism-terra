@@ -21,6 +21,7 @@
 Prepare RGI data sets.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -58,6 +59,8 @@ from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -108,14 +111,20 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    logging.basicConfig(level=logging.INFO, format=log_format)
+    file_handler = logging.FileHandler(output_path / "prepare.log")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logging.getLogger().addHandler(file_handler)
+
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print("Preparing RGI data")
-    print("-" * 120)
-    print("")
+    logger.info("=" * 120)
+    logger.info("\n%s", banner)
+    logger.info("=" * 120)
+    logger.info("Preparing RGI data")
+    logger.info("-" * 120)
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
     regions = pd.DataFrame.from_dict(config["regions"], orient="index", columns=["name"])

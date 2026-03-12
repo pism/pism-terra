@@ -21,6 +21,7 @@
 Prepare RGI.
 """
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
@@ -30,6 +31,8 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from pism_terra.download import download_archive, extract_archive
+
+logger = logging.getLogger(__name__)
 
 
 def get_rgi_url(url_template: str, region: str, outline_type: str = "C") -> str:
@@ -103,9 +106,12 @@ def prepare_rgi_region(
     extract_path = Path(extract_path)
     url = get_rgi_url(url_template, region, outline_type)
     archive_dest = extract_path / Path(url.rsplit("/", 1)[-1])
+    logger.info("Downloading RGI region %s (%s)", region, outline_type)
     archive = download_archive(url, dest=archive_dest, force_overwrite=force_overwrite, verbose=False)
+    logger.info("Extracting RGI region %s (%s)", region, outline_type)
     extract_archive(archive, extract_path, force_overwrite=force_overwrite, verbose=False)
 
+    logger.info("Processing RGI region %s (%s)", region, outline_type)
     rgi = gpd.read_file(extract_path / f"RGI2000-v7.0-{outline_type}-{region}.shp")
     rgi = rgi[rgi["area_km2"] > area_threshold]
     rgi["epsg"] = rgi.apply(
@@ -192,8 +198,9 @@ def prepare_rgi(
                 failed.append((region, outline_type, err))
                 pbar.set_postfix_str(f"{region} ({outline_type}) ✗")
     for region, outline_type, exc in failed:
-        print(f"✗ Failed region: {region}, outline_type: {outline_type} with error: {exc}")
+        logger.error("Failed region: %s, outline_type: %s with error: %s", region, outline_type, exc)
 
+    logger.info("Concatenating %d RGI dataframes", len(rgis))
     rgi = pd.concat(rgis, ignore_index=True)
     rgi_c = rgi[rgi["rgi_id"].str.contains("-C-")].copy()
     rgi_g = rgi[rgi["rgi_id"].str.contains("-G-")].copy()
@@ -240,8 +247,11 @@ def prepare_rgi(
                 rgi_g.loc[result.index, "rgi_id_c"] = result.values
 
     complex_path = output_path / "rgi_c.gpkg"
+    logger.info("Saving complexes to %s", complex_path)
     rgi_c.to_file(complex_path)
     glaciers_path = output_path / "rgi_g.gpkg"
+    logger.info("Saving glaciers to %s", glaciers_path)
     rgi_g.to_file(glaciers_path)
 
+    logger.info("RGI preparation complete: %d complexes, %d glaciers", len(rgi_c), len(rgi_g))
     return {"rgi_complexes": complex_path, "rgi_glaciers": glaciers_path}
