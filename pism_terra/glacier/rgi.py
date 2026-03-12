@@ -154,8 +154,7 @@ def prepare_rgi(
         Dictionary with keys ``"rgi_complexes"`` and ``"rgi_glaciers"``
         pointing to the saved GeoPackage file paths.
     """
-    rgi_path = output_path / Path("rgi")
-    rgi_path.mkdir(parents=True, exist_ok=True)
+
     rgi_archive_path = extract_path / Path("archive")
     rgi_archive_path.mkdir(parents=True, exist_ok=True)
 
