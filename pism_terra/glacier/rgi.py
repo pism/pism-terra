@@ -119,7 +119,13 @@ def prepare_rgi_region(
     return rgi
 
 
-def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False, ntasks: int = 8):
+def prepare_rgi(
+    regions: list,
+    output_path: Path,
+    extract_path: Path | str = "rgi_archive",
+    force_overwrite: bool = False,
+    ntasks: int = 8,
+):
     """
     Download, extract, and merge RGI region shapefiles for complex and glacier outlines.
 
@@ -135,6 +141,8 @@ def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False,
     output_path : Path
         Root directory for output files.  A ``rgi/`` subdirectory is created
         inside it.
+    extract_path : str or Path, optional
+        Path to the directory where the archive will be extracted. Default is "rgi".
     force_overwrite : bool, default False
         If True, re-download the file even if it already exists locally.
     ntasks : int, default 8
@@ -148,7 +156,7 @@ def prepare_rgi(regions: list, output_path: Path, force_overwrite: bool = False,
     """
     rgi_path = output_path / Path("rgi")
     rgi_path.mkdir(parents=True, exist_ok=True)
-    rgi_archive_path = rgi_path / Path("archive")
+    rgi_archive_path = extract_path / Path("archive")
     rgi_archive_path.mkdir(parents=True, exist_ok=True)
 
     outline_types = ["C", "G"]
