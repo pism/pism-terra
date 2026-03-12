@@ -247,7 +247,7 @@ def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: floa
     ds.to_netcdf(file_name, encoding=encoding)
 
 
-def snap_cloud(
+def snap(
     path: Path | str = ".",
     **kwargs,
 ) -> list[Path]:
@@ -281,196 +281,9 @@ def snap_cloud(
 
         if (not check_xr_lazy(snap_file)) or force_overwrite:
             snap_file.unlink(missing_ok=True)
-            s3_to_local(bucket, prefix="snap", dest_dir=path)
+            s3_to_local(bucket, prefix="snap", dest=path)
     snap_files = list(Path(path).rglob("snap_*.nc"))
     return snap_files
-
-
-def snap(
-    path: Path | str = ".",
-    **kwargs,
-) -> list[Path]:
-    """
-    Build SNAP-derived monthly climate files and 30-year climatologies.
-
-    Downloads SNAP IEM monthly precipitation and temperature archives,
-    extracts and converts each GeoTIFF into NetCDF with a monthly time
-    coordinate, merges variables (and DEM-derived surface altitude),
-    and writes both the full historical stack and three 30-year weighted
-    climatologies (1920–1949, 1950–1979, 1980–2009).
-
-    Parameters
-    ----------
-    path : str or pathlib.Path, default ``"."``
-        Output directory. Intermediate and final NetCDFs are written here.
-    **kwargs
-        Forwarded to :func:`download_file` and :func:`extract_archive`
-        (e.g., ``force_overwrite=True``).
-
-    Returns
-    -------
-    list[pathlib.Path]
-        Paths to the three 30-year climatology NetCDF files:
-        ``snap_1920_1949.nc``, ``snap_1950_1979.nc``, ``snap_1980_2009.nc``.
-        Additionally, the full stack ``snap_1900_2015.nc`` is written in
-        ``path`` as a side effect.
-
-    Raises
-    ------
-    requests.HTTPError
-        If SNAP URLs fail to download.
-    OSError
-        On file I/O errors during extraction or NetCDF writing.
-    ValueError
-        If extracted files do not match the expected filename pattern.
-    Exception
-        Propagated errors from xarray/rioxarray/cftime routines.
-
-    Notes
-    -----
-    - Variables are renamed to:
-      ``precipitation`` (kg m^-2 year^-1), ``air_temp`` (celsius),
-      and ``surface`` (m).
-    - CRS is written as ``EPSG:3338``. Per-variable CF linkage
-      (``grid_mapping="spatial_ref"``) is restored for the output climatologies.
-    - The 30-year climatologies are month-wise weighted means using calendar
-      month lengths within each window.
-    - ``_FillValue`` is suppressed on core variables and coordinates at
-      write-time via ``encoding={...: {'_FillValue': None}}``.
-
-    Examples
-    --------
-    >>> out_paths = snap("RGI2000-v7.0-C-01-04374", path="snap_outputs", force_overwrite=True)
-    >>> [p.name for p in out_paths]
-    ['snap_1920_1949.nc', 'snap_1950_1979.nc', 'snap_1980_2009.nc']
-    """
-
-    print("")
-    print("Generate SNAP climate")
-    print("-" * 80)
-
-    force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
-
-    path = Path(path)
-    dss = []
-
-    for url in [
-        "http://data.snap.uaf.edu/data/IEM/Inputs/historical/precipitation/pr_total_mm_iem_cru_TS40_1901_2015.zip",
-        "http://data.snap.uaf.edu/data/IEM/Inputs/historical/temperature/tas_mean_C_iem_cru_TS40_1901_2015.zip",
-    ]:
-        f = Path(url).name
-        f_path = path / Path(f)
-        print(f"Processing {f_path.resolve()}")
-        _ = download_file(url, f_path, force_overwrite=force_overwrite)
-        response = extract_archive(f_path, force_overwrite=force_overwrite)
-        response_clean = [Path(r) for r in sorted(response) if str(r).endswith("tif")]
-        results = convert_many_tifs_concurrent(response_clean, path, force_overwrite=force_overwrite)
-
-        if not results:
-            raise RuntimeError("No NetCDF outputs were produced or found; cannot build SNAP dataset.")
-
-        # Concatenate along time and sort (in case paths are unordered)
-        out = xr.open_mfdataset(results, parallel=True, chunks="auto", engine="h5netcdf")
-        dss.append(out)
-
-    url = "http://data.snap.uaf.edu/data/IEM/Inputs/ancillary/elevation/iem_prism_dem_1km.tif"
-    dem_path = Path(path) / Path("iem_prism_dem_1km.tif")
-    _ = download_file(url, dem_path, force_overwrite=force_overwrite)
-    da = rxr.open_rasterio(dem_path).squeeze(drop=True)  # drop 'band' if present
-    da = da.where(da > 0, 0).fillna(0)
-    da.name = "surface"
-    da.attrs.update({"units": "m", "standard_name": "surface_altitude"})
-    dem = da.interp_like(out)
-    dss.append(dem)
-
-    ds = xr.merge(dss).rio.write_crs("EPSG:3338").fillna(0)
-    ds = ds.rename_vars({"pr": "precipitation", "tas": "air_temp"})
-    ds["precipitation"] *= 12
-    ds["precipitation"].attrs.update({"units": "kg m^-2 year^-1"})
-    ds["air_temp"].attrs.update({"units": "celsius"})
-
-    period_starts = [1920, 1950, 1980]
-    ps: list[Path] = []
-    delayed_writes = []
-
-    for y in period_starts:
-        start = str(y)
-        end = str(y + 29)
-
-        p = Path(path) / f"snap_cru_TS40_{start}_{end}.nc"
-        ps.append(p)
-
-        if check_xr_lazy(p) and not force_overwrite:
-            # Reuse existing file; no work scheduled
-            continue
-
-        # --- compute weighted monthly climatology for this period (all lazy) ---
-        ds_sub = ds.sel(time=slice(start, end))
-        month_length = ds_sub.time.dt.days_in_month
-        weights = month_length.groupby("time.month") / month_length.groupby("time.month").sum()
-
-        ds_weighted = (ds_sub * weights).groupby("time.month").sum(dim="time").rename({"month": "time"})
-
-        # coordinate metadata on x/y
-        for c, axis, stdname in (("x", "X", "projection_x_coordinate"), ("y", "Y", "projection_y_coordinate")):
-            attrs = {
-                "units": "m",
-                "axis": axis,
-                "standard_name": stdname,
-                "long_name": f"{c}-coordinate in projected coordinate system",
-            }
-            if c in ds_weighted.coords:
-                ds_weighted[c].attrs.update(attrs)
-
-        units = "days since 0001-01-01"
-        calendar = "365_day"
-
-        base_year = 1
-        start_date = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
-
-        ds_weighted = ds_weighted.assign_coords(time=("time", start_date))
-        ds_weighted["time"].attrs.update(
-            {
-                "standard_name": "time",
-                "long_name": "climatological time (mid-month)",
-                "bounds": "time_bounds",
-            }
-        )
-        # keep calendar only in encoding to avoid xarray overwrite error
-        ds_weighted["time"].attrs.pop("calendar", None)
-        ds_weighted.time.encoding.update({"units": units, "calendar": calendar})
-
-        time_num = cftime.date2num(ds_weighted.time.values, units=units, calendar=calendar).astype("float64")
-
-        ds_weighted = ds_weighted.assign_coords(time=("time", time_num))
-        ds_weighted["time"].attrs.update({"units": units, "calendar": calendar})
-
-        ds_weighted = ds_weighted.cf.add_bounds("time")
-
-        # CRS + spatial dims + grid_mapping tags
-        ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")
-        ds_weighted.rio.write_crs("EPSG:3338", inplace=True)
-        for v in ("precipitation", "air_temp", "surface"):
-            if v in ds_weighted:
-                ds_weighted[v].attrs["grid_mapping"] = "spatial_ref"
-
-        # encoding: remove _FillValue without nuking other encodings
-        encoding = {
-            v: {"_FillValue": None}
-            for v in ("x", "y", "surface", "air_temp", "precipitation", "time", "time_bounds")
-            if v in ds_weighted
-        }
-
-        # schedule a lazy NetCDF write for this period
-        p.unlink(missing_ok=True)
-        delayed_writes.append(ds_weighted.to_netcdf(p, encoding=encoding, compute=False))
-
-    # Kick off all writes in parallel (plus internal dask parallelism)
-    if delayed_writes:
-        with ProgressBar():
-            dask.compute(*delayed_writes)
-
-    return ps
 
 
 def era5(
@@ -802,30 +615,194 @@ def pmip4(
                 .rename_vars({"pr": "precipitation", "tas": "air_temp", "month": "time"})
             )
             ds.rio.write_crs("EPSG:4326", inplace=True)
-            # Build a CF-compliant time axis: 12 mid-month datetimes in a no-leap year (e.g., 2001)
 
-            base_year = 1
-            start = [cftime.DatetimeNoLeap(base_year, m, 1) for m in range(1, 13)]
-            # Assign coordinates and bounds
+            month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+            bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
+            bounds_end = np.cumsum(month_lengths).astype("float64")
+            time_mid = (bounds_start + bounds_end) / 2.0
 
-            ds = ds.assign_coords(time=("time", start))
-            ds["time"].attrs.update(
-                {
-                    "standard_name": "time",
-                    "long_name": "climatological time (mid-month)",
-                    "bounds": "time_bounds",
-                }
-            )
-            # CRS is fine to keep
-            ds = ds.rio.write_crs("EPSG:4326", inplace=True)
-            ds["time"].attrs.pop("calendar", None)
+            time_bounds = np.column_stack([bounds_start, bounds_end])
 
-            # Put calendar/units ONLY in encoding (CF-compliant, and prevents the error)
-            enc = {"units": "days since 0001-01-01", "calendar": "365_day"}
-            ds.time.encoding.update(enc)
-            ds = add_time_bounds(ds)
+            ds = ds.assign_coords(time=("time", time_mid))
+            ds["time"].attrs.update({"units": "days since 0001-01-01", "calendar": "365_day", "bounds": "time_bounds"})
+            ds["time_bounds"] = (("time", "nv"), time_bounds)
 
             ds.to_netcdf(p)
 
         responses.append(p)
     return responses
+
+
+def prepare_snap(
+    path: Path | str = ".",
+    **kwargs,
+) -> list[Path]:
+    """
+    Build SNAP-derived monthly climate files and 30-year climatologies.
+
+    Downloads SNAP IEM monthly precipitation and temperature archives,
+    extracts and converts each GeoTIFF into NetCDF with a monthly time
+    coordinate, merges variables (and DEM-derived surface altitude),
+    and writes both the full historical stack and three 30-year weighted
+    climatologies (1920–1949, 1950–1979, 1980–2009).
+
+    Parameters
+    ----------
+    path : str or pathlib.Path, default ``"."``
+        Output directory. Intermediate and final NetCDFs are written here.
+    **kwargs
+        Forwarded to :func:`download_file` and :func:`extract_archive`
+        (e.g., ``force_overwrite=True``).
+
+    Returns
+    -------
+    list[pathlib.Path]
+        Paths to the three 30-year climatology NetCDF files:
+        ``snap_1920_1949.nc``, ``snap_1950_1979.nc``, ``snap_1980_2009.nc``.
+        Additionally, the full stack ``snap_1900_2015.nc`` is written in
+        ``path`` as a side effect.
+
+    Raises
+    ------
+    requests.HTTPError
+        If SNAP URLs fail to download.
+    OSError
+        On file I/O errors during extraction or NetCDF writing.
+    ValueError
+        If extracted files do not match the expected filename pattern.
+    Exception
+        Propagated errors from xarray/rioxarray routines.
+
+    Notes
+    -----
+    - Variables are renamed to:
+      ``precipitation`` (kg m^-2 year^-1), ``air_temp`` (celsius),
+      and ``surface`` (m).
+    - CRS is written as ``EPSG:3338``. Per-variable CF linkage
+      (``grid_mapping="spatial_ref"``) is restored for the output climatologies.
+    - The 30-year climatologies are month-wise weighted means using calendar
+      month lengths within each window.
+    - ``_FillValue`` is suppressed on core variables and coordinates at
+      write-time via ``encoding={...: {'_FillValue': None}}``.
+
+    Examples
+    --------
+    >>> out_paths = prepare_snap("RGI2000-v7.0-C-01-04374", path="snap_outputs", force_overwrite=True)
+    >>> [p.name for p in out_paths]
+    ['snap_1920_1949.nc', 'snap_1950_1979.nc', 'snap_1980_2009.nc']
+    """
+
+    print("")
+    print("Generate SNAP climate")
+    print("-" * 80)
+
+    force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
+
+    path = Path(path)
+    dss = []
+
+    for url in [
+        "http://data.snap.uaf.edu/data/IEM/Inputs/historical/precipitation/pr_total_mm_iem_cru_TS40_1901_2015.zip",
+        "http://data.snap.uaf.edu/data/IEM/Inputs/historical/temperature/tas_mean_C_iem_cru_TS40_1901_2015.zip",
+    ]:
+        f = Path(url).name
+        f_path = path / Path(f)
+        print(f"Processing {f_path.resolve()}")
+        _ = download_file(url, f_path, force_overwrite=force_overwrite)
+        response = extract_archive(f_path, force_overwrite=force_overwrite)
+        response_clean = [Path(r) for r in sorted(response) if str(r).endswith("tif")]
+        results = convert_many_tifs_concurrent(response_clean, path, force_overwrite=force_overwrite)
+
+        if not results:
+            raise RuntimeError("No NetCDF outputs were produced or found; cannot build SNAP dataset.")
+
+        # Concatenate along time and sort (in case paths are unordered)
+        out = xr.open_mfdataset(results, parallel=True, chunks="auto", engine="h5netcdf")
+        dss.append(out)
+
+    url = "http://data.snap.uaf.edu/data/IEM/Inputs/ancillary/elevation/iem_prism_dem_1km.tif"
+    dem_path = Path(path) / Path("iem_prism_dem_1km.tif")
+    _ = download_file(url, dem_path, force_overwrite=force_overwrite)
+    da = rxr.open_rasterio(dem_path).squeeze(drop=True)  # drop 'band' if present
+    da = da.where(da > 0, 0).fillna(0)
+    da.name = "surface"
+    da.attrs.update({"units": "m", "standard_name": "surface_altitude"})
+    dem = da.interp_like(out)
+    dss.append(dem)
+
+    ds = xr.merge(dss).rio.write_crs("EPSG:3338").fillna(0)
+    ds = ds.rename_vars({"pr": "precipitation", "tas": "air_temp"})
+    ds["precipitation"] *= 12
+    ds["precipitation"].attrs.update({"units": "kg m^-2 year^-1"})
+    ds["air_temp"].attrs.update({"units": "celsius"})
+
+    period_starts = [1920, 1950, 1980]
+    ps: list[Path] = []
+    delayed_writes = []
+
+    for y in period_starts:
+        start = str(y)
+        end = str(y + 29)
+
+        p = Path(path) / f"snap_cru_TS40_{start}_{end}.nc"
+        ps.append(p)
+
+        if check_xr_lazy(p) and not force_overwrite:
+            # Reuse existing file; no work scheduled
+            continue
+
+        # --- compute weighted monthly climatology for this period (all lazy) ---
+        ds_sub = ds.sel(time=slice(start, end))
+        month_length = ds_sub.time.dt.days_in_month
+        weights = month_length.groupby("time.month") / month_length.groupby("time.month").sum()
+
+        ds_weighted = (ds_sub * weights).groupby("time.month").sum(dim="time").rename({"month": "time"})
+
+        # coordinate metadata on x/y
+        for c, axis, stdname in (("x", "X", "projection_x_coordinate"), ("y", "Y", "projection_y_coordinate")):
+            attrs = {
+                "units": "m",
+                "axis": axis,
+                "standard_name": stdname,
+                "long_name": f"{c}-coordinate in projected coordinate system",
+            }
+            if c in ds_weighted.coords:
+                ds_weighted[c].attrs.update(attrs)
+
+        month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
+        bounds_end = np.cumsum(month_lengths).astype("float64")
+        time_mid = (bounds_start + bounds_end) / 2.0
+
+        time_bounds = np.column_stack([bounds_start, bounds_end])
+
+        ds_weighted = ds_weighted.assign_coords(time=("time", time_mid))
+        ds_weighted["time"].attrs.update(
+            {"units": "days since 0001-01-01", "calendar": "365_day", "bounds": "time_bounds"}
+        )
+        ds_weighted["time_bounds"] = (("time", "nv"), time_bounds)
+
+        # CRS + spatial dims + grid_mapping tags
+        ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")
+        ds_weighted.rio.write_crs("EPSG:3338", inplace=True)
+        for v in ("precipitation", "air_temp", "surface"):
+            if v in ds_weighted:
+                ds_weighted[v].attrs["grid_mapping"] = "spatial_ref"
+
+        # encoding: remove _FillValue without nuking other encodings
+        encoding = {
+            v: {"_FillValue": None}
+            for v in ("x", "y", "surface", "air_temp", "precipitation", "time", "time_bounds")
+            if v in ds_weighted
+        }
+
+        # schedule a lazy NetCDF write for this period
+        p.unlink(missing_ok=True)
+        delayed_writes.append(ds_weighted.to_netcdf(p, encoding=encoding, compute=False))
+
+    # Kick off all writes in parallel (plus internal dask parallelism)
+    if delayed_writes:
+        with ProgressBar():
+            dask.compute(*delayed_writes)
+
+    return ps
