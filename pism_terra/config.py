@@ -1186,52 +1186,67 @@ class StressBalanceConfig(ModelWithOptions):
 
 class CampaignConfig(BaseModel):
     """
-    Campaign-level metadata describing the simulation experiment.
+        Campaign-level metadata describing the simulation experiment.
 
-    Holds high-level identifiers for the data sources, forcing scenario,
-    and file references that define a simulation campaign. Fields are
-    optional so the same model can serve both glacier-scale and ice-sheet
-    (e.g., ISMIP7) workflows.
+        Holds high-level identifiers for the data sources, forcing scenario,
+        and file references that define a simulation campaign. Fields are
+        optional so the same model can serve both glacier-scale and ice-sheet
+        (e.g., ISMIP7) workflows.
 
-    Attributes
-    ----------
-    boot_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
-    bucket : str or None
-        S3 bucket (e.g., ``"pism-cloud7-data"``).
-    climate : str or None
-        Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
-    dem : str or None
-        DEM data source identifier (e.g., ``"copernicus"``).
-    end_year : str, float, or None
-        End year of the forcing period.
-    gcm : str, list, or None
-        GCM model name(s) used for climate forcing.
-    grid_file : str or None
-        Path to the grid NetCDF file (relative to the input directory).
-    heatflux_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
-    ice_thickness : str or None
-        Ice thickness data source identifier (e.g., ``"millan2022"``).
-    name : str or None
-        Human-readable campaign name.
-    pathway : str or None
-        Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
-    prefix : str or None
-        path to data in bucket (e.g., ``"ismip7_greenland_input"``).
-    retreat_file : str or None
-        Path to the retreat NetCDF file (relative to the input directory).
-    start_year : str, float, or None
-        Start year of the forcing period.
-    version : str or None
-        Dataset or experiment version string.
+        Attributes
+        ----------
+    <<<<<<< HEAD
+        boot_file : str or None
+            Path to the boot NetCDF file (relative to the input directory).
+        bucket : str or None
+            S3 bucket (e.g., ``"pism-cloud7-data"``).
+    =======
+        bucket : str or None
+            S3 bucket (e.g., ``"pism-cloud7-data"``).
+        name : str or None
+            Human-readable campaign name.
+    >>>>>>> main
+        climate : str or None
+            Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
+        dem : str or None
+            DEM data source identifier (e.g., ``"copernicus"``).
+    <<<<<<< HEAD
+        end_year : str, float, or None
+            End year of the forcing period.
+    =======
+        ice_thickness : str or None
+            Ice thickness data source identifier (e.g., ``"millan2022"``).
+        velocity : str or None
+            Velocity data source identifier (e.g., ``"its_live"``).
+    >>>>>>> main
+        gcm : str, list, or None
+            GCM model name(s) used for climate forcing.
+        grid_file : str or None
+            Path to the grid NetCDF file (relative to the input directory).
+        heatflux_file : str or None
+            Path to the boot NetCDF file (relative to the input directory).
+        ice_thickness : str or None
+            Ice thickness data source identifier (e.g., ``"millan2022"``).
+        name : str or None
+            Human-readable campaign name.
+        pathway : str or None
+            Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
+        prefix : str or None
+            path to data in bucket (e.g., ``"ismip7_greenland_input"``).
+        retreat_file : str or None
+            Path to the retreat NetCDF file (relative to the input directory).
+        start_year : str, float, or None
+            Start year of the forcing period.
+        version : str or None
+            Dataset or experiment version string.
     """
 
-    boot_file: str | None = Field(default=None)
     bucket: str | None = Field(default=None)
+    name: str | None = Field(default=None)
     climate: str | None = Field(default=None)
     dem: str | None = Field(default=None)
-    end_year: str | float | None = Field(default=None)
+    ice_thickness: str | None = Field(default=None)
+    velocity: str | None = Field(default=None)
     gcm: str | list | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     heatflux_file: str | None = Field(default=None)

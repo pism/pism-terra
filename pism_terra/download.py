@@ -29,9 +29,9 @@ import tempfile
 import zipfile
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from io import BytesIO
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import urlparse
 
 import boto3
 import cdsapi
@@ -174,6 +174,7 @@ def extract_archive(
     archive: tarfile.TarFile | zipfile.ZipFile | str | Path,
     extract_to: str | Path = Path("archive"),
     force_overwrite: bool = False,
+    verbose: bool = True,
 ) -> list[str]:
     """
     Extract a ZIP or TAR archive to a specified directory with a progress bar.
@@ -190,6 +191,8 @@ def extract_archive(
         Directory to extract the archive contents into. Defaults to "archive".
     force_overwrite : bool, optional
         Whether to overwrite existing files. Defaults to False.
+    verbose : bool, optional
+        Show progress bar during extraction. Defaults to True.
 
     Returns
     -------
@@ -203,7 +206,7 @@ def extract_archive(
 
     Notes
     -----
-    - Uses `tqdm` for a progress bar.
+    - Uses `tqdm` for a progress bar when *verbose* is True.
     - Automatically creates the `extract_to` directory if needed.
     - Automatically closes the archive if opened internally.
     """
@@ -228,7 +231,7 @@ def extract_archive(
     members: str | list[str] | list[zipfile.ZipInfo] | list[tarfile.TarInfo]
     if isinstance(archive, zipfile.ZipFile):
         members = archive.namelist()
-        for member in tqdm(members, desc="Extracting files", unit="file"):
+        for member in tqdm(members, desc="Extracting files", unit="file", disable=not verbose):
             file_path = extract_to / member
             if (not file_path.exists()) or force_overwrite:
                 archive.extract(member, path=extract_to)
@@ -236,7 +239,7 @@ def extract_archive(
 
     elif isinstance(archive, tarfile.TarFile):
         members = archive.getmembers()
-        for member in tqdm(members, desc="Extracting files", unit="file"):
+        for member in tqdm(members, desc="Extracting files", unit="file", disable=not verbose):
             file_path = extract_to / member.name
             if (not file_path.exists()) or force_overwrite:
                 archive.extract(member, path=extract_to)
@@ -420,40 +423,65 @@ def save_netcdf(
     ds.to_netcdf(output_filename, encoding=encoding, **kwargs)
 
 
-def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
+def download_archive(
+    url: str, dest: Path | str | None = None, force_overwrite: bool = False, verbose: bool = True
+) -> Path:
     """
-    Download an archive file from a URL and return it as a tarfile or ZipFile object.
+    Download an archive file from a URL and save it to disk.
+
+    If *dest* already exists and *force_overwrite* is ``False`` the download
+    is skipped and the existing path is returned immediately.
 
     Parameters
     ----------
     url : str
-        The URL of the archive file to download. The file can be either a .tar.gz or a .zip file.
+        The URL of the archive file to download.
+    dest : Path or str or None, optional
+        Local file path for the downloaded archive.  When ``None`` the
+        filename is derived from the URL and placed in the current directory.
+    force_overwrite : bool, optional
+        Re-download even when *dest* already exists.  Defaults to ``False``.
+    verbose : bool, optional
+        Show progress bar and status messages. Defaults to ``True``.
 
     Returns
     -------
-    Union[tarfile.TarFile, zipfile.ZipFile]
-        The downloaded archive file as a tarfile.TarFile object if the file is a .tar.gz,
-        or as a ZipFile object if the file is a .zip.
+    Path
+        Path to the downloaded archive file on disk.
     """
-    response = requests.get(url, stream=True, timeout=5)
+    if dest is None:
+        dest = Path(Path(urlparse(url).path).name)
+    else:
+        dest = Path(dest)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if dest.exists() and not force_overwrite:
+        if verbose:
+            print(f"Archive already exists, skipping download: {dest}")
+        return dest
+
+    response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
 
     total_size = int(response.headers.get("Content-Length", 0))
-    buffer = BytesIO()
 
-    with tqdm(total=total_size, unit="B", unit_scale=True, unit_divisor=1024, desc="Downloading archive") as pbar:
+    with (
+        open(dest, "wb") as f,
+        tqdm(
+            total=total_size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=f"Downloading {dest.name}",
+            disable=not verbose,
+        ) as pbar,
+    ):
         for chunk in response.iter_content(chunk_size=8192):
-            buffer.write(chunk)
+            f.write(chunk)
             pbar.update(len(chunk))
 
-    buffer.seek(0)
-
-    if url.endswith((".tar.gz", ".tgz")):
-        return tarfile.open(fileobj=buffer, mode="r:gz")
-    elif url.endswith(".zip"):
-        return zipfile.ZipFile(buffer)
-    else:
-        raise ValueError("Unsupported archive format: must end with .zip or .tar.gz")
+    return dest
 
 
 def file_localizer(file_path: str, dest: str | Path = Path.cwd()) -> Path:

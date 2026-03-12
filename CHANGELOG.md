@@ -6,12 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://www.python.org/dev/peps/pep-0440/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1]
+
+### Added
+
+- New ice thickness dataset from Maffezzoli (in review).
+
 ## [Unreleased]
 
 ### Changed
 
+- Refactor to isolate prepare stage to allow syncing with pism-cloud-data
 - Switched output.{extra,timeseries} to output.{spatial,scalar}
 - This requires PISM dev >= commit dev@f4a9668ef5204145820c8ce091dcabd0174b57b4
+- Refactor {climate,dem}.py -> pism_terra/glacier/
+- Fixed caculation of bounds
 
 ## [0.1.0]
 

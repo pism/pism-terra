@@ -24,8 +24,8 @@ Prepare DEM.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Literal
 
 import geopandas as gpd
 import numpy as np
@@ -33,22 +33,20 @@ import rasterio
 import rioxarray as rxr
 import xarray as xr
 from dem_stitcher import stitch_dem
-from rasterio.merge import merge
 
-from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain
-from pism_terra.download import download_archive, extract_archive
-from pism_terra.observations import glacier_velocities_from_rgi_id
-from pism_terra.raster import check_overlap, reproject_file
+from pism_terra.glacier.ice_thickness import get_ice_thickness
+from pism_terra.glacier.observations import glacier_velocities_from_rgi_id
+from pism_terra.raster import reproject_file
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_rio, check_xr_lazy
+from pism_terra.workflow import check_rio
 
 xr.set_options(keep_attrs=True)
 
 
 def get_surface_dem_by_bounds(
     bounds: tuple[float, float, float, float],
-    dem_name: str = "glo_30",
+    dataset: Literal["glo_30", "arcticdem"],
     path: str | Path = "input",
     force_overwrite: bool = False,
 ) -> Path:
@@ -65,7 +63,7 @@ def get_surface_dem_by_bounds(
     ----------
     bounds : tuple of float
         Geographic bounding box ``(minx, miny, maxx, maxy)`` in degrees (WGS84).
-    dem_name : str, default ``"glo_30"``
+    dataset : str, default ``"glo_30"``
         DEM source identifier recognized by :func:`stitch_dem`
         (e.g., ``"glo_30"``, ``"arcticdem"``).
     path : str or pathlib.Path, default ``"input"``
@@ -113,12 +111,12 @@ def get_surface_dem_by_bounds(
     """
     out_dir = Path(path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    geoid_file = out_dir / f"{dem_name}.tif"
+    geoid_file = out_dir / f"{dataset}.tif"
     # Reuse if present and readable
     if (not check_rio(geoid_file)) or force_overwrite:
         X, p = stitch_dem(
             bounds,
-            dem_name=dem_name,
+            dem_name=dataset,
             dst_ellipsoidal_height=False,
             dst_area_or_point="Point",
         )
@@ -141,249 +139,10 @@ def get_surface_dem_by_bounds(
     return geoid_file
 
 
-def prepare_ice_thickness(
-    glacier, target_grid: xr.Dataset | xr.DataArray, dataset: str = "millan", path: str | Path = "input_files", **kwargs
-):
-    """
-    Prepare ice thickness data for a given glacier and target grid.
-
-    This function dispatches to a dataset-specific loader to prepare an
-    ice thickness field interpolated to the resolution and bounds of a
-    specified target grid. Currently only the "millan" dataset is supported.
-
-    Parameters
-    ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Glacier geometry to match against ice thickness tiles.
-    target_grid : xarray.Dataset or xarray.DataArray
-        Grid to which the output ice thickness will be interpolated.
-    dataset : str, optional
-        The name of the ice thickness dataset to use. Currently only "millan" is implemented.
-        Default is "millan".
-    path : str or pathlib.Path, default ``"input_files"``
-        Working directory used by helper routines to cache/write intermediate rasters/grids.
-    **kwargs
-        Additional keyword arguments passed to the dataset-specific function,
-        e.g., `target_crs="EPSG:32641"`.
-
-    Returns
-    -------
-    xarray.DataArray
-        Ice thickness interpolated to the target grid.
-
-    Raises
-    ------
-    NotImplementedError
-        If the specified dataset is not supported.
-    """
-    if dataset == "millan":
-        thickness = prepare_ice_thickness_millan(glacier, target_grid, path=path, **kwargs)
-    else:
-        raise NotImplementedError(f"Ice thickness dataset '{dataset}' not implemented.")
-    thickness = thickness.where(thickness > 0, 0)
-    thickness.attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
-
-    return thickness
-
-
-def prepare_ice_thickness_millan(
-    glacier, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
-):
-    """
-    Load and interpolate Millan et al. (2022) ice thickness data to a target grid.
-
-    This function identifies all Millan ice thickness raster files that overlap
-    the input glacier geometry, reprojects them to the specified CRS and resolution,
-    interpolates them onto the target grid, and returns the summed result.
-
-    Parameters
-    ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Geometry of the glacier to extract overlapping thickness rasters.
-    target_grid : xarray.Dataset or xarray.DataArray
-        Target grid to which ice thickness should be interpolated.
-    path : str or pathlib.Path, default ``"input_files"``
-        Working directory used by helper routines to cache/write intermediate rasters/grids.
-    **kwargs
-        Additional keyword arguments. Must include:
-        - target_crs : str
-            CRS to reproject rasters to (e.g., "EPSG:32641").
-
-    Returns
-    -------
-    xarray.DataArray
-        Interpolated and summed ice thickness field on the target grid.
-
-    Notes
-    -----
-    - Uses `rioxarray` to load and project raster files.
-    - All overlapping rasters are summed to produce the final thickness field.
-    - Assumes a fixed reprojected resolution of 50 meters.
-    """
-
-    force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
-
-    bucket: str = "pism-cloud-data"
-    out_dir = Path(path)
-    thickness_file = out_dir / "thickness.nc"
-
-    if (not check_xr_lazy(thickness_file)) or force_overwrite:
-
-        thickness_file.unlink(missing_ok=True)
-        # Could tweak this to only pull the relevant regions instead of all of it
-        s3_to_local(bucket, prefix="millan", dest="data/ice_thickness/millan")
-        ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
-
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
-
-            overlapping_rasters = [f.result() for f in as_completed(futures) if f.result() is not None]
-
-        thicknesses = []
-        for k, p in enumerate(overlapping_rasters):
-            if p is not None:
-                projected_file = reproject_file(p, dst_crs=kwargs["target_crs"], resolution=50)
-                da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
-                thickness = da.interp_like(target_grid)
-                thickness.rio.write_nodata(None, inplace=True)
-                thickness.name = "thickness"
-                thickness["raster"] = k
-                thicknesses.append(thickness)
-
-        thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
-        thickness.to_netcdf(thickness_file)
-
-    thickness = xr.open_dataarray(thickness_file)
-
-    return thickness
-
-
-def prepare_ice_thickness_farinotti(glacier):
-    """
-    Load and interpolate Farniotti et al (2019) ice thickness data to a target grid.
-
-    This function identifies all Millan ice thickness raster files that overlap
-    the input glacier geometry, reprojects them to the specified CRS and resolution,
-    interpolates them onto the target grid, and returns the summed result.
-
-    Parameters
-    ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Geometry of the glacier to extract overlapping thickness rasters.
-
-    Returns
-    -------
-    xarray.DataArray
-        Interpolated and summed ice thickness field on the target grid.
-
-    Notes
-    -----
-    - Uses `rioxarray` to load and project raster files.
-    - All overlapping rasters are summed to produce the final thickness field.
-    - Assumes a fixed reprojected resolution of 50 meters.
-    """
-
-    path = Path("data/ice_thickness")
-    path.mkdir(parents=True, exist_ok=True)
-
-    region = glacier["o1region"]
-    url = f"https://www.research-collection.ethz.ch/bitstream/handle/20.500.11850/315707/composite_thickness_RGI60-{region}.zip"
-    archive = download_archive(url)
-    extract_archive(archive, extract_to=path)
-
-    ice_thickness_files = list(Path(f"data/ice_thickness/RGI60-{region}").rglob("*.tif"))
-
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
-
-        overlapping_rasters = [f.result() for f in as_completed(futures) if f.result() is not None]
-
-    # Step 1: List all .tif files
-    tif_files = overlapping_rasters
-
-    # Step 2: Open all files as datasets
-    src_files_to_mosaic = [rasterio.open(fp) for fp in tif_files]
-
-    # Step 3: Merge them
-    mosaic, out_transform = merge(src_files_to_mosaic)
-
-    # Step 4: Get metadata from first file, update with new shape and transform
-    out_meta = src_files_to_mosaic[0].meta.copy()
-    out_meta.update(
-        {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
-    )
-
-    # Step 5: Write the result to disk
-    with rasterio.open("merged.tif", "w", **out_meta) as dest:
-        dest.write(mosaic)
-
-
-def add_malaspina_bed(
-    ds: xr.Dataset,
-    target_crs: str,
-    bed_file: str | Path = "data/ice_thickness/malaspina/malaspina_bed_3338.tif",
-    outline_file: str | Path = "data/rgi/rgi-malaspina.shp",
-) -> xr.Dataset:
-    """
-    Replace bed topography in a dataset using the Malaspina Glacier bed dataset.
-
-    This function reads a GeoTIFF file containing bed topography data for the Malaspina Glacier,
-    clips it to the glacier outline, reprojects it to match the target dataset's CRS, and
-    replaces the corresponding region in the input dataset. It also updates the `thickness`
-    and `surface` fields accordingly.
-
-    Parameters
-    ----------
-    ds : xr.Dataset
-        Input dataset containing at least the variables 'bed', 'thickness', and 'surface'.
-    target_crs : str
-        The target coordinate reference system (CRS) to use for reprojection (e.g., "EPSG:3413").
-    bed_file : str or Path, optional
-        Path to the GeoTIFF file containing the Malaspina bed topography.
-        Default is "data/ice_thickness/malaspina/malaspina_bed_3338.tif".
-    outline_file : str or Path, optional
-        Path to the glacier outline shapefile used to clip the bed topography.
-        Default is "data/rgi/rgi-malaspina.shp".
-
-    Returns
-    -------
-    xr.Dataset
-        Modified dataset with updated 'bed', 'thickness', and 'surface' fields within the Malaspina region.
-
-    Notes
-    -----
-    - Bed values of -9999.0 are treated as nodata and replaced with NaN.
-    - Replaces `bed` where new values are available and recalculates `thickness = surface - bed`.
-    - Ensures that thickness and surface are non-negative.
-    - Updates CF-convention attributes and CRS metadata.
-    """
-
-    outline = gpd.read_file(outline_file).to_crs(target_crs)
-    da = (
-        rxr.open_rasterio(bed_file, mask=True)
-        .squeeze()
-        .drop_vars("band", errors="ignore")
-        .rio.reproject_match(ds["bed"])
-    )
-    clipped_da = da.rio.clip(outline.geometry, drop=False)
-    clipped_da = clipped_da.where(clipped_da != -9999.0, other=np.nan).drop_vars("spatial_ref")
-    ds["bed"] = xr.where(~np.isnan(clipped_da), clipped_da, ds["bed"], keep_attrs=True)
-    ds["thickness"] = xr.where(~np.isnan(clipped_da), ds["surface"] - clipped_da, ds["thickness"], keep_attrs=True)
-
-    ds["thickness"] = ds["thickness"].where(ds["thickness"] > 0.0, 0.0)
-    ds["surface"] = ds["surface"].where(ds["thickness"] > 0.0, 0.0)
-    ds["surface"].attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
-
-    ds["thickness"].attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
-
-    ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
-    return ds
-
-
 def prepare_surface(
     bounds: tuple[float, float, float, float],
     crs: str,
-    dem_name: str = "glo_30",
+    dataset: Literal["glo_30", "arcticdem"],
     path: str | Path = "input_files",
     resolution: float = 50.0,
     **kwargs,
@@ -404,7 +163,7 @@ def prepare_surface(
         Geographic bounding box as ``(minx, miny, maxx, maxy)`` in WGS84 degrees.
     crs : str
         Target coordinate reference system (e.g., ``"EPSG:32606"``).
-    dem_name : str, default ``"glo_30"``
+    dataset : str, default ``"glo_30"``
         DEM source identifier passed to :func:`get_surface_dem_by_bounds`.
     path : str or pathlib.Path, default ``"input_files"``
         Output directory for generated files. Created if missing.
@@ -453,7 +212,7 @@ def prepare_surface(
     ... )
     """
 
-    geoid_file = get_surface_dem_by_bounds(bounds, dem_name=dem_name, path=path, **kwargs)
+    geoid_file = get_surface_dem_by_bounds(bounds, dataset=dataset, path=path, **kwargs)
     projected_file = reproject_file(geoid_file, crs, resolution)
 
     surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
@@ -481,8 +240,10 @@ def prepare_surface(
 
 def boot_file_from_rgi_id(
     rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
-    dem_name: str = "glo_30",
+    rgi: gpd.GeoDataFrame | str | Path,
+    dem_dataset: Literal["glo_30", "arcticdem"],
+    ice_thickness_dataset: Literal["maffezzoli", "millan"],
+    velocity_dataset: Literal["none", "its_live"] | None,
     buffer_distance: float = 5000.0,
     path: str | Path = "input_files",
     resolution: float = 50.0,
@@ -508,8 +269,12 @@ def boot_file_from_rgi_id(
         In-memory RGI table or a path to a GeoPackage/shape readable by
         :func:`geopandas.read_file`. Must contain a row with ``rgi_id`` and an
         ``epsg`` column specifying the glacier CRS.
-    dem_name : str, default ``"glo_30"``
+    dem_dataset : str, default ``"glo_30"``
         DEM source for surface preparation (e.g., ``"glo_30"``, ``"arcticdem"``).
+    ice_thickness_dataset : str, default ``"maffezzoli"``
+        Source for ice thickness (e.g., ``"glo_30"``, ``"arcticdem"``).
+    velocity_dataset : str, default ``"its_live"``
+        Source for velocities (e.g., ``"none"``, ``"its_live"``).
     buffer_distance : float, default ``5000.0``
         Buffer distance **in meters** applied to the glacier polygon in the projected CRS
         to define the working extent for DEM/thickness.
@@ -552,7 +317,7 @@ def boot_file_from_rgi_id(
         Extract a glacier feature by RGI ID from an RGI table.
     prepare_surface
         Mosaic/reproject a DEM over a geographic bounding box and build the target grid.
-    prepare_ice_thickness
+    get_ice_thickness
         Interpolate glacier ice thickness onto a target grid.
     create_domain
         Create a regular xarray grid with specified bounds and resolution.
@@ -588,13 +353,15 @@ def boot_file_from_rgi_id(
 
     bounds_geoid_buffered = geometry_buffered_geoid.bounds
     surface_file, target_grid_file = prepare_surface(
-        bounds_geoid_buffered, dst_crs, dem_name=dem_name, path=path, resolution=resolution, **kwargs
+        bounds_geoid_buffered, dst_crs, dataset=dem_dataset, path=path, resolution=resolution
     )
     surface = xr.open_dataarray(surface_file)
     surface = surface.where(surface > 0.0, 0.0)
     target_grid = xr.open_dataset(target_grid_file)
 
-    ice_thickness = prepare_ice_thickness(glacier, path=path, target_grid=target_grid, target_crs=dst_crs)
+    ice_thickness = get_ice_thickness(
+        glacier, dataset=ice_thickness_dataset, path=path, target_grid=target_grid, target_crs=dst_crs, **kwargs
+    )
     ice_thickness = ice_thickness.rio.clip(glacier_projected.geometry, drop=False).fillna(0)
     ice_thickness = ice_thickness.where(ice_thickness > 0.0, 0.0)
 
@@ -614,14 +381,19 @@ def boot_file_from_rgi_id(
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
 
-    v_filename = path / Path(f"obs_{rgi_id}.nc")
-    v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, path=v_filename, **kwargs)
-    v = v.rio.reproject_match(surface)
-    _v = v["v"].fillna(0)
-
-    tillwat = xr.where(_v < 100, 0, xr.where(_v > 500, 2, 1 + (_v - 100) / (500 - 100)))
+    tillwat = xr.zeros_like(bed)
     tillwat.name = "tillwat"
     tillwat.attrs.update({"units": "m"})
 
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat, _v])
+    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
+
+    if velocity_dataset is not ("none" or None):
+        v_filename = path / Path(f"obs_{rgi_id}.nc")
+        v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, path=v_filename)
+        v = v.rio.reproject_match(surface)
+        _v = v["v"].fillna(0)
+        ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 500, 2, 1 + (_v - 100) / (500 - 100)))
+        ds["tillwat"].attrs.update({"units": "m"})
+        ds = xr.merge([ds, _v])
+
     return ds.fillna(0)

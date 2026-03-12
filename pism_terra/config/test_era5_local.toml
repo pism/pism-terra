@@ -1,8 +1,8 @@
 [run]
 
 executable = "pism"
-mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 40
+mpi = ""
+ntasks = 8
 
 [job]
 
@@ -23,12 +23,12 @@ dem = "glo_30"
 ice_thickness = "maffezzoli"
 bucket = "pism-cloud-data"
 prefix = "glaciers"
-velocity = "its_live"
+velocity = "none"
 
 [time]
 
 'time.start' = "1978-01-01"
-'time.end' =  "2025-01-01"
+'time.end' =  "1978-07-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 
@@ -56,16 +56,17 @@ velocity = "its_live"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
-'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
 'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
+'output.scalar.times' = "daily"
+'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
-'output.spatial.stop_missing' = 'no'
+'output.extra.stop_missing' = 'no'
 
 [grid]
 
-resolution = "250m"
+resolution = "1000m"
 'grid.Lbz' = 0
 'grid.Lz' = 2000
 'grid.Mbz' = 1
@@ -153,7 +154,6 @@ model = "pdd"
 
 'calving.methods' = 'vonmises_calving'
 'calving.vonmises_calving.sigma_max' = 7.5e5
-
 [atmosphere]
 
 model = "given"

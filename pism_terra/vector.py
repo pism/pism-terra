@@ -26,6 +26,26 @@ from pathlib import Path
 import geopandas as gpd
 
 
+def glaciers_in_complex(rgi_c_id: str, rgi_g: gpd.GeoDataFrame) -> list:
+    """
+    Return the glacier outline IDs that belong to a given complex outline.
+
+    Parameters
+    ----------
+    rgi_c_id : str
+        The complex outline identifier (e.g. ``"RGI2000-v7.0-C-01-09429"``).
+    rgi_g : geopandas.GeoDataFrame
+        Glacier outline dataframe with an ``rgi_id_c`` column mapping each
+        glacier to its parent complex.
+
+    Returns
+    -------
+    list
+        List of ``rgi_id`` strings whose ``rgi_id_c`` matches *rgi_c_id*.
+    """
+    return rgi_g.loc[rgi_g["rgi_id_c"] == rgi_c_id, "rgi_id"].tolist()
+
+
 def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:
     """
     Return the row in the GeoDataFrame matching the given RGI ID.

@@ -1,8 +1,8 @@
 [run]
 
 executable = "pism"
-mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 40
+mpi = ""
+ntasks = 8
 
 [job]
 
@@ -17,16 +17,17 @@ nodes = 1
 
 [campaign]
 
-name = "LGM"
+name = "Equilibrium"
+bucket = "pism-cloud-data"
 climate = "snap"
 dem = "glo_30"
-ice_thickness = "millan"
-velocity = "none"
+ice_thickness = "maffezzoli"
+velocity = "its_live"
 
 [time]
 
 'time.start' = "01-01-01"
-'time.end' =  "500-01-01"
+'time.end' =  "05-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "01-01-01"
 
@@ -54,6 +55,7 @@ velocity = "none"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
+'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
 'output.spatial.times' = 1
 'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
@@ -64,9 +66,9 @@ velocity = "none"
 
 resolution = "500m"
 grid.Lbz = 0
-grid.Lz = 5000
+grid.Lz = 2000
 grid.Mbz = 1
-grid.Mz = 251
+grid.Mz = 201
 grid.registration = "center"
 
 [energy]

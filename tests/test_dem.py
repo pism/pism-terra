@@ -19,6 +19,7 @@
 Test DEM functions.
 """
 
+
 import geopandas as gpd
 import numpy as np
 import pytest
@@ -28,7 +29,7 @@ from numpy.testing import assert_array_almost_equal
 from rasterio.io import MemoryFile
 from shapely.geometry import box
 
-from pism_terra.dem import (
+from pism_terra.glacier.dem import (
     boot_file_from_rgi_id,
     get_glacier_from_rgi_id,
 )
@@ -70,7 +71,15 @@ def test_boot_file_from_rgi_id(rgi, tmp_path):
 
     rgi_id = "RGI2000-v7.0-C-01-10853"
     resolution = 100.0
-    ds = boot_file_from_rgi_id(rgi_id, rgi, resolution=resolution, path=path)
+    ds = boot_file_from_rgi_id(
+        rgi_id,
+        rgi,
+        dem_dataset="glo_30",
+        ice_thickness_dataset="millan",
+        velocity_dataset="none",
+        resolution=resolution,
+        path=path,
+    )
     assert isinstance(ds, xr.Dataset)
     assert "surface" in ds
     assert "thickness" in ds
