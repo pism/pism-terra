@@ -1,0 +1,13 @@
+ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rate", "tas" = "ice_surface_temp", "TF" = "theta_ocean", "geothermal_heat_flux1" = "bheatflx"}
+gcms = ["CESM2-WACCM"]
+
+[domain]
+
+x_bounds = [-653000.0, 879700.0]
+y_bounds = [-3384350.0, -632750.0]
+resolution = "900m"
+
+[pathway]
+
+baseline = {"start_year" = 1990, "end_year" = 2019}
+
