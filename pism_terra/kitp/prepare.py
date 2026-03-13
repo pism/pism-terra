@@ -44,9 +44,7 @@ from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
 from pism_terra.ismip7.greenland.forcing import prepare_observations
-from pism_terra.kitp.forcing import (
-    prepare_baseline_climatology,
-)
+from pism_terra.kitp.forcing import prepare_anomalies, prepare_baseline_climatology
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -153,9 +151,23 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     print("Baseline Climatology")
     print("-" * 120)
-    baseline_file = prepare_baseline_climatology(output_path, config, n_workers=ntasks, force_overwrite=force_overwrite)
+    start_year = config["pathway"]["baseline"]["start_year"]
+    end_year = config["pathway"]["baseline"]["end_year"]
+    baseline_file = prepare_baseline_climatology(
+        output_path, start_year=start_year, end_year=end_year, n_workers=ntasks, force_overwrite=force_overwrite
+    )
 
-    input_files = [grid_file] + list(obs_files.values()) + [baseline_file]
+    print("-" * 120)
+    print("Anomaly Forcing")
+    print("-" * 120)
+    bucket = config["forcing"]["bucket"]
+    prefix = config["forcing"]["prefix"]
+    gcms = config["gcms"]
+    forcing_files = prepare_anomalies(
+        output_path, bucket=bucket, prefix=prefix, gcms=gcms, n_workers=ntasks, force_overwrite=force_overwrite
+    )
+
+    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + forcing_files
 
     print("-" * 120)
     print(f"Copying input files to {s3_output_path}")

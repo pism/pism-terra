@@ -17,6 +17,7 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 # pylint: disable=too-many-positional-arguments,unused-import
+
 """
 Prepare KITP Greenland data sets.
 """
@@ -28,7 +29,7 @@ from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import cf_xarray
 import cftime
@@ -44,6 +45,7 @@ from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
 from tqdm import tqdm
 
+from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain
 from pism_terra.download import download_hirham, unzip_files
 from pism_terra.raster import create_ds
@@ -164,9 +166,9 @@ def process_hirham_cdo(
         overwrite=overwrite,
         max_workers=max_workers,
     )
-    hirham_grid_path = hirham_dir / "hirham_grid.txt"
+    hirham_grid_path = hirham_dir / Path("hirham_grid.txt")
     hirham_grid_path.write_text(hirham_grid)
-    target_grid_path = hirham_dir / "ismip6_grid.txt"
+    target_grid_path = hirham_dir / Path("ismip6_grid.txt")
     target_grid_path.write_text(ismip6_grid)
 
     # Initialize an empty list to store the parts of the string
@@ -194,7 +196,6 @@ def process_hirham_cdo(
     # First merge daily files in batches to avoid "Argument list too long"
     merged_file = hirham_nc_dir / "merged_daily.nc"
     print("Merging daily files in batches...")
-    batch_size = 500
     batches = []
     for year in range(start_year, end_year + 1):
         responses = list((hirham_nc_dir / str(year)).glob("Daily*.nc"))
@@ -203,13 +204,27 @@ def process_hirham_cdo(
         batches.append((batch, batch_out))
 
     def _merge_batch(args):
+        """
+        Merge and process a single year-batch of daily HIRHAM files.
+
+        Parameters
+        ----------
+        args : tuple
+            A ``(batch, batch_out)`` pair where *batch* is a list of input
+            file paths and *batch_out* is the output file path.
+
+        Returns
+        -------
+        str
+            Path to the merged output file.
+        """
         batch, batch_out = args
         cdo_local = Cdo()
         cdo_local.monmean(
-            input=f"""-setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -setmissval,9.96921e+36 -mergetime """
+            input=f"""-selvar,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -setmissval,9.96921e+36 -mergetime """
             + " ".join(batch),
             output=batch_out,
-            options=f"-f nc4 -z zip_2 -P 1",
+            options="-f nc4 -z zip_2 -P 1",
         )
         return batch_out
 
@@ -236,6 +251,8 @@ def process_hirham_cdo(
         returnXDataset=True,
     )
 
+    ds = ds.drop_vars("time_bnds", errors="ignore")
+
     month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
     bounds_end = np.cumsum(month_lengths).astype("float64")
@@ -244,13 +261,16 @@ def process_hirham_cdo(
     time_bounds = np.column_stack([bounds_start, bounds_end])
 
     ds = ds.assign_coords(time=("time", time_mid))
-    ds["time"].attrs.update({"units": "days since 0001-01-01", "calendar": "365_day", "bounds": "time_bounds"})
+    ds["time"].attrs.update(
+        {"standard_name": "time", "units": "days since 0001-01-01", "calendar": "365_day", "bounds": "time_bounds"}
+    )
     ds["time_bounds"] = (("time", "nv"), time_bounds)
 
-    for var in ds.data_vars:
+    for var in list(ds.data_vars) + list(ds.coords):
         ds[var].attrs.pop("missing_value", None)
-        ds[var].encoding.pop("_FillValue", None)
         ds[var].attrs.pop("_FillValue", None)
+        ds[var].encoding["missing_value"] = None
+        ds[var].encoding["_FillValue"] = None
 
     ds.to_netcdf(output_file)
 
@@ -263,7 +283,8 @@ def process_hirham_cdo(
 
 def prepare_baseline_climatology(
     output_path: Path | str,
-    config: dict,
+    start_year: int,
+    end_year: int,
     n_workers: int = 4,
     force_overwrite: bool = False,
 ) -> Path:
@@ -274,18 +295,20 @@ def prepare_baseline_climatology(
     ----------
     output_path : Path or str
         Output directory.
-    config : dict
-        Configuration dictionary.
+    start_year : int
+        First year of the baseline period.
+    end_year : int
+        Last year of the baseline period.
     n_workers : int, optional
-        Number of dask workers, by default 2.
+        Number of dask workers, by default 4.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
 
     Returns
     -------
-    list[Path | str]
-        List of output file paths.
+    Path
+        Path to the output climatology file.
     """
     start_time = time.perf_counter()
 
@@ -298,9 +321,6 @@ def prepare_baseline_climatology(
     }
 
     output_path = Path(output_path)
-
-    start_year = config["pathway"]["baseline"]["start_year"]
-    end_year = config["pathway"]["baseline"]["end_year"]
 
     output_file = output_path / Path(f"HIRHAM5-monthly-ERA5_{start_year}_{end_year}.nc")
     if (not check_xr_lazy(output_file)) or force_overwrite:
@@ -322,10 +342,12 @@ def prepare_baseline_climatology(
 
 def prepare_anomalies(
     output_path: Path | str,
-    config: dict,
+    bucket: str,
+    prefix: str,
+    gcms: list[str],
     n_workers: int = 4,
     force_overwrite: bool = False,
-) -> Sequence[Path]:
+) -> list[Path]:
     """
     Process forcing data for all GCMs and forcings in parallel.
 
@@ -333,18 +355,89 @@ def prepare_anomalies(
     ----------
     output_path : Path or str
         Output directory.
-    config : dict
-        Configuration dictionary.
+    bucket : str
+        AWS S3 bucket name containing the forcing data.
+    prefix : str
+        S3 key prefix for the forcing data.
+    gcms : Sequence[str]
+        List of GCM names to process.
     n_workers : int, optional
-        Number of dask workers, by default 2.
+        Number of dask workers, by default 4.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
 
     Returns
     -------
-    list[Path | str]
+    list[Path]
         List of output file paths.
     """
 
-    return []
+    _ = n_workers
+
+    forcing_path = output_path / Path(prefix)
+    s3_to_local(bucket, prefix=prefix, dest=forcing_path)
+
+    target_grid_path = output_path / Path("ismip6_grid.txt")
+    target_grid_path.write_text(ismip6_grid)
+
+    height_file = forcing_path / Path("height.nc")
+    start = time.time()
+    result = []
+    for gcm in gcms:
+        print(gcm)
+        present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT"]
+        future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC"]
+
+        for pd in present_day_forcings:
+            for ff in future_forcings:
+
+                ff_tas_file = forcing_path / Path(ff) / Path(f"tas_Amon_{gcm}_{ff}.nc")
+                ff_pr_file = forcing_path / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
+                pd_tas_file = forcing_path / Path(pd) / Path(f"tas_Amon_{gcm}_{pd}.nc")
+                pd_pr_file = forcing_path / Path(pd) / Path(f"pr_Amon_{gcm}_{pd}.nc")
+                output_file = forcing_path / Path(f"{gcm}_{ff}_{pd}.nc")
+
+                if (not check_xr_lazy(output_file)) or force_overwrite:
+                    cdo_local = Cdo()
+                    cdo_local.debug = True
+
+                    ds = cdo_local.merge(
+                        input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -divc,9.80665 -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
+                        returnXDataset=True,
+                        options="-f nc4 -z zip_2 -P 1",
+                    )
+
+                    ds = ds.drop_vars("time_bnds", errors="ignore")
+
+                    month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                    bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
+                    bounds_end = np.cumsum(month_lengths).astype("float64")
+                    time_mid = (bounds_start + bounds_end) / 2.0
+
+                    time_bounds = np.column_stack([bounds_start, bounds_end])
+
+                    ds = ds.assign_coords(time=("time", time_mid))
+                    ds["time"].attrs.update(
+                        {
+                            "standard_name": "time",
+                            "units": "days since 0001-01-01",
+                            "calendar": "365_day",
+                            "bounds": "time_bounds",
+                        }
+                    )
+                    ds["time_bounds"] = (("time", "nv"), time_bounds)
+
+                    for var in list(ds.data_vars) + list(ds.coords):
+                        ds[var].attrs.pop("missing_value", None)
+                        ds[var].attrs.pop("_FillValue", None)
+                        ds[var].encoding["missing_value"] = None
+                        ds[var].encoding["_FillValue"] = None
+
+                    ds.to_netcdf(output_file)
+                result.append(output_file)
+
+    elapsed = time.perf_counter() - start
+    print(f"Total processing time: {elapsed:.2f} seconds")
+
+    return result
