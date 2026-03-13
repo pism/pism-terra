@@ -1,0 +1,350 @@
+# Copyright (C) 2026 Andy Aschwanden
+#
+# This file is part of pism-terra.
+#
+# PISM-TERRA is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3 of the License, or (at your option) any later
+# version.
+#
+# PISM-TERRA is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License
+# along with PISM; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+# pylint: disable=too-many-positional-arguments,unused-import
+"""
+Prepare KITP Greenland data sets.
+"""
+
+import os
+import re
+import time
+from argparse import ArgumentParser
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed as cf_as_completed
+from pathlib import Path
+from typing import Any, Sequence
+
+import cf_xarray
+import cftime
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import rioxarray  # pylint: disable=unused-import
+import toml
+import xarray as xr
+import xarray_regrid.methods.conservative  # pylint: disable=unused-import
+from cdo import Cdo
+from dask.distributed import Client, as_completed
+from pyfiglet import Figlet
+from tqdm import tqdm
+
+from pism_terra.domain import create_domain
+from pism_terra.download import download_hirham, unzip_files
+from pism_terra.raster import create_ds
+from pism_terra.vector import dissolve
+from pism_terra.workflow import check_xr_fully, check_xr_lazy
+
+xr.set_options(keep_attrs=True)
+
+hirham_grid = """
+gridtype = projection
+xname = rlon
+xsize = 402
+ysize = 602
+xfirst = -16
+xinc = 0.05
+xunits = degree
+yname = rlat
+yfirst = -14
+yinc = 0.05
+yunits = degree
+grid_mapping_name = rotated_latitude_longitude
+grid_north_pole_longitude = 160
+grid_north_pole_latitude = 18
+north_pole_grid_longitude = 0
+"""
+
+bedmachine_grid = """
+gridtype = projection
+xsize     = 10218
+ysize     = 18346
+xunits   = "meter"
+yunits   = "meter"
+xfirst    = -65300
+xinc      = 150
+yfirst    = -3384425
+yinc      = 150
+grid_mapping = crs
+grid_mapping_name = polar_stereographic
+straight_vertical_longitude_from_pole = -39.
+standard_parallel = 71.
+latitude_of_projection_origin = 90.
+false_easting = 0.
+false_northing = 0.
+"""
+
+ismip6_grid = """
+gridtype = projection
+xsize     = 1496
+ysize     = 2700
+xunits   = "meter"
+yunits   = "meter"
+xfirst    = -640000
+xinc      = 1000
+yfirst    = -3355000
+yinc      = 1000
+grid_mapping = crs
+grid_mapping_name = polar_stereographic
+straight_vertical_longitude_from_pole = -45.
+standard_parallel = 70.
+latitude_of_projection_origin = 90.
+false_easting = 0.
+false_northing = 0.
+"""
+
+
+def process_hirham_cdo(
+    data_dir: str | Path,
+    output_file: str | Path,
+    base_url: str,
+    vars_dict: dict,
+    overwrite: bool = False,
+    max_workers: int = 4,
+    start_year: int = 1980,
+    end_year: int = 2021,
+) -> None:
+    """
+    Prepare and process HIRHAM data and save the output to a NetCDF file.
+
+    Parameters
+    ----------
+    data_dir : Union[str, Path]
+        Directory containing the input data.
+    output_file : Union[str, Path]
+        Path to the output NetCDF file.
+    base_url : str
+        Base URL for downloading HIRHAM data.
+    vars_dict : Dict
+        Dictionary of variables to process with their attributes.
+    overwrite : bool, optional
+        Whether to overwrite existing files, by default False.
+    max_workers : int, optional
+        Maximum number of parallel workers, by default 4.
+    start_year : int, optional
+        Starting year for processing, by default 1980.
+    end_year : int, optional
+        Ending year for processing, by default 2021.
+    """
+    print("Processing HIRHAM")
+
+    hirham_dir = data_dir / Path("hirham")
+    hirham_dir.mkdir(parents=True, exist_ok=True)
+    hirham_nc_dir = hirham_dir / Path("nc")
+    hirham_nc_dir.mkdir(parents=True, exist_ok=True)
+    hirham_zip_dir = hirham_dir / Path("zip")
+    hirham_zip_dir.mkdir(parents=True, exist_ok=True)
+
+    responses = download_hirham(
+        base_url,
+        start_year,
+        end_year,
+        output_dir=hirham_zip_dir,
+        max_workers=max_workers,
+    )
+
+    responses = unzip_files(
+        responses,
+        output_dir=hirham_nc_dir,
+        overwrite=overwrite,
+        max_workers=max_workers,
+    )
+    hirham_grid_path = hirham_dir / "hirham_grid.txt"
+    hirham_grid_path.write_text(hirham_grid)
+    target_grid_path = hirham_dir / "ismip6_grid.txt"
+    target_grid_path.write_text(ismip6_grid)
+
+    # Initialize an empty list to store the parts of the string
+    chname_parts = []
+
+    # Iterate over the dictionary items
+    for key, value in vars_dict.items():
+        chname_parts.append(key)
+        chname_parts.append(value["pism_name"])
+    chname = ",".join(chname_parts)
+
+    # Initialize an empty list to store the parts of the string
+    setattribute_parts = []
+
+    # Iterate over the dictionary items
+    for key, value in vars_dict.items():
+        setattribute_parts.append(f"""{key}@units='{value["units"]}'""")
+    setattribute = ",".join(setattribute_parts)
+
+    print("Merging daily files and calculate multi-year monthly means.")
+
+    cdo = Cdo()
+    cdo.debug = True
+
+    # First merge daily files in batches to avoid "Argument list too long"
+    merged_file = hirham_nc_dir / "merged_daily.nc"
+    print("Merging daily files in batches...")
+    batch_size = 500
+    batches = []
+    for year in range(start_year, end_year + 1):
+        responses = list((hirham_nc_dir / str(year)).glob("Daily*.nc"))
+        batch = sorted([str(p.resolve()) for p in responses])
+        batch_out = str((hirham_nc_dir / f"batch_{year}.nc").resolve())
+        batches.append((batch, batch_out))
+
+    def _merge_batch(args):
+        batch, batch_out = args
+        cdo_local = Cdo()
+        cdo_local.monmean(
+            input=f"""-setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -setmissval,9.96921e+36 -mergetime """
+            + " ".join(batch),
+            output=batch_out,
+            options=f"-f nc4 -z zip_2 -P 1",
+        )
+        return batch_out
+
+    batch_files = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_merge_batch, b): b for b in batches}
+        for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging batches"):
+            batch_files.append(future.result())
+    batch_files.sort()
+
+    if len(batch_files) > 1:
+        cdo.mergetime(
+            input=" ".join(batch_files), output=str(merged_file.resolve()), options=f"-f nc4 -z zip_2 -P {max_workers}"
+        )
+        for bf in batch_files:
+            Path(bf).unlink(missing_ok=True)
+    else:
+        Path(batch_files[0]).rename(merged_file)
+
+    start = time.time()
+    ds = cdo.setmisstodis(
+        input=f"""-remapycon,{str(target_grid_path.resolve())} -ymonmean {merged_file}""",
+        options=f"-f nc4 -z zip_2 -P {max_workers}",
+        returnXDataset=True,
+    )
+
+    month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
+    bounds_end = np.cumsum(month_lengths).astype("float64")
+    time_mid = (bounds_start + bounds_end) / 2.0
+
+    time_bounds = np.column_stack([bounds_start, bounds_end])
+
+    ds = ds.assign_coords(time=("time", time_mid))
+    ds["time"].attrs.update({"units": "days since 0001-01-01", "calendar": "365_day", "bounds": "time_bounds"})
+    ds["time_bounds"] = (("time", "nv"), time_bounds)
+
+    for var in ds.data_vars:
+        ds[var].attrs.pop("missing_value", None)
+        ds[var].encoding.pop("_FillValue", None)
+        ds[var].attrs.pop("_FillValue", None)
+
+    ds.to_netcdf(output_file)
+
+    merged_file.unlink(missing_ok=True)
+
+    end = time.time()
+    time_elapsed = end - start
+    print(f"Time elapsed {time_elapsed:.0f}s")
+
+
+def prepare_baseline_climatology(
+    output_path: Path | str,
+    config: dict,
+    n_workers: int = 4,
+    force_overwrite: bool = False,
+) -> Path:
+    """
+    Process baseline monthly climatology.
+
+    Parameters
+    ----------
+    output_path : Path or str
+        Output directory.
+    config : dict
+        Configuration dictionary.
+    n_workers : int, optional
+        Number of dask workers, by default 2.
+    force_overwrite : bool, default ``False``
+        If ``True``, downstream helpers may regenerate intermediate/final artifacts
+        even if cache files exist.
+
+    Returns
+    -------
+    list[Path | str]
+        List of output file paths.
+    """
+    start_time = time.perf_counter()
+
+    hirham_url = "http://ensemblesrt3.dmi.dk/data/prudence/temp/nichan/Daily2D_GrIS/"
+    hirham_vars_dict: dict[str, dict[str, str]] = {
+        "tas": {"pism_name": "air_temp", "units": "kelvin"},
+        "gld": {"pism_name": "climatic_mass_balance", "units": "kg m^-2 day^-1"},
+        "rainfall": {"pism_name": "rainfall", "units": "kg m^-2 day^-1"},
+        "snfall": {"pism_name": "snowfall", "units": "kg m^-2 day^-1"},
+    }
+
+    output_path = Path(output_path)
+
+    start_year = config["pathway"]["baseline"]["start_year"]
+    end_year = config["pathway"]["baseline"]["end_year"]
+
+    output_file = output_path / Path(f"HIRHAM5-monthly-ERA5_{start_year}_{end_year}.nc")
+    if (not check_xr_lazy(output_file)) or force_overwrite:
+        process_hirham_cdo(
+            data_dir=output_path,
+            vars_dict=hirham_vars_dict,
+            start_year=start_year,
+            end_year=end_year,
+            output_file=output_file,
+            base_url=hirham_url,
+            max_workers=n_workers,
+        )
+
+    elapsed = time.perf_counter() - start_time
+    print(f"Total processing time: {elapsed:.2f} seconds")
+
+    return output_file
+
+
+def prepare_anomalies(
+    output_path: Path | str,
+    config: dict,
+    n_workers: int = 4,
+    force_overwrite: bool = False,
+) -> Sequence[Path]:
+    """
+    Process forcing data for all GCMs and forcings in parallel.
+
+    Parameters
+    ----------
+    output_path : Path or str
+        Output directory.
+    config : dict
+        Configuration dictionary.
+    n_workers : int, optional
+        Number of dask workers, by default 2.
+    force_overwrite : bool, default ``False``
+        If ``True``, downstream helpers may regenerate intermediate/final artifacts
+        even if cache files exist.
+
+    Returns
+    -------
+    list[Path | str]
+        List of output file paths.
+    """
+
+    return []
