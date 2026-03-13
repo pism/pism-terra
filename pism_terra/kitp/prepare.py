@@ -56,7 +56,7 @@ xr.set_options(keep_attrs=True)
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
-    Prepare ISMIP7 Greenland input data sets.
+    Prepare KITP Greenland input data sets.
 
     This function is the programmatic entry point. It parses command-line style
     arguments, creates the target grid, downloads and processes observation data,
@@ -87,12 +87,19 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--ntasks",
+        help="Parallel tasks.",
+        type=int,
+        default=8,
+    )
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config_file = args.CONFIG_FILE[0]
     force_overwrite = args.force_overwrite
+    ntasks = args.ntasks
     obs_path = Path(args.obs_path)
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
@@ -146,7 +153,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     print("Baseline Climatology")
     print("-" * 120)
-    baseline_file = prepare_baseline_climatology(output_path, config)
+    baseline_file = prepare_baseline_climatology(output_path, config, n_workers=ntasks, force_overwrite=force_overwrite)
+
     input_files = [grid_file] + list(obs_files.values()) + [baseline_file]
 
     print("-" * 120)
