@@ -203,7 +203,7 @@ def process_hirham_cdo(
         responses = list((hirham_nc_dir / str(year)).glob("Daily*.nc"))
         batch = sorted([str(p.resolve()) for p in responses])
         batch_out = str((hirham_nc_dir / f"batch_{year}.nc").resolve())
-        batches.append((batch, batch_out))
+        batches.append((year, batch, batch_out))
 
     def _merge_batch(args):
         """
@@ -220,10 +220,10 @@ def process_hirham_cdo(
         str
             Path to the merged output file.
         """
-        batch, batch_out = args
+        year, batch, batch_out = args
         cdo_local = Cdo()
         cdo_local.monmean(
-            input=f"""-selvar,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -setmissval,9.96921e+36 -mergetime """
+            input=f"""-setrtomiss,1e10,1e40 -setrtomiss,-1e40,-1e10 -setmissval,-9e33 -selvar,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -mergetime """
             + " ".join(batch),
             output=batch_out,
             options="-f nc4 -z zip_2 -P 1",
@@ -241,8 +241,8 @@ def process_hirham_cdo(
         cdo.mergetime(
             input=" ".join(batch_files), output=str(merged_file.resolve()), options=f"-f nc4 -z zip_2 -P {max_workers}"
         )
-        for bf in batch_files:
-            Path(bf).unlink(missing_ok=True)
+        # for bf in batch_files:
+        #     Path(bf).unlink(missing_ok=True)
     else:
         Path(batch_files[0]).rename(merged_file)
 
@@ -276,7 +276,7 @@ def process_hirham_cdo(
 
     ds.to_netcdf(output_file)
 
-    merged_file.unlink(missing_ok=True)
+    # merged_file.unlink(missing_ok=True)
 
     end = time.time()
     time_elapsed = end - start
