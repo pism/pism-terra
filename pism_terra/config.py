@@ -1209,6 +1209,8 @@ class CampaignConfig(BaseModel):
         Velocity data source identifier (e.g., ``"its_live"``).
     gcm : str, list, or None
         GCM model name(s) used for climate forcing.
+    boot_file : str or None
+        Path to the grid NetCDF boot (relative to the input directory).
     grid_file : str or None
         Path to the grid NetCDF file (relative to the input directory).
     heatflux_file : str or None
@@ -1233,7 +1235,8 @@ class CampaignConfig(BaseModel):
     climate: str | None = Field(default=None)
     dem: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
-    gcm: str | list | None = Field(default=None)
+    gcms: str | list | None = Field(default=None)
+    boot_file: str | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     heatflux_file: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
@@ -1245,6 +1248,8 @@ class CampaignConfig(BaseModel):
     rgi_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
+    present_day_forcings: str | list | None = Field(default=None)
+    future_forcings: str | list | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """

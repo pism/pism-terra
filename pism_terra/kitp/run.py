@@ -35,7 +35,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
-from pism_terra.ismip7.greenland.stage import stage
+from pism_terra.kitp.stage import stage
 from pism_terra.sampling import create_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
@@ -49,7 +49,7 @@ from pism_terra.workflow import (
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
 
-def run_greenland(
+def run_kitp(
     config_file: str | Path,
     template_file: Path | str,
     path: str | Path = "result",
@@ -303,7 +303,7 @@ def run_single():
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Run ISMIP7 Greenland."
+    parser.description = "Run KITP Greenland."
     parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
@@ -390,28 +390,22 @@ def run_single():
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "frontal_melt.routing.file": df["frontal_melt_file"].iloc[0],
-        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "surface.given.file": df["climate_file"].iloc[0],
-        "hydrology.surface_input.file": df["surface_input_file"].iloc[0],
-        "ocean.th.file": df["ocean_file"].iloc[0],
-    }
-
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
-    print("Generate Run for ISMIP7")
-    print("-" * 80)
+    print("=" * 120)
+    print("Generate Run for KITP")
+    print("-" * 120)
     for idx, row in df.iterrows():
-        run_greenland(
+        uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "grid.file": row["grid_file"],
+            "atmosphere.given.file": row["climate_file"],
+        }
+        run_kitp(
             config_file,
             template_file,
             path=path,
@@ -421,14 +415,14 @@ def run_single():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=uq,
+            sample=row["sample"] if "sample" in row else idx,
         )
 
 
 def run_ensemble():
     """
-    Run single glacier.
+    Run KTIP UQ Ensemble.
     """
 
     # set up the option parser
@@ -536,11 +530,9 @@ def run_ensemble():
     default = {
         "input.file": df["boot_file"].iloc[0],
         "input.regrid.file": df["regrid_file"].iloc[0],
-        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
-        "surface.given.file": df["climate_file"].iloc[0],
-        "ocean.th.file": df["ocean_file"].iloc[0],
+        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
     }
 
     seed = 42
@@ -573,7 +565,7 @@ def run_ensemble():
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
     for idx, row in uq_df.iterrows():
-        run_greenland(
+        run_kitp(
             config_file,
             template_file,
             path=path,

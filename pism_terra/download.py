@@ -129,20 +129,23 @@ def unzip_files(
         List of paths to the unzipped files.
     """
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for f in files:
-            futures.append(executor.submit(unzip_file, f, str(output_dir), overwrite=overwrite))
-        for future in as_completed(futures):
+        futures = {
+            executor.submit(unzip_file, f, str(output_dir), overwrite=overwrite, verbose=False): f for f in files
+        }
+        pbar = tqdm(as_completed(futures), total=len(futures), desc="Extracting archives", unit="file")
+        for future in pbar:
             try:
                 future.result()
+                pbar.set_postfix_str(f"{Path(futures[future]).stem} ✓")
             except (IOError, ValueError) as e:
-                print(f"An error occurred: {e}", unzip_file)
+                pbar.set_postfix_str(f"{Path(futures[future]).stem} ✗")
+                print(f"An error occurred: {e}")
 
     responses = list(Path(output_dir).rglob("*.nc"))
     return responses
 
 
-def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
+def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False, verbose: bool = True) -> None:
     """
     Unzip a file to a specified directory with a progress bar and optional overwrite.
 
@@ -154,6 +157,8 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
         The directory where the contents will be extracted.
     overwrite : bool, optional
         Whether to overwrite existing files, by default False.
+    verbose : bool, default True
+        If True, show a per-file progress bar.
     """
     # Ensure the extract_to directory exists
     Path(extract_to).mkdir(parents=True, exist_ok=True)
@@ -164,7 +169,7 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
         file_list = zip_ref.namelist()
 
         # Iterate over the file names with a progress bar
-        for file in tqdm(file_list, desc="Extracting files", unit="file"):
+        for file in tqdm(file_list, desc="Extracting files", unit="file", disable=not verbose):
             file_path = Path(extract_to) / file
             if not file_path.exists() or overwrite:
                 zip_ref.extract(member=file, path=extract_to)

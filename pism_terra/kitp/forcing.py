@@ -16,7 +16,7 @@
 # along with PISM; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
-# pylint: disable=too-many-positional-arguments,unused-import
+# pylint: disable=too-many-positional-arguments,unused-import,broad-exception-caught
 
 """
 Prepare KITP Greenland data sets.
@@ -24,8 +24,10 @@ Prepare KITP Greenland data sets.
 
 import os
 import re
+import tempfile
 import time
 from argparse import ArgumentParser
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
@@ -285,6 +287,7 @@ def prepare_baseline_climatology(
     output_path: Path | str,
     start_year: int,
     end_year: int,
+    version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
 ) -> Path:
@@ -299,6 +302,8 @@ def prepare_baseline_climatology(
         First year of the baseline period.
     end_year : int
         Last year of the baseline period.
+    version : str
+        Version string appended to the output filename.
     n_workers : int, optional
         Number of dask workers, by default 4.
     force_overwrite : bool, default ``False``
@@ -322,7 +327,7 @@ def prepare_baseline_climatology(
 
     output_path = Path(output_path)
 
-    output_file = output_path / Path(f"HIRHAM5-monthly-ERA5_{start_year}_{end_year}.nc")
+    output_file = output_path / Path(f"HIRHAM5-ERA5_YMM_{start_year}_{end_year}_{version}.nc")
     if (not check_xr_lazy(output_file)) or force_overwrite:
         process_hirham_cdo(
             data_dir=output_path,
@@ -345,6 +350,7 @@ def prepare_anomalies(
     bucket: str,
     prefix: str,
     gcms: list[str],
+    version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
 ) -> list[Path]:
@@ -361,6 +367,8 @@ def prepare_anomalies(
         S3 key prefix for the forcing data.
     gcms : Sequence[str]
         List of GCM names to process.
+    version : str
+        Version string appended to the output filename.
     n_workers : int, optional
         Number of dask workers, by default 4.
     force_overwrite : bool, default ``False``
@@ -382,62 +390,150 @@ def prepare_anomalies(
     target_grid_path.write_text(ismip6_grid)
 
     height_file = forcing_path / Path("height.nc")
-    start = time.time()
+    start = time.perf_counter()
+
+    # Build list of all (gcm, pd_forcing, ff_forcing) tasks
+    present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT"]
+    future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC"]
+    tasks = [(gcm, pd_forcing, ff) for gcm in gcms for pd_forcing in present_day_forcings for ff in future_forcings]
+
+    def _process_anomaly(args):
+        """
+        Process a single GCM anomaly combination.
+
+        Parameters
+        ----------
+        args : tuple
+            A ``(gcm, pd_forcing, ff)`` triple.
+
+        Returns
+        -------
+        Path
+            Path to the output file.
+        """
+        gcm, pd_forcing, ff = args
+        ff_tas_file = forcing_path / Path(ff) / Path(f"tas_Amon_{gcm}_{ff}.nc")
+        ff_pr_file = forcing_path / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
+        pd_tas_file = forcing_path / Path(pd_forcing) / Path(f"tas_Amon_{gcm}_{pd_forcing}.nc")
+        pd_pr_file = forcing_path / Path(pd_forcing) / Path(f"pr_Amon_{gcm}_{pd_forcing}.nc")
+        output_file = forcing_path / Path(f"{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
+
+        if (not check_xr_lazy(output_file, verbose=False)) or force_overwrite:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                cdo_local = Cdo(tempdir=tmpdir)
+
+                ds = cdo_local.setmisstodis(
+                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
+                    returnXDataset=True,
+                    options="-f nc4 -z zip_2 -P 1",
+                )
+
+                ds["air_temp"].attrs["units"] = "kelvin"
+                ds["precipitation"] = ds["precipitation"] * 86400.0
+                ds["precipitation"].attrs["units"] = "kg m^-2 day^-1"
+                ds = ds.drop_vars("time_bnds", errors="ignore")
+
+            month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+            bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
+            bounds_end = np.cumsum(month_lengths).astype("float64")
+            time_mid = (bounds_start + bounds_end) / 2.0
+
+            time_bounds = np.column_stack([bounds_start, bounds_end])
+
+            ds = ds.assign_coords(time=("time", time_mid))
+            ds["time"].attrs.update(
+                {
+                    "standard_name": "time",
+                    "units": "days since 0001-01-01",
+                    "calendar": "365_day",
+                    "bounds": "time_bounds",
+                }
+            )
+            ds["time_bounds"] = (("time", "nv"), time_bounds)
+
+            for var in list(ds.data_vars) + list(ds.coords):
+                ds[var].attrs.pop("missing_value", None)
+                ds[var].attrs.pop("_FillValue", None)
+                ds[var].encoding["missing_value"] = None
+                ds[var].encoding["_FillValue"] = None
+
+            ds.to_netcdf(output_file)
+
+        return output_file
+
     result = []
-    for gcm in gcms:
-        print(gcm)
-        present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT"]
-        future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC"]
-
-        for pd in present_day_forcings:
-            for ff in future_forcings:
-
-                ff_tas_file = forcing_path / Path(ff) / Path(f"tas_Amon_{gcm}_{ff}.nc")
-                ff_pr_file = forcing_path / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
-                pd_tas_file = forcing_path / Path(pd) / Path(f"tas_Amon_{gcm}_{pd}.nc")
-                pd_pr_file = forcing_path / Path(pd) / Path(f"pr_Amon_{gcm}_{pd}.nc")
-                output_file = forcing_path / Path(f"{gcm}_{ff}_{pd}.nc")
-
-                if (not check_xr_lazy(output_file)) or force_overwrite:
-                    cdo_local = Cdo()
-                    cdo_local.debug = True
-
-                    ds = cdo_local.merge(
-                        input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -divc,9.80665 -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
-                        returnXDataset=True,
-                        options="-f nc4 -z zip_2 -P 1",
-                    )
-
-                    ds = ds.drop_vars("time_bnds", errors="ignore")
-
-                    month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                    bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
-                    bounds_end = np.cumsum(month_lengths).astype("float64")
-                    time_mid = (bounds_start + bounds_end) / 2.0
-
-                    time_bounds = np.column_stack([bounds_start, bounds_end])
-
-                    ds = ds.assign_coords(time=("time", time_mid))
-                    ds["time"].attrs.update(
-                        {
-                            "standard_name": "time",
-                            "units": "days since 0001-01-01",
-                            "calendar": "365_day",
-                            "bounds": "time_bounds",
-                        }
-                    )
-                    ds["time_bounds"] = (("time", "nv"), time_bounds)
-
-                    for var in list(ds.data_vars) + list(ds.coords):
-                        ds[var].attrs.pop("missing_value", None)
-                        ds[var].attrs.pop("_FillValue", None)
-                        ds[var].encoding["missing_value"] = None
-                        ds[var].encoding["_FillValue"] = None
-
-                    ds.to_netcdf(output_file)
-                result.append(output_file)
+    for task in tqdm(tasks, desc="Processing anomalies"):
+        gcm, pd_forcing, ff = task
+        try:
+            result.append(_process_anomaly(task))
+        except Exception as exc:
+            print(f"Failed {gcm} {ff} vs {pd_forcing}: {exc}")
 
     elapsed = time.perf_counter() - start
     print(f"Total processing time: {elapsed:.2f} seconds")
+
+    return result
+
+
+def baseline_with_anomalies(
+    baseline_file: str | Path,
+    forcing_files: Sequence[str | Path],
+    force_overwrite: bool = False,
+) -> list[Path]:
+    """
+    Add baseline climatology to each anomaly forcing file.
+
+    For precipitation and air_temp the baseline values are added to the
+    anomaly.  The ``height`` variable is taken from the anomaly file
+    unchanged.  Output files are written next to the baseline file with
+    a combined name.
+
+    Parameters
+    ----------
+    baseline_file : str or Path
+        Path to the baseline climatology NetCDF file
+        (e.g. ``HIRHAM5-ERA5_YMM_1990_2019_v1.nc``).
+    forcing_files : list of str or Path
+        Anomaly forcing files
+        (e.g. ``CESM1-WACCM-SC_anomalies_futSST-pdSIC_pdSST-pdSICSIT_v1.nc``).
+    force_overwrite : bool, default False
+        If True, regenerate output even if it already exists.
+
+    Returns
+    -------
+    list of Path
+        Paths to the output files.
+    """
+    baseline_file = Path(baseline_file)
+    # Strip version suffix (e.g. _v1) from baseline stem
+    baseline_stem = re.sub(r"_v\d+$", "", baseline_file.stem)  # e.g. HIRHAM5-ERA5_YMM_1990_2019
+    output_dir = baseline_file.parent
+
+    result = []
+    for forcing_file in tqdm(forcing_files, desc="Adding anomalies to baseline"):
+        forcing_file = Path(forcing_file)
+        forcing_stem = forcing_file.stem  # e.g. CESM1-WACCM-SC_anomalies_futSST-pdSIC_pdSST-pdSICSIT_v1
+        output_file = output_dir / f"{baseline_stem}_{forcing_stem}.nc"
+
+        if (not check_xr_lazy(output_file, verbose=False)) or force_overwrite:
+            baseline = xr.open_dataset(baseline_file)
+            anomaly = xr.open_dataset(forcing_file)
+
+            ds = baseline.copy(deep=True)
+            ds["precipitation"] = baseline["precipitation"] + anomaly["precipitation"]
+            ds["air_temp"] = baseline["air_temp"] + anomaly["air_temp"]
+            ds["height"] = anomaly["height"]
+
+            for var in list(ds.data_vars) + list(ds.coords):
+                ds[var].attrs.pop("missing_value", None)
+                ds[var].attrs.pop("_FillValue", None)
+                ds[var].encoding["missing_value"] = None
+                ds[var].encoding["_FillValue"] = None
+
+            ds.to_netcdf(output_file)
+            baseline.close()
+            anomaly.close()
+
+        result.append(output_file)
 
     return result

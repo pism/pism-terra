@@ -14,22 +14,20 @@ nodes = 1
 [run_info]
 
 'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA ISMIP7 Greenland Historical Run"
+'run_info.title' = "PISM-TERRA KITP Greenland Sea Ice Run"
 
 [campaign]
 
 bucket = "pism-cloud-data"
-prefix = "bedmachine_greenland_input_testing"
-pathway = "historical"
-version = "1"
-start_year = "1980"
-end_year = "1981"
-gcm = "CESM2-WACCM"
-boot_file = "boot_g2400m_GreenlandObsISMIP7-v1.3.nc"
+prefix = "kitp/input"
+version = "v1"
+gcms = "CESM1-WACCM-SC"
+present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT"]
+future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC"]
+boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
-retreat_file = "pism_g2400m_frontretreat_calfin_1972_2019_ME.nc"
-heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
+regrid_file = "g600m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
+heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 [time]
 
@@ -49,7 +47,6 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
-'geometry.front_retreat.prescribed.file' = "none"
 
 ['input']
 
@@ -65,11 +62,11 @@ heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 'output.compression_level' = 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
-'output.extra.file' = "none"
-'output.extra.times' = "monthly"
-'output.extra.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity"
-'output.timeseries.filename' = "none"
-'output.timeseries.times' = "monthly"
+'output.spatial.file' = "none"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity"
+'output.scalar.file' = "none"
+'output.scalar.times' = "monthly"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 'output.ISMIP6' = "no"
@@ -145,12 +142,11 @@ bp_ksp_rtol = 1e-3
 
 [surface]
 
-model = "given"
+model = "pdd"
 
-[surface.options.given]
+[surface.options.pdd]
 
-'surface.models' = "given"
-'surface.given.file' = "none"
+'surface.models' = "pdd"
 
 [calving]
 
@@ -167,10 +163,6 @@ model = "given"
 'atmosphere.given.file' = "none"
 
 [ocean]
-
-'ocean.models' = "th"
-'ocean.th.file' = "none"
-'ocean.th.clip_salinity' = "False"
 
 [hydrology]
 

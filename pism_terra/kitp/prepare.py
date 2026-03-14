@@ -44,7 +44,11 @@ from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
 from pism_terra.ismip7.greenland.forcing import prepare_observations
-from pism_terra.kitp.forcing import prepare_anomalies, prepare_baseline_climatology
+from pism_terra.kitp.forcing import (
+    baseline_with_anomalies,
+    prepare_anomalies,
+    prepare_baseline_climatology,
+)
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -114,6 +118,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("")
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
+    version = config["version"]
 
     print("-" * 120)
     print("Grid File")
@@ -154,7 +159,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     start_year = config["pathway"]["baseline"]["start_year"]
     end_year = config["pathway"]["baseline"]["end_year"]
     baseline_file = prepare_baseline_climatology(
-        output_path, start_year=start_year, end_year=end_year, n_workers=ntasks, force_overwrite=force_overwrite
+        output_path,
+        start_year=start_year,
+        end_year=end_year,
+        version=version,
+        n_workers=ntasks,
+        force_overwrite=force_overwrite,
     )
 
     print("-" * 120)
@@ -164,10 +174,18 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     prefix = config["forcing"]["prefix"]
     gcms = config["gcms"]
     forcing_files = prepare_anomalies(
-        output_path, bucket=bucket, prefix=prefix, gcms=gcms, n_workers=ntasks, force_overwrite=force_overwrite
+        output_path,
+        bucket=bucket,
+        prefix=prefix,
+        gcms=gcms,
+        version=version,
+        n_workers=ntasks,
+        force_overwrite=force_overwrite,
     )
 
-    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + forcing_files
+    combined_files = baseline_with_anomalies(baseline_file, forcing_files)
+
+    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + forcing_files + combined_files
 
     print("-" * 120)
     print(f"Copying input files to {s3_output_path}")
