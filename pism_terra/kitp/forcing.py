@@ -241,8 +241,8 @@ def process_hirham_cdo(
         cdo.mergetime(
             input=" ".join(batch_files), output=str(merged_file.resolve()), options=f"-f nc4 -z zip_2 -P {max_workers}"
         )
-        # for bf in batch_files:
-        #     Path(bf).unlink(missing_ok=True)
+        for bf in batch_files:
+            Path(bf).unlink(missing_ok=True)
     else:
         Path(batch_files[0]).rename(merged_file)
 
@@ -252,6 +252,7 @@ def process_hirham_cdo(
         options=f"-f nc4 -z zip_2 -P {max_workers}",
         returnXDataset=True,
     )
+    merged_file.unlink(missing_ok=True)
 
     ds = ds.drop_vars("time_bnds", errors="ignore")
 
@@ -275,8 +276,6 @@ def process_hirham_cdo(
         ds[var].encoding["_FillValue"] = None
 
     ds.to_netcdf(output_file)
-
-    # merged_file.unlink(missing_ok=True)
 
     end = time.time()
     time_elapsed = end - start
@@ -350,6 +349,8 @@ def prepare_anomalies(
     bucket: str,
     prefix: str,
     gcms: list[str],
+    present_day_forcings: list[str],
+    future_forcings: list[str],
     version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
@@ -367,6 +368,10 @@ def prepare_anomalies(
         S3 key prefix for the forcing data.
     gcms : Sequence[str]
         List of GCM names to process.
+    present_day_forcings : list of str
+        Present-day forcing experiment names (e.g. ``["pdSST-pdSIC"]``).
+    future_forcings : list of str
+        Future forcing experiment names (e.g. ``["futSST-pdSIC"]``).
     version : str
         Version string appended to the output filename.
     n_workers : int, optional
@@ -393,8 +398,6 @@ def prepare_anomalies(
     start = time.perf_counter()
 
     # Build list of all (gcm, pd_forcing, ff_forcing) tasks
-    present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT"]
-    future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC"]
     tasks = [(gcm, pd_forcing, ff) for gcm in gcms for pd_forcing in present_day_forcings for ff in future_forcings]
 
     def _process_anomaly(args):

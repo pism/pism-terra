@@ -170,14 +170,20 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     print("Anomaly Forcing")
     print("-" * 120)
+
     bucket = config["forcing"]["bucket"]
     prefix = config["forcing"]["prefix"]
     gcms = config["gcms"]
+    present_day_forcings = config["forcing"]["present_day_forcings"]
+    future_forcings = config["forcing"]["future_forcings"]
+
     forcing_files = prepare_anomalies(
         output_path,
         bucket=bucket,
         prefix=prefix,
         gcms=gcms,
+        present_day_forcings=present_day_forcings,
+        future_forcings=future_forcings,
         version=version,
         n_workers=ntasks,
         force_overwrite=force_overwrite,

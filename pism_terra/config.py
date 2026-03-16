@@ -1236,6 +1236,8 @@ class CampaignConfig(BaseModel):
     dem: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
     gcms: str | list | None = Field(default=None)
+    present_day_forcings: str | list | None = Field(default=None)
+    future_forcings: str | list | None = Field(default=None)
     boot_file: str | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     heatflux_file: str | None = Field(default=None)
@@ -1248,8 +1250,6 @@ class CampaignConfig(BaseModel):
     rgi_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
-    present_day_forcings: str | list | None = Field(default=None)
-    future_forcings: str | list | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """
