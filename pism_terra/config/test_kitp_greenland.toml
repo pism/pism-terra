@@ -8,7 +8,7 @@ writer = ""
 [job]
 
 queue = "t2small"
-walltime = "48:00:00"
+walltime = "4:00:00"
 nodes = 1
 
 [run_info]
@@ -24,15 +24,15 @@ version = "v1"
 gcms = "CESM1-WACCM-SC"
 present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT"]
 future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC"]
-boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_g2400m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g600m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
-heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
+regrid_file = "g2400m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
+heatflux_file  = "heatflux_g2400m_GreenlandObsISMIP7-v1.3.nc"
 
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0100-01-01"
+'time.end' =  "0005-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "0001-01-01"
 
