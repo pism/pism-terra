@@ -1,4 +1,4 @@
-# Copyright (C) 2025 Andy Aschwanden
+# Copyright (C) 2026 Andy Aschwanden
 #
 # This file is part of pism-terra.
 #
@@ -23,23 +23,26 @@ Postprocessing.
 
 import json
 import time
+import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
 import cf_xarray
-import dask
 import geopandas as gpd
 import rioxarray
 import toml
 import xarray as xr
-from dask.diagnostics import ProgressBar
 from dask.distributed import Client, progress
 from pyfiglet import Figlet
+from tqdm import tqdm
 
 xr.set_options(keep_attrs=True)
+warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
 
 
-def process_file(infile: str | Path, rgi_file: str | Path):
+def process_file(
+    infile: str | Path, rgi_file: str | Path, client: Client, column: str = "SUBREGION1", crs: str = "EPSG:3413"
+):
     """
     Clip a NetCDF dataset to the glacier geometry defined in an RGI file.
 
@@ -54,19 +57,21 @@ def process_file(infile: str | Path, rgi_file: str | Path):
     rgi_file : str or Path
         Path to the RGI glacier outline file (e.g., GeoPackage or shapefile) that defines
         the geometry to clip the dataset to. Must include an `epsg` column to define the CRS.
+    client : dask.Client
+        Dask client.
+    column : str
+        Column.
+    crs : str
+        CRS code.
     """
 
     infile = Path(infile)
     infile_name = infile.name
     infile_path = infile.parent
     clipped_file = infile_path / Path("clipped_" + infile_name)
-    speed_clipped_file = infile_path / Path("clipped_speed_" + infile_name)
     scalar_file = infile_path / Path("fldsum_" + infile_name)
 
     rgi = gpd.read_file(rgi_file)
-    crs = rgi.iloc[0]["epsg"]
-    rgi_projected = rgi.to_crs(crs)
-    geometry = rgi_projected.geometry
 
     start = time.time()
 
@@ -83,15 +88,34 @@ def process_file(infile: str | Path, rgi_file: str | Path):
     )
 
     ds = ds.rio.write_crs(crs, inplace=False)
-    ds_clipped = ds.rio.clip(geometry, drop=False)
-    ds_clipped.to_netcdf(clipped_file)
+    ds = client.persist(ds)
+    progress(ds)
+
+    gis_clipped = ds.rio.clip(rgi[rgi[column] == "GIS"].geometry, drop=False)
+    print(f"Writing {clipped_file}")
+    comp = {"zlib": True, "complevel": 2}
+    encoding = {var: comp for var in gis_clipped.data_vars}
+    write_clipped = gis_clipped.to_netcdf(clipped_file, engine="h5netcdf", encoding=encoding, compute=False)
+    future_clipped = client.compute(write_clipped)
+    progress(future_clipped)
+
+    dss = []
+    for _, basin in tqdm(rgi.iterrows(), total=len(rgi), desc="Clipping basins"):
+        ds_clipped = ds.rio.clip([basin.geometry], drop=False)
+        dss.append(ds_clipped.expand_dims({"basin": [basin[column]]}))
+
+    clipped = xr.concat(dss, dim="basin")
+
+    print(f"Writing {scalar_file}")
+    scalar = clipped.sum(dim=["y", "x"])
+    encoding_scalar = {var: comp for var in scalar.data_vars}
+    write_scalar = scalar.to_netcdf(scalar_file, engine="h5netcdf", encoding=encoding_scalar, compute=False)
+    future_scalar = client.compute(write_scalar)
+    progress(future_scalar)
+
     end = time.time()
     time_elapsed = end - start
-    print(f"Time elapsed for postprocessing: {time_elapsed:.0f}s")
-    pism_config = ds["pism_config"]
-    ds_scalar = ds_clipped.drop_vars(["pism_config"], errors="ignore").sum(dim=["x", "y"])
-    ds_scalar = xr.merge([ds_scalar, pism_config])
-    ds_scalar.to_netcdf(scalar_file)
+    print(f"Time elapsed for {infile_name}: {time_elapsed:.0f}s")
 
 
 def postprocess_glacier(config_file: str | Path):
@@ -114,13 +138,16 @@ def postprocess_glacier(config_file: str | Path):
     config = json.loads(json.dumps(config_toml))
 
     start = time.time()
-    rgi_file = config["rgi"]["outline"]
+    rgi_file = "/home/andy/pism-ragis/data/mouginot/Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 
-    for o in ["spatial", "state"]:
+    client = Client(n_workers=4, threads_per_worker=1, memory_limit="8GiB")
+    print(f"Dask dashboard: {client.dashboard_link}")
+
+    for o in ["spatial"]:
         s_file = Path(config["output"][o])
-        print(s_file)
-        with ProgressBar():
-            process_file(s_file, rgi_file)
+        process_file(s_file, rgi_file, client)
+
+    client.close()
 
     end = time.time()
     time_elapsed = end - start
@@ -134,7 +161,7 @@ def main():
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Postprocess RGI Glacier."
+    parser.description = "Postprocess KITP Greenland."
     parser.add_argument(
         "RUN_FILE",
         help="CONFIG TOML.",

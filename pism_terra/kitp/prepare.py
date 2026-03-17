@@ -45,6 +45,8 @@ from tqdm.auto import tqdm
 from pism_terra.domain import create_domain
 from pism_terra.ismip7.greenland.forcing import prepare_observations
 from pism_terra.kitp.forcing import (
+    baseline_with_anomalies,
+    prepare_anomalies,
     prepare_baseline_climatology,
 )
 from pism_terra.raster import create_ds
@@ -56,7 +58,7 @@ xr.set_options(keep_attrs=True)
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
-    Prepare ISMIP7 Greenland input data sets.
+    Prepare KITP Greenland input data sets.
 
     This function is the programmatic entry point. It parses command-line style
     arguments, creates the target grid, downloads and processes observation data,
@@ -87,17 +89,22 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--ntasks",
+        help="Parallel tasks.",
+        type=int,
+        default=8,
+    )
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config_file = args.CONFIG_FILE[0]
     force_overwrite = args.force_overwrite
+    ntasks = args.ntasks
     obs_path = Path(args.obs_path)
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
-    s3_output_path = output_path / Path("kitp_greenland_input")
-    s3_output_path.mkdir(parents=True, exist_ok=True)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -109,6 +116,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("")
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
+    version = config["version"]
 
     print("-" * 120)
     print("Grid File")
@@ -146,9 +154,45 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     print("-" * 120)
     print("Baseline Climatology")
     print("-" * 120)
-    baseline_file = prepare_baseline_climatology(output_path, config)
-    input_files = [grid_file] + list(obs_files.values()) + [baseline_file]
+    start_year = config["pathway"]["baseline"]["start_year"]
+    end_year = config["pathway"]["baseline"]["end_year"]
+    baseline_file = prepare_baseline_climatology(
+        output_path,
+        start_year=start_year,
+        end_year=end_year,
+        version=version,
+        n_workers=ntasks,
+        force_overwrite=force_overwrite,
+    )
 
+    print("-" * 120)
+    print("Anomaly Forcing")
+    print("-" * 120)
+
+    bucket = config["forcing"]["bucket"]
+    prefix = config["forcing"]["prefix"]
+    gcms = config["gcms"]
+    present_day_forcings = config["forcing"]["present_day_forcings"]
+    future_forcings = config["forcing"]["future_forcings"]
+
+    forcing_files = prepare_anomalies(
+        output_path,
+        bucket=bucket,
+        prefix=prefix,
+        gcms=gcms,
+        present_day_forcings=present_day_forcings,
+        future_forcings=future_forcings,
+        version=version,
+        n_workers=ntasks,
+        force_overwrite=force_overwrite,
+    )
+
+    combined_files = baseline_with_anomalies(baseline_file, forcing_files)
+
+    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + forcing_files + combined_files
+
+    s3_output_path = output_path / Path(config["prefix"])
+    s3_output_path.mkdir(parents=True, exist_ok=True)
     print("-" * 120)
     print(f"Copying input files to {s3_output_path}")
     print("-" * 120)
