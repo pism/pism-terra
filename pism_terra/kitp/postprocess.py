@@ -41,21 +41,21 @@ warnings.filterwarnings("ignore", message="invalid value encountered in cast", c
 
 
 def process_file(
-    infile: str | Path, rgi_file: str | Path, client: Client, column: str = "SUBREGION1", crs: str = "EPSG:3413"
+    infile: str | Path, basin_file: str | Path, client: Client, column: str = "SUBREGION1", crs: str = "EPSG:3413"
 ):
     """
-    Clip a NetCDF dataset to the glacier geometry defined in an RGI file.
+    Clip a NetCDF dataset to the glacier geometry defined in an BASIN file.
 
     This function reads a NetCDF file containing geospatial data and clips it to the
-    geometry defined in a glacier outline file (e.g., RGI shapefile). The clipped dataset
+    geometry defined in a glacier outline file (e.g., BASIN shapefile). The clipped dataset
     is saved to a new NetCDF file prefixed with "clipped_".
 
     Parameters
     ----------
     infile : str or Path
         Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
-    rgi_file : str or Path
-        Path to the RGI glacier outline file (e.g., GeoPackage or shapefile) that defines
+    basin_file : str or Path
+        Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
         the geometry to clip the dataset to. Must include an `epsg` column to define the CRS.
     client : dask.Client
         Dask client.
@@ -71,7 +71,7 @@ def process_file(
     clipped_file = infile_path / Path("clipped_" + infile_name)
     scalar_file = infile_path / Path("fldsum_" + infile_name)
 
-    rgi = gpd.read_file(rgi_file)
+    basin = gpd.read_file(basin_file)
 
     start = time.time()
 
@@ -88,10 +88,17 @@ def process_file(
     )
 
     ds = ds.rio.write_crs(crs, inplace=False)
+
+    # Separate variables that lack spatial (x, y) dimensions, as rio.clip cannot handle them
+    non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
+    ds_non_spatial = ds[non_spatial_vars]
+    ds = ds.drop_vars(non_spatial_vars)
+
     ds = client.persist(ds)
     progress(ds)
 
-    gis_clipped = ds.rio.clip(rgi[rgi[column] == "GIS"].geometry, drop=False)
+    gis_clipped = ds.rio.clip(basin[basin[column] == "GIS"].geometry, drop=False)
+    gis_clipped = xr.merge([gis_clipped, ds_non_spatial])
     print(f"Writing {clipped_file}")
     comp = {"zlib": True, "complevel": 2}
     encoding = {var: comp for var in gis_clipped.data_vars}
@@ -100,7 +107,7 @@ def process_file(
     progress(future_clipped)
 
     dss = []
-    for _, basin in tqdm(rgi.iterrows(), total=len(rgi), desc="Clipping basins"):
+    for _, basin in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
         ds_clipped = ds.rio.clip([basin.geometry], drop=False)
         dss.append(ds_clipped.expand_dims({"basin": [basin[column]]}))
 
@@ -138,14 +145,14 @@ def postprocess_glacier(config_file: str | Path):
     config = json.loads(json.dumps(config_toml))
 
     start = time.time()
-    rgi_file = "/home/andy/pism-ragis/data/mouginot/Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+    basin_file = "/home/andy/pism-ragis/data/mouginot/Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 
     client = Client(n_workers=4, threads_per_worker=1, memory_limit="8GiB")
     print(f"Dask dashboard: {client.dashboard_link}")
 
     for o in ["spatial"]:
         s_file = Path(config["output"][o])
-        process_file(s_file, rgi_file, client)
+        process_file(s_file, basin_file, client)
 
     client.close()
 
