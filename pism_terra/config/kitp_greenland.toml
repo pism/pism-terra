@@ -70,6 +70,7 @@ heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 'output.ISMIP6' = "no"
+'output.experiment_id_max_length' = 100
 
 [grid]
 
