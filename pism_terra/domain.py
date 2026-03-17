@@ -25,7 +25,7 @@ import numpy as np
 import xarray as xr
 
 
-def new_range(x: np.array, dx: float) -> tuple[float, float, int]:
+def new_range(x: np.ndarray, dx: float) -> tuple[float, float, int]:
     """
     Compute the center and half-width of a domain that will contain all values in `x`.
 
@@ -33,7 +33,7 @@ def new_range(x: np.array, dx: float) -> tuple[float, float, int]:
 
     Parameters
     ----------
-    x : numpy.array
+    x : numpy.ndarray
         A 1D array of coordinate values.
     dx : float
         The desired resolution for the new domain.
@@ -240,10 +240,10 @@ def create_domain(
         x_bounds = np.stack([xb[:-1], xb[1:]]).T
         y_bounds = np.stack([yb[:-1], yb[1:]]).T
     else:
-        x = [0]
-        y = [0]
-        x_bounds = [[x_bnds[0], x_bnds[1]]]
-        y_bounds = [[y_bnds[0], y_bnds[1]]]
+        x = np.array([0])
+        y = np.array([0])
+        x_bounds = np.array([[x_bnds[0], x_bnds[1]]])
+        y_bounds = np.array([[y_bnds[0], y_bnds[1]]])
 
     x_bnds_dim = f"{x_dim}_bnds"
     y_bnds_dim = f"{y_dim}_bnds"

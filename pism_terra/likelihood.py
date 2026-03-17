@@ -21,6 +21,8 @@
 Log likelihood models.
 """
 
+from typing import cast
+
 import numpy as np
 import xarray as xr
 from scipy.special import pseudo_huber  # pylint: disable=no-name-in-module
@@ -68,9 +70,9 @@ def log_jaccard_score(
 
 
 def log_jaccard_score_xr(
-    x: np.ndarray | xr.DataArray,
-    mu: np.ndarray | xr.DataArray,
-    std: float | np.ndarray | xr.DataArray,
+    x: xr.DataArray,
+    mu: xr.DataArray,
+    std: float | xr.DataArray,
     fudge_factor: float = 1.0,
     dim="z",
     sum_dims=["y", "x", "time"],
@@ -80,11 +82,11 @@ def log_jaccard_score_xr(
 
     Parameters
     ----------
-    x : np.ndarray or xr.DataArray
+    x : xr.DataArray
         The data for which the log-likelihood is to be calculated.
-    mu : np.ndarray or xr.DataArray
+    mu : xr.DataArray
         The mean of the distribution.
-    std : float or np.ndarray or xr.DataArray
+    std : float or xr.DataArray
         The standard deviation of the distribution.
     fudge_factor : float, optional
         A multiplicative factor applied to the Jaccard score, by default 1.0.
@@ -172,7 +174,7 @@ def log_normal_xr(
         The log-likelihood of the data given the distribution parameters.
     """
 
-    da = log_normal(x, mu, std, fudge_factor=fudge_factor)
+    da = cast(xr.DataArray, log_normal(x, mu, std, fudge_factor=fudge_factor))
     da = da.where(da != 0, np.nan)
     da.name = "log_likelihood"
     da.attrs.update({"units": "1", "long_name": "negative log likelihood"})
@@ -243,7 +245,7 @@ def log_pseudo_huber_xr(
         The log-likelihood of the data given the distribution parameters.
     """
 
-    da = log_pseudo_huber(x, mu, std, fudge_factor=fudge_factor, delta=delta)
+    da = cast(xr.DataArray, log_pseudo_huber(x, mu, std, fudge_factor=fudge_factor, delta=delta))
     da = da.where(da != 0, np.nan)
     da.name = "log_likelihood"
     da.attrs.update({"units": "1", "long_name": "negative log likelihood"})

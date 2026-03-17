@@ -215,7 +215,7 @@ def run_kitp(
         name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
     else:
         name_options = f"id_{sample}"
-        # run.update({"output.experiment_id": sample})
+        run.update({"output.experiment_id": sample})
 
     uq_clean = normalize_row(uq) if uq is not None else {}
     # Prefer explicit `sample` arg; else default from uq['sample']
