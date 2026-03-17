@@ -215,7 +215,7 @@ def run_kitp(
         name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
     else:
         name_options = f"id_{sample}"
-        run.update({"output.experiment_id": sample})
+        # run.update({"output.experiment_id": sample})
 
     uq_clean = normalize_row(uq) if uq is not None else {}
     # Prefer explicit `sample` arg; else default from uq['sample']
@@ -282,7 +282,7 @@ def run_kitp(
         toml.dump(run_toml, toml_file)
 
     prefix = f"{mpi_str} {cfg.run.executable} "
-    postfix = "# End of script"
+    postfix = f"pism-kitp-postprocess {post_file}"
     rendered_script = "" if debug else template.render(params)
     rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
 

@@ -22,8 +22,8 @@ bucket = "pism-cloud-data"
 prefix = "kitp/input"
 version = "v1"
 gcms = "CESM1-WACCM-SC"
-present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT"]
-future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC"]
+present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
+future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pa-futArcSIC-ext"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
 regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
@@ -32,8 +32,8 @@ heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0500-01-01"
-'time.calendar' =  "standard"
+'time.end' =  "0300-01-01"
+'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
 [time_stepping]
@@ -63,8 +63,8 @@ heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "monthly"
-'output.spatial.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity"
+'output.spatial.times' = "yearly"
+'output.spatial.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,mass_fluxes"
 'output.scalar.file' = "none"
 'output.scalar.times' = "monthly"
 'output.checkpoint.interval' = 24

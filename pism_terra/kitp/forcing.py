@@ -416,9 +416,16 @@ def prepare_anomalies(
         """
         gcm, pd_forcing, ff = args
         ff_tas_file = forcing_path / Path(ff) / Path(f"tas_Amon_{gcm}_{ff}.nc")
-        ff_pr_file = forcing_path / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
+        if ff == "pa-futArcSIC-ext":
+            ff_pr_file = forcing_path / Path(ff) / Path(f"pr_day_{gcm}_{ff}.nc")
+        else:
+            ff_pr_file = forcing_path / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
+        if pd_forcing == "pa-pdSIC-ext":
+            pd_pr_file = forcing_path / Path(pd_forcing) / Path(f"pr_day_{gcm}_{pd_forcing}.nc")
+        else:
+            pd_pr_file = forcing_path / Path(pd_forcing) / Path(f"pr_Amon_{gcm}_{pd_forcing}.nc")
+
         pd_tas_file = forcing_path / Path(pd_forcing) / Path(f"tas_Amon_{gcm}_{pd_forcing}.nc")
-        pd_pr_file = forcing_path / Path(pd_forcing) / Path(f"pr_Amon_{gcm}_{pd_forcing}.nc")
         output_file = forcing_path / Path(f"{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
 
         if (not check_xr_lazy(output_file, verbose=False)) or force_overwrite:

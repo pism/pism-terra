@@ -105,8 +105,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     obs_path = Path(args.obs_path)
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
-    s3_output_path = output_path / Path("kitp_greenland_input")
-    s3_output_path.mkdir(parents=True, exist_ok=True)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -193,6 +191,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + forcing_files + combined_files
 
+    s3_output_path = output_path / Path(config["prefix"])
+    s3_output_path.mkdir(parents=True, exist_ok=True)
     print("-" * 120)
     print(f"Copying input files to {s3_output_path}")
     print("-" * 120)
