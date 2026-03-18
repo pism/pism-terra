@@ -542,6 +542,7 @@ def run_ensemble():
         "grid.file": df["grid_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
         "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
+        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
     }
 
     seed = 42
