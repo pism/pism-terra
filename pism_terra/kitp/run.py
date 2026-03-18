@@ -395,7 +395,6 @@ def run_single():
     prefix = campaign_config["prefix"]
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-    outline_file = df["outline_file"].iloc[0]
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -405,6 +404,7 @@ def run_single():
     print("Generate Run for KITP")
     print("-" * 120)
     for idx, row in df.iterrows():
+        print(row)
         uq = {
             "input.file": row["boot_file"],
             "input.regrid.file": row["regrid_file"],
@@ -412,6 +412,7 @@ def run_single():
             "grid.file": row["grid_file"],
             "atmosphere.given.file": row["climate_file"],
         }
+        outline_file = row["outline_file"]
         run_kitp(
             config_file,
             template_file,
@@ -536,15 +537,6 @@ def run_ensemble():
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
     outline_file = df["outline_file"].iloc[0]
 
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
-    }
-
     seed = 42
     rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
@@ -574,31 +566,36 @@ def run_ensemble():
     print("-" * 80)
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-    for df_idx, df_row in df.iterrows():
-        df_sample = df_row["sample"] if "sample" in df_row else df_idx
-        uq = {
-            "input.file": df_row["boot_file"],
-            "input.regrid.file": df_row["regrid_file"],
-            "energy.bedrock_thermal.file": df_row["heatflux_file"],
-            "grid.file": df_row["grid_file"],
-            "atmosphere.given.file": df_row["climate_file"],
+
+    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
+    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+
+    for _, row in merged_df.iterrows():
+        row_uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "grid.file": row["grid_file"],
+            "atmosphere.given.file": row["climate_file"],
         }
-        for idx, row in uq_df.iterrows():
-            sample = (df_sample + "_uq_" + str(int((row["sample"])))) if "sample" in row else (df_idx + "_" + idx)
-            run_kitp(
-                config_file,
-                template_file,
-                outline_file,
-                path=path,
-                resolution=resolution,
-                nodes=nodes,
-                ntasks=ntasks,
-                queue=queue,
-                walltime=walltime,
-                debug=debug,
-                uq=default,
-                sample=sample,
-            )
+        row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
+        outline_file = row["outline_file"]
+        sample = row["sample"]
+        run_kitp(
+            config_file,
+            template_file,
+            outline_file,
+            path=path,
+            resolution=resolution,
+            nodes=nodes,
+            ntasks=ntasks,
+            queue=queue,
+            walltime=walltime,
+            debug=debug,
+            uq=row_uq,
+            sample=sample,
+        )
 
 
 if __name__ == "__main__":
