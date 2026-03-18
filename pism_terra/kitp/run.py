@@ -576,6 +576,13 @@ def run_ensemble():
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
     for df_idx, df_row in df.iterrows():
         df_sample = df_row["sample"] if "sample" in df_row else df_idx
+        uq = {
+            "input.file": df_row["boot_file"],
+            "input.regrid.file": df_row["regrid_file"],
+            "energy.bedrock_thermal.file": df_row["heatflux_file"],
+            "grid.file": df_row["grid_file"],
+            "atmosphere.given.file": df_row["climate_file"],
+        }
         for idx, row in uq_df.iterrows():
             sample = (df_sample + "_uq_" + str(int((row["sample"])))) if "sample" in row else (df_idx + "_" + idx)
             run_kitp(
