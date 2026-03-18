@@ -21,6 +21,7 @@
 """
 Module for filtering (calibration).
 """
+
 from __future__ import annotations
 
 import warnings

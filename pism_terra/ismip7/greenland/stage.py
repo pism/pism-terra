@@ -20,6 +20,7 @@
 """
 Staging.
 """
+
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
@@ -42,22 +43,19 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 xr.set_options(keep_attrs=True)
 
 
-def stage_greenland(
+def stage(
     config: dict,
     path: str | Path = "input_files",
     bucket: str = "pism-cloud-data",
+    prefix: str = "ismip7_greenland_input",
     force_overwrite: bool = False,
 ) -> pd.DataFrame:
     """
-    Stage glacier inputs (boot, grid, outline, climate) and return a file index.
+    Stage ISMIP7 Greenland inputs and return a file index.
 
-    For the glacier identified by ``rgi_id``, this function:
-    (1) loads the glacier geometry (GeoDataFrame or GPKG),
-    (2) builds a DEM/thickness/bed “boot” dataset,
-    (3) creates a target model grid and derives simple perimeter masks,
-    (4) writes the boot and grid NetCDF files and the glacier outline/domain bounds as GPKG,
-    (5) generates climate forcing files using the configured climate builder,
-    and (6) returns a tidy table (one row per **climate** file) with absolute paths.
+    Syncs pre-built input data from S3, validates each file, and returns
+    a single-row DataFrame with absolute paths to all staged artifacts
+    (boot, grid, heatflux, regrid, retreat, climate, and ocean files).
 
     Parameters
     ----------
@@ -67,6 +65,12 @@ def stage_greenland(
             Path to the grid NetCDF file relative to the input directory.
         - ``"boot_file"`` : str
             Path to the boot NetCDF file relative to the input directory.
+        - ``"heatflux_file"`` : str
+            Path to the heatflux NetCDF file relative to the input directory.
+        - ``"regrid_file"`` : str
+            Path to the regrid NetCDF file relative to the input directory.
+        - ``"retreat_file"`` : str
+            Path to the retreat NetCDF file relative to the input directory.
         - ``"pathway"`` : str
             ISMIP7 pathway identifier.
         - ``"gcm"`` : str
@@ -81,6 +85,8 @@ def stage_greenland(
         Output directory. Created if missing. All staged artifacts are written here.
     bucket : str, default ``"pism-cloud-data"``
         AWS S3 bucket name to sync ISMIP7 input data from.
+    prefix : str, default ``"ismip7_greenland_input"``
+        S3 key prefix (folder path within the bucket).
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
@@ -88,39 +94,10 @@ def stage_greenland(
     Returns
     -------
     pandas.DataFrame
-        One row per produced **climate** file, with absolute-path columns:
-        ``rgi_id``, ``outline`` (GPKG), ``boot_file`` (NetCDF),
-        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF).
-
-    Raises
-    ------
-    KeyError
-        If required keys (e.g., ``"dem"``, ``"climate"``) are missing in ``config``.
-    FileNotFoundError
-        If an RGI path is provided and does not exist.
-    ValueError
-        If ``rgi_id`` is not found in the RGI layer or geometry/CRS is invalid.
-    Exception
-        Propagated errors from DEM/thickness preparation, reprojection, or I/O.
-
-    See Also
-    --------
-    boot_file_from_rgi_id
-        Builds the boot (DEM, thickness, bed, masks) dataset around the glacier.
-    create_grid
-        Creates the target model grid and bounds.
-    CLIMATE
-        Mapping from climate name (e.g., ``"pmip4"``) to a function that generates
-        climate NetCDF file(s) for the glacier domain.
-
-    Notes
-    -----
-    - Applies :func:`apply_perimeter_band` to clean DEM edges.
-    - Enforces simple constraints (non-negative thickness; bed below surface).
-    - Writes two vector layers:
-        - Glacier outline: ``rgi_{rgi_id}.gpkg`` (same CRS as RGI entry).
-        - Domain bounds polygon: ``domain_{rgi_id}.gpkg``.
-    - The returned DataFrame is convenient for downstream orchestration/fan-out.
+        Single-row DataFrame with absolute-path columns including
+        ``boot_file``, ``grid_file``, ``heatflux_file``, ``regrid_file``,
+        ``retreat_file``, ``climate_file``, ``ocean_file``,
+        ``surface_input_file``, and ``frontal_melt_file``.
     """
 
     f = Figlet(font="standard")
@@ -141,13 +118,16 @@ def stage_greenland(
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)
 
-    s3_to_local(bucket, prefix="ismip7_greenland_input", dest=input_path)
+    s3_to_local(bucket, prefix=prefix, dest=input_path)
 
     grid_file = input_path / Path(config["grid_file"])
     check_xr_fully(grid_file)
 
     boot_file = input_path / Path(config["boot_file"])
     check_xr_lazy(boot_file)
+
+    heatflux_file = input_path / Path(config["heatflux_file"])
+    check_xr_lazy(heatflux_file)
 
     regrid_file = input_path / Path(config["regrid_file"])
     check_xr_lazy(regrid_file)
@@ -165,6 +145,7 @@ def stage_greenland(
     files_dict = {
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
+        "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
         "retreat_file": retreat_file.resolve(),
     }
@@ -174,6 +155,20 @@ def stage_greenland(
         )
         check_xr_lazy(forcing_file)
         files_dict[f"{forcing}_file"] = forcing_file.resolve()
+
+    forcing = "climate"
+    surface_input_file = input_path / Path(
+        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
+    )
+    check_xr_lazy(surface_input_file)
+    files_dict["surface_input_file"] = surface_input_file.resolve()
+
+    forcing = "ocean"
+    frontal_melt_file = input_path / Path(
+        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
+    )
+    check_xr_lazy(frontal_melt_file)
+    files_dict["frontal_melt_file"] = frontal_melt_file.resolve()
 
     dfs: list[pd.DataFrame] = []
     dfs.append(pd.DataFrame.from_dict([files_dict]))
@@ -224,7 +219,7 @@ def main():
 
     path.mkdir(parents=True, exist_ok=True)
 
-    is_df = stage_greenland(config, path=path, force_overwrite=force_overwrite)
+    is_df = stage(config, path=path, force_overwrite=force_overwrite)
     is_df.to_csv(path / Path("input") / Path("ismip7_greenland_files.csv"))
 
     if options.bucket:

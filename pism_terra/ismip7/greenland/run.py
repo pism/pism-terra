@@ -28,13 +28,14 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
-from pism_terra.ismip7.greenland.stage import stage_greenland
+from pism_terra.ismip7.greenland.stage import stage
 from pism_terra.sampling import create_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
@@ -168,6 +169,8 @@ def run_greenland(
     log_path.mkdir(parents=True, exist_ok=True)
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
+    scalar_path = output_path / Path("scalar")
+    scalar_path.mkdir(parents=True, exist_ok=True)
     spatial_path = output_path / Path("spatial")
     spatial_path.mkdir(parents=True, exist_ok=True)
     state_path = output_path / Path("state")
@@ -184,12 +187,14 @@ def run_greenland(
         "time_stepping",
     ):
         run.update(getattr(cfg, section))
-    run.update(cfg.stress_balance.selected())
     run.update(cfg.atmosphere.selected())
-    run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
+    run.update(cfg.frontal_melt.selected())
     run.update(cfg.grid.as_params())
+    run.update(cfg.hydrology.selected())
     run.update(cfg.run_info.as_params())
+    run.update(cfg.surface.selected())
+    run.update(cfg.stress_balance.selected())
     run.update(cfg.time.as_params())
 
     template_file = Path(template_file)
@@ -198,6 +203,7 @@ def run_greenland(
 
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
+    writer = cfg.model_dump()["run"]["writer"] if (cfg.model_dump()["run"]["writer"] is not None) else ""
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
@@ -223,16 +229,18 @@ def run_greenland(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
+    scalar_file = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
     run.update(
         {
             "output.file": state_file.resolve(),
-            "output.extra.file": spatial_file.resolve(),
+            "output.spatial.file": spatial_file.resolve(),
+            "output.scalar.file": scalar_file.resolve(),
         }
     )
 
-    run_str = dict2str(sort_dict_by_key(run))
+    run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
 
     run_opts = RunConfig(**cfg.run.model_dump())
     job_opts = JobConfig(**cfg.job.model_dump())
@@ -273,7 +281,7 @@ def run_greenland(
         toml.dump(run_toml, toml_file)
 
     prefix = f"{mpi_str} {cfg.run.executable} "
-    postfix = f"pism-glacier-postprocess {post_file}"
+    postfix = "# End of script"
     rendered_script = "" if debug else template.render(params)
     rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
 
@@ -285,8 +293,7 @@ def run_greenland(
     # Save or print the output
     run_script.write_text(rendered_script)
 
-    print(f"\nSLURM script written to {run_script.resolve()}\n")
-    print(f"Postprocessing script written to {post_file.resolve()}\n")
+    print(f"\nJob script written to {run_script.resolve()}\n")
 
 
 def run_single():
@@ -377,15 +384,22 @@ def run_single():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_greenland(campaign_config, path=path, force_overwrite=force_overwrite)
+
+    bucket = campaign_config["bucket"]
+    prefix = campaign_config["prefix"]
+
+    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
         "input.regrid.file": df["regrid_file"].iloc[0],
+        "frontal_melt.routing.file": df["frontal_melt_file"].iloc[0],
         "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
         "grid.file": df["grid_file"].iloc[0],
+        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
         "surface.given.file": df["climate_file"].iloc[0],
+        "hydrology.surface_input.file": df["surface_input_file"].iloc[0],
         "ocean.th.file": df["ocean_file"].iloc[0],
     }
 
@@ -457,6 +471,12 @@ def run_ensemble():
         default=None,
     )
     parser.add_argument(
+        "--posterior-file",
+        help="CSV file posterior parameter distributions to sample from. Default=None.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
@@ -467,11 +487,6 @@ def run_ensemble():
         help="Force downloading all files.",
         action="store_true",
         default=False,
-    )
-    parser.add_argument(
-        "DATA_FILE",
-        help="CSV with path to input data.",
-        nargs=1,
     )
     parser.add_argument(
         "CONFIG_FILE",
@@ -496,6 +511,7 @@ def run_ensemble():
     template_file = options.TEMPLATE_FILE[0]
     uq_file = options.UQ_FILE[0]
     resolution = options.resolution
+    posterior_file = options.posterior_file
     debug = options.debug
     queue = options.queue
     ntasks = options.ntasks
@@ -511,7 +527,11 @@ def run_ensemble():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_greenland(campaign_config, path=input_path, force_overwrite=force_overwrite)
+
+    bucket = campaign_config["bucket"]
+    prefix = campaign_config["prefix"]
+
+    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
@@ -523,10 +543,22 @@ def run_ensemble():
         "ocean.th.file": df["ocean_file"].iloc[0],
     }
 
+    seed = 42
+    rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
     n_samples = uq.samples
     mapping = uq.mapping
-    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=42)
+
+    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
+    if posterior_file is not None:
+        posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
+        choice_indices = rng.choice(range(len(posterior_df)), n_samples)
+        posterior_sampled_df = posterior_df.iloc[choice_indices].reset_index(drop=True)
+        duplicate_cols = list(set(uq_df.columns) & set(posterior_sampled_df.columns) - {"sample"})
+        if duplicate_cols:
+            print(f"WARNING: posterior overrides UQ for columns: {sorted(duplicate_cols)}")
+            uq_df = uq_df.drop(columns=duplicate_cols)
+        uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
     uq_file = output_path / Path("uq.csv")
     uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)

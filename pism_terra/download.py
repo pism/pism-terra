@@ -15,9 +15,9 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=consider-using-with,too-many-positional-arguments
+# pylint: disable=consider-using-with,too-many-positional-arguments,broad-exception-caught
 """
-Module for data processing.
+Module for downloading data.
 """
 
 from __future__ import annotations
@@ -30,10 +30,10 @@ import zipfile
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import NamedTuple
 from urllib.parse import urlparse
 
+import boto3
 import cdsapi
 import earthaccess
 import numpy as np
@@ -114,7 +114,7 @@ def unzip_files(
 
     Parameters
     ----------
-    files : List[Union[str, Path]]
+    files : list[Union[str, Path]]
         List of file paths to unzip.
     output_dir : Union[str, Path], optional
         The directory where the unzipped files will be saved, by default ".".
@@ -125,24 +125,27 @@ def unzip_files(
 
     Returns
     -------
-    List[Path]
+    list[Path]
         List of paths to the unzipped files.
     """
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for f in files:
-            futures.append(executor.submit(unzip_file, f, str(output_dir), overwrite=overwrite))
-        for future in as_completed(futures):
+        futures = {
+            executor.submit(unzip_file, f, str(output_dir), overwrite=overwrite, verbose=False): f for f in files
+        }
+        pbar = tqdm(as_completed(futures), total=len(futures), desc="Extracting archives", unit="file")
+        for future in pbar:
             try:
                 future.result()
+                pbar.set_postfix_str(f"{Path(futures[future]).stem} ✓")
             except (IOError, ValueError) as e:
-                print(f"An error occurred: {e}", unzip_file)
+                pbar.set_postfix_str(f"{Path(futures[future]).stem} ✗")
+                print(f"An error occurred: {e}")
 
     responses = list(Path(output_dir).rglob("*.nc"))
     return responses
 
 
-def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
+def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False, verbose: bool = True) -> None:
     """
     Unzip a file to a specified directory with a progress bar and optional overwrite.
 
@@ -154,6 +157,8 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
         The directory where the contents will be extracted.
     overwrite : bool, optional
         Whether to overwrite existing files, by default False.
+    verbose : bool, default True
+        If True, show a per-file progress bar.
     """
     # Ensure the extract_to directory exists
     Path(extract_to).mkdir(parents=True, exist_ok=True)
@@ -164,7 +169,7 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
         file_list = zip_ref.namelist()
 
         # Iterate over the file names with a progress bar
-        for file in tqdm(file_list, desc="Extracting files", unit="file"):
+        for file in tqdm(file_list, desc="Extracting files", unit="file", disable=not verbose):
             file_path = Path(extract_to) / file
             if not file_path.exists() or overwrite:
                 zip_ref.extract(member=file, path=extract_to)
@@ -607,7 +612,7 @@ def download_earthaccess(filter_str: str | None = None, result_dir: Path | str =
 
     Returns
     -------
-    List
+    list
         A list of paths to the downloaded files.
     """
     p = Path(result_dir)
@@ -632,6 +637,8 @@ def download_netcdf(
     """
     Download a dataset from the specified URL and return it as an xarray Dataset.
 
+    Supports both HTTP(S) and S3 URLs (``s3://bucket/key``).
+
     Parameters
     ----------
     url : str, optional
@@ -649,26 +656,34 @@ def download_netcdf(
     >>> dataset = download_dataset()
     >>> print(dataset)
     """
-    # Get the file size from the headers
-    response = requests.head(url, timeout=10)
-    file_size = int(response.headers.get("content-length", 0))
+    tmp = Path(tempfile.mktemp(suffix=".nc"))
+    try:
+        if url.startswith("s3://"):
+            parts = url.replace("s3://", "").split("/", 1)
+            bucket, key = parts[0], parts[1]
+            s3 = boto3.client("s3")
+            meta = s3.head_object(Bucket=bucket, Key=key)
+            file_size = meta["ContentLength"]
+            progress = tqdm(total=file_size, unit="iB", unit_scale=True)
+            print(f"Downloading {url}")
+            s3.download_file(bucket, key, str(tmp), Callback=progress.update)
+            progress.close()
+        else:
+            response = requests.head(url, timeout=10)
+            file_size = int(response.headers.get("content-length", 0))
+            progress = tqdm(total=file_size, unit="iB", unit_scale=True)
+            print(f"Downloading {url}")
+            with requests.get(url, stream=True, timeout=10) as r:
+                r.raise_for_status()
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        f.write(chunk)
+                        progress.update(len(chunk))
+            progress.close()
 
-    # Initialize the progress bar
-    progress = tqdm(total=file_size, unit="iB", unit_scale=True)
-
-    # Download the file in chunks and update the progress bar
-    print(f"Downloading {url}")
-    with requests.get(url, stream=True, timeout=10) as r:
-        r.raise_for_status()
-        with open("temp.nc", "wb") as f:
-            for chunk in r.iter_content(chunk_size=chunk_size):
-                f.write(chunk)
-                progress.update(len(chunk))
-    progress.close()
-
-    with NamedTemporaryFile(suffix=".nc", delete=False) as xr_file:
-        # Open the downloaded file with xarray
-        return xr.open_dataset(xr_file)
+        return xr.open_dataset(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def download_gebco(
@@ -736,3 +751,50 @@ def download_gebco(
         if check_xr_lazy(nc_path):
             return nc_path
     raise RuntimeError(f"Found NetCDF files in {target_dir}, but none could be opened successfully.")
+
+
+def download_hirham(
+    base_url: str,
+    start_year: int,
+    end_year: int,
+    output_dir: str | Path = ".",
+    max_workers: int = 4,
+) -> list[Path]:
+    """
+    Download HIRHAM files in parallel.
+
+    Parameters
+    ----------
+    base_url : str
+        The base URL for downloading HIRHAM data.
+    start_year : int
+        The starting year of the files to download.
+    end_year : int
+        The ending year of the files to download.
+    output_dir : Union[str, Path], optional
+        The directory where the downloaded files will be saved, by default ".".
+    max_workers : int, optional
+        The maximum number of threads to use for downloading, by default 4.
+
+    Returns
+    -------
+    list[Path]
+        List of paths to the downloaded files.
+    """
+    print(f"Downloading HIRHAM5 from {base_url}")
+    responses = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for year in range(start_year, end_year + 1):
+            year_file = f"{year}.zip"
+            url = base_url + year_file
+            output_path = output_dir / Path(year_file)
+            futures.append(executor.submit(download_file, url, output_path))
+            responses.append(output_path)
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"An error occurred: {e}")
+
+    return responses

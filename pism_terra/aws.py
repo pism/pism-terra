@@ -19,9 +19,11 @@
 """
 AWS syncing.
 """
+
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 from typing import Iterable
@@ -30,6 +32,8 @@ from urllib.parse import urlparse
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------
 # Pure boto3 implementation (one-way syncs)
@@ -187,6 +191,10 @@ def s3_to_local(
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
 
+    # Ensure trailing slash so "foo" doesn't also match "foo_testing"
+    if prefix and not prefix.endswith("/"):
+        prefix = prefix + "/"
+
     s3 = boto3.client("s3", config=Config(retries={"max_attempts": 10}))
     paginator = s3.get_paginator("list_objects_v2")
     txconf = TransferConfig(
@@ -197,12 +205,14 @@ def s3_to_local(
     )
 
     s3_local_abs = set()
+    n_objects = 0
 
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
             if key.endswith("/") or key in exclude_keys:
                 continue
+            n_objects += 1
             rel = key[len(prefix) :] if prefix and key.startswith(prefix) else key
             local_path = dest / rel.lstrip("/")
             local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,6 +223,13 @@ def s3_to_local(
                     s3.download_file(bucket, key, str(local_path), Config=txconf)
 
             s3_local_abs.add(str(local_path.resolve()))
+
+    if n_objects == 0:
+        logger.warning(
+            "No objects found in s3://%s/%s — check that the bucket and prefix are correct.",
+            bucket,
+            prefix,
+        )
 
     if delete_extra:
         for p in dest.rglob("*"):

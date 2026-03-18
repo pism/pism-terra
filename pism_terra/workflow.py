@@ -589,7 +589,7 @@ def check_dataset_fully(ds: xr.Dataset) -> None:
     _ = ds.load()
 
 
-def check_xr_lazy(path: Path | str) -> bool:
+def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     Open a dataset and run a **sampled** health check with xarray.
 
@@ -603,6 +603,8 @@ def check_xr_lazy(path: Path | str) -> bool:
     path : str or pathlib.Path
         Path to a CF-compliant NetCDF/Zarr dataset readable by
         :func:`xarray.open_dataset`.
+    verbose : bool, default True
+        If True, print validation status messages.
 
     Returns
     -------
@@ -628,13 +630,16 @@ def check_xr_lazy(path: Path | str) -> bool:
     try:
         ds = xr.open_dataset(p)
         check_dataset_lazy(ds)  # your sampled checker
-        print(f"{p} is valid ✓")
+        if verbose:
+            print(f"{p} is valid ✓")
         is_ok = True
     except FileNotFoundError:
-        print(f"{p} is not valid ✗")
+        if verbose:
+            print(f"{p} is not valid ✗")
         is_ok = False
     except Exception as e:
-        print(f"{p} is not valid ✗ ({type(e).__name__}: {e})")
+        if verbose:
+            print(f"{p} is not valid ✗ ({type(e).__name__}: {e})")
         is_ok = False
     return is_ok
 

@@ -19,6 +19,7 @@
 """
 Prepare RGI.
 """
+
 # pylint: disable=broad-exception-caught
 
 import shutil

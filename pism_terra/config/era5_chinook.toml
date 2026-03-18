@@ -17,12 +17,13 @@ nodes = 1
 
 [campaign]
 
-name = "Calibration"
+bucket = "pism-cloud-data"
 climate = "era5"
 dem = "glo_30"
 ice_thickness = "maffezzoli"
-bucket = "pism-cloud-data"
-prefix = "glaciers"
+name = "Calibration"
+prefix = "glacier"
+rgi_file = "rgi_c.gpkg"
 velocity = "its_live"
 
 [time]

@@ -3,9 +3,9 @@ gcms = ["CESM2-WACCM"]
 
 [domain]
 
-x_bounds = [-654500, 894500]
-y_bounds = [-504500, -3515500]
-resolution = 1000
+x_bounds = [-720500.0, 961500.0]
+y_bounds = [-3450500.0, -569500.0]
+resolution = "1000m"
 
 [pathway]
 
