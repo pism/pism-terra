@@ -145,14 +145,14 @@ def postprocess_glacier(config_file: str | Path):
     config = json.loads(json.dumps(config_toml))
 
     start = time.time()
-    basin_file = "/home/andy/pism-ragis/data/mouginot/Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+    outline_file = config["basin"]["outline"]
 
     client = Client(n_workers=4, threads_per_worker=1, memory_limit="8GiB")
     print(f"Dask dashboard: {client.dashboard_link}")
 
     for o in ["spatial"]:
         s_file = Path(config["output"][o])
-        process_file(s_file, basin_file, client)
+        process_file(s_file, outline_file, client)
 
     client.close()
 
