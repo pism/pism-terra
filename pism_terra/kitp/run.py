@@ -404,7 +404,6 @@ def run_single():
     print("Generate Run for KITP")
     print("-" * 120)
     for idx, row in df.iterrows():
-        print(row)
         uq = {
             "input.file": row["boot_file"],
             "input.regrid.file": row["regrid_file"],
