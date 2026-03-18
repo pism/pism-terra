@@ -52,6 +52,7 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 def run_kitp(
     config_file: str | Path,
     template_file: Path | str,
+    outline_file: Path | str,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -80,6 +81,8 @@ def run_kitp(
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template (e.g., SLURM/LSF script). The
         context is populated from validated ``RunConfig`` and ``JobConfig``.
+    outline_file : str or pathlib.Path
+        Path to a geopandas file with the glacier outline.
     path : str or pathlib.Path, optional
         Base output directory. A subfolder ``<path>/<rgi_id>`` is created with
         ``output/`` and ``run_scripts/`` subdirectories. Default is ``"result"``.
@@ -153,6 +156,7 @@ def run_kitp(
     ... )
     """
 
+    outline_file = Path(outline_file)
     cfg = load_config(config_file)
 
     if resolution:
@@ -268,6 +272,7 @@ def run_kitp(
         params.update(JobConfig(**job_kwargs).as_params())
 
     run_toml = {
+        "basin": {"basin": "Mouginot/Rignot", "outline": str(outline_file.resolve())},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "state": str(state_file.resolve()),
@@ -390,6 +395,7 @@ def run_single():
     prefix = campaign_config["prefix"]
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
+    outline_file = df["outline_file"].iloc[0]
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -409,6 +415,7 @@ def run_single():
         run_kitp(
             config_file,
             template_file,
+            outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
@@ -527,6 +534,7 @@ def run_ensemble():
     prefix = campaign_config["prefix"]
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
+    outline_file = df["outline_file"].iloc[0]
 
     default = {
         "input.file": df["boot_file"].iloc[0],
@@ -534,6 +542,7 @@ def run_ensemble():
         "grid.file": df["grid_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
         "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
+        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
     }
 
     seed = 42
@@ -565,20 +574,24 @@ def run_ensemble():
     print("-" * 80)
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-    for idx, row in uq_df.iterrows():
-        run_kitp(
-            config_file,
-            template_file,
-            path=path,
-            resolution=resolution,
-            nodes=nodes,
-            ntasks=ntasks,
-            queue=queue,
-            walltime=walltime,
-            debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
-        )
+    for df_idx, df_row in df.iterrows():
+        df_sample = df_row["sample"] if "sample" in df_row else df_idx
+        for idx, row in uq_df.iterrows():
+            sample = (df_sample + "_uq_" + str(int((row["sample"])))) if "sample" in row else (df_idx + "_" + idx)
+            run_kitp(
+                config_file,
+                template_file,
+                outline_file,
+                path=path,
+                resolution=resolution,
+                nodes=nodes,
+                ntasks=ntasks,
+                queue=queue,
+                walltime=walltime,
+                debug=debug,
+                uq=default,
+                sample=sample,
+            )
 
 
 if __name__ == "__main__":

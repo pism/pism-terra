@@ -124,12 +124,15 @@ def stage(
     regrid_file = input_path / Path(config["regrid_file"])
     check_xr_lazy(regrid_file)
 
+    outline_file = input_path / Path(config["outline_file"])
+
     # Build file index (one row per climate file)
     files_dict: dict[str, str | Path] = {
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
         "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
+        "outline_file": outline_file.resolve(),
     }
 
     for key in ("gcms", "present_day_forcings", "future_forcings"):

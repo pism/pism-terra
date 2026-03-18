@@ -33,7 +33,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0005-01-01"
+'time.end' =  "0300-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -64,7 +64,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "monthly"
+'output.spatial.times' = "yearly"
 'output.spatial.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity,ice_mass,mass_fluxes"
 'output.scalar.file' = "none"
 'output.scalar.times' = "monthly"

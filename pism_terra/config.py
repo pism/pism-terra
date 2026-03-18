@@ -1197,6 +1197,8 @@ class CampaignConfig(BaseModel):
     ----------
     boot_file : str or None
         Path to the boot NetCDF file (relative to the input directory).
+    outline_file : str or None
+        Path to GPKG basin file (relative to the input directory).
     bucket : str or None
         S3 bucket (e.g., ``"pism-cloud7-data"``).
     climate : str or None
@@ -1239,6 +1241,7 @@ class CampaignConfig(BaseModel):
     present_day_forcings: str | list | None = Field(default=None)
     future_forcings: str | list | None = Field(default=None)
     boot_file: str | None = Field(default=None)
+    outline_file: str | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     heatflux_file: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
