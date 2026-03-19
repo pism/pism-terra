@@ -159,7 +159,11 @@ def _process_single_forcing(
         ]
         k, v = m_var, ismip7_to_pism[m_var]
         tas_replace = "-setrtoc,0,230,230 -setrtoc,303,403,303" if m_var == "tas" else ""
-        merge_cmd = f"-chname,{k},{v} {tas_replace} -mergetime [ " + " ".join(str(f) for f in urls) + " ]"
+        merge_cmd = (
+            f"-chname,{k},{v} {tas_replace} -setgrid,{str(grid_file)} -mergetime [ "
+            + " ".join(str(f) for f in urls)
+            + " ]"
+        )
         merge_cmds.append(merge_cmd)
     output_file = output_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc")
 

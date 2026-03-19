@@ -33,7 +33,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0005-01-01"
+'time.end' =  "0002-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -152,8 +152,10 @@ model = "pdd"
 
 [calving]
 
-'calving.methods' = 'vonmises_calving'
-'calving.vonmises_calving.sigma_max' = 7.5e5
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.vonmises_calving.sigma_max' = 5.0e5
+'calving.thickness_calving.threshold' = 100.0
+
 
 [atmosphere]
 

@@ -152,8 +152,9 @@ model = "pdd"
 
 [calving]
 
-'calving.methods' = 'vonmises_calving'
-'calving.vonmises_calving.sigma_max' = 7.5e5
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.vonmises_calving.sigma_max' = 5.0e5
+'calving.thickness_calving.threshold' = 100.0
 
 [atmosphere]
 
