@@ -68,7 +68,7 @@ heatflux_file  = "heatflux_g2400m_GreenlandObsISMIP7-v1.3.nc"
 'output.scalar.times' = 'daily'
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "bmelt,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat"
+'output.spatial.vars' = "bmelt,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,topg,ice_mass,mass_fluxes"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 'output.ISMIP6' = "no"
@@ -97,7 +97,7 @@ model = "enthalpy"
 
 [stress_balance]
 
-model = 'blatter'
+model = 'hybrid'
 
 [stress_balance.options.blatter]
 
