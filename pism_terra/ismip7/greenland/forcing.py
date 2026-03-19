@@ -151,6 +151,8 @@ def _process_single_forcing(
     cdo = Cdo()
     cdo.debug = True
 
+    grid_file = file_localizer("s3://pism-cloud-data/ismip7_extra/grid.txt", dest=output_path)
+
     merge_cmds = []
     for m_var in fields:
         urls = [
@@ -167,7 +169,6 @@ def _process_single_forcing(
         merge_cmds.append(merge_cmd)
     output_file = output_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc")
 
-    grid_file = file_localizer("s3://pism-cloud-data/ismip7_extra/grid.txt", dest=output_path)
     cdo.setmisstoc(
         0,
         input=f"""-setgrid,{str(grid_file)} -settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{start_year}-01-16 12:00,,{freq}' -merge """
