@@ -558,11 +558,12 @@ def run_ensemble():
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Generate Ensemble Runs for Greenland")
-    print("-" * 80)
+    print("-" * 120)
+
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
 

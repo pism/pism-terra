@@ -1229,6 +1229,8 @@ class CampaignConfig(BaseModel):
         Path to the retreat NetCDF file (relative to the input directory).
     start_year : str, float, or None
         Start year of the forcing period.
+    end_year : str, float, or None
+        End year of the forcing period.
     version : str or None
         Dataset or experiment version string.
     """
@@ -1252,6 +1254,7 @@ class CampaignConfig(BaseModel):
     retreat_file: str | None = Field(default=None)
     rgi_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
+    end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:

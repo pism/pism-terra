@@ -390,27 +390,27 @@ def run_single():
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "frontal_melt.routing.file": df["frontal_melt_file"].iloc[0],
-        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "surface.given.file": df["climate_file"].iloc[0],
-        "hydrology.surface_input.file": df["surface_input_file"].iloc[0],
-        "ocean.th.file": df["ocean_file"].iloc[0],
-    }
-
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Generate Run for ISMIP7")
-    print("-" * 80)
+    print("-" * 120)
     for idx, row in df.iterrows():
+        uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "frontal_melt.routing.file": row["frontal_melt_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
+            "grid.file": row["grid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "atmosphere.given.file": row["climate_file"],
+            "surface.given.file": row["climate_file"],
+            "hydrology.surface_input.file": row["surface_input_file"],
+            "ocean.th.file": row["ocean_file"],
+        }
+        sample = int(row["sample"]) if "sample" in row else idx
         run_greenland(
             config_file,
             template_file,
@@ -421,8 +421,8 @@ def run_single():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=uq,
+            sample=sample,
         )
 
 
@@ -565,14 +565,29 @@ def run_ensemble():
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Generate Ensemble Runs for Greenland")
-    print("-" * 80)
+    print("-" * 120)
+
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-    for idx, row in uq_df.iterrows():
+
+    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
+    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+
+    for _, row in merged_df.iterrows():
+        row_uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "grid.file": row["grid_file"],
+            "atmosphere.given.file": row["climate_file"],
+        }
+        row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
+        sample = row["sample"]
         run_greenland(
             config_file,
             template_file,
@@ -583,8 +598,8 @@ def run_ensemble():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=row_uq,
+            sample=sample,
         )
 
 

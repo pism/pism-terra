@@ -102,11 +102,11 @@ def stage(
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Stage ISMIP7 Greenland")
-    print("-" * 80)
+    print("-" * 120)
     print("")
 
     # Outputs dir
@@ -136,7 +136,8 @@ def stage(
     check_xr_lazy(retreat_file)
 
     pathway = config["pathway"]
-    gcm = config["gcm"]
+    gcms = config["gcms"]
+    gcms = [gcms] if isinstance(gcms, str) else gcms
     version = config["version"]
     start_year = config["start_year"]
     end_year = config["end_year"]
@@ -149,29 +150,31 @@ def stage(
         "regrid_file": regrid_file.resolve(),
         "retreat_file": retreat_file.resolve(),
     }
-    for forcing in ["climate", "ocean"]:
-        forcing_file = input_path / Path(
-            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-        )
-        check_xr_lazy(forcing_file)
-        files_dict[f"{forcing}_file"] = forcing_file.resolve()
-
-    forcing = "climate"
-    surface_input_file = input_path / Path(
-        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-    )
-    check_xr_lazy(surface_input_file)
-    files_dict["surface_input_file"] = surface_input_file.resolve()
-
-    forcing = "ocean"
-    frontal_melt_file = input_path / Path(
-        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-    )
-    check_xr_lazy(frontal_melt_file)
-    files_dict["frontal_melt_file"] = frontal_melt_file.resolve()
 
     dfs: list[pd.DataFrame] = []
-    dfs.append(pd.DataFrame.from_dict([files_dict]))
+    for gcm in gcms:
+        for forcing in ["climate", "ocean"]:
+            forcing_file = input_path / Path(
+                f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
+            )
+            check_xr_lazy(forcing_file)
+            files_dict[f"{forcing}_file"] = forcing_file.resolve()
+
+        forcing = "climate"
+        surface_input_file = input_path / Path(
+            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
+        )
+        check_xr_lazy(surface_input_file)
+        files_dict["surface_input_file"] = surface_input_file.resolve()
+
+        forcing = "ocean"
+        frontal_melt_file = input_path / Path(
+            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
+        )
+        check_xr_lazy(frontal_melt_file)
+        files_dict["frontal_melt_file"] = frontal_melt_file.resolve()
+        files_dict["sample"] = gcm
+        dfs.append(pd.DataFrame.from_dict([files_dict]))
 
     df = pd.concat(dfs).reset_index(drop=True)
     return df
