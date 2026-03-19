@@ -533,16 +533,6 @@ def run_ensemble():
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "surface.given.file": df["climate_file"].iloc[0],
-        "ocean.th.file": df["ocean_file"].iloc[0],
-    }
-
     seed = 42
     rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
@@ -582,9 +572,14 @@ def run_ensemble():
         row_uq = {
             "input.file": row["boot_file"],
             "input.regrid.file": row["regrid_file"],
-            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "frontal_melt.routing.file": row["frontal_melt_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
             "grid.file": row["grid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
             "atmosphere.given.file": row["climate_file"],
+            "surface.given.file": row["climate_file"],
+            "hydrology.surface_input.file": row["surface_input_file"],
+            "ocean.th.file": row["ocean_file"],
         }
         row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
         sample = row["sample"]
