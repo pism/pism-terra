@@ -165,6 +165,7 @@ model = "given"
 
 'atmosphere.models' = "given"
 'atmosphere.given.file' = "none"
+'atmosphere.given.periodic' = "yes"
 
 [ocean]
 
