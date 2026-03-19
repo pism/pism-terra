@@ -395,7 +395,7 @@ def run_single():
     prefix = campaign_config["prefix"]
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-
+    print(df)
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
     print("=" * 120)

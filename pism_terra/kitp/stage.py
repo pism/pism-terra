@@ -149,6 +149,7 @@ def stage(
     climate_file = input_path / Path(f"HIRHAM5-ERA5_YMM_1990_2019_{version}.nc")
     check_xr_lazy(climate_file)
     files_dict["climate_file"] = climate_file.resolve()
+    files_dict["sample"] = "HIRHAM5-ERA5_YMM_1990_2019"
     dfs.append(pd.DataFrame.from_dict([files_dict]))
     for task in tasks:
         gcm, pd_forcing, ff = task
