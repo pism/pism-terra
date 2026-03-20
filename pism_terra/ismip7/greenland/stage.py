@@ -135,6 +135,8 @@ def stage(
     retreat_file = input_path / Path(config["retreat_file"])
     check_xr_lazy(retreat_file)
 
+    outline_file = input_path / Path(config["outline_file"])
+
     pathway = config["pathway"]
     gcms = config["gcms"]
     gcms = [gcms] if isinstance(gcms, str) else gcms
@@ -149,6 +151,7 @@ def stage(
         "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
         "retreat_file": retreat_file.resolve(),
+        "outline_file": outline_file.resolve(),
     }
 
     dfs: list[pd.DataFrame] = []

@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,11 @@ def download_from_s3(s3_uri: str, dest: str | Path) -> Path:
     prefix = parsed_url.path.lstrip("/")
 
     s3 = boto3.client("s3")
-    s3.download_file(bucket, prefix, str(dest))
+    head = s3.head_object(Bucket=bucket, Key=prefix)
+    total_size = head["ContentLength"]
+
+    with tqdm(total=total_size, unit="B", unit_scale=True, desc=dest.name) as pbar:
+        s3.download_file(bucket, prefix, str(dest), Callback=pbar.update)
 
     return dest
 

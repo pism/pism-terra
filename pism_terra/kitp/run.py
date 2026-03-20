@@ -52,7 +52,7 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 def run_kitp(
     config_file: str | Path,
     template_file: Path | str,
-    outline_file: Path | str,
+    outline_file: Path | str | None,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -156,7 +156,6 @@ def run_kitp(
     ... )
     """
 
-    outline_file = Path(outline_file)
     cfg = load_config(config_file)
 
     if resolution:
@@ -271,8 +270,9 @@ def run_kitp(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     run_toml = {
-        "basin": {"basin": "Mouginot/Rignot", "outline": str(outline_file.resolve())},
+        "basin": {"basin": "Mouginot/Rignot", "outline": outline_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "state": str(state_file.resolve()),
@@ -411,7 +411,7 @@ def run_single():
             "grid.file": row["grid_file"],
             "atmosphere.given.file": row["climate_file"],
         }
-        outline_file = row["outline_file"]
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_kitp(
             config_file,
             template_file,
@@ -534,7 +534,6 @@ def run_ensemble():
     prefix = campaign_config["prefix"]
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-    outline_file = df["outline_file"].iloc[0]
 
     seed = 42
     rng = np.random.default_rng(seed=seed)
@@ -580,7 +579,7 @@ def run_ensemble():
             "atmosphere.given.file": row["climate_file"],
         }
         row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
-        outline_file = row["outline_file"]
+        outline_file = row["outline_file"] if "outline_file" in row else None
         sample = row["sample"]
         run_kitp(
             config_file,

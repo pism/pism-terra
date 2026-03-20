@@ -52,6 +52,7 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 def run_greenland(
     config_file: str | Path,
     template_file: Path | str,
+    outline_file: Path | str | None,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -80,6 +81,8 @@ def run_greenland(
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template (e.g., SLURM/LSF script). The
         context is populated from validated ``RunConfig`` and ``JobConfig``.
+    outline_file : str or pathlib.Path
+        Path to a geopandas file with the glacier outline.
     path : str or pathlib.Path, optional
         Base output directory. A subfolder ``<path>/<rgi_id>`` is created with
         ``output/`` and ``run_scripts/`` subdirectories. Default is ``"result"``.
@@ -266,7 +269,9 @@ def run_greenland(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     run_toml = {
+        "basin": {"basin": "Mouginot/Rignot", "outline": outline_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "state": str(state_file.resolve()),
@@ -411,9 +416,11 @@ def run_single():
             "ocean.th.file": row["ocean_file"],
         }
         sample = int(row["sample"]) if "sample" in row else idx
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_greenland(
             config_file,
             template_file,
+            outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
@@ -583,9 +590,11 @@ def run_ensemble():
         }
         row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
         sample = row["sample"]
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_greenland(
             config_file,
             template_file,
+            outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
