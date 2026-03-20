@@ -38,6 +38,7 @@ from tqdm import tqdm
 
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
 
 
 def process_file(
@@ -74,49 +75,48 @@ def process_file(
     basin = gpd.read_file(basin_file)
 
     start = time.time()
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    ds = (
-        xr.open_dataset(
-            infile,
-            decode_times=False,
-            decode_timedelta=False,
-            chunks="auto",
-            engine="h5netcdf",
-        )
-        .drop_vars("time_bounds", errors="ignore")
-        .rio.set_spatial_dims(x_dim="x", y_dim="y")
+    ds = xr.open_dataset(
+        infile,
+        decode_timedelta=False,
+        decode_times=False,
+        chunks="auto",
+        engine="h5netcdf",
     )
-
-    ds = ds.rio.write_crs(crs, inplace=False)
 
     # Separate variables that lack spatial (x, y) dimensions, as rio.clip cannot handle them
     non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
     ds_non_spatial = ds[non_spatial_vars]
-    ds = ds.drop_vars(non_spatial_vars)
-
+    ds = ds.drop_vars(non_spatial_vars).rio.write_crs(crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
     ds = client.persist(ds)
     progress(ds)
 
     gis_clipped = ds.rio.clip(basin[basin[column] == "GIS"].geometry, drop=False)
     gis_clipped = xr.merge([gis_clipped, ds_non_spatial])
+
     print(f"Writing {clipped_file}")
     comp = {"zlib": True, "complevel": 2}
     encoding = {var: comp for var in gis_clipped.data_vars}
-    write_clipped = gis_clipped.to_netcdf(clipped_file, engine="h5netcdf", encoding=encoding, compute=False)
+    write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False)
     future_clipped = client.compute(write_clipped)
     progress(future_clipped)
 
     dss = []
-    for _, basin in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
-        ds_clipped = ds.rio.clip([basin.geometry], drop=False)
-        dss.append(ds_clipped.expand_dims({"basin": [basin[column]]}))
+    for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
+        ds_clipped = ds.rio.clip([row.geometry], drop=False)
+        dss.append(ds_clipped.expand_dims({"basin": [row[column]]}))
 
     clipped = xr.concat(dss, dim="basin")
 
     print(f"Writing {scalar_file}")
     scalar = clipped.sum(dim=["y", "x"])
+    # Keep dimensionless non-spatial vars (e.g. pism_config) but skip those with a time dim to avoid duplicates
+    scalar_extras = ds_non_spatial[list(ds_non_spatial.data_vars)]
+    if scalar_extras.data_vars:
+        scalar = xr.merge([scalar, scalar_extras])
     encoding_scalar = {var: comp for var in scalar.data_vars}
-    write_scalar = scalar.to_netcdf(scalar_file, engine="h5netcdf", encoding=encoding_scalar, compute=False)
+    write_scalar = scalar.to_netcdf(scalar_file, encoding=encoding_scalar, compute=False)
     future_scalar = client.compute(write_scalar)
     progress(future_scalar)
 
