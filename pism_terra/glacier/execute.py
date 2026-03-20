@@ -67,6 +67,7 @@ def ensure_pism_terra_structure(script: Path):
     (rgi_dir / "input").mkdir(parents=True, exist_ok=True)
     (rgi_dir / "logs").mkdir(parents=True, exist_ok=True)
     (rgi_dir / "output" / "post_processing").mkdir(parents=True, exist_ok=True)
+    (rgi_dir / "output" / "scalar").mkdir(parents=True, exist_ok=True)
     (rgi_dir / "output" / "spatial").mkdir(parents=True, exist_ok=True)
     (rgi_dir / "output" / "state").mkdir(parents=True, exist_ok=True)
 
