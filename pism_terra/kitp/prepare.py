@@ -21,6 +21,7 @@
 Prepare ISMIP7 Greenland data sets.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -54,6 +55,8 @@ from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -106,21 +109,27 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    logging.basicConfig(level=logging.INFO, format=log_format)
+    file_handler = logging.FileHandler(output_path / "prepare.log")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logging.getLogger().addHandler(file_handler)
+
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print("Preparing ISMIP7 Greenland data")
-    print("-" * 120)
-    print("")
+    logger.info("=" * 120)
+    logger.info("\n%s", banner)
+    logger.info("=" * 120)
+    logger.info("Preparing ISMIP7 Greenland data")
+    logger.info("-" * 120)
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
     version = config["version"]
 
-    print("-" * 120)
-    print("Grid File")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Grid File")
+    logger.info("-" * 120)
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
@@ -137,9 +146,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     check_xr_fully(grid_file)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
-    print("-" * 120)
-    print("Boot File")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Boot File")
+    logger.info("-" * 120)
     obs_files = prepare_observations(
         url,
         obs_path,
@@ -151,9 +160,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     for v in obs_files.values():
         check_xr_lazy(v)
 
-    print("-" * 120)
-    print("Baseline Climatology")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Baseline Climatology")
+    logger.info("-" * 120)
     start_year = config["pathway"]["baseline"]["start_year"]
     end_year = config["pathway"]["baseline"]["end_year"]
     baseline_file = prepare_baseline_climatology(
@@ -165,9 +174,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         force_overwrite=force_overwrite,
     )
 
-    print("-" * 120)
-    print("Anomaly Forcing")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Anomaly Forcing")
+    logger.info("-" * 120)
 
     bucket = config["forcing"]["bucket"]
     prefix = config["forcing"]["prefix"]
@@ -193,13 +202,13 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     s3_output_path = output_path / Path(config["prefix"])
     s3_output_path.mkdir(parents=True, exist_ok=True)
-    print("-" * 120)
-    print(f"Copying input files to {s3_output_path}")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Copying input files to %s", s3_output_path)
+    logger.info("-" * 120)
     for f in input_files:
         dest = s3_output_path / Path(f).name
         shutil.copy2(f, dest)
-        print(f"  {dest}")
+        logger.info("  %s", dest)
 
     return {
         "config": config,

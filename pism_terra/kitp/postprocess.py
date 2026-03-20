@@ -22,6 +22,7 @@ Postprocessing.
 """
 
 import json
+import logging
 import time
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -39,6 +40,8 @@ from tqdm import tqdm
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
+
+logger = logging.getLogger(__name__)
 
 
 def process_file(
@@ -95,7 +98,7 @@ def process_file(
     gis_clipped = ds.rio.clip(basin[basin[column] == "GIS"].geometry, drop=False)
     gis_clipped = xr.merge([gis_clipped, ds_non_spatial])
 
-    print(f"Writing {clipped_file}")
+    logger.info("Writing %s", clipped_file)
     comp = {"zlib": True, "complevel": 2}
     encoding = {var: comp for var in gis_clipped.data_vars}
     write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False)
@@ -105,24 +108,22 @@ def process_file(
     dss = []
     for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
         ds_clipped = ds.rio.clip([row.geometry], drop=False)
-        dss.append(ds_clipped.expand_dims({"basin": [row[column]]}))
+        ds_sum = ds_clipped.sum(dim=["y", "x"]).compute()
+        dss.append(ds_sum.expand_dims({"basin": [row[column]]}))
 
-    clipped = xr.concat(dss, dim="basin")
+    scalar = xr.concat(dss, dim="basin")
 
-    print(f"Writing {scalar_file}")
-    scalar = clipped.sum(dim=["y", "x"])
-    # Keep dimensionless non-spatial vars (e.g. pism_config) but skip those with a time dim to avoid duplicates
-    scalar_extras = ds_non_spatial[list(ds_non_spatial.data_vars)]
-    if scalar_extras.data_vars:
-        scalar = xr.merge([scalar, scalar_extras])
+    logger.info("Writing %s", scalar_file)
+    # Keep non-spatial vars (e.g. pism_config)
+    extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims]
+    if extra_vars:
+        scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
     encoding_scalar = {var: comp for var in scalar.data_vars}
-    write_scalar = scalar.to_netcdf(scalar_file, encoding=encoding_scalar, compute=False)
-    future_scalar = client.compute(write_scalar)
-    progress(future_scalar)
+    scalar.to_netcdf(scalar_file, encoding=encoding_scalar)
 
     end = time.time()
     time_elapsed = end - start
-    print(f"Time elapsed for {infile_name}: {time_elapsed:.0f}s")
+    logger.info("Time elapsed for %s: %.0fs", infile_name, time_elapsed)
 
 
 def postprocess_glacier(config_file: str | Path):
@@ -148,7 +149,7 @@ def postprocess_glacier(config_file: str | Path):
     outline_file = config["basin"]["outline"]
 
     client = Client(n_workers=4, threads_per_worker=1, memory_limit="8GiB")
-    print(f"Dask dashboard: {client.dashboard_link}")
+    logger.info("Dask dashboard: %s", client.dashboard_link)
 
     for o in ["spatial"]:
         s_file = Path(config["output"][o])
@@ -158,7 +159,7 @@ def postprocess_glacier(config_file: str | Path):
 
     end = time.time()
     time_elapsed = end - start
-    print(f"Time elapsed {time_elapsed:.0f}s")
+    logger.info("Time elapsed %.0fs", time_elapsed)
 
 
 def main():
@@ -177,6 +178,14 @@ def main():
 
     options, unknown = parser.parse_known_args()
     config_file = options.RUN_FILE[0]
+
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    logging.basicConfig(level=logging.INFO, format=log_format)
+    config_path = Path(config_file).resolve().parent
+    file_handler = logging.FileHandler(config_path / "postprocess.log")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logging.getLogger().addHandler(file_handler)
 
     postprocess_glacier(config_file)
 
