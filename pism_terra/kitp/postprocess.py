@@ -126,7 +126,7 @@ def process_file(
     logger.info("Time elapsed for %s: %.0fs", infile_name, time_elapsed)
 
 
-def postprocess_glacier(config_file: str | Path):
+def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
     """
     Configure and print a PISM model run command for a glacier.
 
@@ -140,6 +140,8 @@ def postprocess_glacier(config_file: str | Path):
     config_file : str or Path
         Path to a TOML file containing PISM run configuration, including time,
         energy model, stress balance model, and reporting options.
+    n_workers : int, optional
+        Number of Dask workers, by default 4.
     """
 
     config_toml = toml.load(config_file)
@@ -148,7 +150,7 @@ def postprocess_glacier(config_file: str | Path):
     start = time.time()
     outline_file = config["basin"]["outline"]
 
-    client = Client(n_workers=4, threads_per_worker=1, memory_limit="8GiB")
+    client = Client(n_workers=n_workers, threads_per_worker=1)
     logger.info("Dask dashboard: %s", client.dashboard_link)
 
     for o in ["spatial"]:
@@ -171,6 +173,12 @@ def main():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Postprocess KITP Greenland."
     parser.add_argument(
+        "--ntasks",
+        help="Sets number of tasks.",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
         "RUN_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -178,6 +186,7 @@ def main():
 
     options, unknown = parser.parse_known_args()
     config_file = options.RUN_FILE[0]
+    ntasks = options.ntasks
 
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     logging.basicConfig(level=logging.INFO, format=log_format)
@@ -187,7 +196,7 @@ def main():
     file_handler.setFormatter(logging.Formatter(log_format))
     logging.getLogger().addHandler(file_handler)
 
-    postprocess_glacier(config_file)
+    postprocess_glacier(config_file, n_workers=ntasks)
 
 
 if __name__ == "__main__":
