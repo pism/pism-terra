@@ -410,6 +410,7 @@ def run_single():
             "energy.bedrock_thermal.file": row["heatflux_file"],
             "grid.file": row["grid_file"],
             "atmosphere.given.file": row["climate_file"],
+            "surface.pdd.std_dev.file": row["climate_file"],
         }
         outline_file = row["outline_file"] if "outline_file" in row else None
         run_kitp(
@@ -577,6 +578,7 @@ def run_ensemble():
             "energy.bedrock_thermal.file": row["heatflux_file"],
             "grid.file": row["grid_file"],
             "atmosphere.given.file": row["climate_file"],
+            "surface.pdd.std_dev.file": row["climate_file"],
         }
         row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
         outline_file = row["outline_file"] if "outline_file" in row else None
