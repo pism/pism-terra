@@ -149,6 +149,7 @@ model = "pdd"
 [surface.options.pdd]
 
 'surface.models' = "pdd"
+'surface.pdd.std_dev.file' = "none"
 
 [calving]
 

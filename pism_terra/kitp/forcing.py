@@ -24,6 +24,7 @@ Prepare KITP Greenland data sets.
 
 import os
 import re
+import shutil
 import tempfile
 import time
 from argparse import ArgumentParser
@@ -221,13 +222,36 @@ def process_hirham_cdo(
             Path to the merged output file.
         """
         year, batch, batch_out = args
-        cdo_local = Cdo()
-        cdo_local.monmean(
-            input=f"""-setrtomiss,1e10,1e40 -setrtomiss,-1e40,-1e10 -setmissval,-9e33 -selvar,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -mergetime """
+        tmpdir = tempfile.mkdtemp()
+        cdo_local = Cdo(tempdir=tmpdir)
+        merged = os.path.join(tmpdir, f"merged_{year}.nc")
+        cdo_local.setrtomiss(
+            "-1e40,-1e10",
+            input=f"""-setmissval,-9e33 -selvar,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -mergetime """
             + " ".join(batch),
+            output=merged,
+            options="-f nc4 -z zip_2 -P 1",
+        )
+        monmean = os.path.join(tmpdir, f"monmean_{year}.nc")
+        cdo_local.monmean(
+            input=merged,
+            output=monmean,
+            options="-f nc4 -z zip_2 -P 1",
+        )
+        monstd = os.path.join(tmpdir, f"monstd_{year}.nc")
+        cdo_local.setattribute(
+            """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
+            input=f"""-delattribute,"air_temp_sd@standard_name" -chname,air_temp,air_temp_sd -monstd -selvar,air_temp {merged}""",
+            output=monstd,
+            options="-f nc4 -z zip_2 -P 1",
+        )
+        cdo_local.merge(
+            input=f"{monmean} {monstd}",
             output=batch_out,
             options="-f nc4 -z zip_2 -P 1",
         )
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
         return batch_out
 
     batch_files = []
