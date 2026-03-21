@@ -22,7 +22,9 @@ Postprocessing.
 """
 
 import json
+import logging
 import time
+import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
@@ -32,14 +34,17 @@ import geopandas as gpd
 import rioxarray
 import toml
 import xarray as xr
-from dask.diagnostics import ProgressBar
 from dask.distributed import Client, progress
 from pyfiglet import Figlet
 
 xr.set_options(keep_attrs=True)
+warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
+
+logger = logging.getLogger(__name__)
 
 
-def process_file(infile: str | Path, rgi_file: str | Path):
+def process_file(infile: str | Path, rgi_file: str | Path, client: Client):
     """
     Clip a NetCDF dataset to the glacier geometry defined in an RGI file.
 
@@ -54,6 +59,8 @@ def process_file(infile: str | Path, rgi_file: str | Path):
     rgi_file : str or Path
         Path to the RGI glacier outline file (e.g., GeoPackage or shapefile) that defines
         the geometry to clip the dataset to. Must include an `epsg` column to define the CRS.
+    client : dask.Client
+        Dask client.
     """
 
     infile = Path(infile)
@@ -70,31 +77,45 @@ def process_file(infile: str | Path, rgi_file: str | Path):
 
     start = time.time()
 
-    ds = (
-        xr.open_dataset(
-            infile,
-            decode_times=False,
-            decode_timedelta=False,
-            chunks="auto",
-            engine="h5netcdf",
-        )
-        .drop_vars("time_bounds", errors="ignore")
-        .rio.set_spatial_dims(x_dim="x", y_dim="y")
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
+
+    ds = xr.open_dataset(
+        infile,
+        decode_timedelta=False,
+        decode_times=False,
+        chunks="auto",
+        engine="h5netcdf",
     )
 
-    ds = ds.rio.write_crs(crs, inplace=False)
+    # Separate variables that lack spatial (x, y) dimensions, as rio.clip cannot handle them
+    non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
+    ds_non_spatial = ds[non_spatial_vars]
+    ds = ds.drop_vars(non_spatial_vars).rio.write_crs(crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
+    ds = client.persist(ds)
+    progress(ds)
+
     ds_clipped = ds.rio.clip(geometry, drop=False)
-    ds_clipped.to_netcdf(clipped_file)
+    ds_clipped = xr.merge([ds_clipped, ds_non_spatial.drop_vars("spatial_ref", errors="ignore")])
+    comp = {"zlib": True, "complevel": 2}
+    encoding = {var: comp for var in ds_clipped.data_vars}
+    write_clipped = ds_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False)
+    future_clipped = client.compute(write_clipped)
+    progress(future_clipped)
+
     end = time.time()
     time_elapsed = end - start
-    print(f"Time elapsed for postprocessing: {time_elapsed:.0f}s")
-    pism_config = ds["pism_config"]
-    ds_scalar = ds_clipped.drop_vars(["pism_config"], errors="ignore").sum(dim=["x", "y"])
-    ds_scalar = xr.merge([ds_scalar, pism_config])
-    ds_scalar.to_netcdf(scalar_file)
+    logger.info("Time elapsed for postprocessing: %.0fs", time_elapsed)
+
+    spatial_vars = [v for v in ds_clipped.data_vars if "x" in ds_clipped[v].dims and "y" in ds_clipped[v].dims]
+    scalar = ds_clipped[spatial_vars].sum(dim=["y", "x"]).compute()
+    extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims]
+    if extra_vars:
+        scalar = xr.merge([scalar, ds_non_spatial[extra_vars].drop_vars("spatial_ref", errors="ignore").compute()])
+    encoding_scalar = {var: comp for var in scalar.data_vars}
+    scalar.to_netcdf(scalar_file, encoding=encoding_scalar)
 
 
-def postprocess_glacier(config_file: str | Path):
+def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
     """
     Configure and print a PISM model run command for a glacier.
 
@@ -108,23 +129,28 @@ def postprocess_glacier(config_file: str | Path):
     config_file : str or Path
         Path to a TOML file containing PISM run configuration, including time,
         energy model, stress balance model, and reporting options.
+    n_workers : int, optional
+        Number of Dask workers, by default 4.
     """
 
     config_toml = toml.load(config_file)
     config = json.loads(json.dumps(config_toml))
 
     start = time.time()
-    rgi_file = config["rgi"]["outline"]
+    outline_file = config["rgi"]["outline"]
+
+    client = Client(n_workers=n_workers, threads_per_worker=1)
+    logger.info("Dask dashboard: %s", client.dashboard_link)
 
     for o in ["spatial", "state"]:
         s_file = Path(config["output"][o])
-        print(s_file)
-        with ProgressBar():
-            process_file(s_file, rgi_file)
+        process_file(s_file, outline_file, client)
+
+    client.close()
 
     end = time.time()
     time_elapsed = end - start
-    print(f"Time elapsed {time_elapsed:.0f}s")
+    logger.info("Time elapsed %.0fs", time_elapsed)
 
 
 def main():
@@ -136,6 +162,12 @@ def main():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Postprocess RGI Glacier."
     parser.add_argument(
+        "--ntasks",
+        help="Sets number of tasks.",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
         "RUN_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -143,8 +175,17 @@ def main():
 
     options, unknown = parser.parse_known_args()
     config_file = options.RUN_FILE[0]
+    ntasks = options.ntasks
 
-    postprocess_glacier(config_file)
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    logging.basicConfig(level=logging.INFO, format=log_format)
+    config_path = Path(config_file).resolve().parent
+    file_handler = logging.FileHandler(config_path / "postprocess.log")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logging.getLogger().addHandler(file_handler)
+
+    postprocess_glacier(config_file, n_workers=ntasks)
 
 
 if __name__ == "__main__":
