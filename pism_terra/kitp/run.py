@@ -391,9 +391,9 @@ def run_single():
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
 
-    s3_bucket: str = campaign_config.pop("bucket", "pism-cloud-data")
-    s3_prefix: str = campaign_config.pop("prefix", "kitp/input")
-    version: str = campaign_config.pop("version", "v2")
+    s3_bucket: str = campaign_config["bucket"] if "bucket" in campaign_config else "pism-cloud-data"
+    s3_prefix: str = campaign_config["prefix"] if "prefix" in campaign_config else "kitp/input"
+    version: str = campaign_config["version"] if "version" in campaign_config else "v2"
     s3_path = f"""{s3_prefix}/{version}"""
 
     df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite)
