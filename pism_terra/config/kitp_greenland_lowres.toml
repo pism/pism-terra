@@ -8,7 +8,7 @@ writer = ""
 [job]
 
 queue = "t2small"
-walltime = "01:00:00"
+walltime = "24:00:00"
 nodes = 1
 
 [run_info]
@@ -33,7 +33,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0003-01-01"
+'time.end' =  "0300-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 

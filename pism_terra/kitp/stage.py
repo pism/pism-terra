@@ -105,7 +105,7 @@ def stage(
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
-    input_path = path / Path("input")
+    input_path = path / Path("input") / Path(config["version"])
     if force_overwrite:
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)

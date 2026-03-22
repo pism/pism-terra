@@ -227,7 +227,7 @@ def process_hirham_cdo(
         merged = os.path.join(tmpdir, f"merged_{year}.nc")
         cdo_local.setrtomiss(
             "-1e40,-1e10",
-            input=f"""-setmissval,-9e33 -selvar,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -mergetime """
+            input=f"""-setmissval,-9e33 -selvar,climatic_mass_balance,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -mergetime """
             + " ".join(batch),
             output=merged,
             options="-f nc4 -z zip_2 -P 1",

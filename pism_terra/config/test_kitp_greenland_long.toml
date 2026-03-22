@@ -150,6 +150,7 @@ model = "pdd"
 
 'surface.models' = "pdd"
 'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
 
 [calving]
 

@@ -2,7 +2,7 @@ ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rat
 gcms = ["CESM1-WACCM-SC"]
 version = "v1"
 bucket = "pism-cloud-data"
-prefix = "kitp_greenland_input"
+prefix = "input"
 
 [domain]
 
