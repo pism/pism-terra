@@ -131,6 +131,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     logger.info("Grid File")
     logger.info("-" * 120)
 
+    data_path = output_path / Path(f"stage_{config["version"]}")
+    data_path.mkdir(exist_ok=True)
+
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
     resolution_str = config["domain"]["resolution"]
@@ -140,7 +143,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     resolution, _ = int(match.group(1)), match.group(2)
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution)
-    grid_file = output_path / Path("ismip7_greenland_grid.nc")
+    grid_file = data_path / Path("ismip7_greenland_grid.nc")
     encoding = {var: {"_FillValue": None} for var in list(grid_ds.data_vars) + list(grid_ds.coords)}
     grid_ds.to_netcdf(grid_file, encoding=encoding)
     check_xr_fully(grid_file)
@@ -152,7 +155,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     obs_files = prepare_observations(
         url,
         obs_path,
-        output_path,
+        data_path,
         config,
         target_grid=grid_ds,
         force_overwrite=force_overwrite,
@@ -166,7 +169,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     start_year = config["pathway"]["baseline"]["start_year"]
     end_year = config["pathway"]["baseline"]["end_year"]
     baseline_file = prepare_baseline_climatology(
-        output_path,
+        data_path,
         start_year=start_year,
         end_year=end_year,
         version=version,
@@ -185,7 +188,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     future_forcings = config["forcing"]["future_forcings"]
 
     forcing_files = prepare_anomalies(
-        output_path,
+        data_path,
         bucket=bucket,
         prefix=prefix,
         gcms=gcms,
