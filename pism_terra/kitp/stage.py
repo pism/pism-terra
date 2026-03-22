@@ -45,9 +45,9 @@ xr.set_options(keep_attrs=True)
 
 def stage(
     config: dict,
-    path: str | Path = "input_files",
-    bucket: str = "pism-cloud-data",
-    prefix: str = "kitp/input",
+    bucket: str,
+    prefix: str,
+    output_path: str | Path,
     force_overwrite: bool = False,
 ) -> pd.DataFrame:
     """
@@ -73,12 +73,12 @@ def stage(
             GCM model name.
         - ``"version"`` : str
             Dataset version.
-    path : str or pathlib.Path, default ``"input_files"``
-        Output directory. Created if missing. All staged artifacts are written here.
-    bucket : str, default ``"pism-cloud-data"``
+    bucket : str
         AWS S3 bucket name to sync KITP input data from.
-    prefix : str, default ``"kitp_greenland_input"``
+    prefix : str
         S3 key prefix (folder path within the bucket).
+    output_path : str or pathlib.Path`
+        Output directory. Created if missing. All staged artifacts are written here.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
@@ -102,14 +102,14 @@ def stage(
     print("")
 
     # Outputs dir
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    input_path = path / Path("input") / Path(config["version"])
+    input_path = output_path / Path(prefix)
+
     if force_overwrite:
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)
-
     s3_to_local(bucket, prefix=prefix, dest=input_path)
 
     grid_file = input_path / Path(config["grid_file"])
@@ -196,21 +196,25 @@ def main():
     )
 
     options, unknown = parser.parse_known_args()
-    path = options.output_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
+    output_path = options.output_path
+    output_path.mkdir(parents=True, exist_ok=True)
 
     cfg = load_config(config_file)
     config = cfg.campaign.as_params()
 
-    path.mkdir(parents=True, exist_ok=True)
+    s3_bucket: str = config.pop("bucket", "pism-cloud-data")
+    s3_prefix: str = config.pop("prefix", "kitp/input")
+    version: str = config.pop("version", "v2")
+    s3_path = f"""{s3_prefix}/{version}"""
 
-    is_df = stage(config, path=path, force_overwrite=force_overwrite)
-    is_df.to_csv(path / Path("input") / Path("ismip7_greenland_files.csv"))
+    is_df = stage(config, s3_bucket, s3_path, output_path, force_overwrite=force_overwrite)
+    is_df.to_csv(output_path / Path(s3_path) / Path("ismip7_greenland_files.csv"))
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/kitp_greenland" if options.bucket_prefix else "kitp_greenland"
-        local_to_s3(path, bucket=options.bucket, prefix=prefix)
+        local_to_s3(output_path, bucket=options.bucket, prefix=prefix)
 
 
 if __name__ == "__main__":

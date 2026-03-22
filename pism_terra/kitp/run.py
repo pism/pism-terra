@@ -391,10 +391,12 @@ def run_single():
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
 
-    bucket = campaign_config["bucket"]
-    prefix = campaign_config["prefix"]
+    s3_bucket: str = campaign_config.pop("bucket", "pism-cloud-data")
+    s3_prefix: str = campaign_config.pop("prefix", "kitp/input")
+    version: str = campaign_config.pop("version", "v2")
+    s3_path = f"""{s3_prefix}/{version}"""
 
-    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
+    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -531,10 +533,11 @@ def run_ensemble():
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
 
-    bucket = campaign_config["bucket"]
-    prefix = campaign_config["prefix"]
-
-    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
+    s3_bucket: str = campaign_config.pop("bucket", "pism-cloud-data")
+    s3_prefix: str = campaign_config.pop("prefix", "kitp/input")
+    version: str = campaign_config.pop("version", "v2")
+    s3_path = f"""{s3_prefix}/{version}"""
+    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite)
 
     seed = 42
     rng = np.random.default_rng(seed=seed)
