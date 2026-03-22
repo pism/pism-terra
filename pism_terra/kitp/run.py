@@ -383,8 +383,6 @@ def run_single():
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    input_path = path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -395,6 +393,9 @@ def run_single():
     s3_prefix: str = campaign_config["prefix"] if "prefix" in campaign_config else "kitp/input"
     version: str = campaign_config["version"] if "version" in campaign_config else "v2"
     s3_path = f"""{s3_prefix}/{version}"""
+
+    input_path = path / Path(s3_path)
+    input_path.mkdir(parents=True, exist_ok=True)
 
     df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite)
 
