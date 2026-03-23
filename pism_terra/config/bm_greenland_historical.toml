@@ -72,7 +72,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 'output.spatial.times' = "monthly"
 'output.spatial.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity,mass_fluxes,ice_mass"
 'output.checkpoint.interval' = 24
-'output.extra.stop_missing' = 'no'
+'output.spatial.stop_missing' = 'no'
 'output.ISMIP6' = "no"
 
 [grid]
