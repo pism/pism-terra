@@ -199,7 +199,7 @@ model = "routing"
 [frontal_melt.options.routing]
 
 'frontal_melt.routing.file' = "none"
-'frontal_melt.routing.parameter_a' = 3e-4
-'frontal_melt.routing.parameter_b' = 0.15
+'frontal_melt.routing.parameter_a' = 4.89e-4
+'frontal_melt.routing.parameter_b' = 0.2445
 'frontal_melt.routing.power_alpha' = 0.39
 'frontal_melt.routing.power_beta' = 1.18

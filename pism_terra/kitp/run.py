@@ -414,6 +414,8 @@ def run_single():
             "grid.file": row["grid_file"],
             "atmosphere.given.file": row["climate_file"],
             "surface.pdd.std_dev.file": row["climate_file"],
+            "surface.debm_simple.std_dev.file": row["climate_file"],
+            "surface.debm_simple.albedo_input.file": row["climate_file"],
         }
         outline_file = row["outline_file"] if "outline_file" in row else None
         run_kitp(

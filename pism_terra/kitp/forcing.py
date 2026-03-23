@@ -342,6 +342,7 @@ def prepare_baseline_climatology(
 
     hirham_url = "http://ensemblesrt3.dmi.dk/data/prudence/temp/nichan/Daily2D_GrIS/"
     hirham_vars_dict: dict[str, dict[str, str]] = {
+        "alb": {"pism_name": "surface_albedo", "units": ""},
         "tas": {"pism_name": "air_temp", "units": "kelvin"},
         "gld": {"pism_name": "climatic_mass_balance", "units": "kg m^-2 day^-1"},
         "rogl": {"pism_name": "surface_runoff_flux", "units": "kg m^-2 day^-1"},

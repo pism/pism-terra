@@ -69,7 +69,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 'output.scalar.times' = 'daily'
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "bmelt,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,topg,ice_mass,mass_fluxes"
+'output.spatial.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat,diffusivity,mass_fluxes,ice_mass"
 'output.checkpoint.interval' = 24
 'output.extra.stop_missing' = 'no'
 'output.ISMIP6' = "no"
@@ -199,7 +199,7 @@ model = "routing"
 [frontal_melt.options.routing]
 
 'frontal_melt.routing.file' = "none"
-'frontal_melt.routing.parameter_a' = 3e-4
-'frontal_melt.routing.parameter_b' = 0.15
+'frontal_melt.routing.parameter_a' = 4.89e-4
+'frontal_melt.routing.parameter_b' = 0.2445
 'frontal_melt.routing.power_alpha' = 0.39
 'frontal_melt.routing.power_beta' = 1.18
