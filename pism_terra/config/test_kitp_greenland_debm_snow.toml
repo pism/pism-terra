@@ -20,7 +20,7 @@ nodes = 1
 
 bucket = "pism-cloud-data"
 prefix = "kitp/input"
-version = "v2"
+version = "v3"
 gcms = "CESM1-WACCM-SC"
 present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
 future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pa-futArcSIC-ext"]
@@ -159,7 +159,7 @@ model = "debm"
 'surface.debm_simple.std_dev.periodic' = "yes"
 'surface.debm_simple.albedo_input.file' = "none"
 'surface.debm_simple.albedo_input.periodic' = "yes"
-'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.interpret_precip_as_snow' = "yes"
 
 [calving]
 
