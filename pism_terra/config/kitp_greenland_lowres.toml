@@ -144,13 +144,21 @@ bp_ksp_rtol = 1e-3
 
 [surface]
 
-model = "pdd"
+model = "debm"
 
 [surface.options.pdd]
 
 'surface.models' = "pdd"
 'surface.pdd.std_dev.file' = "none"
 'surface.pdd.std_dev.periodic' = "yes"
+
+[surface.options.debm]
+
+'surface.models' = "debm_simple"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.albedo_input.file' = "none"
+'surface.debm_simple.albedo_input.periodic' = "yes"
 
 [calving]
 
