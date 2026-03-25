@@ -11,6 +11,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Fixed a bug in UQ assignment
+- Applied UQ logic from KITP
 
 ## [0.1.3]
 
