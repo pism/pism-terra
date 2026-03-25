@@ -24,10 +24,10 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "boto3",
-    "botocore",
+    "botocore[crt]",
     "cdo",
     "cdsapi",
-    # "cf-units",  # FIXME: # FIXME: Breaks the conda environment; doesn't appear to be needed
+    # "cf-units",  # FIXME: Breaks the conda environment; doesn't appear to be needed
     "cf_xarray",
     "cftime",
     "dask[distributed,dataframe]",

@@ -5,6 +5,7 @@ dependencies:
   - python=3.12
   - pip
   # runtime requirements
+  - awscrt  # boto3 extra needed
   - boto3
   - botocore
   - cdsapi
