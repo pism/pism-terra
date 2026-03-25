@@ -619,11 +619,19 @@ def run_ensemble():
         delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
         create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        row["atmosphere.delta_T.file"] = scalar_offset_file
-        row["atmosphere.frac_P.file"] = scalar_offset_file
-        row["atmosphere.precip_scaling.file"] = scalar_offset_file
 
         row_uq = row.drop(labels=df_columns + ["sample_df", "sample_uq"], errors="ignore").to_dict()
+        row_uq.update(
+            {
+                "input.file": row["boot_file"],
+                "grid.file": row["grid_file"],
+                "atmosphere.given.file": row["climate_file"],
+                "atmosphere.elevation_change.file": row["climate_file"],
+                "atmosphere.delta_T.file": scalar_offset_file,
+                "atmosphere.frac_P.file": scalar_offset_file,
+                "atmosphere.precip_scaling.file": scalar_offset_file,
+            }
+        )
         run_glacier(
             rgi_id,
             config_file,
