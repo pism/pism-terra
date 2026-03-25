@@ -28,7 +28,7 @@ import shutil
 import tempfile
 import time
 from argparse import ArgumentParser
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
@@ -50,8 +50,8 @@ from tqdm import tqdm
 
 from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain
-from pism_terra.download import download_hirham, unzip_files
-from pism_terra.raster import create_ds
+from pism_terra.download import download_hirham, download_request, unzip_files
+from pism_terra.raster import add_time_bounds, create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
@@ -112,6 +112,133 @@ latitude_of_projection_origin = 90.
 false_easting = 0.
 false_northing = 0.
 """
+
+
+def carra(
+    year: list[int] | Iterable[int] = range(1990, 2019),
+    dataset: str = "reanalysis-pan-carra-means",
+    variable: list[str] | Iterable[str] = ("2m_temperature", "total_precipitation", "z"),
+    path: Path | str = ".",
+    **kwargs,
+) -> Path:
+    """
+    Download monthly CARRA reanalysis and write a NetCDF.
+
+    Parameters
+    ----------
+    year : list of int or Iterable of int, default ``range(1990, 2019)``
+        Years to request from CARRA.
+    dataset : str, default ``"reanalysis-pan-carra-means"``
+        CDS dataset name for CARRA means.
+    variable : list of str or Iterable of str, default ``("2m_temperature", "total_precipitation", "z")``
+        CARRA variable names to download.
+    path : str or pathlib.Path, default ``"."``
+        Output directory or filename base. The function writes a file named
+        ``carra_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
+        otherwise the provided filename is used.
+    **kwargs
+        Additional keyword arguments forwarded to :func:`download_request`
+        (e.g., alternate ``variable`` sequences, custom authentication/session
+        options, or client settings). These are passed unchanged to the CDS
+        retrieval helper.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path to the written NetCDF file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the provided RGI path is missing.
+    ValueError
+        If the glacier ID cannot be found or the geometry is invalid.
+    Exception
+        Any errors propagated from the CDS request, reprojection, or I/O.
+
+    Notes
+    -----
+    - Output variables:
+      - ``air_temp`` (K) from CARRA ``t2m``.
+      - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
+      - ``surface`` (m) derived from CARRA ``z`` / 9.80665 (geopotential → meters).
+    - ``time_bounds`` are added for CF-style climatological metadata.
+    - If missing values are detected in the regional subset, the function
+      patches them from the global reanalysis (same period).
+    """
+    path = Path(path)
+
+    print("")
+    print("Generate historical climate")
+    print("-" * 80)
+
+    request = {
+        "time_aggregation": "daily",
+        "level_type": "single_levels",
+        "variable": variable,
+        "product_type": "analysis_based",
+        "year": year,
+        "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+        "day": [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30",
+            "31",
+        ],
+        "data_format": "netcdf",
+    }
+
+    carra_filename = path / Path("carra.nc")
+
+    ds = download_request(
+        dataset, file_path=carra_filename, request_override=request, **kwargs  # pass the full CARRA request dict
+    )
+    ds = ds.rename({"valid_time": "time"})
+
+    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
+    ds["surface"] /= 9.80665
+    ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
+    ds["precipitation"] *= 1000
+    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
+    ds["air_temp"].attrs.update({"units": "kelvin"})
+    ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
+    ds["time"].encoding["calendar"] = "standard"
+    ds.rio.write_crs("EPSG:4326", inplace=True)
+    for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
+        if name in ds:
+            ds[name].encoding.update({"_FillValue": None})
+
+    ds = add_time_bounds(ds)
+    ds.to_netcdf(carra_filename)
+
+    return carra_filename
 
 
 def process_hirham_cdo(
