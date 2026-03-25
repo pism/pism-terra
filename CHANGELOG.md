@@ -6,15 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://www.python.org/dev/peps/pep-0440/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-
-- Fixed a bug in UQ assignment
-- And applied a second fixed due to wrong ordering
-- Applied UQ logic from KITP
-
 ## [0.1.3]
+
+### Added
+- Applied UQ logic from KITP.
 
 ### Changed
 - Upgraded the base PISM image to v2.3.0.
@@ -23,6 +18,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added the awscrt optional dependency to boto3 we need, but is not provided by the conda-forge recipe.
 - Added the missing `campaign` section from `config/era5_ec2_1year.toml`.
 - Ensures the `spatial` directory exists before executing PISM simulations.
+- Fixed bugs in UQ assignment and ordering.
 
 ## [0.1.2]
 
