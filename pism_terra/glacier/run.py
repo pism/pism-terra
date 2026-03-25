@@ -578,17 +578,6 @@ def run_ensemble():
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
     df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
-
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.frac_P.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.precip_scaling.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-    }
     outline_file = df["outline"].iloc[0]
 
     seed = 42
@@ -639,7 +628,7 @@ def run_ensemble():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
+            uq=row,
             sample=int(row["sample"]) if "sample" in row else idx,
         )
 
