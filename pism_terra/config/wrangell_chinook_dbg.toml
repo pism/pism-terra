@@ -2,7 +2,7 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 40
+ntasks = 8
 
 [job]
 
@@ -26,7 +26,7 @@ velocity = "none"
 [time]
 
 'time.start' = "01-01-01"
-'time.end' =  "5-01-01"
+'time.end' =  "01-04-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "01-01-01"
 
@@ -54,11 +54,12 @@ velocity = "none"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
-'output.extra.file' = "none"
-'output.extra.times' = "monthly"
-'output.extra.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
+'output.scalar.times' = "daily"
+'output.spatial.file' = "none"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
 'output.checkpoint.interval' = 24
-'output.extra.stop_missing' = 'no'
+'output.spatial.stop_missing' = 'no'
 
 [grid]
 

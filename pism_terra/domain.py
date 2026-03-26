@@ -25,7 +25,7 @@ import numpy as np
 import xarray as xr
 
 
-def new_range(x: np.array, dx: float) -> tuple[float, float, int]:
+def new_range(x: np.ndarray, dx: float) -> tuple[float, float, int]:
     """
     Compute the center and half-width of a domain that will contain all values in `x`.
 
@@ -33,7 +33,7 @@ def new_range(x: np.array, dx: float) -> tuple[float, float, int]:
 
     Parameters
     ----------
-    x : numpy.array
+    x : numpy.ndarray
         A 1D array of coordinate values.
     dx : float
         The desired resolution for the new domain.
@@ -232,17 +232,18 @@ def create_domain(
     """
 
     if resolution is not None:
-        x = np.arange(x_bnds[0] + resolution / 2, x_bnds[1], resolution)
-        y = np.arange(y_bnds[0] + resolution / 2, y_bnds[1], resolution)
+        # np.arange(start, stop) includes start but not stop
         xb = np.arange(x_bnds[0], x_bnds[1] + resolution, resolution)
         yb = np.arange(y_bnds[0], y_bnds[1] + resolution, resolution)
+        x = np.arange(x_bnds[0] + resolution / 2, x_bnds[1] + resolution - resolution / 2, resolution)
+        y = np.arange(y_bnds[0] + resolution / 2, y_bnds[1] + resolution - resolution / 2, resolution)
         x_bounds = np.stack([xb[:-1], xb[1:]]).T
         y_bounds = np.stack([yb[:-1], yb[1:]]).T
     else:
-        x = [0]
-        y = [0]
-        x_bounds = [[x_bnds[0], x_bnds[1]]]
-        y_bounds = [[y_bnds[0], y_bnds[1]]]
+        x = np.array([0])
+        y = np.array([0])
+        x_bounds = np.array([[x_bnds[0], x_bnds[1]]])
+        y_bounds = np.array([[y_bnds[0], y_bnds[1]]])
 
     x_bnds_dim = f"{x_dim}_bnds"
     y_bnds_dim = f"{y_dim}_bnds"
@@ -251,22 +252,16 @@ def create_domain(
             [x_dim],
             x,
             {
-                "units": "m",
                 "axis": x_dim.upper(),
                 "bounds": x_bnds_dim,
-                "standard_name": "projection_x_coordinate",
-                "long_name": f"{x_dim}-coordinate in projected coordinate system",
             },
         ),
         y_dim: (
             [y_dim],
             y,
             {
-                "units": "m",
                 "axis": y_dim.upper(),
                 "bounds": y_bnds_dim,
-                "standard_name": "projection_y_coordinate",
-                "long_name": f"{y_dim}-coordinate in projected coordinate system",
             },
         ),
     }
@@ -284,16 +279,17 @@ def create_domain(
                 data=x_bounds,
                 dims=[x_dim, "nv2"],
                 coords={x_dim: coords[x_dim]},
-                attrs={"_FillValue": False},
             ),
             y_bnds_dim: xr.DataArray(
                 data=y_bounds,
                 dims=[y_dim, "nv2"],
                 coords={y_dim: coords[y_dim]},
-                attrs={"_FillValue": False},
             ),
         },
         attrs={"Conventions": "CF-1.8"},
     ).rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim)
-    ds.rio.write_crs(crs, inplace=True)
+    ds.rio.write_crs(crs, inplace=True).rio.write_coordinate_system(inplace=True)
+    for var in list(ds.data_vars) + list(ds.coords):
+        ds[var].encoding["_FillValue"] = None
+
     return ds

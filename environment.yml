@@ -5,19 +5,24 @@ dependencies:
   - python=3.12
   - pip
   # runtime requirements
+  - awscrt  # boto3 extra needed
   - boto3
   - botocore
   - cdsapi
+  - python-cdo
   # - cf_units  # FIXME: Breaks this environment; doesn't appear to be needed
   - cf_xarray
   - cftime
   - dask[distributed,dataframe]
   - dem_stitcher
   - earthaccess
+  - geocube
   - geopandas
   - h5netcdf
   - jinja2
+  - joblib
   - matplotlib
+  - netCDF4
   - numpy
   - pandas
   - pint-xarray
@@ -38,6 +43,7 @@ dependencies:
   - toml
   - tqdm
   - xarray
+  - xarray-regrid
   - zarr
   # for development and testing
   - black
@@ -53,7 +59,7 @@ dependencies:
   - sphinx-copybutton
   - myst-parser
   - numpydoc
-  # for convenience
+  # for notebooks and convenience
   - cdo
   - ncview
   - cmcrameri
@@ -61,7 +67,8 @@ dependencies:
   - cartopy
   - flox  # FIXME: possibly a runtime requirement for xarray/dask performance
   - hyp3_sdk
-  - joblib
   - jupyter
   - jupyter-server-proxy
+  - moviepy
+  - python-dateutil
   - seaborn

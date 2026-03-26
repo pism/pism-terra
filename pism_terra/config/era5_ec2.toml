@@ -13,11 +13,14 @@ ntasks = 32
 
 [campaign]
 
-name = "Calibration"
+bucket = "pism-cloud-data"
 climate = "era5"
 dem = "glo_30"
-ice_thickness = "millan"
-velocity = "none"
+ice_thickness = "maffezzoli"
+name = "Calibration"
+prefix = "glacier"
+rgi_file = "rgi_c.gpkg"
+velocity = "its_live"
 
 [time]
 
@@ -50,11 +53,12 @@ velocity = "none"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
-'output.extra.file' = "none"
-'output.extra.times' = "monthly"
-'output.extra.vars' = "ice_mass,mass_fluxes,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
+'output.scalar.times' = "daily"
+'output.spatial.file' = "none"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "ice_mass,mass_fluxes,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
 'output.checkpoint.interval' = 24
-'output.extra.stop_missing' = 'no'
+'output.spatial.stop_missing' = 'no'
 
 [grid]
 
@@ -161,3 +165,15 @@ model = "given"
 
 'ocean.constant.melt_rate' = 0.0
 'ocean.models' = 'constant'
+
+[hydrology]
+
+model = "null"
+
+[hydrology.options]
+
+[frontal_melt]
+
+model = "off"
+
+[frontal_melt.options.off]

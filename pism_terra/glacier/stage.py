@@ -20,6 +20,7 @@
 """
 Staging.
 """
+
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
@@ -35,14 +36,14 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
 
-from pism_terra.aws import local_to_s3
-from pism_terra.climate import create_offset_file, era5, pmip4, snap
+from pism_terra.aws import download_from_s3, local_to_s3
 from pism_terra.config import load_config
-from pism_terra.dem import boot_file_from_rgi_id
 from pism_terra.domain import create_grid
+from pism_terra.glacier.climate import create_offset_file, era5, pmip4, snap
+from pism_terra.glacier.dem import boot_file_from_rgi_id
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_dataset, check_xr
+from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
@@ -52,7 +53,6 @@ CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap}
 def stage_glacier(
     config: dict,
     rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path,
     path: str | Path = "input_files",
     resolution: float = 50.0,
     force_overwrite: bool = False,
@@ -78,9 +78,6 @@ def stage_glacier(
             Key in :data:`CLIMATE` (e.g., ``"pmip4"``) selecting the climate builder.
     rgi_id : str
         Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
-    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
-        In-memory RGI GeoDataFrame or a path to a GeoPackage/shape readable by
-        :func:`geopandas.read_file`.
     path : str or pathlib.Path, default ``"input_files"``
         Output directory. Created if missing. All staged artifacts are written here.
     resolution : float, default ``50.0``
@@ -142,9 +139,15 @@ def stage_glacier(
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
-    # Load RGI (accept GeoDataFrame or file path)
-    if isinstance(rgi, (str, Path)):
-        rgi = gpd.read_file(rgi)
+    print("RGI Database")
+    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_file"]}"""
+    rgi_local = path / config["rgi_file"]
+    if not rgi_local.exists():
+        print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
+        download_from_s3(rgi_s3_uri, rgi_local)
+    else:
+        print(f"Using cached {rgi_local}")
+    rgi = gpd.read_file(rgi_local)
 
     glacier = get_glacier_from_rgi_id(rgi, rgi_id)
     if glacier.empty:
@@ -161,11 +164,19 @@ def stage_glacier(
 
     # Build boot dataset (DEM/thickness/bed)
     boot_ds = boot_file_from_rgi_id(
-        rgi_id, rgi, buffer_distance=5000.0, dem_name=config["dem"], path=path, force_overwrite=force_overwrite
+        rgi_id,
+        rgi,
+        dem_dataset=config["dem"],
+        ice_thickness_dataset=config["ice_thickness"],
+        velocity_dataset=config["velocity"],
+        buffer_distance=10000.0,
+        path=path,
+        force_overwrite=force_overwrite,
+        bucket=config["bucket"],
     )
 
     # Grid & bounds
-    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=2500.0)
+    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=8000.0)
     bounds = [
         grid_ds["x_bnds"].values[0][0],
         grid_ds["y_bnds"].values[0][0],
@@ -185,15 +196,19 @@ def stage_glacier(
     for name in ("x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
         if name in boot_ds:
             boot_ds[name].encoding.update({"_FillValue": None})
+    boot_ds.rio.write_coordinate_system(inplace=True)
 
     print("")
     print("Saving bootfile")
     print("-" * 80)
-    print(boot_file.resolve())
-    boot_ds.to_netcdf(boot_file)
+    boot_file.unlink(missing_ok=True)
+    boot_ds.to_netcdf(boot_file, engine="netcdf4")
+    check_xr_lazy(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})
-    grid_ds.to_netcdf(grid_file, engine="h5netcdf")
+    grid_file.unlink(missing_ok=True)
+    grid_ds.to_netcdf(grid_file, engine="netcdf4")
+    check_xr_fully(grid_file)
 
     # Save domain extent polygon as a GPKG
     x_point_list = [
@@ -276,11 +291,6 @@ def main():
         nargs=1,
     )
     parser.add_argument(
-        "RGI_FILE",
-        help="RGI.",
-        nargs=1,
-    )
-    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -290,7 +300,6 @@ def main():
     path = options.output_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
-    rgi_file = options.RGI_FILE[0]
     rgi_id = options.RGI_ID[0]
 
     cfg = load_config(config_file)
@@ -302,11 +311,16 @@ def main():
 
     input_path = glacier_path / Path("input")
     input_path.mkdir(parents=True, exist_ok=True)
-    glacier_df = stage_glacier(config, rgi_id, rgi_file, path=input_path, force_overwrite=force_overwrite)
+    glacier_df = stage_glacier(
+        config,
+        rgi_id,
+        path=input_path,
+        force_overwrite=force_overwrite,
+    )
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
 
     if options.bucket:
-        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
+        prefix = f"{options.bucket}/{rgi_id}" if options.bucket_prefix else rgi_id
         local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
 
 

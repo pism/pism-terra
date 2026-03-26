@@ -27,188 +27,30 @@ import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TypeVar
 
-import geopandas as gpd
 import numpy as np
 import pandas as pd
 import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-from pydantic import BaseModel
 from pyfiglet import Figlet
 
 from pism_terra.aws import local_to_s3
-from pism_terra.climate import create_offset_file
 from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
 from pism_terra.download import file_localizer
+from pism_terra.glacier.climate import create_offset_file
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import create_samples
+from pism_terra.workflow import (
+    apply_choice_mapping,
+    dict2str,
+    merge_model,
+    normalize_row,
+    sort_dict_by_key,
+)
 
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
-
-T = TypeVar("T", bound=BaseModel)
-
-
-def _merge_model(base_model: T, **overrides: Any) -> T:
-    """
-    Create a new Pydantic model instance by shallow-merging non-None overrides.
-
-    This returns a **new** instance of the same model class as ``base_model``.
-    It starts from ``base_model``'s data (via ``model_dump()``) and applies
-    values from ``overrides`` where the value is not ``None``. Unknown fields
-    or invalid values will raise a Pydantic ``ValidationError``.
-
-    Parameters
-    ----------
-    base_model : T
-        An existing Pydantic model instance to use as the base.
-    **overrides : Any
-        Field values to override on top of ``base_model``. Keys must be valid
-        field names of the model. Any key whose value is ``None`` is ignored.
-
-    Returns
-    -------
-    T
-        A **new** instance of ``type(base_model)`` with overrides applied.
-
-    Raises
-    ------
-    pydantic.ValidationError
-        If any override fails validation or refers to an unknown field,
-        depending on the model's configuration.
-    TypeError
-        If ``base_model`` is not a Pydantic ``BaseModel`` instance.
-
-    Notes
-    -----
-    * This is a **shallow** merge. Nested models or containers are replaced,
-      not deep-merged.
-    * In Pydantic v2, an equivalent (and concise) pattern is::
-
-        new_model = base_model.model_copy(
-            update={k: v for k, v in overrides.items() if v is not None}
-        )
-
-      This function mirrors that behavior while making the "skip None" rule explicit.
-
-    Examples
-    --------
-    >>> from pydantic import BaseModel
-    >>> class RunConfig(BaseModel):
-    ...     ntasks: int | None = None
-    ...     mpi: str = "srun -n {ntasks}"
-    ...
-    >>> rc = RunConfig(ntasks=16)
-    >>> new = _merge_model(rc, ntasks=80, extra=None)  # 'extra' ignored; None skipped
-    >>> new.ntasks
-    80
-    >>> type(new) is type(rc)
-    True
-    """
-    if not isinstance(base_model, BaseModel):
-        raise TypeError("base_model must be a Pydantic BaseModel instance")
-
-    data = base_model.model_dump()
-    data.update({k: v for k, v in overrides.items() if v is not None})
-    return type(base_model)(**data)
-
-
-def _to_python_scalar(v: Any) -> Any:
-    """
-    Convert NumPy/Pandas scalar types to built-in Python objects.
-
-    Attempts to coerce common array/scalar dtypes (e.g., ``np.int64``,
-    ``np.float32``) and pandas datetime-like scalars into plain Python types
-    suitable for TOML/JSON serialization and Jinja rendering.
-
-    Parameters
-    ----------
-    v : Any
-        Value to coerce. Supports values deriving from ``numpy.generic`` as well
-        as pandas objects exposing ``.to_pydatetime()`` or ``.to_pytimedelta()``.
-        Other types are returned unchanged.
-
-    Returns
-    -------
-    Any
-        A built-in Python scalar (e.g., ``int``, ``float``, ``bool``,
-        ``datetime.datetime``, ``datetime.timedelta``) when conversion applies;
-        otherwise the original value.
-
-    Notes
-    -----
-    - This function does **not** recurse into containers; it only converts the
-      top-level value. Use it element-wise for sequences/mappings.
-    - Any exception during the NumPy scalar probe is intentionally ignored to
-      keep the conversion path robust across environments.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> _to_python_scalar(np.int64(3))
-    3
-    >>> import pandas as pd
-    >>> _to_python_scalar(pd.Timestamp("2020-01-01"))
-    datetime.datetime(2020, 1, 1, 0, 0)
-    """
-    try:
-
-        if isinstance(v, (np.generic,)):
-            return v.item()
-    except Exception:
-        pass
-
-    # Pandas Timestamp/Timedelta-like
-    if hasattr(v, "to_pydatetime"):
-        return v.to_pydatetime()
-    if hasattr(v, "to_pytimedelta"):
-        return v.to_pytimedelta()
-
-    return v
-
-
-def _normalize_row(row) -> dict:
-    """
-    Normalize a row-like object into a clean ``dict[str, Any]``.
-
-    Converts values to plain Python scalars via :func:`_to_python_scalar`,
-    casts keys to ``str``, and drops entries whose value is ``None``. Intended
-    for preparing parameter dictionaries for TOML/JSON dumps and Jinja contexts.
-
-    Parameters
-    ----------
-    row : mapping or pandas.Series
-        A mapping-like object (e.g., ``dict``) or a ``pandas.Series`` obtained
-        from ``DataFrame.iterrows()``. Keys are interpreted as parameter names.
-
-    Returns
-    -------
-    dict
-        Dictionary with string keys and Python-native scalar values. Any items
-        with ``None`` values are omitted.
-
-    Notes
-    -----
-    - This function does **not** deep-convert nested containers; nested dicts or
-      lists are left as-is except for top-level value coercion.
-    - If ``row`` is a pandas ``Series``, its ``.to_dict()`` is used first.
-
-    Examples
-    --------
-    >>> import pandas as pd
-    >>> s = pd.Series({"a": pd.Timestamp("2021-01-01"), "b": None, "c": 1})
-    >>> _normalize_row(s)
-    {'a': datetime.datetime(2021, 1, 1, 0, 0), 'c': 1}
-    """
-    d = row.to_dict() if hasattr(row, "to_dict") else dict(row)
-    out: dict[str, Any] = {}
-    for k, v in d.items():
-        if v is None:
-            continue
-        out[str(k)] = _to_python_scalar(v)
-    return out
 
 
 def run_glacier(
@@ -225,7 +67,7 @@ def run_glacier(
     debug: bool = False,
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
-    sample: int | None = None,
+    sample: str | int | None = None,
 ):
     """
     Configure and generate a PISM job script for a single glacier (ensemble-ready).
@@ -341,6 +183,8 @@ def run_glacier(
     log_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
+    scalar_path = output_path / Path("scalar")
+    scalar_path.mkdir(parents=True, exist_ok=True)
     spatial_path = output_path / Path("spatial")
     spatial_path.mkdir(parents=True, exist_ok=True)
     state_path = output_path / Path("state")
@@ -383,7 +227,7 @@ def run_glacier(
     else:
         name_options = f"id_{sample}"
 
-    uq_clean = _normalize_row(uq) if uq is not None else {}
+    uq_clean = normalize_row(uq) if uq is not None else {}
     # Prefer explicit `sample` arg; else default from uq['sample']
     if sample is None and "sample" in uq_clean:
         try:
@@ -396,12 +240,14 @@ def run_glacier(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
+    scalar_file = scalar_path / Path(f"scalar_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     run.update(
         {
             "output.file": state_file.resolve(),
-            "output.extra.file": spatial_file.resolve(),
+            "output.scalar.file": scalar_file.resolve(),
+            "output.spatial.file": spatial_file.resolve(),
         }
     )
 
@@ -416,7 +262,7 @@ def run_glacier(
     }
 
     # run_opts comes from your config; ntasks comes from CLI (or None)
-    active_run_opts = _merge_model(run_opts, ntasks=ntasks)
+    active_run_opts = merge_model(run_opts, ntasks=ntasks)
 
     # Use this ONE source to update params and to compute mpi_str
     run_params = active_run_opts.as_params()
@@ -435,6 +281,7 @@ def run_glacier(
         "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.resolve())},
         "output": {
             "spatial": str(spatial_file.resolve()),
+            "scalar.file": scalar_file.resolve(),
             "state": str(state_file.resolve()),
         },
         "config": run,
@@ -461,102 +308,6 @@ def run_glacier(
 
     print(f"\nSLURM script written to {run_script.resolve()}\n")
     print(f"Postprocessing script written to {post_file.resolve()}\n")
-
-
-def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
-    """
-    Replace integer choices in `uq_df` with values from `df` using a per-flag mapping.
-
-    Parameters
-    ----------
-    uq_df : pandas.DataFrame
-        DataFrame produced by your sampler (has integer-coded columns like
-        'surface.given.file', 'atmosphere.given.file', etc.).
-    df : pandas.DataFrame
-        Source DataFrame that contains the lookup columns (e.g., 'cosipy_file').
-        Row order defines the integer choices: 0 -> first row, 1 -> second row, etc.
-    mapping : dict[str, str]
-        Mapping from dotted flag name in `uq_df` to column name in `df`,
-        e.g. {"surface.given.file": "cosipy_file"}.
-
-    Returns
-    -------
-    pandas.DataFrame
-        A copy of `uq_df` with the specified columns mapped to their path strings.
-    """
-    out = uq_df.copy()
-
-    if not isinstance(mapping, dict) or not mapping:
-        return out
-
-    for flag, df_col in mapping.items():
-        if flag not in out.columns:
-            # nothing to map for this flag; skip
-            continue
-        if df_col not in df.columns:
-            raise KeyError(f"Mapping for '{flag}' points to missing df column '{df_col}'")
-
-        # Build int-choice -> value mapping using the *row order* of df[df_col]
-        # Using a Series preserves integer index 0..n-1 after reset_index(drop=True)
-        choice_series = df[df_col].reset_index(drop=True)
-
-        # Ensure the source choices are integer-coded
-        out[flag] = pd.to_numeric(out[flag], errors="raise").astype("int64")
-
-        # Series.map with a Series maps by index; perfect for 0..n-1 codes
-        out[flag] = out[flag].map(choice_series)
-
-        # Optional: fail fast if any choice was out of bounds
-        if out[flag].isna().any():
-            bad = out.loc[out[flag].isna(), flag].index.tolist()
-            raise ValueError(
-                f"Found out-of-range choice(s) for '{flag}' at rows {bad}; "
-                f"valid choices are 0..{len(choice_series)-1}"
-            )
-
-    return out
-
-
-def sort_dict_by_key(d: dict) -> dict:
-    """
-    Sort a dictionary by its keys.
-
-    Parameters
-    ----------
-    d : dict
-        The dictionary to sort.
-
-    Returns
-    -------
-    dict
-        A new dictionary sorted by keys.
-    """
-    return {k: d[k] for k in sorted(d.keys())}
-
-
-def dict2str(d: dict) -> str:
-    """
-    Convert a dictionary into a formatted string of key-value pairs.
-
-    Parameters
-    ----------
-    d : dict
-        The dictionary to convert.
-
-    Returns
-    -------
-    str
-        A string representation of the dictionary, where each key-value pair is
-        formatted as `-key value` and pairs are separated by spaces.
-
-    Examples
-    --------
-    >>> d = {"a": 1, "b": 2}
-    >>> dict2str(d)
-    '-a 1
-     -b 2'
-    """
-    return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
 
 
 def run_single():
@@ -632,11 +383,6 @@ def run_single():
         nargs="?",
     )
     parser.add_argument(
-        "RGI_FILE",
-        help="RGI.",
-        nargs="?",
-    )
-    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs="?",
@@ -659,7 +405,6 @@ def run_single():
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
 
-    rgi_file = file_localizer(options.RGI_FILE, path / "rgi")
     config_file = file_localizer(options.CONFIG_FILE, path / "config")
     template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
     resolution = options.resolution
@@ -670,10 +415,9 @@ def run_single():
     nodes = options.nodes
     walltime = options.walltime
 
-    rgi = gpd.read_file(rgi_file)
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
+    df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
 
     default = {
         "input.file": df["boot_file"].iloc[0],
@@ -694,7 +438,6 @@ def run_single():
     print(f"Generate Run for Glacier {rgi_id}")
     print("-" * 80)
     for idx, row in df.iterrows():
-        default.update(row)
         run_glacier(
             rgi_id,
             config_file,
@@ -776,6 +519,12 @@ def run_ensemble():
         default=None,
     )
     parser.add_argument(
+        "--posterior-file",
+        help="CSV file posterior parameter distributions to sample from. Default=None.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
@@ -784,11 +533,6 @@ def run_ensemble():
     parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
-        nargs="?",
-    )
-    parser.add_argument(
-        "RGI_FILE",
-        help="RGI.",
         nargs="?",
     )
     parser.add_argument(
@@ -819,38 +563,37 @@ def run_ensemble():
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
 
-    rgi_file = file_localizer(options.RGI_FILE, path / "rgi")
     config_file = file_localizer(options.CONFIG_FILE, path / "config")
     template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
     uq_file = file_localizer(options.UQ_FILE, path / "uq")
 
     resolution = options.resolution
+    posterior_file = options.posterior_file
     debug = options.debug
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
     walltime = options.walltime
 
-    rgi = gpd.read_file(rgi_file)
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    df = stage_glacier(campaign_config, rgi_id, rgi, path=input_path, force_overwrite=force_overwrite)
+    df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
 
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.fract_P.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-    }
-    outline_file = df["outline"].iloc[0]
-
+    seed = 42
+    rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
     n_samples = uq.samples
     mapping = uq.mapping
-    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=42)
+    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
+    if posterior_file is not None:
+        posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
+        choice_indices = rng.choice(range(len(posterior_df)), n_samples)
+        posterior_sampled_df = posterior_df.iloc[choice_indices].reset_index(drop=True)
+        duplicate_cols = list(set(uq_df.columns) & set(posterior_sampled_df.columns) - {"sample"})
+        if duplicate_cols:
+            print(f"WARNING: posterior overrides UQ for columns: {sorted(duplicate_cols)}")
+            uq_df = uq_df.drop(columns=duplicate_cols)
+        uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
     uq_file = output_path / Path("uq.csv")
     uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)
@@ -864,14 +607,32 @@ def run_ensemble():
     print("-" * 80)
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-    for idx, row in uq_df.iterrows():
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
+    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
+    df_columns = list(df.columns)
+    for _, row in merged_df.iterrows():
+        df_sample = row["sample_df"] if "sample_df" in row else ""
+        uq_sample = str(int(row["sample_uq"])) if "sample_uq" in row else str(int(row["sample"]))
+        sample = f"{df_sample}_uq_{uq_sample}" if df_sample else uq_sample
+
+        outline_file = row["outline"]
+        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{uq_sample}.nc")
         delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
         create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        row["atmosphere.delta_T.file"] = scalar_offset_file
-        row["atmosphere.precip_scaling.file"] = scalar_offset_file
-        default.update(row)
+
+        row_uq = row.drop(labels=df_columns + ["sample_df", "sample_uq"], errors="ignore").to_dict()
+        row_uq.update(
+            {
+                "input.file": row["boot_file"],
+                "grid.file": row["grid_file"],
+                "atmosphere.given.file": row["climate_file"],
+                "atmosphere.elevation_change.file": row["climate_file"],
+                "atmosphere.delta_T.file": scalar_offset_file,
+                "atmosphere.frac_P.file": scalar_offset_file,
+                "atmosphere.precip_scaling.file": scalar_offset_file,
+                "surface.force_to_thickness.file": row["boot_file"],
+            }
+        )
         run_glacier(
             rgi_id,
             config_file,
@@ -884,8 +645,8 @@ def run_ensemble():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=row_uq,
+            sample=sample,
         )
 
     if options.bucket:

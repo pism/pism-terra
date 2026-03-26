@@ -24,18 +24,21 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "boto3",
-    "botocore",
+    "botocore[crt]",
+    "cdo",
     "cdsapi",
-    # "cf-units",  # FIXME: # FIXME: Breaks the conda environment; doesn't appear to be needed
+    # "cf-units",  # FIXME: Breaks the conda environment; doesn't appear to be needed
     "cf_xarray",
     "cftime",
     "dask[distributed,dataframe]",
     "dem_stitcher",
     "earthaccess",
+    "geocube",
     "geopandas",
     "h5netcdf",
     "jinja2",
     "matplotlib",
+    "netCDf4",
     "numpy",
     "pandas",
     "pint-xarray",
@@ -56,6 +59,7 @@ dependencies = [
     "toml",
     "tqdm",
     "xarray",
+    "xarray-regrid",
     "zarr",
 ]
 
@@ -83,7 +87,17 @@ pism-glacier-stage = "pism_terra.glacier.stage:main"
 pism-glacier-run = "pism_terra.glacier.run:run_single"
 pism-glacier-run-ensemble = "pism_terra.glacier.run:run_ensemble"
 pism-glacier-execute = "pism_terra.glacier.execute:main"
+pism-glacier-prepare = "pism_terra.glacier.prepare:main"
 pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
+pism-ismip7-greenland-prepare = "pism_terra.ismip7.greenland.prepare:main"
+pism-ismip7-greenland-stage = "pism_terra.ismip7.greenland.stage:main"
+pism-ismip7-greenland-run = "pism_terra.ismip7.greenland.run:run_single"
+pism-ismip7-greenland-run-ensemble = "pism_terra.ismip7.greenland.run:run_ensemble"
+pism-kitp-prepare = "pism_terra.kitp.prepare:cli"
+pism-kitp-postprocess = "pism_terra.kitp.postprocess:main"
+pism-kitp-stage = "pism_terra.kitp.stage:main"
+pism-kitp-run = "pism_terra.kitp.run:run_single"
+pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
 combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
 
 [tool.setuptools.packages.find]

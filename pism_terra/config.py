@@ -613,6 +613,7 @@ class RunConfig(BaseModel):
     mpi: str = Field(default="mpirun")
     executable: str = Field(default="pism")
     ntasks: int = Field(ge=1)
+    writer: str | None = None
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """
@@ -782,6 +783,10 @@ class PismConfig(BaseModelWithDot):
         Calving-related options to pass through. Defaults to ``{}``.
     iceflow : dict of str to Any, optional
         Ice-flow-related options to pass through. Defaults to ``{}``.
+    frontal_melt : dict of str to Any, optional
+        Frontal melt-related options to pass through. Defaults to ``{}``.
+    hydrology : dict of str to Any, optional
+        Hydrology-related options to pass through. Defaults to ``{}``.
     surface : dict of str to Any, optional
         Surface-related options to pass through. Defaults to ``{}``.
     reporting : dict of str to Any, optional
@@ -817,6 +822,8 @@ class PismConfig(BaseModelWithDot):
     grid: GridConfig
     atmosphere: AtmosphereConfig
     surface: SurfaceConfig
+    frontal_melt: FrontalMeltConfig
+    hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
     ocean: dict[str, Any] = {}
     calving: dict[str, Any] = {}
@@ -869,7 +876,7 @@ class InfoConfig(BaseModelWithDot):
             String to quote.
 
         Returns
-        ----------
+        -------
         str
             String in quotes.
         """
@@ -910,6 +917,7 @@ class GridConfig(BaseModelWithDot):
     Lz: int | float | None = Field(default=None, alias="grid.Lz")
     Mbz: int | None = Field(default=None, alias="grid.Mbz")
     Mz: int | None = Field(default=None, alias="grid.Mz")
+    extrapolation: str | None = Field(default=None, alias="grid.allow_extrapolation")
     registration: str | None = Field(default=None, alias="grid.registration")
 
     # derived / optionally provided:
@@ -1146,6 +1154,26 @@ class EnergyConfig(ModelWithOptions):
     SECTION = "energy"
 
 
+class HydrologyConfig(ModelWithOptions):
+    """
+    Hydrology model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "hydrology"
+
+
+class FrontalMeltConfig(ModelWithOptions):
+    """
+    Frontal melt model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "frontal_melt"
+
+
 class StressBalanceConfig(ModelWithOptions):
     """
     Stress-balance model configuration.
@@ -1158,39 +1186,73 @@ class StressBalanceConfig(ModelWithOptions):
 
 class CampaignConfig(BaseModel):
     """
-    Execution settings for a PISM run.
+    Campaign-level metadata describing the simulation experiment.
 
-    Provides executable/launcher options and a helper to export parameters
-    for templating. String fields that contain Jinja expressions (e.g.,
-    ``"mpirun -np {{ ntasks }}"``) are rendered using the model values.
+    Holds high-level identifiers for the data sources, forcing scenario,
+    and file references that define a simulation campaign. Fields are
+    optional so the same model can serve both glacier-scale and ice-sheet
+    (e.g., ISMIP7) workflows.
 
     Attributes
     ----------
-    mpi : str
-        MPI launcher template, e.g., ``"mpirun -np {{ ntasks }}"``.
-        Defaults to ``"mpirun"``.
-    executable : str
-        Path to the PISM executable, or command name. Defaults to ``"pism"``.
-    ntasks : int
-        Total number of MPI ranks. Must be >= 1.
-
-    Notes
-    -----
-    The :meth:`as_params` method returns only non-empty fields and renders any
-    string value containing Jinja delimiters ``{{ ... }}`` using the current
-    field values (plus any extra context provided).
-
-    Examples
-    --------
-    >>> rc = RunConfig(mpi="mpirun -np {{ ntasks }}", executable="/path/pism", ntasks=56)
-    >>> rc.as_params()["mpi"]
-    'mpirun -np 56'
+    boot_file : str or None
+        Path to the boot NetCDF file (relative to the input directory).
+    outline_file : str or None
+        Path to GPKG basin file (relative to the input directory).
+    bucket : str or None
+        S3 bucket (e.g., ``"pism-cloud7-data"``).
+    climate : str or None
+        Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
+    dem : str or None
+        DEM data source identifier (e.g., ``"copernicus"``).
+    end_year : str, float, or None
+        End year of the forcing period.
+    velocity : str or None
+        Velocity data source identifier (e.g., ``"its_live"``).
+    gcm : str, list, or None
+        GCM model name(s) used for climate forcing.
+    boot_file : str or None
+        Path to the grid NetCDF boot (relative to the input directory).
+    grid_file : str or None
+        Path to the grid NetCDF file (relative to the input directory).
+    heatflux_file : str or None
+        Path to the boot NetCDF file (relative to the input directory).
+    ice_thickness : str or None
+        Ice thickness data source identifier (e.g., ``"millan2022"``).
+    name : str or None
+        Human-readable campaign name.
+    pathway : str or None
+        Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
+    prefix : str or None
+        path to data in bucket (e.g., ``"ismip7_greenland_input"``).
+    retreat_file : str or None
+        Path to the retreat NetCDF file (relative to the input directory).
+    start_year : str, float, or None
+        Start year of the forcing period.
+    version : str or None
+        Dataset or experiment version string.
     """
 
-    name: str = Field(default="hindcast")
-    climate: str = Field(default="era5")
-    dem: str = Field(default="glo_30")
-    ice_thickness: str = Field(default="millan")
+    bucket: str | None = Field(default=None)
+    climate: str | None = Field(default=None)
+    dem: str | None = Field(default=None)
+    velocity: str | None = Field(default=None)
+    gcms: str | list | None = Field(default=None)
+    present_day_forcings: str | list | None = Field(default=None)
+    future_forcings: str | list | None = Field(default=None)
+    boot_file: str | None = Field(default=None)
+    outline_file: str | None = Field(default=None)
+    grid_file: str | None = Field(default=None)
+    heatflux_file: str | None = Field(default=None)
+    ice_thickness: str | None = Field(default=None)
+    name: str | None = Field(default=None)
+    pathway: str | None = Field(default=None)
+    prefix: str | None = Field(default=None)
+    regrid_file: str | None = Field(default=None)
+    retreat_file: str | None = Field(default=None)
+    rgi_file: str | None = Field(default=None)
+    start_year: str | float | None = Field(default=None)
+    version: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """

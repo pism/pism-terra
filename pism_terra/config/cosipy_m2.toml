@@ -49,9 +49,10 @@ resolution = "200m"
 'output.format' = "netcdf4_parallel"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,bmelt"
-'output.extra.file' = "none"
-'output.extra.times' = "monthly"
-'output.extra.vars' = "climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
+'output.scalar.times' = "daily"
+'output.spatial.file' = "none"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "climatic_mass_balance,thk,velsurf_mag,velbase_mag,ice_mass,mass_fluxes,mask,usurf"
 'output.checkpoint.interval' = 24
 
 [energy]

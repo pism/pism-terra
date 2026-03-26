@@ -1,4 +1,4 @@
-# Copyright (C) 2025 Andy Aschwanden
+# Copyright (C) 2025, 2026 Andy Aschwanden
 #
 # This file is part of pism-terra.
 #
@@ -16,6 +16,7 @@
 # along with PISM; if not, write to the Free Software
 
 # mypy: disable-error-code="call-overload"
+# pylint: disable=too-many-positional-arguments,unused-import
 
 """
 Provide raster functions.
@@ -26,10 +27,91 @@ from tempfile import NamedTemporaryFile
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import rasterio
+import rioxarray as rxr
 import xarray as xr
+from geocube.api.core import make_geocube
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from shapely.geometry import box
+
+from pism_terra.workflow import check_xr_lazy
+
+
+def create_ds(
+    output_file: Path | str,
+    date: pd.Timestamp,
+    ds1: gpd.GeoDataFrame,
+    ds2: gpd.GeoDataFrame,
+    geom: dict,
+    resolution: float = 450,
+    crs: str = "EPSG:3413",
+    encoding_time: dict = {"time": {"units": "hours since 1972-01-01 00:00:00", "calendar": "standard"}},
+) -> Path | str:
+    """
+    Create a dataset representing land ice area fraction retreat and save it to a NetCDF file.
+
+    Parameters
+    ----------
+    output_file : Path or str
+        The path to the output NetCDF file.
+    date : pd.Timestamp
+        The date for which the dataset is created.
+    ds1 : gpd.GeoDataFrame
+        The first GeoDataFrame containing the initial geometries.
+    ds2 : gpd.GeoDataFrame
+        The second GeoDataFrame containing the geometries to be compared.
+    geom : dict
+        The geometry dictionary for the geocube.
+    resolution : float, optional
+        The resolution of the geocube, by default 450.
+    crs : str, optional
+        The coordinate reference system, by default "EPSG:3413".
+    encoding_time : dict, optional
+        The encoding settings for the time variable, by default {"time": {"units": "hours since 1972-01-01 00:00:00", "calendar": "standard"}}.
+
+    Returns
+    -------
+    Path
+        The path to the saved NetCDF file.
+
+    Examples
+    --------
+    >>> import geopandas as gp
+    >>> import pandas as pd
+    >>> from pathlib import Path
+    >>> date = pd.Timestamp("2023-01-01")
+    >>> ds1 = gpd.read_file("path_to_ds1.shp")
+    >>> ds2 = gpd.read_file("path_to_ds2.shp")
+    >>> geom = {"type": "Polygon", "coordinates": [[[...]]]}
+    >>> result_path = create_ds(date, ds1, ds2, geom)
+    >>> print(result_path)
+    """
+
+    start = date.replace(day=1)
+
+    ds = gpd.GeoDataFrame(ds1, crs=crs)
+    geom_valid = ds.geometry.make_valid()
+    ds.geometry = geom_valid
+    ds_dissolved = ds.dissolve()
+    diff = ds2.difference(ds_dissolved.buffer(5))
+    n = len(diff)
+    diff_df = {"land_ice_area_fraction_retreat": np.ones(n)}
+    diff_gp = gpd.GeoDataFrame(data=diff_df, geometry=diff, crs=crs)
+    ds = make_geocube(vector_data=diff_gp, geom=geom, resolution=(resolution, resolution))
+    ds = ds.fillna(0)
+    ds["land_ice_area_fraction_retreat"].attrs["units"] = "1"
+    ds["land_ice_area_fraction_retreat"].attrs.pop("coordinates", None)
+    ds["land_ice_area_fraction_retreat"].attrs["grid_mapping"] = "spatial_ref"
+    ds = ds.expand_dims(time=[start])
+    comp = {"zlib": True, "complevel": 2}
+    encoding = {var: comp for var in ds.data_vars}
+    encoding.update(encoding_time)
+    encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
+
+    ds.to_netcdf(output_file, encoding=encoding)
+
+    return output_file
 
 
 def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:

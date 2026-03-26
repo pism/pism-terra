@@ -1,0 +1,18 @@
+ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rate", "tas" = "ice_surface_temp", "TF" = "theta_ocean", "geothermal_heat_flux1" = "bheatflx"}
+gcms = ["CESM2-WACCM"]
+
+[domain]
+
+x_bounds = [-720500.0, 961500.0]
+y_bounds = [-3450500.0, -569500.0]
+resolution = "1000m"
+
+[pathway]
+
+historical = {"start_year" = 1975, "end_year" = 2015, version = 1}
+ssp585 = {"start_year" = 2015, "end_year" = 2299, version = 1 }
+
+[forcing]
+
+climate = {fields = ["acabf", "runoff", "tas"], short_hand = "SDBN1"}
+ocean = {fields = ["TF"], short_hand = "none"}

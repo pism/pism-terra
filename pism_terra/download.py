@@ -15,9 +15,9 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=consider-using-with,too-many-positional-arguments
+# pylint: disable=consider-using-with,too-many-positional-arguments,broad-exception-caught
 """
-Module for data processing.
+Module for downloading data.
 """
 
 from __future__ import annotations
@@ -29,11 +29,11 @@ import tempfile
 import zipfile
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from io import BytesIO
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import NamedTuple
+from urllib.parse import urlparse
 
+import boto3
 import cdsapi
 import earthaccess
 import numpy as np
@@ -42,7 +42,7 @@ import xarray as xr
 from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3
-from pism_terra.workflow import check_xr_sampled
+from pism_terra.workflow import check_xr_lazy
 
 
 class FileInfo(NamedTuple):
@@ -114,7 +114,7 @@ def unzip_files(
 
     Parameters
     ----------
-    files : List[Union[str, Path]]
+    files : list[Union[str, Path]]
         List of file paths to unzip.
     output_dir : Union[str, Path], optional
         The directory where the unzipped files will be saved, by default ".".
@@ -125,24 +125,27 @@ def unzip_files(
 
     Returns
     -------
-    List[Path]
+    list[Path]
         List of paths to the unzipped files.
     """
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for f in files:
-            futures.append(executor.submit(unzip_file, f, str(output_dir), overwrite=overwrite))
-        for future in as_completed(futures):
+        futures = {
+            executor.submit(unzip_file, f, str(output_dir), overwrite=overwrite, verbose=False): f for f in files
+        }
+        pbar = tqdm(as_completed(futures), total=len(futures), desc="Extracting archives", unit="file")
+        for future in pbar:
             try:
                 future.result()
+                pbar.set_postfix_str(f"{Path(futures[future]).stem} ✓")
             except (IOError, ValueError) as e:
-                print(f"An error occurred: {e}", unzip_file)
+                pbar.set_postfix_str(f"{Path(futures[future]).stem} ✗")
+                print(f"An error occurred: {e}")
 
     responses = list(Path(output_dir).rglob("*.nc"))
     return responses
 
 
-def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
+def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False, verbose: bool = True) -> None:
     """
     Unzip a file to a specified directory with a progress bar and optional overwrite.
 
@@ -154,6 +157,8 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
         The directory where the contents will be extracted.
     overwrite : bool, optional
         Whether to overwrite existing files, by default False.
+    verbose : bool, default True
+        If True, show a per-file progress bar.
     """
     # Ensure the extract_to directory exists
     Path(extract_to).mkdir(parents=True, exist_ok=True)
@@ -164,7 +169,7 @@ def unzip_file(zip_path: str, extract_to: str, overwrite: bool = False) -> None:
         file_list = zip_ref.namelist()
 
         # Iterate over the file names with a progress bar
-        for file in tqdm(file_list, desc="Extracting files", unit="file"):
+        for file in tqdm(file_list, desc="Extracting files", unit="file", disable=not verbose):
             file_path = Path(extract_to) / file
             if not file_path.exists() or overwrite:
                 zip_ref.extract(member=file, path=extract_to)
@@ -174,6 +179,7 @@ def extract_archive(
     archive: tarfile.TarFile | zipfile.ZipFile | str | Path,
     extract_to: str | Path = Path("archive"),
     force_overwrite: bool = False,
+    verbose: bool = True,
 ) -> list[str]:
     """
     Extract a ZIP or TAR archive to a specified directory with a progress bar.
@@ -190,6 +196,8 @@ def extract_archive(
         Directory to extract the archive contents into. Defaults to "archive".
     force_overwrite : bool, optional
         Whether to overwrite existing files. Defaults to False.
+    verbose : bool, optional
+        Show progress bar during extraction. Defaults to True.
 
     Returns
     -------
@@ -203,7 +211,7 @@ def extract_archive(
 
     Notes
     -----
-    - Uses `tqdm` for a progress bar.
+    - Uses `tqdm` for a progress bar when *verbose* is True.
     - Automatically creates the `extract_to` directory if needed.
     - Automatically closes the archive if opened internally.
     """
@@ -228,7 +236,7 @@ def extract_archive(
     members: str | list[str] | list[zipfile.ZipInfo] | list[tarfile.TarInfo]
     if isinstance(archive, zipfile.ZipFile):
         members = archive.namelist()
-        for member in tqdm(members, desc="Extracting files", unit="file"):
+        for member in tqdm(members, desc="Extracting files", unit="file", disable=not verbose):
             file_path = extract_to / member
             if (not file_path.exists()) or force_overwrite:
                 archive.extract(member, path=extract_to)
@@ -236,7 +244,7 @@ def extract_archive(
 
     elif isinstance(archive, tarfile.TarFile):
         members = archive.getmembers()
-        for member in tqdm(members, desc="Extracting files", unit="file"):
+        for member in tqdm(members, desc="Extracting files", unit="file", disable=not verbose):
             file_path = extract_to / member.name
             if (not file_path.exists()) or force_overwrite:
                 archive.extract(member, path=extract_to)
@@ -332,7 +340,7 @@ def download_request(
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if (not check_xr_sampled(file_path)) or force_overwrite:
+    if (not check_xr_lazy(file_path)) or force_overwrite:
         client = cdsapi.Client()
 
         path = file_path.parent
@@ -420,45 +428,70 @@ def save_netcdf(
     ds.to_netcdf(output_filename, encoding=encoding, **kwargs)
 
 
-def download_archive(url: str) -> tarfile.TarFile | zipfile.ZipFile:
+def download_archive(
+    url: str, dest: Path | str | None = None, force_overwrite: bool = False, verbose: bool = True
+) -> Path:
     """
-    Download an archive file from a URL and return it as a tarfile or ZipFile object.
+    Download an archive file from a URL and save it to disk.
+
+    If *dest* already exists and *force_overwrite* is ``False`` the download
+    is skipped and the existing path is returned immediately.
 
     Parameters
     ----------
     url : str
-        The URL of the archive file to download. The file can be either a .tar.gz or a .zip file.
+        The URL of the archive file to download.
+    dest : Path or str or None, optional
+        Local file path for the downloaded archive.  When ``None`` the
+        filename is derived from the URL and placed in the current directory.
+    force_overwrite : bool, optional
+        Re-download even when *dest* already exists.  Defaults to ``False``.
+    verbose : bool, optional
+        Show progress bar and status messages. Defaults to ``True``.
 
     Returns
     -------
-    Union[tarfile.TarFile, zipfile.ZipFile]
-        The downloaded archive file as a tarfile.TarFile object if the file is a .tar.gz,
-        or as a ZipFile object if the file is a .zip.
+    Path
+        Path to the downloaded archive file on disk.
     """
-    response = requests.get(url, stream=True, timeout=5)
+    if dest is None:
+        dest = Path(Path(urlparse(url).path).name)
+    else:
+        dest = Path(dest)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if dest.exists() and not force_overwrite:
+        if verbose:
+            print(f"Archive already exists, skipping download: {dest}")
+        return dest
+
+    response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
 
     total_size = int(response.headers.get("Content-Length", 0))
-    buffer = BytesIO()
 
-    with tqdm(total=total_size, unit="B", unit_scale=True, unit_divisor=1024, desc="Downloading archive") as pbar:
+    with (
+        open(dest, "wb") as f,
+        tqdm(
+            total=total_size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=f"Downloading {dest.name}",
+            disable=not verbose,
+        ) as pbar,
+    ):
         for chunk in response.iter_content(chunk_size=8192):
-            buffer.write(chunk)
+            f.write(chunk)
             pbar.update(len(chunk))
 
-    buffer.seek(0)
-
-    if url.endswith((".tar.gz", ".tgz")):
-        return tarfile.open(fileobj=buffer, mode="r:gz")
-    elif url.endswith(".zip"):
-        return zipfile.ZipFile(buffer)
-    else:
-        raise ValueError("Unsupported archive format: must end with .zip or .tar.gz")
+    return dest
 
 
-def file_localizer(file_path: str, dest_dir: str | Path = Path.cwd()) -> Path:
+def file_localizer(file_path: str, dest: str | Path = Path.cwd()) -> Path:
     """
-    Localize files to the ``dest_dir`` directory if the don't already exist on the local filesystem.
+    Localize files to the ``dest`` directory if the don't already exist on the local filesystem.
 
     This function will ensure files are available in a local directory, either by downloading the HTTP/S3 file, or
     finding an appropriate file bundled with the pism-terra package.
@@ -467,7 +500,7 @@ def file_localizer(file_path: str, dest_dir: str | Path = Path.cwd()) -> Path:
     ----------
     file_path : str
         URI, local path, or path within pism-terra to a file.
-    dest_dir : str or Path, optional
+    dest : str or Path, optional
         If a file is localized, place it in this directory. Defaults to the current working directory.
 
     Returns
@@ -475,17 +508,17 @@ def file_localizer(file_path: str, dest_dir: str | Path = Path.cwd()) -> Path:
     Path
         Localized file path.
     """
-    dest_dir = Path(dest_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
 
     if Path(file_path).exists():
         return Path(file_path).resolve()
     elif (package_path := Path(__file__).parent / Path(file_path)).exists():
         return package_path.resolve()
     elif file_path.startswith("s3://"):
-        return download_from_s3(file_path, dest_dir / Path(file_path).name)
+        return download_from_s3(file_path, dest / Path(file_path).name)
     elif file_path.startswith("https://") or file_path.startswith("http://"):
-        return Path(download_file(file_path, dest_dir / Path(file_path).name))
+        return Path(download_file(file_path, dest / Path(file_path).name))
 
     raise ValueError(f"Unable to find local path to {file_path}")
 
@@ -579,7 +612,7 @@ def download_earthaccess(filter_str: str | None = None, result_dir: Path | str =
 
     Returns
     -------
-    List
+    list
         A list of paths to the downloaded files.
     """
     p = Path(result_dir)
@@ -604,6 +637,8 @@ def download_netcdf(
     """
     Download a dataset from the specified URL and return it as an xarray Dataset.
 
+    Supports both HTTP(S) and S3 URLs (``s3://bucket/key``).
+
     Parameters
     ----------
     url : str, optional
@@ -621,23 +656,145 @@ def download_netcdf(
     >>> dataset = download_dataset()
     >>> print(dataset)
     """
-    # Get the file size from the headers
-    response = requests.head(url, timeout=10)
-    file_size = int(response.headers.get("content-length", 0))
+    tmp = Path(tempfile.mktemp(suffix=".nc"))
+    try:
+        if url.startswith("s3://"):
+            parts = url.replace("s3://", "").split("/", 1)
+            bucket, key = parts[0], parts[1]
+            s3 = boto3.client("s3")
+            meta = s3.head_object(Bucket=bucket, Key=key)
+            file_size = meta["ContentLength"]
+            progress = tqdm(total=file_size, unit="iB", unit_scale=True)
+            print(f"Downloading {url}")
+            s3.download_file(bucket, key, str(tmp), Callback=progress.update)
+            progress.close()
+        else:
+            response = requests.head(url, timeout=10)
+            file_size = int(response.headers.get("content-length", 0))
+            progress = tqdm(total=file_size, unit="iB", unit_scale=True)
+            print(f"Downloading {url}")
+            with requests.get(url, stream=True, timeout=10) as r:
+                r.raise_for_status()
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        f.write(chunk)
+                        progress.update(len(chunk))
+            progress.close()
 
-    # Initialize the progress bar
-    progress = tqdm(total=file_size, unit="iB", unit_scale=True)
+        return xr.open_dataset(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
 
-    # Download the file in chunks and update the progress bar
-    print(f"Downloading {url}")
-    with requests.get(url, stream=True, timeout=10) as r:
+
+def download_gebco(
+    url: str = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2025/ice_surface_elevation/netcdf/gebco_2025.zip?download=1",
+    target_dir: os.PathLike | str = ".",
+) -> Path:
+    """
+    Download and extract GEBCO 2025 ice surface elevation NetCDF if needed.
+
+    Parameters
+    ----------
+    url : str, optional
+        URL to the GEBCO 2025 ZIP archive.
+    target_dir : str or PathLike, optional
+        Directory where the ZIP and NetCDF file should be stored.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the extracted NetCDF file.
+
+    Notes
+    -----
+    - If a valid NetCDF file already exists in `target_dir`, it is returned
+      without re-downloading.
+    - The function searches for any ``*.nc`` file in `target_dir` and uses
+      the first valid one.
+    """
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    # 1. Check for existing valid NetCDF in target_dir
+    existing_nc_files = sorted(target_dir.glob("GEBCO*.nc"))
+    for nc_path in existing_nc_files:
+        if check_xr_lazy(nc_path):
+            return nc_path
+    # 2. No valid NetCDF found, download ZIP
+    zip_path = target_dir / "gebco_2025.zip"
+    with requests.get(url, stream=True, timeout=300) as r:
         r.raise_for_status()
-        with open("temp.nc", "wb") as f:
+        total = int(r.headers.get("Content-Length", 0))
+        chunk_size = 1024 * 1024  # 1 MB
+        with (
+            open(zip_path, "wb") as f,
+            tqdm(
+                total=total,
+                unit="B",
+                unit_scale=True,
+                desc="Downloading gebco_2025.zip",
+            ) as pbar,
+        ):
             for chunk in r.iter_content(chunk_size=chunk_size):
-                f.write(chunk)
-                progress.update(len(chunk))
-    progress.close()
+                if chunk:  # filter out keep-alive chunks
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+    # 3. Extract ZIP
+    print(f"Extracting {zip_path} to {target_dir}")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(target_dir)
+    # 4. Find NetCDF file in target_dir
+    nc_files = sorted(target_dir.glob("*.nc"))
+    if not nc_files:
+        raise FileNotFoundError(f"No NetCDF (*.nc) files found in {target_dir} after extracting {zip_path}")
+    # Prefer the first valid one
+    for nc_path in nc_files:
+        if check_xr_lazy(nc_path):
+            return nc_path
+    raise RuntimeError(f"Found NetCDF files in {target_dir}, but none could be opened successfully.")
 
-    with NamedTemporaryFile(suffix=".nc", delete=False) as xr_file:
-        # Open the downloaded file with xarray
-        return xr.open_dataset(xr_file)
+
+def download_hirham(
+    base_url: str,
+    start_year: int,
+    end_year: int,
+    output_dir: str | Path = ".",
+    max_workers: int = 4,
+) -> list[Path]:
+    """
+    Download HIRHAM files in parallel.
+
+    Parameters
+    ----------
+    base_url : str
+        The base URL for downloading HIRHAM data.
+    start_year : int
+        The starting year of the files to download.
+    end_year : int
+        The ending year of the files to download.
+    output_dir : Union[str, Path], optional
+        The directory where the downloaded files will be saved, by default ".".
+    max_workers : int, optional
+        The maximum number of threads to use for downloading, by default 4.
+
+    Returns
+    -------
+    list[Path]
+        List of paths to the downloaded files.
+    """
+    print(f"Downloading HIRHAM5 from {base_url}")
+    responses = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for year in range(start_year, end_year + 1):
+            year_file = f"{year}.zip"
+            url = base_url + year_file
+            output_path = output_dir / Path(year_file)
+            futures.append(executor.submit(download_file, url, output_path))
+            responses.append(output_path)
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"An error occurred: {e}")
+
+    return responses
