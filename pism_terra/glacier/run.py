@@ -630,6 +630,7 @@ def run_ensemble():
                 "atmosphere.delta_T.file": scalar_offset_file,
                 "atmosphere.frac_P.file": scalar_offset_file,
                 "atmosphere.precip_scaling.file": scalar_offset_file,
+                "surface.force_to_thickness.file": row["boot_file"],
             }
         )
         run_glacier(
