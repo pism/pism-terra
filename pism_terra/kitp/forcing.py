@@ -242,13 +242,13 @@ def prepare_carra2(
         cdo_local = Cdo(tempdir=tmpdir)
         pr_monmean = cdo_local.ymonmean(
             input="""-setattribute,precipitation@units="kg m^-2 day^-1"  -chname,total_precipitation,precipitation -mergetime """
-            + " ".join(precipitation_files)
+            + " ".join(str(f) for f in precipitation_files)
         )
         tas_monmean = cdo_local.ymonmean(
-            input="-chname,2m_temperature,air_temp -mergetime " + " ".join(temperature_files)
+            input="-chname,2m_temperature,air_temp -mergetime " + " ".join(str(f) for f in temperature_files)
         )
         tas_monstd = cdo_local.ymonstd(
-            input="-chname,2m_temperature,air_temp_sd -mergetime " + " ".join(temperature_files),
+            input="-chname,2m_temperature,air_temp_sd -mergetime " + " ".join(str(f) for f in temperature_files),
             options="-f nc4 -z zip_2 -P 1",
         )
         ds = cdo_local.merge(
