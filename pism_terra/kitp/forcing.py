@@ -22,6 +22,7 @@
 Prepare KITP Greenland data sets.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -55,6 +56,8 @@ from pism_terra.grids import load_grid
 from pism_terra.raster import add_time_bounds, create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
+
+logger = logging.getLogger(__name__)
 
 xr.set_options(keep_attrs=True)
 
@@ -238,26 +241,34 @@ def prepare_carra2(
         **kwargs,  # pass the full CARRA request dict
     )
 
+    logger.info(
+        "Downloaded %d precipitation files, %d temperature files", len(precipitation_files), len(temperature_files)
+    )
     with tempfile.TemporaryDirectory() as tmpdir:
         cdo = Cdo(tempdir=tmpdir)
         cdo.debug = True
 
+        logger.info("CDO: computing ymonmean for precipitation (%d files)...", len(precipitation_files))
         pr_monmean = cdo.ymonmean(
             input="""-setattribute,precipitation@units="kg m^-2 day^-1"  -chname,total_precipitation,precipitation -mergetime """
             + " ".join(str(f) for f in precipitation_files)
         )
+        logger.info("CDO: computing ymonmean for temperature (%d files)...", len(temperature_files))
         tas_monmean = cdo.ymonmean(
             input="-chname,2m_temperature,air_temp -mergetime " + " ".join(str(f) for f in temperature_files)
         )
+        logger.info("CDO: computing ymonstd for temperature...")
         tas_monstd = cdo.ymonstd(
             input="-chname,2m_temperature,air_temp_sd -mergetime " + " ".join(str(f) for f in temperature_files),
             options="-f nc4 -z zip_2 -P 1",
         )
+        logger.info("CDO: remapping and merging to target grid...")
         ds = cdo.merge(
             input=f"""-remapycon,{str(target_grid_path.resolve())} -setgrid,{str(carra2_grid_path.resolve())} -merge {pr_monmean} {tas_monmean} {tas_monstd}""",
             options="-f nc4 -z zip_2 -P 1",
             returnXDataset=True,
         )
+        logger.info("CDO: done")
 
         ds = ds.drop_vars("time_bnds", errors="ignore")
 
