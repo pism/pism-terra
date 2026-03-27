@@ -239,19 +239,21 @@ def prepare_carra2(
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cdo_local = Cdo(tempdir=tmpdir)
-        pr_monmean = cdo_local.ymonmean(
+        cdo = Cdo(tempdir=tmpdir)
+        cdo.debug = True
+
+        pr_monmean = cdo.ymonmean(
             input="""-setattribute,precipitation@units="kg m^-2 day^-1"  -chname,total_precipitation,precipitation -mergetime """
             + " ".join(str(f) for f in precipitation_files)
         )
-        tas_monmean = cdo_local.ymonmean(
+        tas_monmean = cdo.ymonmean(
             input="-chname,2m_temperature,air_temp -mergetime " + " ".join(str(f) for f in temperature_files)
         )
-        tas_monstd = cdo_local.ymonstd(
+        tas_monstd = cdo.ymonstd(
             input="-chname,2m_temperature,air_temp_sd -mergetime " + " ".join(str(f) for f in temperature_files),
             options="-f nc4 -z zip_2 -P 1",
         )
-        ds = cdo_local.merge(
+        ds = cdo.merge(
             input=f"""-remapycon,{str(target_grid_path.resolve())} -setgrid,{str(carra2_grid_path.resolve())} -merge {pr_monmean} {tas_monmean} {tas_monstd}""",
             options="-f nc4 -z zip_2 -P 1",
             returnXDataset=True,

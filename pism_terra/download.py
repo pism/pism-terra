@@ -22,6 +22,7 @@ Module for downloading data.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tarfile
@@ -43,6 +44,8 @@ from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3
 from pism_terra.workflow import check_xr_lazy
+
+logger = logging.getLogger(__name__)
 
 
 class FileInfo(NamedTuple):
@@ -139,7 +142,7 @@ def unzip_files(
                 pbar.set_postfix_str(f"{Path(futures[future]).stem} ✓")
             except (IOError, ValueError) as e:
                 pbar.set_postfix_str(f"{Path(futures[future]).stem} ✗")
-                print(f"An error occurred: {e}")
+                logger.error("An error occurred: %s", e)
 
     responses = list(Path(output_dir).rglob("*.nc"))
     return responses
@@ -398,7 +401,7 @@ def carra_download_request(
                 pbar.set_postfix_str(f"{yr} done")
             except Exception as e:
                 pbar.set_postfix_str(f"{yr} failed")
-                print(f"Failed to download year {yr}: {e}")
+                logger.error("Failed to download year %s: %s", yr, e)
 
     return result
 
@@ -495,7 +498,7 @@ def download_request(
         file_path.unlink(missing_ok=True)
 
         years = [str(y) for y in request.pop("year")]
-        print(years)
+        logger.info("Downloading years: %s", years)
         # Remove "year" from the base request; each worker adds its own.
 
         downloaded: list[Path] = []
@@ -513,7 +516,7 @@ def download_request(
                     pbar.set_postfix_str(f"{yr} done")
                 except Exception as e:
                     pbar.set_postfix_str(f"{yr} failed")
-                    print(f"Failed to download year {yr}: {e}")
+                    logger.error("Failed to download year %s: %s", yr, e)
 
         dss = []
         for nc in sorted(downloaded):
@@ -621,7 +624,7 @@ def download_archive(
 
     if dest.exists() and not force_overwrite:
         if verbose:
-            print(f"Archive already exists, skipping download: {dest}")
+            logger.info("Archive already exists, skipping download: %s", dest)
         return dest
 
     response = requests.get(url, stream=True, timeout=30)
@@ -823,14 +826,14 @@ def download_netcdf(
             meta = s3.head_object(Bucket=bucket, Key=key)
             file_size = meta["ContentLength"]
             progress = tqdm(total=file_size, unit="iB", unit_scale=True)
-            print(f"Downloading {url}")
+            logger.info("Downloading %s", url)
             s3.download_file(bucket, key, str(tmp), Callback=progress.update)
             progress.close()
         else:
             response = requests.head(url, timeout=10)
             file_size = int(response.headers.get("content-length", 0))
             progress = tqdm(total=file_size, unit="iB", unit_scale=True)
-            print(f"Downloading {url}")
+            logger.info("Downloading %s", url)
             with requests.get(url, stream=True, timeout=10) as r:
                 r.raise_for_status()
                 with open(tmp, "wb") as f:
@@ -897,7 +900,7 @@ def download_gebco(
                     f.write(chunk)
                     pbar.update(len(chunk))
     # 3. Extract ZIP
-    print(f"Extracting {zip_path} to {target_dir}")
+    logger.info("Extracting %s to %s", zip_path, target_dir)
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(target_dir)
     # 4. Find NetCDF file in target_dir
@@ -939,7 +942,7 @@ def download_hirham(
     list[Path]
         List of paths to the downloaded files.
     """
-    print(f"Downloading HIRHAM5 from {base_url}")
+    logger.info("Downloading HIRHAM5 from %s", base_url)
     responses = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
@@ -953,6 +956,6 @@ def download_hirham(
             try:
                 future.result()
             except Exception as e:
-                print(f"An error occurred: {e}")
+                logger.error("An error occurred: %s", e)
 
     return responses
