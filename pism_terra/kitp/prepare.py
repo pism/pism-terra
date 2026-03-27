@@ -134,6 +134,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     data_path = output_path / Path(f"stage_{config["version"]}")
     data_path.mkdir(exist_ok=True)
+    carra2_path = data_path / Path("carra2")
+    carra2_path.mkdir(exist_ok=True)
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
@@ -149,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     grid_ds.to_netcdf(grid_file, encoding=encoding)
     check_xr_fully(grid_file)
 
-    prepare_carra2(data_path, max_workers=ntasks)
+    prepare_carra2(carra2_path, max_workers=ntasks)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     logger.info("-" * 120)

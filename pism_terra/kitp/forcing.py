@@ -104,7 +104,6 @@ def prepare_carra2(
     - If missing values are detected in the regional subset, the function
       patches them from the global reanalysis (same period).
     """
-    path = Path(path)
 
     print("")
     print("Generate historical climate")

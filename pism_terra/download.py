@@ -375,6 +375,9 @@ def carra_download_request(
     client = cdsapi.Client()
 
     path = file_path.parent
+    carra2_path = path / Path("_".join(v for v in request["variable"]))
+    carra2_path.mkdir(exist_ok=True)
+
     file_path.unlink(missing_ok=True)
 
     years = [str(y) for y in request.pop("year")]
@@ -383,7 +386,8 @@ def carra_download_request(
     result: list[Path] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_cds_download_year, client, dataset, request, yr, path, force_overwrite): yr for yr in years
+            executor.submit(_cds_download_year, client, dataset, request, yr, carra2_path, force_overwrite): yr
+            for yr in years
         }
         pbar = tqdm(as_completed(futures), total=len(futures), desc="Downloading years", unit="yr")
         for future in pbar:
