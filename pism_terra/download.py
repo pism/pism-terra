@@ -315,6 +315,90 @@ def _cds_download_year(
     return nc_path
 
 
+def carra_download_request(
+    dataset: str,
+    request: dict,
+    file_path: Path | str = "tmp.nc",
+    force_overwrite: bool = False,
+    max_workers: int = 5,
+) -> xr.Dataset:
+    """
+    Download reanalysis data from CDS and return it as an xarray Dataset.
+
+    By default, sends a request to the Copernicus Climate Data Store (CDS)
+    API for monthly ERA5 averages. For other datasets (e.g., CARRA), pass a
+    fully formed ``request_override`` dict — it will be used as-is, ignoring
+    ``area``, ``year``, and ``variable``.
+
+    Requests are split by year and submitted concurrently (up to
+    ``max_workers`` in parallel) so the CDS queue processes them faster.
+
+    Parameters
+    ----------
+    dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
+        CDS dataset identifier to retrieve.
+    request : dict
+        Used as the CDS request verbatim.
+        ERA5 request. The ``year`` key will be split for parallel download.
+        Useful for CARRA or other datasets with different request schemas.
+    file_path : str or pathlib.Path, default ``"tmp.nc"``
+        Cache file. If it exists and opens successfully, it is re-used unless
+        ``force_overwrite`` is set.
+    force_overwrite : bool, default ``False``
+        If ``True``, ignore any existing cache at ``path`` and perform a fresh
+        download.
+    max_workers : int, default 5
+        Maximum number of concurrent CDS requests.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset containing the requested data.
+
+    Raises
+    ------
+    cdsapi.api.ClientError
+        CDS request/authentication/parameter failures.
+    OSError
+        Problems opening/writing downloaded files.
+    ValueError
+        Incompatible files for merge.
+
+    Notes
+    -----
+    - Requires a valid CDS API key in ``~/.cdsapirc``.
+    - If CDS provides a ZIP, contents are extracted before loading/merging.
+    """
+
+    file_path = Path(file_path)
+
+    client = cdsapi.Client()
+
+    path = file_path.parent
+    file_path.unlink(missing_ok=True)
+
+    years = [str(y) for y in request.pop("year")]
+    # Remove "year" from the base request; each worker adds its own.
+
+    result: list[Path] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_cds_download_year, client, dataset, request, yr, path, force_overwrite): yr for yr in years
+        }
+        pbar = tqdm(as_completed(futures), total=len(futures), desc="Downloading years", unit="yr")
+        for future in pbar:
+            yr = futures[future]
+            try:
+                nc = future.result()
+                result.append(nc)
+                pbar.set_postfix_str(f"{yr} done")
+            except Exception as e:
+                pbar.set_postfix_str(f"{yr} failed")
+                print(f"Failed to download year {yr}: {e}")
+
+    return result
+
+
 def download_request(
     dataset: str = "reanalysis-era5-single-levels-monthly-means",
     area: Sequence[float] | None = (90.0, -90.0, 45.0, 90.0),
@@ -343,6 +427,7 @@ def download_request(
     area : sequence of float or None, default ``(90, -90, 45, 90)``
         Geographic bounding box **[North, West, South, East]** in degrees (WGS84).
         Ignored when ``request_override`` is provided.
+
     year : iterable of int, default ``range(1980, 2025)``
         Years to request. Ignored when ``request_override`` is provided.
     variable : sequence of str, default ``("2m_temperature", "total_precipitation")``
@@ -406,6 +491,7 @@ def download_request(
         file_path.unlink(missing_ok=True)
 
         years = [str(y) for y in request.pop("year")]
+        print(years)
         # Remove "year" from the base request; each worker adds its own.
 
         downloaded: list[Path] = []

@@ -50,7 +50,7 @@ from tqdm import tqdm
 
 from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain
-from pism_terra.download import download_hirham, download_request, unzip_files
+from pism_terra.download import carra_download_request, download_hirham, unzip_files
 from pism_terra.raster import add_time_bounds, create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -115,37 +115,26 @@ false_northing = 0.
 
 
 def carra(
-    year: list[int] | Iterable[int] = range(1990, 2019),
-    dataset: str = "reanalysis-pan-carra-means",
-    variable: list[str] | Iterable[str] = ("2m_temperature", "total_precipitation", "z"),
     path: Path | str = ".",
+    max_workers: int = 5,
     **kwargs,
-) -> Path:
+):
     """
     Download monthly CARRA reanalysis and write a NetCDF.
 
     Parameters
     ----------
-    year : list of int or Iterable of int, default ``range(1990, 2019)``
-        Years to request from CARRA.
-    dataset : str, default ``"reanalysis-pan-carra-means"``
-        CDS dataset name for CARRA means.
-    variable : list of str or Iterable of str, default ``("2m_temperature", "total_precipitation", "z")``
-        CARRA variable names to download.
     path : str or pathlib.Path, default ``"."``
         Output directory or filename base. The function writes a file named
         ``carra_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
         otherwise the provided filename is used.
+    max_workers : int, default 5
+        Maximum number of concurrent CDS download requests.
     **kwargs
         Additional keyword arguments forwarded to :func:`download_request`
         (e.g., alternate ``variable`` sequences, custom authentication/session
         options, or client settings). These are passed unchanged to the CDS
         retrieval helper.
-
-    Returns
-    -------
-    pathlib.Path
-        Absolute path to the written NetCDF file.
 
     Raises
     ------
@@ -170,14 +159,85 @@ def carra(
 
     print("")
     print("Generate historical climate")
-    print("-" * 80)
+    print("-" * 120)
 
-    request = {
+    precipitation_dataset = "reanalysis-pan-carra-means"
+    precipitation_request = {
+        "time_aggregation": "monthly",
+        "level_type": "single_levels",
+        "variable": ["total_precipitation"],
+        "product_type": "forecast_based",
+        "year": [
+            "1986",
+            "1987",
+            "1988",
+            "1991",
+            "1992",
+            "1993",
+            "1996",
+            "1997",
+            "1998",
+            "2001",
+            "2002",
+            "2003",
+            "2006",
+            "2007",
+            "2008",
+            "2011",
+            "2012",
+            "2013",
+            "2016",
+            "2017",
+            "2018",
+            "2021",
+            "2022",
+            "2023",
+        ],
+        "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+        "data_format": "netcdf",
+        "area": [86, -65, 55, -25],
+    }
+
+    _ = carra_download_request(
+        precipitation_dataset,
+        precipitation_request,
+        file_path="pr.nc",
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    temperature_dataset = "reanalysis-pan-carra-means"
+    temperature_request = {
         "time_aggregation": "daily",
         "level_type": "single_levels",
-        "variable": variable,
+        "variable": ["2m_temperature"],
         "product_type": "analysis_based",
-        "year": year,
+        "year": [
+            "1986",
+            "1987",
+            "1988",
+            "1991",
+            "1992",
+            "1993",
+            "1996",
+            "1997",
+            "1998",
+            "2001",
+            "2002",
+            "2003",
+            "2006",
+            "2007",
+            "2008",
+            "2011",
+            "2012",
+            "2013",
+            "2016",
+            "2017",
+            "2018",
+            "2021",
+            "2022",
+            "2023",
+        ],
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
         "day": [
             "01",
@@ -213,32 +273,32 @@ def carra(
             "31",
         ],
         "data_format": "netcdf",
+        "area": [86, -65, 55, -25],
     }
 
-    carra_filename = path / Path("carra.nc")
-
-    ds = download_request(
-        dataset, file_path=carra_filename, request_override=request, **kwargs  # pass the full CARRA request dict
+    _ = carra_download_request(
+        temperature_dataset,
+        temperature_request,
+        file_path="tas.nc",
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
     )
-    ds = ds.rename({"valid_time": "time"})
 
-    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
-    ds["surface"] /= 9.80665
-    ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
-    ds["precipitation"] *= 1000
-    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
-    ds["air_temp"].attrs.update({"units": "kelvin"})
-    ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
-    ds["time"].encoding["calendar"] = "standard"
-    ds.rio.write_crs("EPSG:4326", inplace=True)
-    for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
-        if name in ds:
-            ds[name].encoding.update({"_FillValue": None})
+    # precip = precip.rename_vars({"total_precipitation": "precipitation"})
+    # temp = temp.rename_vars({"2m_temperature": "air_temp"})
+    # ds = xr.merge([precip, temp])
+    # ds["precipitation"] *= 1000
+    # ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
 
-    ds = add_time_bounds(ds)
-    ds.to_netcdf(carra_filename)
+    # ds.rio.write_crs("EPSG:4326", inplace=True)
+    # for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
+    #     if name in ds:
+    #         ds[name].encoding.update({"_FillValue": None})
 
-    return carra_filename
+    # ds = add_time_bounds(ds)
+    # ds.to_netcdf(carra_filename)
+
+    # return carra_filename
 
 
 def process_hirham_cdo(
