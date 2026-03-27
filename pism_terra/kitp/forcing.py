@@ -51,76 +51,26 @@ from tqdm import tqdm
 from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain
 from pism_terra.download import carra_download_request, download_hirham, unzip_files
+from pism_terra.grids import load_grid
 from pism_terra.raster import add_time_bounds, create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
-hirham_grid = """
-gridtype = projection
-xname = rlon
-xsize = 402
-ysize = 602
-xfirst = -16
-xinc = 0.05
-xunits = degree
-yname = rlat
-yfirst = -14
-yinc = 0.05
-yunits = degree
-grid_mapping_name = rotated_latitude_longitude
-grid_north_pole_longitude = 160
-grid_north_pole_latitude = 18
-north_pole_grid_longitude = 0
-"""
-
-bedmachine_grid = """
-gridtype = projection
-xsize     = 10218
-ysize     = 18346
-xunits   = "meter"
-yunits   = "meter"
-xfirst    = -65300
-xinc      = 150
-yfirst    = -3384425
-yinc      = 150
-grid_mapping = crs
-grid_mapping_name = polar_stereographic
-straight_vertical_longitude_from_pole = -39.
-standard_parallel = 71.
-latitude_of_projection_origin = 90.
-false_easting = 0.
-false_northing = 0.
-"""
-
-ismip6_grid = """
-gridtype = projection
-xsize     = 1496
-ysize     = 2700
-xunits   = "meter"
-yunits   = "meter"
-xfirst    = -640000
-xinc      = 1000
-yfirst    = -3355000
-yinc      = 1000
-grid_mapping = crs
-grid_mapping_name = polar_stereographic
-straight_vertical_longitude_from_pole = -45.
-standard_parallel = 70.
-latitude_of_projection_origin = 90.
-false_easting = 0.
-false_northing = 0.
-"""
+hirham_grid = load_grid("hirham")
+bedmachine_grid = load_grid("bedmachine")
+carra2_grid = load_grid("carra2")
+ismip6_grid = load_grid("ismip6")
 
 
-def carra(
+def prepare_carra2(
     path: Path | str = ".",
-    max_workers: int = 5,
+    max_workers: int = 8,
     **kwargs,
 ):
     """
-    Download monthly CARRA reanalysis and write a NetCDF.
+    Download monthly CARRA2 reanalysis and write a NetCDF.
 
     Parameters
     ----------
@@ -150,7 +100,6 @@ def carra(
     - Output variables:
       - ``air_temp`` (K) from CARRA ``t2m``.
       - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
-      - ``surface`` (m) derived from CARRA ``z`` / 9.80665 (geopotential → meters).
     - ``time_bounds`` are added for CF-style climatological metadata.
     - If missing values are detected in the regional subset, the function
       patches them from the global reanalysis (same period).
@@ -160,6 +109,12 @@ def carra(
     print("")
     print("Generate historical climate")
     print("-" * 120)
+
+    path = Path(path)
+    carra2_grid_path = path / Path("carra2_grid.txt")
+    carra2_grid_path.write_text(carra2_grid)
+    target_grid_path = path / Path("ismip6_grid.txt")
+    target_grid_path.write_text(ismip6_grid)
 
     precipitation_dataset = "reanalysis-pan-carra-means"
     precipitation_request = {
@@ -198,7 +153,7 @@ def carra(
         "area": [86, -65, 55, -25],
     }
 
-    _ = carra_download_request(
+    precipitation_files = carra_download_request(
         precipitation_dataset,
         precipitation_request,
         file_path="pr.nc",
@@ -276,13 +231,56 @@ def carra(
         "area": [86, -65, 55, -25],
     }
 
-    _ = carra_download_request(
+    temperature_files = carra_download_request(
         temperature_dataset,
         temperature_request,
         file_path="tas.nc",
         max_workers=max_workers,
         **kwargs,  # pass the full CARRA request dict
     )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cdo_local = Cdo(tempdir=tmpdir)
+        pr_monmean = cdo_local.ymonmean(
+            input="""-setattribute,precipitation@units="kg m^-2 day^-1"  -chname,total_precipitation,precipitation -mergetime """
+            + " ".join(precipitation_files)
+        )
+        tas_monmean = cdo_local.ymonmean(
+            input="-chname,2m_temperature,air_temp -mergetime " + " ".join(temperature_files)
+        )
+        tas_monstd = cdo_local.ymonstd(
+            input="-chname,2m_temperature,air_temp_sd -mergetime " + " ".join(temperature_files),
+            options="-f nc4 -z zip_2 -P 1",
+        )
+        ds = cdo_local.merge(
+            input=f"""-remapycon,{str(target_grid_path.resolve())} -setgrid,{str(carra2_grid_path.resolve())} -merge {pr_monmean} {tas_monmean} {tas_monstd}""",
+            options="-f nc4 -z zip_2 -P 1",
+            returnXDataset=True,
+        )
+
+        ds = ds.drop_vars("time_bnds", errors="ignore")
+
+        month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
+        bounds_end = np.cumsum(month_lengths).astype("float64")
+        time_mid = (bounds_start + bounds_end) / 2.0
+
+        time_bounds = np.column_stack([bounds_start, bounds_end])
+
+        ds = ds.assign_coords(time=("time", time_mid))
+        ds["time"].attrs.update(
+            {"standard_name": "time", "units": "days since 0001-01-01", "calendar": "365_day", "bounds": "time_bounds"}
+        )
+        ds["time_bounds"] = (("time", "nv"), time_bounds)
+
+        for var in list(ds.data_vars) + list(ds.coords):
+            ds[var].attrs.pop("missing_value", None)
+            ds[var].attrs.pop("_FillValue", None)
+            ds[var].encoding["missing_value"] = None
+            ds[var].encoding["_FillValue"] = None
+
+        output_file = path / "carra2.nc"
+        ds.to_netcdf(output_file)
 
     # precip = precip.rename_vars({"total_precipitation": "precipitation"})
     # temp = temp.rename_vars({"2m_temperature": "air_temp"})

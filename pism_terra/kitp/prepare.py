@@ -47,9 +47,9 @@ from pism_terra.domain import create_domain
 from pism_terra.ismip7.greenland.forcing import prepare_observations
 from pism_terra.kitp.forcing import (
     baseline_with_anomalies,
-    carra,
     prepare_anomalies,
     prepare_baseline_climatology,
+    prepare_carra2,
 )
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
@@ -149,7 +149,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     grid_ds.to_netcdf(grid_file, encoding=encoding)
     check_xr_fully(grid_file)
 
-    carra(data_path, max_workers=ntasks)
+    prepare_carra2(data_path, max_workers=ntasks)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     logger.info("-" * 120)
