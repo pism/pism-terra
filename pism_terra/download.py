@@ -386,22 +386,22 @@ def carra_download_request(
     years = [str(y) for y in request.pop("year")]
     # Remove "year" from the base request; each worker adds its own.
 
+    n_years = len(years)
+    logger.info("Downloading %d years for %s", n_years, dataset)
     result: list[Path] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_cds_download_year, client, dataset, request, yr, carra2_path, force_overwrite): yr
             for yr in years
         }
-        pbar = tqdm(as_completed(futures), total=len(futures), desc="Downloading years", unit="yr")
-        for future in pbar:
+        for i, future in enumerate(as_completed(futures), 1):
             yr = futures[future]
             try:
                 nc = future.result()
                 result.append(nc)
-                pbar.set_postfix_str(f"{yr} done")
+                logger.info("  [%d/%d] %s done", i, n_years, yr)
             except Exception as e:
-                pbar.set_postfix_str(f"{yr} failed")
-                logger.error("Failed to download year %s: %s", yr, e)
+                logger.error("  [%d/%d] %s failed: %s", i, n_years, yr, e)
 
     return result
 
@@ -501,22 +501,22 @@ def download_request(
         logger.info("Downloading years: %s", years)
         # Remove "year" from the base request; each worker adds its own.
 
+        n_years = len(years)
+        logger.info("Downloading %d years for %s", n_years, dataset)
         downloaded: list[Path] = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(_cds_download_year, client, dataset, request, yr, path, force_overwrite): yr
                 for yr in years
             }
-            pbar = tqdm(as_completed(futures), total=len(futures), desc="Downloading years", unit="yr")
-            for future in pbar:
+            for i, future in enumerate(as_completed(futures), 1):
                 yr = futures[future]
                 try:
                     nc = future.result()
                     downloaded.append(nc)
-                    pbar.set_postfix_str(f"{yr} done")
+                    logger.info("  [%d/%d] %s done", i, n_years, yr)
                 except Exception as e:
-                    pbar.set_postfix_str(f"{yr} failed")
-                    logger.error("Failed to download year %s: %s", yr, e)
+                    logger.error("  [%d/%d] %s failed: %s", i, n_years, yr, e)
 
         dss = []
         for nc in sorted(downloaded):
