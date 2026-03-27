@@ -155,7 +155,7 @@ def prepare_carra2(
     precipitation_files = carra_download_request(
         precipitation_dataset,
         precipitation_request,
-        file_path="pr.nc",
+        file_path=path / Path("pr.nc"),
         max_workers=max_workers,
         **kwargs,  # pass the full CARRA request dict
     )
@@ -233,7 +233,7 @@ def prepare_carra2(
     temperature_files = carra_download_request(
         temperature_dataset,
         temperature_request,
-        file_path="tas.nc",
+        file_path=path / Path("tas.nc"),
         max_workers=max_workers,
         **kwargs,  # pass the full CARRA request dict
     )
