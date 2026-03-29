@@ -160,7 +160,7 @@ def process_carra2(
         "year": year,
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
         "data_format": "netcdf",
-        "area": [86, -65, 55, -25],
+        "area": [90, -180, 40, 180],
     }
 
     precipitation_files = carra_download_request(
@@ -213,7 +213,7 @@ def process_carra2(
             "31",
         ],
         "data_format": "netcdf",
-        "area": [86, -65, 55, -25],
+        "area": [90, -180, 40, 180],
     }
 
     temperature_files = carra_download_request(
