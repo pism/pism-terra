@@ -67,9 +67,37 @@ carra2_grid = load_grid("carra2")
 ismip6_grid = load_grid("ismip6")
 
 
-def prepare_carra2(
-    path: Path | str = ".",
+def process_carra2(
+    data_dir: str | Path,
+    output_file: str | Path,
+    year: list[str | int] = [
+        "1986",
+        "1987",
+        "1988",
+        "1991",
+        "1992",
+        "1993",
+        "1996",
+        "1997",
+        "1998",
+        "2001",
+        "2002",
+        "2003",
+        "2006",
+        "2007",
+        "2008",
+        "2011",
+        "2012",
+        "2013",
+        "2016",
+        "2017",
+        "2018",
+        "2021",
+        "2022",
+        "2023",
+    ],
     max_workers: int = 8,
+    force_overwrite: bool = False,
     **kwargs,
 ):
     """
@@ -77,12 +105,16 @@ def prepare_carra2(
 
     Parameters
     ----------
-    path : str or pathlib.Path, default ``"."``
-        Output directory or filename base. The function writes a file named
-        ``carra_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
-        otherwise the provided filename is used.
+    data_dir : Union[str, Path]
+        Directory containing the input data.
+    output_file : Union[str, Path]
+        Path to the output NetCDF file.
+    year : list[str | int]
+        List of years to download.
     max_workers : int, default 5
         Maximum number of concurrent CDS download requests.
+    force_overwrite : bool, default False
+        If ``True``, recompute intermediate and output files even if they exist.
     **kwargs
         Additional keyword arguments forwarded to :func:`download_request`
         (e.g., alternate ``variable`` sequences, custom authentication/session
@@ -112,10 +144,11 @@ def prepare_carra2(
     print("Generate historical climate")
     print("-" * 120)
 
-    path = Path(path)
-    carra2_grid_path = path / Path("carra2_grid.txt")
+    carra2_path = data_dir / Path("carra2")
+    carra2_path.mkdir(exist_ok=True)
+    carra2_grid_path = carra2_path / Path("carra2_grid.txt")
     carra2_grid_path.write_text(carra2_grid)
-    target_grid_path = path / Path("ismip6_grid.txt")
+    target_grid_path = carra2_path / Path("ismip6_grid.txt")
     target_grid_path.write_text(ismip6_grid)
 
     precipitation_dataset = "reanalysis-pan-carra-means"
@@ -124,32 +157,7 @@ def prepare_carra2(
         "level_type": "single_levels",
         "variable": ["total_precipitation"],
         "product_type": "forecast_based",
-        "year": [
-            "1986",
-            "1987",
-            "1988",
-            "1991",
-            "1992",
-            "1993",
-            "1996",
-            "1997",
-            "1998",
-            "2001",
-            "2002",
-            "2003",
-            "2006",
-            "2007",
-            "2008",
-            "2011",
-            "2012",
-            "2013",
-            "2016",
-            "2017",
-            "2018",
-            "2021",
-            "2022",
-            "2023",
-        ],
+        "year": year,
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
         "data_format": "netcdf",
         "area": [86, -65, 55, -25],
@@ -158,7 +166,7 @@ def prepare_carra2(
     precipitation_files = carra_download_request(
         precipitation_dataset,
         precipitation_request,
-        file_path=path / Path("pr.nc"),
+        file_path=carra2_path / Path("pr.nc"),
         max_workers=max_workers,
         **kwargs,  # pass the full CARRA request dict
     )
@@ -169,32 +177,7 @@ def prepare_carra2(
         "level_type": "single_levels",
         "variable": ["2m_temperature"],
         "product_type": "analysis_based",
-        "year": [
-            "1986",
-            "1987",
-            "1988",
-            "1991",
-            "1992",
-            "1993",
-            "1996",
-            "1997",
-            "1998",
-            "2001",
-            "2002",
-            "2003",
-            "2006",
-            "2007",
-            "2008",
-            "2011",
-            "2012",
-            "2013",
-            "2016",
-            "2017",
-            "2018",
-            "2021",
-            "2022",
-            "2023",
-        ],
+        "year": year,
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
         "day": [
             "01",
@@ -236,7 +219,7 @@ def prepare_carra2(
     temperature_files = carra_download_request(
         temperature_dataset,
         temperature_request,
-        file_path=path / Path("tas.nc"),
+        file_path=carra2_path / Path("tas.nc"),
         max_workers=max_workers,
         **kwargs,  # pass the full CARRA request dict
     )
@@ -248,23 +231,44 @@ def prepare_carra2(
         cdo = Cdo(tempdir=tmpdir)
         cdo.debug = True
 
+        grid = str(carra2_grid_path.resolve())
+        pr_mergetime = " ".join(
+            f"-setgrid,{grid}  -settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon [ {f} ]"
+            for yr, f in zip(year, sorted(precipitation_files))
+        )
+        tas_mergetime = " ".join(
+            f"-setgrid,{grid} -settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day [ {f} ]"
+            for yr, f in zip(year, sorted(temperature_files))
+        )
+
         logger.info("CDO: computing ymonmean for precipitation (%d files)...", len(precipitation_files))
-        pr_monmean = cdo.ymonmean(
-            input="""-setattribute,precipitation@units="kg m^-2 day^-1"  -chname,total_precipitation,precipitation -mergetime """
-            + " ".join(str(f) for f in precipitation_files)
-        )
+        pr_monmean_file = carra2_path / Path("pr_mm.nc")
+        if (not check_xr_lazy(pr_monmean_file)) or force_overwrite:
+            cdo.ymonmean(
+                input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation -mergetime {pr_mergetime}""",
+                output=str(pr_monmean_file.resolve()),
+                options="--reduce_dim -f nc4 -z zip_2 -P 1",
+            )
         logger.info("CDO: computing ymonmean for temperature (%d files)...", len(temperature_files))
-        tas_monmean = cdo.ymonmean(
-            input="-chname,2m_temperature,air_temp -mergetime " + " ".join(str(f) for f in temperature_files)
-        )
+        tas_monmean_file = carra2_path / Path("tas_mm.nc")
+        if (not check_xr_lazy(tas_monmean_file)) or force_overwrite:
+            cdo.ymonmean(
+                input=f"-chname,t2m,air_temp -mergetime {tas_mergetime}",
+                output=str(tas_monmean_file.resolve()),
+                options="--reduce_dim -f nc4 -z zip_2 -P 1",
+            )
         logger.info("CDO: computing ymonstd for temperature...")
-        tas_monstd = cdo.ymonstd(
-            input="-chname,2m_temperature,air_temp_sd -mergetime " + " ".join(str(f) for f in temperature_files),
-            options="-f nc4 -z zip_2 -P 1",
-        )
+        tas_monstd_file = carra2_path / Path("tas_mstd.nc")
+        if (not check_xr_lazy(tas_monstd_file)) or force_overwrite:
+            cdo.ymonstd(
+                input=f"-chname,t2m,air_temp_sd -mergetime {tas_mergetime}",
+                output=str(tas_monstd_file.resolve()),
+                options="--reduce_dim -f nc4 -z zip_2 -P 1",
+            )
         logger.info("CDO: remapping and merging to target grid...")
-        ds = cdo.merge(
-            input=f"""-remapycon,{str(target_grid_path.resolve())} -setgrid,{str(carra2_grid_path.resolve())} -merge {pr_monmean} {tas_monmean} {tas_monstd}""",
+        ds = cdo.remapycon(
+            str(target_grid_path.resolve()),
+            input=f" -merge [ {str(pr_monmean_file.resolve())} {str(tas_monmean_file.resolve())} {str(tas_monstd_file.resolve())} ]",
             options="-f nc4 -z zip_2 -P 1",
             returnXDataset=True,
         )
@@ -281,7 +285,12 @@ def prepare_carra2(
 
         ds = ds.assign_coords(time=("time", time_mid))
         ds["time"].attrs.update(
-            {"standard_name": "time", "units": "days since 0001-01-01", "calendar": "365_day", "bounds": "time_bounds"}
+            {
+                "standard_name": "time",
+                "units": "days since 0001-01-01",
+                "calendar": "365_day",
+                "bounds": "time_bounds",
+            }
         )
         ds["time_bounds"] = (("time", "nv"), time_bounds)
 
@@ -291,27 +300,10 @@ def prepare_carra2(
             ds[var].encoding["missing_value"] = None
             ds[var].encoding["_FillValue"] = None
 
-        output_file = path / "carra2.nc"
         ds.to_netcdf(output_file)
 
-    # precip = precip.rename_vars({"total_precipitation": "precipitation"})
-    # temp = temp.rename_vars({"2m_temperature": "air_temp"})
-    # ds = xr.merge([precip, temp])
-    # ds["precipitation"] *= 1000
-    # ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
 
-    # ds.rio.write_crs("EPSG:4326", inplace=True)
-    # for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
-    #     if name in ds:
-    #         ds[name].encoding.update({"_FillValue": None})
-
-    # ds = add_time_bounds(ds)
-    # ds.to_netcdf(carra_filename)
-
-    # return carra_filename
-
-
-def process_hirham_cdo(
+def process_hirham(
     data_dir: str | Path,
     output_file: str | Path,
     base_url: str,
@@ -503,7 +495,55 @@ def process_hirham_cdo(
     print(f"Time elapsed {time_elapsed:.0f}s")
 
 
-def prepare_baseline_climatology(
+def prepare_carra2_climatology(
+    output_path: Path | str,
+    year: list[str | int],
+    version: str,
+    n_workers: int = 4,
+    force_overwrite: bool = False,
+) -> Path:
+    """
+    Process baseline monthly climatology.
+
+    Parameters
+    ----------
+    output_path : Path or str
+        Output directory.
+    year : list[str] or list[int]
+        List of years.
+    version : str
+        Version string appended to the output filename.
+    n_workers : int, optional
+        Number of dask workers, by default 4.
+    force_overwrite : bool, default ``False``
+        If ``True``, downstream helpers may regenerate intermediate/final artifacts
+        even if cache files exist.
+
+    Returns
+    -------
+    Path
+        Path to the output climatology file.
+    """
+    start_time = time.perf_counter()
+
+    output_path = Path(output_path)
+
+    output_file = output_path / Path(f"CARRA2_YMM_{version}.nc")
+    if (not check_xr_lazy(output_file)) or force_overwrite:
+        process_carra2(
+            data_dir=output_path,
+            output_file=output_file,
+            year=year,
+            max_workers=n_workers,
+        )
+
+    elapsed = time.perf_counter() - start_time
+    print(f"Total processing time: {elapsed:.2f} seconds")
+
+    return output_file
+
+
+def prepare_hirham5_climatology(
     output_path: Path | str,
     start_year: int,
     end_year: int,
@@ -552,7 +592,7 @@ def prepare_baseline_climatology(
 
     output_file = output_path / Path(f"HIRHAM5-ERA5_YMM_{start_year}_{end_year}_{version}.nc")
     if (not check_xr_lazy(output_file)) or force_overwrite:
-        process_hirham_cdo(
+        process_hirham(
             data_dir=output_path,
             vars_dict=hirham_vars_dict,
             start_year=start_year,

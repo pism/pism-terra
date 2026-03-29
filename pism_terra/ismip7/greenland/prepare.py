@@ -24,6 +24,7 @@ Prepare ISMIP7 Greenland data sets.
 import logging
 import os
 import re
+import shutil
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -102,11 +103,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path.mkdir(parents=True, exist_ok=True)
 
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.INFO, format=log_format)
+    logging.basicConfig(level=logging.WARNING, format=log_format)
     file_handler = logging.FileHandler(output_path / "prepare.log")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter(log_format))
-    logging.getLogger().addHandler(file_handler)
+    logging.getLogger("pism_terra").setLevel(logging.INFO)
+    logging.getLogger("pism_terra").addHandler(file_handler)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -165,6 +167,18 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     logger.info("Forcings")
     logger.info("-" * 120)
     forcing_files = prepare_ismip7_forcing(data_path, output_path, config)
+    logger.info("Forcing files: %s", forcing_files)
+    input_files = [grid_file] + list(obs_files.values()) + [retreat_file] + list(forcing_files)
+
+    s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
+    s3_output_path.mkdir(parents=True, exist_ok=True)
+    logger.info("-" * 120)
+    logger.info("Copying input files to %s", s3_output_path)
+    logger.info("-" * 120)
+    for f in input_files:
+        dest = s3_output_path / Path(f).name
+        shutil.copy2(f, dest)
+        logger.info("  %s", dest)
 
     return {
         "config": config,

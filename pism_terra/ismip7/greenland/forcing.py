@@ -21,6 +21,7 @@
 Prepare ISMIP7 Greenland data sets.
 """
 
+import logging
 import os
 import re
 import time
@@ -53,6 +54,8 @@ from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+logger = logging.getLogger(__name__)
 
 
 def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version):
@@ -102,14 +105,16 @@ def _process_single_forcing(
     output_path: Path,
     pathway: str,
     version: str,
-    start_year: int,
-    end_year: int,
+    hist_start_year: int,
+    hist_end_year: int,
+    proj_start_year: int,
+    proj_end_year: int,
     short_hand: str,
     fields: list[str],
     ismip7_to_pism: dict[str, str],
     freq: str = "1mon",
     calendar: str = "365_day",
-) -> Path:
+) -> list[Path]:
     """
     Process a single GCM/forcing combination.
 
@@ -127,9 +132,13 @@ def _process_single_forcing(
         Pathway name (e.g., "historical", "ssp585").
     version : str
         Version string (e.g., "v1").
-    start_year : int
+    hist_start_year : int
         Start year for time selection.
-    end_year : int
+    hist_end_year : int
+        End year for time selection.
+    proj_start_year : int
+        Start year for time selection.
+    proj_end_year : int
         End year for time selection.
     short_hand : str
         Short hand identifier for forcing.
@@ -153,11 +162,13 @@ def _process_single_forcing(
 
     grid_file = file_localizer("s3://pism-cloud-data/ismip7_extra/grid.txt", dest=output_path)
 
-    merge_cmds = []
+    output_files = []
+
+    hist_merge_cmds = []
     for m_var in fields:
         urls = [
-            _make_path(year, base_path, gcm, pathway, short_hand, m_var, version)
-            for year in range(start_year, end_year)
+            _make_path(year, base_path, gcm, "historical", short_hand, m_var, version)
+            for year in range(hist_start_year, hist_end_year)
         ]
         k, v = m_var, ismip7_to_pism[m_var]
         tas_replace = "-setrtoc,0,230,230 -setrtoc,303,403,303" if m_var == "tas" else ""
@@ -166,19 +177,60 @@ def _process_single_forcing(
             + " ".join(str(f) for f in urls)
             + " ]"
         )
-        merge_cmds.append(merge_cmd)
-    output_file = output_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc")
+        hist_merge_cmds.append(merge_cmd)
+
+    proj_merge_cmds = []
+    for m_var in fields:
+        urls = [
+            _make_path(year, base_path, gcm, pathway, short_hand, m_var, version)
+            for year in range(proj_start_year, proj_end_year)
+        ]
+        k, v = m_var, ismip7_to_pism[m_var]
+        tas_replace = "-setrtoc,0,230,230 -setrtoc,303,403,303" if m_var == "tas" else ""
+        merge_cmd = (
+            f"-chname,{k},{v} {tas_replace} -setgrid,{str(grid_file)} -mergetime [ "
+            + " ".join(str(f) for f in urls)
+            + " ]"
+        )
+        proj_merge_cmds.append(merge_cmd)
+
+    hist_output_file = output_path / Path(
+        f"ismip7_greenland_{forcing}_historical_{gcm}_{version}_{hist_start_year}_{hist_end_year}.nc"
+    )
 
     cdo.setmisstoc(
         0,
-        input=f"""-setgrid,{str(grid_file)} -settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{start_year}-01-16 12:00,,{freq}' -merge """
-        + " ".join(merge_cmds),
-        returnXDataset=False,
+        input=f"""-setgrid,{str(grid_file)} -settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{hist_start_year}-01-16 12:00,,{freq}' -merge """
+        + " ".join(hist_merge_cmds),
+        output=str(hist_output_file.resolve()),
         options="-f nc4 -z zip_2",
-        output=str(output_file.resolve()),
+    )
+    output_files.append(hist_output_file)
+
+    proj_output_file = output_path / Path(
+        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{proj_start_year}_{proj_end_year}.nc"
     )
 
-    return output_file
+    cdo.setmisstoc(
+        0,
+        input=f"""-setgrid,{str(grid_file)} -settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{proj_start_year}-01-16 12:00,,{freq}' -merge """
+        + " ".join(proj_merge_cmds),
+        output=str(proj_output_file.resolve()),
+        options="-f nc4 -z zip_2",
+    )
+    output_files.append(proj_output_file)
+
+    input_files = " ".join(str(f.resolve()) for f in output_files)
+    merged_file = output_path / Path(
+        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{hist_start_year}_{proj_end_year}.nc"
+    )
+    cdo.mergetime(
+        input=input_files,
+        options="-f nc4 -z zip_2",
+        output=str(merged_file.resolve()),
+    )
+    output_files.append(merged_file)
+    return output_files
 
 
 def prepare_observations(
@@ -247,8 +299,14 @@ def prepare_observations(
     ftt_mask = xr.where(ds_bm_regridded["thickness"] > 0, 1, 0)
     ftt_mask.name = "ftt_mask"
     if surface_dem is not None:
+        surface_file = Path(input_path) / Path("surface_dem.nc")
         bed = ds_bm_regridded["bed"]
-        surface = download_netcdf(surface_dem)["surface"].regrid.conservative(target_grid)
+        if (not check_xr_lazy(surface_file)) or force_overwrite:
+            ds = download_netcdf(surface_dem)
+            ds.to_netcdf(surface_file)
+        else:
+            ds = xr.open_dataset(surface_file)
+        surface = ds["surface"].regrid.conservative(target_grid)
         thickness = xr.where(surface > 0, surface - bed, 0)
         thickness = thickness.where(thickness > 10, 0)
         thickness.name = "thickness"
@@ -347,7 +405,7 @@ def prepare_calfin(
 
     if (not check_xr_lazy(p_fn)) or force_overwrite:
 
-        tmp_path = output_path.parent / Path(output_path.name + "_tmp")
+        tmp_path = output_path.parent / Path("calfin")
 
         # Download CALFIN data
         retreat_files = download_earthaccess(
@@ -377,7 +435,7 @@ def prepare_calfin(
         groups = [(date, df) for date, df in calfin.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
 
         with Client(n_workers=n_workers, threads_per_worker=1) as client:
-            print(f"Dask dashboard: {client.dashboard_link}")
+            logger.info("Dask dashboard: %s", client.dashboard_link)
 
             futures = [client.submit(dissolve, df, date) for date, df in groups]
             grouped_results = []
@@ -387,7 +445,7 @@ def prepare_calfin(
         calfin_grouped = pd.concat(grouped_results).reset_index()
 
         # Step 2: Cumulative union (O(n) instead of O(n²))
-        print("Computing cumulative unions...")
+        logger.info("Computing cumulative unions...")
         cumulative_geoms = []
         cumulative = None
         for _, row in tqdm(calfin_grouped.iterrows(), total=len(calfin_grouped), desc="Cumulative dissolve"):
@@ -403,7 +461,7 @@ def prepare_calfin(
         agg_groups = [(date, df) for date, df in calfin_aggregated.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
 
         with Client(n_workers=n_workers, threads_per_worker=1) as client:
-            print(f"Dask dashboard: {client.dashboard_link}")
+            logger.info("Dask dashboard: %s", client.dashboard_link)
 
             futures = [
                 client.submit(
@@ -424,7 +482,7 @@ def prepare_calfin(
         result_filtered = [r for r in raster_results if r is not None]
 
         # Merge and save
-        print(f"Merging datasets and saving to {p_fn.resolve()}")
+        logger.info("Merging datasets and saving to %s", p_fn.resolve())
 
         cdo = Cdo()
         cdo.settbounds(
@@ -473,19 +531,43 @@ def prepare_ismip7_forcing(
     for gcm in config["gcms"]:
         for pathway in config["pathway"]:
             version = "v" + str(config["pathway"][pathway]["version"])
-            start_year = config["pathway"][pathway]["start_year"]
-            end_year = config["pathway"][pathway]["end_year"]
+            hist_start_year, hist_end_year = config["pathway"][pathway]["historical"]
+            proj_start_year, proj_end_year = config["pathway"][pathway]["projection"]
             for forcing, forcing_dict in config["forcing"].items():
                 short_hand = forcing_dict["short_hand"]
                 fields = forcing_dict["fields"]
-                tasks.append((gcm, forcing, version, start_year, end_year, pathway, short_hand, fields))
+                tasks.append(
+                    (
+                        gcm,
+                        forcing,
+                        version,
+                        hist_start_year,
+                        hist_end_year,
+                        proj_start_year,
+                        proj_end_year,
+                        pathway,
+                        short_hand,
+                        fields,
+                    )
+                )
 
     # Process in parallel using dask.distributed
     with Client(n_workers=n_workers, threads_per_worker=1) as client:
-        print(f"Dask dashboard: {client.dashboard_link}")
+        logger.info("Dask dashboard: %s", client.dashboard_link)
 
         futures = []
-        for gcm, forcing, version, start_year, end_year, pathway, short_hand, fields in tasks:
+        for (
+            gcm,
+            forcing,
+            version,
+            hist_start_year,
+            hist_end_year,
+            proj_start_year,
+            proj_end_year,
+            pathway,
+            short_hand,
+            fields,
+        ) in tasks:
             future = client.submit(
                 _process_single_forcing,
                 gcm,
@@ -494,8 +576,10 @@ def prepare_ismip7_forcing(
                 output_path,
                 pathway,
                 version,
-                start_year,
-                end_year,
+                hist_start_year,
+                hist_end_year,
+                proj_start_year,
+                proj_end_year,
                 short_hand,
                 fields,
                 ismip7_to_pism,
@@ -505,11 +589,11 @@ def prepare_ismip7_forcing(
         # Collect results as they complete
         processed_files = []
         for future in as_completed(futures):
-            output_file = future.result()
-            print(f"Completed: {output_file}")
-            processed_files.append(output_file)
+            output_files = future.result()
+            logger.info("Completed: %s", output_files)
+            processed_files.extend(output_files)
 
     elapsed = time.perf_counter() - start_time
-    print(f"Total processing time: {elapsed:.2f} seconds")
+    logger.info("Total processing time: %.2f seconds", elapsed)
 
     return processed_files

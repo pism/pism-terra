@@ -48,8 +48,8 @@ from pism_terra.ismip7.greenland.forcing import prepare_observations
 from pism_terra.kitp.forcing import (
     baseline_with_anomalies,
     prepare_anomalies,
-    prepare_baseline_climatology,
-    prepare_carra2,
+    prepare_carra2_climatology,
+    prepare_hirham5_climatology,
 )
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
@@ -111,11 +111,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path.mkdir(parents=True, exist_ok=True)
 
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.INFO, format=log_format)
+    logging.basicConfig(level=logging.WARNING, format=log_format)
     file_handler = logging.FileHandler(output_path / "prepare.log")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter(log_format))
-    logging.getLogger().addHandler(file_handler)
+    logging.getLogger("pism_terra").setLevel(logging.INFO)
+    logging.getLogger("pism_terra").addHandler(file_handler)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -134,8 +135,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     data_path = output_path / Path(f"stage_{config["version"]}")
     data_path.mkdir(exist_ok=True)
-    carra2_path = data_path / Path("carra2")
-    carra2_path.mkdir(exist_ok=True)
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
@@ -150,8 +149,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     encoding = {var: {"_FillValue": None} for var in list(grid_ds.data_vars) + list(grid_ds.coords)}
     grid_ds.to_netcdf(grid_file, encoding=encoding)
     check_xr_fully(grid_file)
-
-    prepare_carra2(carra2_path, max_workers=ntasks)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     logger.info("-" * 120)
@@ -171,16 +168,29 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     logger.info("-" * 120)
     logger.info("Baseline Climatology")
     logger.info("-" * 120)
-    start_year = config["pathway"]["baseline"]["start_year"]
-    end_year = config["pathway"]["baseline"]["end_year"]
-    baseline_file = prepare_baseline_climatology(
-        data_path,
-        start_year=start_year,
-        end_year=end_year,
-        version=version,
-        n_workers=ntasks,
-        force_overwrite=force_overwrite,
-    )
+    baseline = config["baseline"]
+    if baseline == "hirham5":
+        start_year = config["climatology"][baseline]["start_year"]
+        end_year = config["climatology"][baseline]["end_year"]
+        baseline_file = prepare_hirham5_climatology(
+            data_path,
+            start_year=start_year,
+            end_year=end_year,
+            version=version,
+            n_workers=ntasks,
+            force_overwrite=force_overwrite,
+        )
+    elif baseline == "carra2":
+        year = config["climatology"][baseline]["year"]
+        baseline_file = prepare_carra2_climatology(
+            data_path,
+            year=year,
+            version=version,
+            n_workers=ntasks,
+            force_overwrite=force_overwrite,
+        )
+    else:
+        raise ValueError(f"Unknown baseline {baseline!r}. Supported: 'hirham5', 'carra2'.")
 
     logger.info("-" * 120)
     logger.info("Anomaly Forcing")

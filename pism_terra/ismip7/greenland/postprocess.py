@@ -189,12 +189,13 @@ def main():
     ntasks = options.ntasks
 
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.INFO, format=log_format)
+    logging.basicConfig(level=logging.WARNING, format=log_format)
     config_path = Path(config_file).resolve().parent
     file_handler = logging.FileHandler(config_path / "postprocess.log")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter(log_format))
-    logging.getLogger().addHandler(file_handler)
+    logging.getLogger("pism_terra").setLevel(logging.INFO)
+    logging.getLogger("pism_terra").addHandler(file_handler)
 
     postprocess_glacier(config_file, n_workers=ntasks)
 

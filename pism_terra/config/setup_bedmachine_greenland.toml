@@ -1,5 +1,7 @@
 ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rate", "tas" = "ice_surface_temp", "TF" = "theta_ocean", "geothermal_heat_flux1" = "bheatflx"}
 gcms = ["CESM2-WACCM"]
+prefix = "input"
+version = "v1"
 
 [domain]
 
@@ -9,7 +11,7 @@ resolution = "900m"
 
 [pathway]
 
-ssp585 = {"projection" = [1978, 2015], "projection" = [2015, 2299], version = 1 }
+ssp585 = {"historical" = [2014, 2015], "projection" = [2015, 2016], version = 1 }
 
 [forcing]
 

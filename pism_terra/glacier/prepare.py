@@ -112,11 +112,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path.mkdir(parents=True, exist_ok=True)
 
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.INFO, format=log_format)
+    logging.basicConfig(level=logging.WARNING, format=log_format)
     file_handler = logging.FileHandler(output_path / "prepare.log")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter(log_format))
-    logging.getLogger().addHandler(file_handler)
+    logging.getLogger("pism_terra").setLevel(logging.INFO)
+    logging.getLogger("pism_terra").addHandler(file_handler)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")

@@ -3,6 +3,7 @@ gcms = ["CESM1-WACCM-SC"]
 version = "v3"
 bucket = "pism-cloud-data"
 prefix = "input"
+baseline = "carra2"
 
 [domain]
 
@@ -17,6 +18,7 @@ prefix = "kitp_forcing"
 present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
 future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pa-futArcSIC-ext"]
 
-[pathway]
+[climatology]
 
-baseline = {"start_year" = 1990, "end_year" = 2019}
+hirham5 = {"start_year" = 1990, "end_year" = 2019}
+carra2 = {"year" = [1986, 1987, 1988, 1991, 1992, 1993, 1996, 1997, 1998, 2001, 2002, 2003, 2006, 2007, 2008, 2011, 2012, 2013, 2016, 2017, 2018, 2021, 2022, 2023]}
