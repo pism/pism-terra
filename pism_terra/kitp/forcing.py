@@ -258,7 +258,7 @@ def process_carra2(
             Path to the merged output file.
         """
         yr, pr_f, tas_f, batch_out = args
-        tmp = tempfile.mkdtemp()
+        tmp = carra2_path
         cdo_local = Cdo(tempdir=tmp)
 
         # Precipitation: monthly means (already monthly data, just fix grid + time)
