@@ -162,7 +162,7 @@ model = "debm"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.c1' = 20
-'surface.debm_simple.c1' = -50
+'surface.debm_simple.c2' = -50
 
 [calving]
 
