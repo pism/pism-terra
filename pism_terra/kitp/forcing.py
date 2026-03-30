@@ -232,28 +232,49 @@ def process_carra2(
         cdo.debug = True
 
         grid = str(carra2_grid_path.resolve())
-        pr_mergetime = " ".join(
-            f"-setgrid,{grid}  -settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon [ {f} ]"
-            for yr, f in zip(year, sorted(precipitation_files))
-        )
-        tas_mergetime = " ".join(
-            f"-setgrid,{grid} -settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day [ {f} ]"
-            for yr, f in zip(year, sorted(temperature_files))
-        )
 
-        logger.info("CDO: computing ymonmean for precipitation (%d files)...", len(precipitation_files))
+        # Step 1: fix time axis per file into tmpdir
+        logger.info("CDO: fixing time axes for precipitation files...")
+        pr_fixed = []
+        for yr, f in zip(year, sorted(precipitation_files)):
+            out = Path(tmpdir) / f"pr_fixed_{yr}.nc"
+            cdo.setgrid(
+                grid,
+                input=f"-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {f}",
+                output=str(out),
+                options="--reduce_dim -f nc4",
+            )
+            pr_fixed.append(str(out))
+
+        logger.info("CDO: fixing time axes for temperature files...")
+        tas_fixed = []
+        for yr, f in zip(year, sorted(temperature_files)):
+            out = Path(tmpdir) / f"tas_fixed_{yr}.nc"
+            cdo.setgrid(
+                grid,
+                input=f"-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {f}",
+                output=str(out),
+                options="--reduce_dim -f nc4",
+            )
+            tas_fixed.append(str(out))
+
+        # Step 2: mergetime + ymonmean/ymonstd
+        pr_files_str = " ".join(pr_fixed)
+        tas_files_str = " ".join(tas_fixed)
+
+        logger.info("CDO: computing ymonmean for precipitation (%d files)...", len(pr_fixed))
         pr_monmean_file = carra2_path / Path("pr_mm.nc")
         if (not check_xr_lazy(pr_monmean_file)) or force_overwrite:
             cdo.ymonmean(
-                input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation -mergetime {pr_mergetime}""",
+                input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation -mergetime {pr_files_str}""",
                 output=str(pr_monmean_file.resolve()),
                 options="--reduce_dim -f nc4 -z zip_2 -P 1",
             )
-        logger.info("CDO: computing ymonmean for temperature (%d files)...", len(temperature_files))
+        logger.info("CDO: computing ymonmean for temperature (%d files)...", len(tas_fixed))
         tas_monmean_file = carra2_path / Path("tas_mm.nc")
         if (not check_xr_lazy(tas_monmean_file)) or force_overwrite:
             cdo.ymonmean(
-                input=f"-chname,t2m,air_temp -mergetime {tas_mergetime}",
+                input=f"-chname,t2m,air_temp -mergetime {tas_files_str}",
                 output=str(tas_monmean_file.resolve()),
                 options="--reduce_dim -f nc4 -z zip_2 -P 1",
             )
@@ -261,7 +282,7 @@ def process_carra2(
         tas_monstd_file = carra2_path / Path("tas_mstd.nc")
         if (not check_xr_lazy(tas_monstd_file)) or force_overwrite:
             cdo.ymonstd(
-                input=f"-chname,t2m,air_temp_sd -mergetime {tas_mergetime}",
+                input=f"-chname,t2m,air_temp_sd -mergetime {tas_files_str}",
                 output=str(tas_monstd_file.resolve()),
                 options="--reduce_dim -f nc4 -z zip_2 -P 1",
             )
