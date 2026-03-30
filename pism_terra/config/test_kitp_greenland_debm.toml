@@ -2,7 +2,7 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 40
+ntasks = 20
 writer = ""
 
 [job]
@@ -34,7 +34,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0003-01-01"
+'time.end' =  "0002-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -76,7 +76,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 
 [grid]
 
-resolution = "2400m"
+resolution = "4800m"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 51
