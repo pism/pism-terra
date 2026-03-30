@@ -296,7 +296,9 @@ def process_carra2(
             output=batch_out,
             options="-f nc4 -z zip_2",
         )
-        shutil.rmtree(tmp, ignore_errors=True)
+        # Clean up per-year intermediate files only (not the shared directory)
+        for f in (pr_fixed, tas_mm, tas_mstd):
+            Path(f).unlink(missing_ok=True)
         return batch_out
 
     # Only process batches that don't already exist (unless force_overwrite)
