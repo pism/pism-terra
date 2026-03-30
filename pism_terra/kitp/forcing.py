@@ -227,72 +227,121 @@ def process_carra2(
     logger.info(
         "Downloaded %d precipitation files, %d temperature files", len(precipitation_files), len(temperature_files)
     )
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cdo = Cdo(tempdir=tmpdir)
-        cdo.debug = True
 
-        grid = str(carra2_grid_path.resolve())
+    grid = str(carra2_grid_path.resolve())
+    cdo = Cdo()
+    cdo.debug = True
 
-        # Step 1: fix time axis per file into tmpdir
-        logger.info("CDO: fixing time axes for precipitation files...")
-        pr_fixed = []
-        for yr, f in zip(year, sorted(precipitation_files)):
-            out = Path(tmpdir) / f"pr_fixed_{yr}.nc"
-            cdo.setgrid(
-                grid,
-                input=f"-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {f}",
-                output=str(out),
-                options="--reduce_dim -f nc4",
-            )
-            pr_fixed.append(str(out))
+    # --- Step 1: per-year batches (setgrid, settaxis, monmean/monstd) ---
 
-        logger.info("CDO: fixing time axes for temperature files...")
-        tas_fixed = []
-        for yr, f in zip(year, sorted(temperature_files)):
-            out = Path(tmpdir) / f"tas_fixed_{yr}.nc"
-            cdo.setgrid(
-                grid,
-                input=f"-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {f}",
-                output=str(out),
-                options="--reduce_dim -f nc4",
-            )
-            tas_fixed.append(str(out))
+    pr_sorted = sorted(precipitation_files)
+    tas_sorted = sorted(temperature_files)
 
-        # Step 2: mergetime + ymonmean/ymonstd
-        pr_files_str = " ".join(pr_fixed)
-        tas_files_str = " ".join(tas_fixed)
+    batches = []
+    for yr, pr_f, tas_f in zip(year, pr_sorted, tas_sorted):
+        batch_out = str((carra2_path / f"batch_{yr}.nc").resolve())
+        batches.append((yr, str(pr_f), str(tas_f), batch_out))
 
-        logger.info("CDO: computing ymonmean for precipitation (%d files)...", len(pr_fixed))
-        pr_monmean_file = carra2_path / Path("pr_mm.nc")
-        if (not check_xr_lazy(pr_monmean_file)) or force_overwrite:
-            cdo.ymonmean(
-                input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation -mergetime {pr_files_str}""",
-                output=str(pr_monmean_file.resolve()),
-                options="--reduce_dim -f nc4 -z zip_2 -P 1",
-            )
-        logger.info("CDO: computing ymonmean for temperature (%d files)...", len(tas_fixed))
-        tas_monmean_file = carra2_path / Path("tas_mm.nc")
-        if (not check_xr_lazy(tas_monmean_file)) or force_overwrite:
-            cdo.ymonmean(
-                input=f"-chname,t2m,air_temp -mergetime {tas_files_str}",
-                output=str(tas_monmean_file.resolve()),
-                options="--reduce_dim -f nc4 -z zip_2 -P 1",
-            )
-        logger.info("CDO: computing ymonstd for temperature...")
-        tas_monstd_file = carra2_path / Path("tas_mstd.nc")
-        if (not check_xr_lazy(tas_monstd_file)) or force_overwrite:
-            cdo.ymonstd(
-                input=f"-chname,t2m,air_temp_sd -mergetime {tas_files_str}",
-                output=str(tas_monstd_file.resolve()),
-                options="--reduce_dim -f nc4 -z zip_2 -P 1",
-            )
-        logger.info("CDO: remapping and merging to target grid...")
+    def _process_carra2_batch(args):
+        """
+        Process a single year-batch: fix grid/time, compute monmean/monstd, merge.
+
+        Parameters
+        ----------
+        args : tuple
+            A ``(yr, pr_f, tas_f, batch_out)`` tuple with the year string,
+            precipitation file, temperature file, and output path.
+
+        Returns
+        -------
+        str
+            Path to the merged output file.
+        """
+        yr, pr_f, tas_f, batch_out = args
+        tmp = tempfile.mkdtemp()
+        cdo_local = Cdo(tempdir=tmp)
+
+        # Precipitation: monthly means (already monthly data, just fix grid + time)
+        pr_fixed = os.path.join(tmp, f"pr_{yr}.nc")
+        cdo_local.setgrid(
+            grid,
+            input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation """
+            f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {pr_f}""",
+            output=pr_fixed,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Temperature: aggregate daily -> monthly mean
+        tas_mm = os.path.join(tmp, f"tas_mm_{yr}.nc")
+        cdo_local.monmean(
+            input=f"""-setgrid,{grid} -chname,t2m,air_temp """
+            f"""-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {tas_f}""",
+            output=tas_mm,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Temperature: aggregate daily -> monthly std
+        tas_mstd = os.path.join(tmp, f"tas_mstd_{yr}.nc")
+        cdo_local.setattribute(
+            """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
+            input=f"""-chname,air_temp,air_temp_sd -monstd -setgrid,{grid} -chname,t2m,air_temp """
+            f"""-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {tas_f}""",
+            output=tas_mstd,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Merge pr + tas_mm + tas_mstd for this year
+        cdo_local.merge(
+            input=f"{pr_fixed} {tas_mm} {tas_mstd}",
+            output=batch_out,
+            options="-f nc4 -z zip_2",
+        )
+        shutil.rmtree(tmp, ignore_errors=True)
+        return batch_out
+
+    # Only process batches that don't already exist (unless force_overwrite)
+    batches_to_run = [b for b in batches if (not check_xr_lazy(b[3])) or force_overwrite]
+    if batches_to_run:
+        logger.info("CDO: processing %d year batches (setgrid + monmean/monstd)...", len(batches_to_run))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_carra2_batch, b): b for b in batches_to_run}
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Processing CARRA2 batches"):
+                future.result()
+    else:
+        logger.info("CDO: all %d year batches already exist, skipping.", len(batches))
+
+    batch_files = sorted(b[3] for b in batches)
+
+    # --- Step 2: mergetime all year batches, then ymonmean ---
+    merged_file = carra2_path / "merged_monthly.nc"
+    if (not check_xr_lazy(merged_file)) or force_overwrite:
+        logger.info("CDO: merging %d year batches...", len(batch_files))
+        cdo.mergetime(
+            input=" ".join(batch_files),
+            output=str(merged_file.resolve()),
+            options=f"-f nc4 -z zip_2 -P {max_workers}",
+        )
+
+    # --- Step 3: multi-year monthly mean + remap ---
+    if (not check_xr_lazy(output_file)) or force_overwrite:
+        logger.info("CDO: computing multi-year monthly mean and remapping to target grid...")
         ds = cdo.remapycon(
             str(target_grid_path.resolve()),
-            input=f" -merge [ {str(pr_monmean_file.resolve())} {str(tas_monmean_file.resolve())} {str(tas_monstd_file.resolve())} ]",
-            options="-f nc4 -z zip_2 -P 1",
+            input=f"-ymonmean {merged_file}",
+            options=f"-f nc4 -z zip_2 -P {max_workers}",
             returnXDataset=True,
         )
+
+        # Compute ymonstd for air_temp separately
+        logger.info("CDO: computing multi-year monthly std for air_temp...")
+        ds_std = cdo.remapycon(
+            str(target_grid_path.resolve()),
+            input=f"-selvar,air_temp_sd -ymonmean {merged_file}",
+            options=f"-f nc4 -z zip_2 -P {max_workers}",
+            returnXDataset=True,
+        )
+        ds["air_temp_sd"] = ds_std["air_temp_sd"]
+
         logger.info("CDO: done")
 
         ds = ds.drop_vars("time_bnds", errors="ignore")
