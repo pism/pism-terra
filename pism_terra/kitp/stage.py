@@ -140,20 +140,21 @@ def stage(
             config[key] = [config[key]]
 
     gcms = config["gcms"]
+    climatology = config["climatology"]
     version = config["version"]
     present_day_forcings = config["present_day_forcings"]
     future_forcings = config["future_forcings"]
 
     tasks = [(gcm, pd_forcing, ff) for gcm in gcms for pd_forcing in present_day_forcings for ff in future_forcings]
     dfs: list[pd.DataFrame] = []
-    climate_file = input_path / Path(f"HIRHAM5-ERA5_YMM_1990_2019_{version}.nc")
+    climate_file = input_path / Path(f"{climatology}_{version}.nc")
     check_xr_lazy(climate_file)
     files_dict["climate_file"] = climate_file.resolve()
-    files_dict["sample"] = "HIRHAM5-ERA5_YMM_1990_2019"
+    files_dict["sample"] = climatology
     dfs.append(pd.DataFrame.from_dict([files_dict]))
     for task in tasks:
         gcm, pd_forcing, ff = task
-        climate_file = input_path / Path(f"HIRHAM5-ERA5_YMM_1990_2019_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
+        climate_file = input_path / Path(f"{climatology}_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
         check_xr_lazy(climate_file)
         files_dict["climate_file"] = climate_file.resolve()
         files_dict["sample"] = f"{gcm}_{ff}_{pd_forcing}"

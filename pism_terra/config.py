@@ -1203,6 +1203,8 @@ class CampaignConfig(BaseModel):
         S3 bucket (e.g., ``"pism-cloud7-data"``).
     climate : str or None
         Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
+    climatology : str or None
+        Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
     end_year : str, float, or None
@@ -1237,6 +1239,7 @@ class CampaignConfig(BaseModel):
 
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
+    climatology: str | None = Field(default=None)
     dem: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
     gcms: str | list | None = Field(default=None)
