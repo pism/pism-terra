@@ -182,7 +182,6 @@ def run_kitp(
     run = {}
     for section in (
         "geometry",
-        "ocean",
         "calving",
         "iceflow",
         "reporting",
@@ -191,6 +190,7 @@ def run_kitp(
     ):
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
+    run.update(cfg.ocean.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.frontal_melt.selected())
     run.update(cfg.grid.as_params())

@@ -193,7 +193,6 @@ def run_glacier(
     run = {}
     for section in (
         "geometry",
-        "ocean",
         "calving",
         "iceflow",
         "reporting",
@@ -203,6 +202,7 @@ def run_glacier(
         run.update(getattr(cfg, section))
     run.update(cfg.stress_balance.selected())
     run.update(cfg.atmosphere.selected())
+    run.update(cfg.ocean.selected())
     run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.grid.as_params())

@@ -775,6 +775,9 @@ class PismConfig(BaseModelWithDot):
     atmosphere : dict of str to Any, optional
         Additional atmosphere-related options to pass through (keys are
         typically dotted, e.g., ``"atmosphere.given.file"``). Defaults to ``{}``.
+    ocean : dict of str to Any, optional
+        Additional ocean-related options to pass through (keys are
+        typically dotted, e.g., ``"ocean.given.file"``). Defaults to ``{}``.
     geometry : dict of str to Any, optional
         Geometry-related options to pass through. Defaults to ``{}``.
     ocean : dict of str to Any, optional
@@ -821,11 +824,11 @@ class PismConfig(BaseModelWithDot):
     stress_balance: StressBalanceConfig
     grid: GridConfig
     atmosphere: AtmosphereConfig
+    ocean: OceanConfig
     surface: SurfaceConfig
     frontal_melt: FrontalMeltConfig
     hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
-    ocean: dict[str, Any] = {}
     calving: dict[str, Any] = {}
     iceflow: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
@@ -1132,6 +1135,16 @@ class AtmosphereConfig(ModelWithOptions):
     """
 
     SECTION = "atmosphere"
+
+
+class OceanConfig(ModelWithOptions):
+    """
+    Ocean model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "ocean"
 
 
 class SurfaceConfig(ModelWithOptions):
