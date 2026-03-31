@@ -50,6 +50,7 @@ from pism_terra.kitp.forcing import (
     prepare_anomalies,
     prepare_carra2_climatology,
     prepare_hirham5_climatology,
+    prepare_ocean_forcing,
 )
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
@@ -166,6 +167,25 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         check_xr_lazy(v)
 
     logger.info("-" * 120)
+    logger.info("Ocean Forcing")
+    logger.info("-" * 120)
+
+    bmelt_0: float = 228.0
+    bmelt_1: float = 10.0
+    lat_0: float = 69.0
+    lat_1: float = 80.0
+
+    ocean_forcing_file = data_path / Path(f"ocean_forcing_{bmelt_0}_{bmelt_1}_{lat_0}_{lat_1}.nc")
+    prepare_ocean_forcing(
+        input_path=obs_files["boot_file"],
+        output_path=ocean_forcing_file,
+        bmelt_0=bmelt_0,
+        bmelt_1=bmelt_1,
+        lat_0=lat_0,
+        lat_1=lat_1,
+    )
+
+    logger.info("-" * 120)
     logger.info("Baseline Climatology")
     logger.info("-" * 120)
     baseline = config["baseline"]
@@ -216,7 +236,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     combined_files = baseline_with_anomalies(baseline_file, forcing_files)
 
-    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + forcing_files + combined_files
+    input_files = (
+        [grid_file] + list(obs_files.values()) + [baseline_file] + [ocean_forcing_file] + forcing_files + combined_files
+    )
 
     s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
     s3_output_path.mkdir(parents=True, exist_ok=True)

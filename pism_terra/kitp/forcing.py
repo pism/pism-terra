@@ -39,6 +39,7 @@ import cf_xarray
 import cftime
 import geopandas as gpd
 import numpy as np
+from pyproj import Proj
 import pandas as pd
 import rioxarray  # pylint: disable=unused-import
 import toml
@@ -883,3 +884,110 @@ def baseline_with_anomalies(
         result.append(output_file)
 
     return result
+
+
+ICE_DENSITY = 910.0  # kg m^-3
+
+
+def prepare_ocean_forcing(
+    input_path: str | Path,
+    output_path: str | Path,
+    bmelt_0: float = 228.0,
+    bmelt_1: float = 10.0,
+    lat_0: float = 69.0,
+    lat_1: float = 80.0,
+    process_mask: bool = False,
+    crs: str = "EPSG:3413",
+) -> None:
+    """
+    Write latitude-dependent ocean forcing into *infile* (in-place).
+
+    Parameters
+    ----------
+    infile : str
+        Path to the NetCDF file to modify.
+    bmelt_0 : float
+        Southern basal melt rate in m yr-1.
+    bmelt_1 : float
+        Northern basal melt rate in m yr-1.
+    lat_0 : float
+        Latitude for the southern melt rate.
+    lat_1 : float
+        Latitude for the northern melt rate.
+    process_mask : bool
+        If True, zero out melt on non-ocean cells.
+    """
+
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    ds = xr.open_dataset(input_path)
+    proj = Proj(crs)
+
+    x = ds["x"].values
+    y = ds["y"].values
+    X, Y = np.meshgrid(x, y)
+    _, Lat = proj(X, Y, inverse=True)
+
+    # Convert melt rates: m yr-1 -> kg m-2 yr-1
+    bmelt_0_kg = bmelt_0 * ICE_DENSITY
+    bmelt_1_kg = bmelt_1 * ICE_DENSITY
+
+    # Linear interpolation: bmelt = a * lat + b
+    a = (bmelt_1_kg - bmelt_0_kg) / (lat_1 - lat_0)
+    b_intercept = bmelt_0_kg - a * lat_0
+
+    bmelt = a * Lat + b_intercept
+    bmelt = np.clip(bmelt, min(bmelt_0_kg, bmelt_1_kg), max(bmelt_0_kg, bmelt_1_kg))
+
+    if process_mask and "mask" in ds:
+        land_mask = (ds["mask"].values != 0) & (ds["mask"].values != 3)
+        if land_mask.ndim == 3:
+            land_mask = land_mask[0]
+        bmelt[land_mask] = 0.0
+
+    ds.close()
+
+    # Build output dataset
+    time_mid = np.array([1.0])
+    time_bnds = np.array([[0.0, 1.0]])
+
+    time_coord = xr.Variable(
+        "time",
+        time_mid,
+        attrs={
+            "units": "years since 1-1-1",
+            "calendar": "none",
+            "standard_name": "time",
+            "axis": "T",
+            "bounds": "time_bnds",
+        },
+    )
+
+    out = xr.Dataset(
+        {
+            "shelfbmassflux": xr.Variable(
+                ("time", "y", "x"),
+                bmelt[np.newaxis, :, :],
+                attrs={"units": "kg m-2 yr-1", "grid_mapping": "mapping"},
+            ),
+            "shelfbtemp": xr.Variable(
+                ("time", "y", "x"),
+                np.zeros((1, len(y), len(x))),
+                attrs={"units": "deg_C", "grid_mapping": "mapping"},
+            ),
+            "time_bnds": xr.Variable(("time", "nb2"), time_bnds),
+        },
+        coords={"time": time_coord, "x": ("x", x), "y": ("y", y)},
+    )
+    out.rio.write_crs(crs, inplace=True)
+
+    for var in list(ds.data_vars) + list(ds.coords):
+        ds[var].attrs.pop("missing_value", None)
+        ds[var].attrs.pop("_FillValue", None)
+        ds[var].encoding["missing_value"] = None
+        ds[var].encoding["_FillValue"] = None
+
+    encoding = {var: {"_FillValue": None} for var in list(out.data_vars) + list(out.coords)}
+    encoding["shelfbmassflux"].update({"zlib": True, "complevel": 2})
+    encoding["shelfbtemp"].update({"zlib": True, "complevel": 2})
+    out.to_netcdf(output_path, encoding=encoding)

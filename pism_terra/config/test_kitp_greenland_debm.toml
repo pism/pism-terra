@@ -29,6 +29,7 @@ boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
 regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
+ocean_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 
 [time]
@@ -183,6 +184,14 @@ model = "given"
 'atmosphere.given.periodic' = "yes"
 
 [ocean]
+
+model = "given"
+
+[ocean.options.given]
+
+'ocean.model' = "given"
+'ocean.given.file' = "none"
+'ocean.given.periodic' = "yes"
 
 [hydrology]
 
