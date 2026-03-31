@@ -161,8 +161,18 @@ model = "given"
 
 [ocean]
 
-'ocean.constant.melt_rate' = 0.0
+model = "constant"
+
+[ocean.options.given]
+
+'ocean.models' = "given"
+'ocean.given.file' = "none"
+'ocean.given.periodic' = "yes"
+
+[ocean.options.constant]
+
 'ocean.models' = 'constant'
+'ocean.constant.melt_rate' = 0.0
 
 [hydrology]
 

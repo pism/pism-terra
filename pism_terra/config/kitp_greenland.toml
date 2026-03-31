@@ -187,7 +187,7 @@ model = "given"
 
 [ocean.options.given]
 
-'ocean.model' = "given"
+'ocean.models' = "given"
 'ocean.given.file' = "none"
 'ocean.given.periodic' = "yes"
 
