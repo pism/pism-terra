@@ -952,14 +952,14 @@ def prepare_ocean_forcing(
     ds.close()
 
     # Build output dataset
-    time_mid = np.array([1.0])
-    time_bnds = np.array([[0.0, 1.0]])
+    time_mid = np.array([187.5])
+    time_bnds = np.array([[0.0, 365.0]])
 
     time_coord = xr.Variable(
         "time",
         time_mid,
         attrs={
-            "units": "years since 1-1-1",
+            "units": "days since 0001-01-01",
             "calendar": "365_day",
             "standard_name": "time",
             "axis": "T",
