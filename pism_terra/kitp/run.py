@@ -413,6 +413,7 @@ def run_single():
             "energy.bedrock_thermal.file": row["heatflux_file"],
             "grid.file": row["grid_file"],
             "atmosphere.given.file": row["climate_file"],
+            "ocean.given.file": row["ocean_file"],
             "surface.pdd.std_dev.file": row["climate_file"],
             "surface.debm_simple.std_dev.file": row["climate_file"],
             "surface.debm_simple.albedo_input.file": row["climate_file"],
