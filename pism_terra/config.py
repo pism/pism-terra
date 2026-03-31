@@ -1223,6 +1223,8 @@ class CampaignConfig(BaseModel):
         Ice thickness data source identifier (e.g., ``"millan2022"``).
     name : str or None
         Human-readable campaign name.
+    ocean_file : str or None
+        Ocean forcing file name.
     pathway : str or None
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     prefix : str or None
@@ -1251,6 +1253,7 @@ class CampaignConfig(BaseModel):
     heatflux_file: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
     name: str | None = Field(default=None)
+    ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
