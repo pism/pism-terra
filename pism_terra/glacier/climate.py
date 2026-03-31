@@ -399,6 +399,7 @@ def era5(
         .squeeze()
         .drop_vars("time", errors="ignore")
     )
+    print(ds_geo)
     ds_geo_ = ds_geo.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
 
     lon_attrs = ds["longitude"].attrs

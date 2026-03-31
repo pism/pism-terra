@@ -259,6 +259,33 @@ def extract_archive(
     return extracted_files
 
 
+# Mapping from ERA5 CDS long variable names to NetCDF short names
+_ERA5_NAME_MAP: dict[str, str] = {
+    "2m_temperature": "t2m",
+    "total_precipitation": "tp",
+    "geopotential": "z",
+    "10m_u_component_of_wind": "u10",
+    "10m_v_component_of_wind": "v10",
+    "surface_solar_radiation_downwards": "ssrd",
+    "surface_thermal_radiation_downwards": "strd",
+    "total_cloud_cover": "tcc",
+}
+
+
+def _era5_short_names(variable: Sequence[str]) -> set[str]:
+    """Map CDS long variable names to expected NetCDF short names."""
+    return {_ERA5_NAME_MAP.get(v, v) for v in variable}
+
+
+def _cache_has_variables(file_path: Path, expected: set[str]) -> bool:
+    """Check whether a cached NetCDF file contains the expected variables."""
+    try:
+        with xr.open_dataset(file_path, decode_times=False) as ds:
+            return expected.issubset(set(ds.data_vars))
+    except Exception:
+        return False
+
+
 def download_request(
     dataset: str = "reanalysis-era5-single-levels-monthly-means",
     area: Sequence[float] = (90.0, -90.0, 45.0, 90.0),
@@ -340,7 +367,9 @@ def download_request(
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if (not check_xr_lazy(file_path)) or force_overwrite:
+    expected_short_names = _era5_short_names(variable)
+    cache_valid = check_xr_lazy(file_path) and _cache_has_variables(file_path, expected_short_names)
+    if (not cache_valid) or force_overwrite:
         client = cdsapi.Client()
 
         path = file_path.parent

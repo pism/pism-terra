@@ -176,3 +176,10 @@ model = "given"
 model = "null"
 
 [hydrology.options]
+
+[frontal_melt]
+
+model = "off"
+
+[frontal_melt.options.off]
+
