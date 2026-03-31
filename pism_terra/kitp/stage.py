@@ -134,8 +134,9 @@ def stage(
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
         "heatflux_file": heatflux_file.resolve(),
-        "regrid_file": regrid_file.resolve(),
+        "ocean_file": ocean_file.resolve(),
         "outline_file": outline_file.resolve(),
+        "regrid_file": regrid_file.resolve(),
     }
 
     for key in ("gcms", "present_day_forcings", "future_forcings"):
