@@ -583,6 +583,7 @@ def run_ensemble():
             "input.regrid.file": row["regrid_file"],
             "energy.bedrock_thermal.file": row["heatflux_file"],
             "grid.file": row["grid_file"],
+            "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.given.file": row["climate_file"],
             "surface.pdd.std_dev.file": row["climate_file"],
             "surface.debm_simple.std_dev.file": row["climate_file"],

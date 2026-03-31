@@ -176,7 +176,9 @@ model = "given"
 
 [atmosphere.options.given]
 
-'atmosphere.models' = "given"
+'atmosphere.models' = "given,elevation_change"
+'atmosphere.elevation_change.temperature_lapse_rate' = 6
+'atmosphere.elevation_change.file' = "none"
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = "yes"
 
