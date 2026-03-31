@@ -627,8 +627,10 @@ def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     p = Path(path).resolve()
     is_ok: bool
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
     try:
-        ds = xr.open_dataset(p)
+        ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_lazy(ds)  # your sampled checker
         if verbose:
             print(f"{p} is valid ✓")
@@ -676,8 +678,10 @@ def check_xr_fully(path: Path | str) -> bool:
     """
     p = Path(path).resolve()
     is_ok: bool
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
     try:
-        ds = xr.open_dataset(p)
+        ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_fully(ds)  # your full-load checker
         print(f"{p} is valid ✓")
         is_ok = True
