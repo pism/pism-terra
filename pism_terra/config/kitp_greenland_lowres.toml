@@ -18,19 +18,19 @@ nodes = 1
 
 [campaign]
 
-bucket = "pism-cloud-data"
-prefix = "kitp/input"
-version = "v3"
-gcms = "CESM1-WACCM-SC"
-climatology = "HIRHAM5-ERA5_YMM_1990_2019"
-present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
-future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pa-futArcSIC-ext"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+bucket = "pism-cloud-data"
+climatology = "HIRHAM5-ERA5_YMM_1990_2019"
+future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pa-futArcSIC-ext"]
+gcms = "CESM1-WACCM-SC"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 ocean_file = "ocean_forcing_228.0_10.0_69.0_80.0.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+prefix = "kitp/input"
+present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
+regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
+version = "v3"
 
 [time]
 
