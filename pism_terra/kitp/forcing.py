@@ -39,7 +39,6 @@ import cf_xarray
 import cftime
 import geopandas as gpd
 import numpy as np
-from pyproj import Proj
 import pandas as pd
 import rioxarray  # pylint: disable=unused-import
 import toml
@@ -48,6 +47,7 @@ import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from cdo import Cdo
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
+from pyproj import Proj
 from tqdm import tqdm
 
 from pism_terra.aws import s3_to_local
@@ -900,12 +900,14 @@ def prepare_ocean_forcing(
     crs: str = "EPSG:3413",
 ) -> None:
     """
-    Write latitude-dependent ocean forcing into *infile* (in-place).
+    Write latitude-dependent ocean forcing.
 
     Parameters
     ----------
-    infile : str
-        Path to the NetCDF file to modify.
+    input_path : str or Path
+        Path to the input NetCDF file.
+    output_path : str or Path
+        Path to the output NetCDF file.
     bmelt_0 : float
         Southern basal melt rate in m yr-1.
     bmelt_1 : float
@@ -916,6 +918,8 @@ def prepare_ocean_forcing(
         Latitude for the northern melt rate.
     process_mask : bool
         If True, zero out melt on non-ocean cells.
+    crs : str
+        Coordinate reference system string.
     """
 
     input_path = Path(input_path)
