@@ -960,7 +960,7 @@ def prepare_ocean_forcing(
         time_mid,
         attrs={
             "units": "years since 1-1-1",
-            "calendar": "none",
+            "calendar": "365_day",
             "standard_name": "time",
             "axis": "T",
             "bounds": "time_bnds",
@@ -981,7 +981,11 @@ def prepare_ocean_forcing(
             ),
             "time_bnds": xr.Variable(("time", "nb2"), time_bnds),
         },
-        coords={"time": time_coord, "x": ("x", x), "y": ("y", y)},
+        coords={
+            "time": time_coord,
+            "x": xr.Variable("x", x, attrs={"units": "m", "standard_name": "projection_x_coordinate", "axis": "X"}),
+            "y": xr.Variable("y", y, attrs={"units": "m", "standard_name": "projection_y_coordinate", "axis": "Y"}),
+        },
     )
     out.rio.write_crs(crs, inplace=True)
 

@@ -113,6 +113,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     logging.basicConfig(level=logging.WARNING, format=log_format)
+    for handler in logging.root.handlers:
+        handler.setLevel(logging.WARNING)
     file_handler = logging.FileHandler(output_path / "prepare.log")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter(log_format))

@@ -47,6 +47,7 @@ from pism_terra.workflow import (
     merge_model,
     normalize_row,
     sort_dict_by_key,
+    validate_pism_options,
 )
 
 # one Jinja environment for all renders
@@ -68,6 +69,7 @@ def run_glacier(
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
+    pism_config_cdl: str | Path | None = None,
 ):
     """
     Configure and generate a PISM job script for a single glacier (ensemble-ready).
@@ -122,6 +124,9 @@ def run_glacier(
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._s0042``). If neither is provided,
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+    pism_config_cdl : str or Path or None, optional
+        Path to a PISM CDL master config file. If provided, all run options
+        are validated against it before generating the command line.
 
     Raises
     ------
@@ -251,6 +256,9 @@ def run_glacier(
         }
     )
 
+    if pism_config_cdl is not None:
+        validate_pism_options(run, pism_config_cdl)
+
     run_str = dict2str(sort_dict_by_key(run))
 
     run_opts = RunConfig(**cfg.run.model_dump())
@@ -378,6 +386,12 @@ def run_single():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
         nargs="?",
@@ -395,6 +409,7 @@ def run_single():
 
     options = parser.parse_args()
     force_overwrite = options.force_overwrite
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(options.output_path)
     rgi_id = options.RGI_ID
@@ -452,6 +467,7 @@ def run_single():
             debug=debug,
             uq=default,
             sample=int(row["sample"]) if "sample" in row else idx,
+            pism_config_cdl=pism_config_cdl,
         )
 
     if options.execute and not options.debug:
@@ -531,6 +547,12 @@ def run_ensemble():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
         nargs="?",
@@ -553,6 +575,7 @@ def run_ensemble():
 
     options = parser.parse_args()
     force_overwrite = options.force_overwrite
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(options.output_path)
     rgi_id = options.RGI_ID
@@ -641,6 +664,7 @@ def run_ensemble():
             debug=debug,
             uq=default,
             sample=int(row["sample"]) if "sample" in row else idx,
+            pism_config_cdl=pism_config_cdl,
         )
 
     if options.bucket:

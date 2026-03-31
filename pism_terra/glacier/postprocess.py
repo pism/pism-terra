@@ -179,6 +179,8 @@ def main():
 
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     logging.basicConfig(level=logging.WARNING, format=log_format)
+    for handler in logging.root.handlers:
+        handler.setLevel(logging.WARNING)
     config_path = Path(config_file).resolve().parent
     file_handler = logging.FileHandler(config_path / "postprocess.log")
     file_handler.setLevel(logging.INFO)

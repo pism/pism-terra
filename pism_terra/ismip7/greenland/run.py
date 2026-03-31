@@ -43,6 +43,7 @@ from pism_terra.workflow import (
     merge_model,
     normalize_row,
     sort_dict_by_key,
+    validate_pism_options,
 )
 
 # one Jinja environment for all renders
@@ -63,6 +64,7 @@ def run_greenland(
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
+    pism_config_cdl: str | Path | None = None,
 ):
     """
     Configure and generate a PISM job script for a single glacier (ensemble-ready).
@@ -114,6 +116,9 @@ def run_greenland(
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._s0042``). If neither is provided,
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+    pism_config_cdl : str or Path or None, optional
+        Path to a PISM CDL master config file. If provided, all run options
+        are validated against it before generating the command line.
 
     Raises
     ------
@@ -243,6 +248,9 @@ def run_greenland(
         }
     )
 
+    if pism_config_cdl is not None:
+        validate_pism_options(run, pism_config_cdl)
+
     run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
 
     run_opts = RunConfig(**cfg.run.model_dump())
@@ -358,6 +366,12 @@ def run_single():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -379,6 +393,7 @@ def run_single():
     ntasks = options.ntasks
     nodes = options.nodes
     walltime = options.walltime
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -430,6 +445,7 @@ def run_single():
             debug=debug,
             uq=uq,
             sample=sample,
+            pism_config_cdl=pism_config_cdl,
         )
 
 
@@ -490,6 +506,12 @@ def run_ensemble():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -524,6 +546,7 @@ def run_ensemble():
     ntasks = options.ntasks
     nodes = options.nodes
     walltime = options.walltime
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -604,6 +627,7 @@ def run_ensemble():
             debug=debug,
             uq=row_uq,
             sample=sample,
+            pism_config_cdl=pism_config_cdl,
         )
 
 
