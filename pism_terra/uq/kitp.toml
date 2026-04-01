@@ -1,14 +1,14 @@
-samples = 50
+samples = 10
 mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
 
 ['surface.debm_simple.c1']
 
-loc = 0
-scale = 40
+loc = 25
+scale = 10
 distribution = "uniform"
 
 ['surface.debm_simple.c2']
 
-loc = -150
-scale = 150
+loc = -130
+scale = 10
 distribution = "uniform"
