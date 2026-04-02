@@ -37,6 +37,8 @@ from dask.distributed import Client, progress
 from pyfiglet import Figlet
 from tqdm import tqdm
 
+from pism_terra.log import setup_logging
+
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
@@ -188,16 +190,8 @@ def main():
     config_file = options.RUN_FILE[0]
     ntasks = options.ntasks
 
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.WARNING, format=log_format)
-    for handler in logging.root.handlers:
-        handler.setLevel(logging.WARNING)
     config_path = Path(config_file).resolve().parent
-    file_handler = logging.FileHandler(config_path / "postprocess.log")
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(log_format))
-    logging.getLogger("pism_terra").setLevel(logging.INFO)
-    logging.getLogger("pism_terra").addHandler(file_handler)
+    setup_logging(config_path / "postprocess.log")
 
     postprocess_glacier(config_file, n_workers=ntasks)
 

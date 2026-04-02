@@ -55,6 +55,7 @@ from pism_terra.download import download_archive, download_file, extract_archive
 from pism_terra.glacier.climate import convert_many_tifs_concurrent
 from pism_terra.glacier.ice_thickness import prepare_ice_thickness_maffezzoli
 from pism_terra.glacier.rgi import prepare_rgi
+from pism_terra.log import setup_logging
 from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
 
@@ -111,15 +112,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.WARNING, format=log_format)
-    for handler in logging.root.handlers:
-        handler.setLevel(logging.WARNING)
-    file_handler = logging.FileHandler(output_path / "prepare.log")
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(log_format))
-    logging.getLogger("pism_terra").setLevel(logging.INFO)
-    logging.getLogger("pism_terra").addHandler(file_handler)
+    setup_logging(output_path / "prepare.log")
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")

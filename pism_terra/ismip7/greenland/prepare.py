@@ -48,6 +48,7 @@ from pism_terra.ismip7.greenland.forcing import (
     prepare_ismip7_forcing,
     prepare_observations,
 )
+from pism_terra.log import setup_logging
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -102,15 +103,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.WARNING, format=log_format)
-    for handler in logging.root.handlers:
-        handler.setLevel(logging.WARNING)
-    file_handler = logging.FileHandler(output_path / "prepare.log")
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(log_format))
-    logging.getLogger("pism_terra").setLevel(logging.INFO)
-    logging.getLogger("pism_terra").addHandler(file_handler)
+    setup_logging(output_path / "prepare.log")
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
