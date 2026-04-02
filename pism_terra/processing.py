@@ -23,6 +23,7 @@
 Processing Functions.
 """
 
+import json
 import re
 from collections import OrderedDict
 from collections.abc import Hashable, Mapping
@@ -225,34 +226,26 @@ def preprocess_config_rgi(
     m_exp_id = m_exp_id_re.group(1)
 
     p_config = ds["pism_config"]
+    ds = ds.drop_vars(["pism_config"], errors="ignore").drop_dims(["pism_config_axis"], errors="ignore")
     ds = ds.expand_dims({rgi_dim: [m_rgi_id], exp_dim: [m_exp_id]})
 
     # List of suffixes to exclude
     suffixes_to_exclude = ["_doc", "_type", "_units", "_option", "_choices"]
 
-    # Filter the dictionary
+    # Filter the dictionary and encode as a single JSON string per (rgi_id, exp_id)
     config = {k: v for k, v in p_config.attrs.items() if not any(k.endswith(suffix) for suffix in suffixes_to_exclude)}
     if "geometry.front_retreat.prescribed.file" not in config.keys():
         config["geometry.front_retreat.prescribed.file"] = "false"
 
-    config_sorted = OrderedDict(sorted(config.items()))
-
-    pc_keys = np.array(list(config_sorted.keys()))
-    pc_vals = np.array(list(config_sorted.values()))
-
+    config_json = json.dumps(OrderedDict(sorted(config.items())))
     pism_config = xr.DataArray(
-        pc_vals.reshape(-1),
-        dims=["pism_config_axis"],
-        coords={"pism_config_axis": pc_keys},
+        np.array([[config_json]], dtype=object),
+        dims=[rgi_dim, exp_dim],
+        coords={rgi_dim: [m_rgi_id], exp_dim: [m_exp_id]},
         name="pism_config",
     )
+    ds["pism_config"] = pism_config
 
-    ds = xr.merge(
-        [
-            ds.drop_vars(["pism_config"], errors="ignore").drop_dims(["pism_config_axis"], errors="ignore"),
-            pism_config,
-        ]
-    )
     return ds.drop_vars(drop_vars, errors="ignore").drop_dims(drop_dims, errors="ignore")
 
 
