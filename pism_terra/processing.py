@@ -33,71 +33,15 @@ import numpy as np
 import xarray as xr
 
 
-def preprocess_nc(
-    ds: xr.Dataset,
-    regexp: str = "id_(.+?)_",
-    dim: str = "exp_id",
-    drop_vars: list[str] | None = None,
-    drop_dims: list[str] | None = None,
-) -> xr.Dataset:
-    """
-    Add experiment identifier to the dataset.
-
-    This function processes the dataset by extracting an experiment identifier from the filename
-    using a regular expression, adding it as a new dimension, and optionally dropping specified
-    variables and dimensions from the dataset.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        The input dataset to be processed.
-    regexp : str, optional
-        The regular expression pattern to extract the experiment identifier from the filename,
-        by default "id_(.+?)_".
-    dim : str, optional
-        The name of the new dimension to be added to the dataset, by default "exp_id".
-    drop_vars : list of str or None, optional
-        A list of variable names to be dropped from the dataset, by default None.
-    drop_dims : list of str or None, optional
-        A list of dimension names to be dropped from the dataset, by default None.
-
-    Returns
-    -------
-    xarray.Dataset
-        The processed dataset with the experiment identifier added as a new dimension,
-        and specified variables and dimensions dropped.
-
-    Raises
-    ------
-    AssertionError
-        If the regular expression does not match any part of the filename.
-
-    Notes
-    -----
-    If `drop_dims` is not provided, it defaults to `["nv4"]`.
-    """
-    if drop_dims is None:  # Initialize drop_dims if not provided
-        drop_dims = ["nv4"]
-
-    m_id_re = re.search(regexp, ds.encoding["source"])
-    ds = ds.expand_dims(dim)
-    assert m_id_re is not None
-    m_id: str | int
-    try:
-        m_id = int(m_id_re.group(1))
-    except ValueError:  # Catch specific exception
-        m_id = str(m_id_re.group(1))
-    ds[dim] = [m_id]
-
-    return ds.drop_vars(drop_vars, errors="ignore").drop_dims(drop_dims, errors="ignore")
-
-
-def preprocess_config(
+def preprocess_netcdf(
     ds,
-    regexp: str = "id_(.+?)_",
-    dim: str = "exp_id",
+    exp_regexp: str = "id_(.+?)_",
+    uq_regexp: str | None = r"(RGI2000-v7\.0-C-[^/\s]+)",
+    exp_dim: str = "exp_id",
+    uq_dim: str | None = "uq_id",
     drop_vars: list[str] | None = None,
     drop_dims: list[str] = ["nv4"],
+    process_config: bool = True,
 ) -> xr.Dataset:
     """
     Add experiment identifier to the dataset.
@@ -110,14 +54,23 @@ def preprocess_config(
     ----------
     ds : xarray.Dataset
         The input dataset to be processed.
-    regexp : str, optional
+    exp_regexp : str, optional
         The regular expression pattern to extract the experiment identifier from the filename, by default "id_(.+?)_".
-    dim : str, optional
-        The name of the new dimension to be added to the dataset, by default "exp_id".
+    uq_regexp : str or None, optional
+        The regular expression pattern to extract the UQ identifier from the filename, by default ``r"(RGI2000-v7\\.0-C-[^/\\s]+)"``.
+        If None, no UQ dimension is added.
+    exp_dim : str, optional
+        The name of the new experiment dimension to be added to the dataset, by default "exp_id".
+    uq_dim : str or None, optional
+        The name of the new UQ dimension to be added to the dataset, by default "uq_id".
+        If None, no UQ dimension is added.
     drop_vars : list[str]| None, optional
         A list of variable names to be dropped from the dataset, by default None.
     drop_dims : list[str], optional
         A list of dimension names to be dropped from the dataset, by default ["nv4"].
+    process_config : bool, optional
+        If True, extract and store pism_config as a JSON-encoded DataArray. If False, simply
+        drop the pism_config variable and axis without re-adding it. By default True.
 
     Returns
     -------
@@ -130,46 +83,49 @@ def preprocess_config(
         If the regular expression does not match any part of the filename.
     """
 
-    if dim not in ds.dims:
-        m_id_re = re.search(regexp, ds.encoding["source"])
-        ds = ds.expand_dims(dim)
-        assert m_id_re is not None
-        m_id: str | int
-        try:
-            m_id = int(m_id_re.group(1))
-        except:
-            m_id = str(m_id_re.group(1))
-        ds[dim] = [m_id]
+    m_exp_id_re = re.search(exp_regexp, ds.encoding["source"])
+    assert m_exp_id_re is not None
+    m_exp_id = m_exp_id_re.group(1)
 
-    p_config = ds["pism_config"]
+    if process_config:
+        p_config = ds["pism_config"]
 
-    # List of suffixes to exclude
-    suffixes_to_exclude = ["_doc", "_type", "_units", "_option", "_choices"]
+    ds = ds.drop_vars(["pism_config"], errors="ignore").drop_dims(["pism_config_axis"], errors="ignore")
 
-    # Filter the dictionary
-    config = {k: v for k, v in p_config.attrs.items() if not any(k.endswith(suffix) for suffix in suffixes_to_exclude)}
-    if "geometry.front_retreat.prescribed.file" not in config.keys():
-        config["geometry.front_retreat.prescribed.file"] = "false"
+    if uq_regexp is not None and uq_dim is not None and hasattr(ds, "command"):
+        m_uq_id_re = re.search(uq_regexp, ds.command)
+        assert m_uq_id_re is not None
+        m_uq_id = m_uq_id_re.group(1)
+        ds = ds.expand_dims({uq_dim: [m_uq_id], exp_dim: [m_exp_id]})
+        expand_dims = [uq_dim, exp_dim]
+        expand_coords = {uq_dim: [m_uq_id], exp_dim: [m_exp_id]}
+    else:
+        ds = ds.expand_dims({exp_dim: [m_exp_id]})
+        expand_dims = [exp_dim]
+        expand_coords = {exp_dim: [m_exp_id]}
 
-    config_sorted = OrderedDict(sorted(config.items()))
+    if process_config:
 
-    pc_keys = np.array(list(config_sorted.keys()))
-    pc_vals = np.array(list(config_sorted.values()))
+        # List of suffixes to exclude
+        suffixes_to_exclude = ["_doc", "_type", "_units", "_option", "_choices"]
 
-    pism_config = xr.DataArray(
-        pc_vals.reshape(-1, 1),
-        dims=["pism_config_axis", dim],
-        coords={"pism_config_axis": pc_keys, dim: [m_id]},
-        name="pism_config",
-    )
-    ds = xr.merge(
-        [
-            ds.drop_vars(["pism_config", "run_stats"], errors="ignore").drop_dims(
-                ["pism_config_axis", "run_stats_axis"], errors="ignore"
-            ),
-            pism_config,
-        ]
-    )
+        # Filter the dictionary and encode as a single JSON string per (uq_id, exp_id)
+        config = {
+            k: v for k, v in p_config.attrs.items() if not any(k.endswith(suffix) for suffix in suffixes_to_exclude)
+        }
+        if "geometry.front_retreat.prescribed.file" not in config.keys():
+            config["geometry.front_retreat.prescribed.file"] = "false"
+
+        config_json = json.dumps(OrderedDict(sorted(config.items())))
+        shape = [1] * len(expand_dims)
+        pism_config = xr.DataArray(
+            np.array(config_json, dtype=object).reshape(shape),
+            dims=expand_dims,
+            coords=expand_coords,
+            name="pism_config",
+        )
+        ds["pism_config"] = pism_config
+
     return ds.drop_vars(drop_vars, errors="ignore").drop_dims(drop_dims, errors="ignore")
 
 
