@@ -18,16 +18,16 @@ nodes = 1
 
 [campaign]
 
+version = "v1"
 bucket = "pism-cloud-data"
-prefix = "ismip7_greenland_input_testing"
+prefix = "input"
 pathway = "historical"
-version = "1"
 start_year = "1980"
 end_year = "1981"
 gcm = "CESM2-WACCM"
-boot_file = "boot_g1000m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g1200m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
+regrid_file = "g900m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
 retreat_file = "pism_g1000m_frontretreat_calfin_1972_2019_ME.nc"
 heatflux_file  = "heatflux_GreenlandObsISMIP7-v1.3.nc"
 
@@ -167,6 +167,10 @@ model = "given"
 'atmosphere.given.file' = "none"
 
 [ocean]
+
+model = "th"
+
+[ocean.options.th]
 
 'ocean.models' = "th"
 'ocean.th.file' = "none"

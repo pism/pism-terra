@@ -168,6 +168,10 @@ model = "given"
 
 [ocean]
 
+model = "th"
+
+[ocean.options.th]
+
 'ocean.models' = "th"
 'ocean.th.file' = "none"
 'ocean.th.clip_salinity' = "False"

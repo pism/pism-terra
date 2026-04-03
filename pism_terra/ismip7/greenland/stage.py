@@ -158,21 +158,21 @@ def stage(
     for gcm in gcms:
         for forcing in ["climate", "ocean"]:
             forcing_file = input_path / Path(
-                f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
+                f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc"
             )
             check_xr_lazy(forcing_file)
             files_dict[f"{forcing}_file"] = forcing_file.resolve()
 
         forcing = "climate"
         surface_input_file = input_path / Path(
-            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
+            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc"
         )
         check_xr_lazy(surface_input_file)
         files_dict["surface_input_file"] = surface_input_file.resolve()
 
         forcing = "ocean"
         frontal_melt_file = input_path / Path(
-            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
+            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc"
         )
         check_xr_lazy(frontal_melt_file)
         files_dict["frontal_melt_file"] = frontal_melt_file.resolve()
