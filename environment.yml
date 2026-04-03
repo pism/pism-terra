@@ -12,6 +12,8 @@ dependencies:
   # - cf_units  # FIXME: Breaks this environment; doesn't appear to be needed
   - cf_xarray
   - cftime
+  - cmap
+  - cmweather
   - dask[distributed,dataframe]
   - dem_stitcher
   - earthaccess
