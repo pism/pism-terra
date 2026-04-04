@@ -27,7 +27,6 @@ dependencies = [
     "botocore",
     "cdo",
     "cdsapi",
-    # "cf-units",  # FIXME: # FIXME: Breaks the conda environment; doesn't appear to be needed
     "cf_xarray",
     "cftime",
     "cmap",
