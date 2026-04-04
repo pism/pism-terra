@@ -427,6 +427,7 @@ def run_single():
             "input.regrid.file": row["regrid_file"],
             "energy.bedrock_thermal.file": row["heatflux_file"],
             "grid.file": row["grid_file"],
+            "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.given.file": row["climate_file"],
             "ocean.given.file": row["ocean_file"],
             "surface.pdd.std_dev.file": row["climate_file"],
