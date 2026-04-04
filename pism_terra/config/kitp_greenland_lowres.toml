@@ -2,12 +2,12 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 80
+ntasks = 72
 writer = ""
 
 [job]
 
-queue = "t2small"
+queue = "t2standard"
 walltime = "72:00:00"
 nodes = 1
 
@@ -77,7 +77,7 @@ version = "v3"
 
 [grid]
 
-resolution = "1500m"
+resolution = "1200m"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 51
@@ -173,13 +173,20 @@ model = "debm"
 
 [atmosphere]
 
-model = "given"
+model = "given_elevation_change"
 
 [atmosphere.options.given]
 
 'atmosphere.models' = "given"
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = "yes"
+
+[atmosphere.options.given_elevation_change]
+
+'atmosphere.models' = "given,elevation_change"
+'atmosphere.given.file' = "none"
+'atmosphere.elevation_change.temperature_lapse_rate' = 6
+'atmosphere.elevation_change.file' = "none"
 
 [ocean]
 
