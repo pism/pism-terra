@@ -22,6 +22,7 @@ dependencies:
   - jinja2
   - joblib
   - matplotlib
+  - nc-time-axis
   - netCDF4
   - numpy
   - pandas

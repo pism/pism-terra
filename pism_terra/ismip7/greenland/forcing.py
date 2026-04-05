@@ -284,8 +284,13 @@ def prepare_observations(
     else:
         ds_bm = xr.open_dataset(obs_file)
 
+    ds_bm = ds_bm.rename_vars({"surface_grimp": "surface"})
+    ds_bm["surface"].attrs.update(
+        {"standard_name": "surface_altitude", "long_name": "ice surface elevation", "units": "m"}
+    )
+
     if target_grid is not None:
-        ds_bm_regridded = ds_bm[["bed", "thickness"]].regrid.conservative(target_grid)
+        ds_bm_regridded = ds_bm[["bed", "thickness", "surface"]].regrid.conservative(target_grid)
         gebco_p = download_gebco(target_dir=input_path)
         gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
         gebco_bm_regridded = gebco.rio.reproject_match(ds_bm_regridded.rio.write_crs("EPSG:3413")).compute()
@@ -307,13 +312,14 @@ def prepare_observations(
         else:
             ds = xr.open_dataset(surface_file)
         surface = ds["surface"].regrid.conservative(target_grid)
+        surface.name = "surface"
         thickness = xr.where(surface > 0, surface - bed, 0)
         thickness = thickness.where(thickness > 10, 0)
         thickness.name = "thickness"
         thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
         boot = xr.merge([bed, ftt_mask, surface, thickness])
     else:
-        boot = xr.merge([ds_bm_regridded[["bed", "thickness"]], ftt_mask])
+        boot = xr.merge([ds_bm_regridded[["bed", "thickness", "surface"]], ftt_mask])
     boot = boot.fillna(0)
     ds = xr.merge([boot, ds_bm["mapping"]])
 
@@ -325,6 +331,7 @@ def prepare_observations(
     )
     geo = geo.where(geo != -9999, 0.042)
 
+    ds["surface"].attrs.update({"standard_name": "surface_altitude", "units": "m"})
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
     ds = ds.rename_vars({k: v for k, v in config["ismip7_to_pism"].items() if k in ds}).drop_vars(
         ["crs", "spatial_ref"], errors="ignore"

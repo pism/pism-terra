@@ -39,6 +39,7 @@ dependencies = [
     "h5netcdf",
     "jinja2",
     "matplotlib",
+    "nc-time-axis",
     "netCDf4",
     "numpy",
     "pandas",
