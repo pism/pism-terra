@@ -389,7 +389,7 @@ def boot_file_from_rgi_id(
 
     if velocity_dataset is not ("none" or None):
         v_filename = path / Path(f"obs_{rgi_id}.nc")
-        v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, path=v_filename)
+        v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=20000.0, path=v_filename)
         v = v.rio.reproject_match(surface)
         _v = v["v"].fillna(0)
         ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 500, 2, 1 + (_v - 100) / (500 - 100)))

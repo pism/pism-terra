@@ -220,6 +220,7 @@ def run_glacier(
 
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
+    writer = cfg.model_dump()["run"]["writer"] if (cfg.model_dump()["run"]["writer"] is not None) else ""
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
@@ -259,7 +260,7 @@ def run_glacier(
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
 
-    run_str = dict2str(sort_dict_by_key(run))
+    run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
 
     run_opts = RunConfig(**cfg.run.model_dump())
     job_opts = JobConfig(**cfg.job.model_dump())
