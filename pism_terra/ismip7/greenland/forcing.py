@@ -290,7 +290,7 @@ def prepare_observations(
     )
 
     if target_grid is not None:
-        ds_bm_regridded = ds_bm[["bed", "thickness", "surface"]].regrid.conservative(target_grid)
+        ds_bm_regridded = ds_bm[["bed", "thickness", "surface", "mask"]].regrid.conservative(target_grid)
         gebco_p = download_gebco(target_dir=input_path)
         gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
         gebco_bm_regridded = gebco.rio.reproject_match(ds_bm_regridded.rio.write_crs("EPSG:3413")).compute()
@@ -303,6 +303,12 @@ def prepare_observations(
 
     ftt_mask = xr.where(ds_bm_regridded["thickness"] > 0, 1, 0)
     ftt_mask.name = "ftt_mask"
+
+    liafr = xr.where(ds_bm_regridded["mask"] == 0, 0, 1)
+    liafr.name = "land_ice_area_fraction_retreat"
+    liafr.attrs.update({"units": "1"})
+    liafr = liafr.astype("bool")
+
     if surface_dem is not None:
         surface_file = Path(input_path) / Path("surface_dem.nc")
         bed = ds_bm_regridded["bed"]
@@ -317,9 +323,9 @@ def prepare_observations(
         thickness = thickness.where(thickness > 10, 0)
         thickness.name = "thickness"
         thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
-        boot = xr.merge([bed, ftt_mask, surface, thickness])
+        boot = xr.merge([bed, ftt_mask, surface, thickness, liafr])
     else:
-        boot = xr.merge([ds_bm_regridded[["bed", "thickness", "surface"]], ftt_mask])
+        boot = xr.merge([ds_bm_regridded[["bed", "thickness", "surface"]], ftt_mask, liafr])
     boot = boot.fillna(0)
     ds = xr.merge([boot, ds_bm["mapping"]])
 

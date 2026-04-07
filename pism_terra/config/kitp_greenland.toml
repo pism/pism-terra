@@ -30,6 +30,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 prefix = "kitp/input"
 present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
 regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
+retreat_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 version = "v3"
 
 [time]
@@ -50,6 +51,7 @@ version = "v3"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
+'geometry.front_retreat.prescribed.file' = "none"
 
 ['input']
 
