@@ -95,8 +95,8 @@ model = 'blatter'
 [stress_balance.options.blatter]
 
 'stress_balance.model' = "blatter"
-'stress_balance.blatter.Mz' = 17
-'stress_balance.blatter.coarsening_factor' = 4
+'stress_balance.blatter.Mz' = 10
+'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.blatter.use_eta_transform' = 'yes'
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.surface_gradient_method' = 'eta'
