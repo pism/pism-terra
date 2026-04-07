@@ -124,7 +124,7 @@ def preprocess_netcdf(
             coords=expand_coords,
             name="pism_config",
         )
-        ds["pism_config"] = pism_config
+        ds = ds.assign_coords(pism_config=pism_config)
 
     return ds.drop_vars(drop_vars, errors="ignore").drop_dims(drop_dims, errors="ignore")
 
@@ -200,7 +200,7 @@ def preprocess_config_rgi(
         coords={rgi_dim: [m_rgi_id], exp_dim: [m_exp_id]},
         name="pism_config",
     )
-    ds["pism_config"] = pism_config
+    ds = ds.assign_coords(pism_config=pism_config)
 
     return ds.drop_vars(drop_vars, errors="ignore").drop_dims(drop_dims, errors="ignore")
 
