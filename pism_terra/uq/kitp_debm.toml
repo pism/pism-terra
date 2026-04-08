@@ -13,8 +13,14 @@ loc = -130
 scale = 10
 distribution = "uniform"
 
-['debm_simple.air_temp_all_precip_as_snow']
+['surface.debm_simple.air_temp_all_precip_as_snow']
 
-loc = 272.15
+loc = 271.15
 scale = 1
+distribution = "uniform"
+
+['surface.debm_simple.air_temp_all_precip_as_rain']
+
+loc = 273.15
+scale = 4
 distribution = "uniform"
