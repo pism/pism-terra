@@ -48,6 +48,7 @@ version = "v3"
 
 ['geometry']
 
+'geometry.update.enabled' = "no"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
@@ -89,7 +90,9 @@ resolution = "1200m"
 
 [energy]
 
-model = "enthalpy"
+model = "none"
+
+[energy.options.none]
 
 [energy.options.enthalpy]
 
@@ -101,7 +104,11 @@ model = "enthalpy"
 
 [stress_balance]
 
-model = 'hybrid'
+model = 'none'
+
+[stress_balance.options.none]
+
+'stress_balance.model' = "none"
 
 [stress_balance.options.blatter]
 
@@ -155,6 +162,8 @@ model = "debm"
 'surface.models' = "pdd"
 'surface.pdd.std_dev.file' = "none"
 'surface.pdd.std_dev.periodic' = "yes"
+'surface.pdd.factor_ice' = 0.00879120879120879
+'surface.pdd.factor_snow' = 0.0032967032967033
 
 [surface.options.debm]
 
