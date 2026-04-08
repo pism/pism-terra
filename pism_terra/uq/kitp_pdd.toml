@@ -20,5 +20,5 @@ distribution = "truncnorm"
 ['surface.pdd.refreeze']
 
 loc = 0.2
-scalr = 0.6
+scale = 0.6
 distribution = "uniform"
