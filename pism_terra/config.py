@@ -707,7 +707,7 @@ class JobConfig(BaseModelWithDot):
     @classmethod
     def _hhmmss(cls, v: str | None) -> str | None:
         """
-        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS``.
+        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS`` or ``HHH:MM:SS``.
 
         Parameters
         ----------
