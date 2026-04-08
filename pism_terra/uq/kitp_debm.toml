@@ -24,3 +24,9 @@ distribution = "uniform"
 loc = 273.15
 scale = 4
 distribution = "uniform"
+
+['surface.debm_simple.refreeze']
+
+loc = 0.2
+scale = 0.6
+distribution = "uniform"
