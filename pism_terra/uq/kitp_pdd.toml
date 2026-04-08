@@ -16,3 +16,9 @@ scale = 0.0016483516483516484
 a = -1.2
 b = 1.2
 distribution = "truncnorm"
+
+['surface.pdd.refreeze']
+
+loc = 0.2
+scalr = 0.6
+distribution = "uniform"

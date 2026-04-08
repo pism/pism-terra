@@ -80,7 +80,7 @@ version = "v3"
 
 [grid]
 
-resolution = "1200m"
+resolution = "4800m"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 51
@@ -164,6 +164,8 @@ model = "pdd"
 'surface.pdd.std_dev.periodic' = "yes"
 'surface.pdd.factor_ice' = 0.00879120879120879
 'surface.pdd.factor_snow' = 0.0032967032967033
+'surface.pdd.refreeze' = 0.6
+'surface.pdd.refreeze_ice_melt' = "no"
 
 [surface.options.debm]
 
@@ -175,6 +177,8 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.c1' = 30
 'surface.debm_simple.c2' = -120
+'surface.debm_simple.refreeze' = 0.6
+'surface.debm_simple.refreeze_ice_melt' = "no"
 
 [calving]
 
