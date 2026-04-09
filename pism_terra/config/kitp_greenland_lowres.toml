@@ -2,7 +2,7 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 72
+ntasks = 120
 writer = ""
 
 [job]
@@ -167,8 +167,8 @@ model = "debm"
 'surface.debm_simple.albedo_input.file' = "none"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
-'surface.debm_simple.c1' = 42
-'surface.debm_simple.c2' = -128
+'surface.debm_simple.c1' = 45
+'surface.debm_simple.c2' = -130
 'surface.debm_simple.refreeze' = 0.28
 'surface.debm_simple.refreeze_ice_melt' = "no"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 272.15
