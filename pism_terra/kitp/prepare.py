@@ -52,7 +52,6 @@ from pism_terra.kitp.forcing import (
     prepare_hirham5_climatology,
     prepare_ocean_forcing,
 )
-from pism_terra.log import setup_logging
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -112,7 +111,15 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
-    setup_logging(output_path / "prepare.log")
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    logging.basicConfig(level=logging.WARNING, format=log_format)
+    for handler in logging.root.handlers:
+        handler.setLevel(logging.WARNING)
+    file_handler = logging.FileHandler(output_path / "prepare.log")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logging.getLogger("pism_terra").setLevel(logging.INFO)
+    logging.getLogger("pism_terra").addHandler(file_handler)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -216,6 +223,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     gcms = config["gcms"]
     present_day_forcings = config["forcing"]["present_day_forcings"]
     future_forcings = config["forcing"]["future_forcings"]
+    forcings = config["forcing"]["forcings"]
 
     forcing_files = prepare_anomalies(
         data_path,
@@ -224,6 +232,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         gcms=gcms,
         present_day_forcings=present_day_forcings,
         future_forcings=future_forcings,
+        forcings=forcings,
         version=version,
         n_workers=ntasks,
         force_overwrite=force_overwrite,

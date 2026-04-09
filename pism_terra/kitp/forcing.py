@@ -688,6 +688,7 @@ def prepare_anomalies(
     gcms: list[str],
     present_day_forcings: list[str],
     future_forcings: list[str],
+    forcings: list[str],
     version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
@@ -708,6 +709,8 @@ def prepare_anomalies(
     present_day_forcings : list of str
         Present-day forcing experiment names (e.g. ``["pdSST-pdSIC"]``).
     future_forcings : list of str
+        Future forcing experiment names (e.g. ``["futSST-pdSIC"]``).
+    forcings : list of str
         Future forcing experiment names (e.g. ``["futSST-pdSIC"]``).
     version : str
         Version string appended to the output filename.
@@ -734,8 +737,14 @@ def prepare_anomalies(
     height_file = forcing_path / Path("height.nc")
     start = time.perf_counter()
 
-    # Build list of all (gcm, pd_forcing, ff_forcing) tasks
-    tasks = [(gcm, pd_forcing, ff) for gcm in gcms for pd_forcing in present_day_forcings for ff in future_forcings]
+    # Build list of all (gcm, pd_forcing, ff_forcing) tasks, filtered by valid combinations
+    tasks = [
+        (gcm, pd_forcing, ff)
+        for gcm in gcms
+        for pd_forcing in present_day_forcings
+        for ff in future_forcings
+        if f"{ff}_{pd_forcing}" in forcings
+    ]
 
     def _process_anomaly(args):
         """
