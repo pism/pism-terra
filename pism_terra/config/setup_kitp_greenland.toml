@@ -16,7 +16,7 @@ resolution = "900m"
 bucket = "pism-cloud-data"
 prefix = "kitp_forcing"
 present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
-future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pdSST-futArcSICSIT", "pa-futArcSIC-ext"]
+future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pdSST-futArcSICSIT", "pa-futArcSIC-ext", "futSST-futArcSIC-SUM", "futSST-futArcSICSIT-SUM"]
 
 [climatology]
 
