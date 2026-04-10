@@ -2,13 +2,13 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 120
+ntasks = 160
 writer = ""
 
 [job]
 
 queue = "t2standard"
-walltime = "72:00:00"
+walltime = "96:00:00"
 nodes = 1
 
 [run_info]
