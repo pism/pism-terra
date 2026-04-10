@@ -69,8 +69,8 @@ def stage(
             Path to the heatflux NetCDF file relative to the input directory.
         - ``"regrid_file"`` : str
             Path to the regrid NetCDF file relative to the input directory.
-        - ``"gcm"`` : str
-            GCM model name.
+        - ``"gcms"`` : dict[str, list[str]]
+            Mapping of GCM names to their valid forcing combinations.
         - ``"version"`` : str
             Dataset version.
     bucket : str
@@ -139,17 +139,24 @@ def stage(
         "regrid_file": regrid_file.resolve(),
     }
 
-    for key in ("gcms", "present_day_forcings", "future_forcings"):
-        if isinstance(config[key], str):
-            config[key] = [config[key]]
+    if isinstance(config["present_day_forcings"], str):
+        config["present_day_forcings"] = [config["present_day_forcings"]]
 
     gcms = config["gcms"]
     climatology = config["climatology"]
     version = config["version"]
     present_day_forcings = config["present_day_forcings"]
-    future_forcings = config["future_forcings"]
 
-    tasks = [(gcm, pd_forcing, ff) for gcm in gcms for pd_forcing in present_day_forcings for ff in future_forcings]
+    # Build tasks from per-GCM valid forcing combinations
+    tasks = []
+    for gcm, valid_combos in gcms.items():
+        for combo in valid_combos:
+            for pd_forcing in present_day_forcings:
+                suffix = f"_{pd_forcing}"
+                if combo.endswith(suffix):
+                    ff = combo[: -len(suffix)]
+                    tasks.append((gcm, pd_forcing, ff))
+                    break
     dfs: list[pd.DataFrame] = []
     climate_file = input_path / Path(f"{climatology}_{version}.nc")
     check_xr_lazy(climate_file)

@@ -222,8 +222,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     prefix = config["forcing"]["prefix"]
     gcms = config["gcms"]
     present_day_forcings = config["forcing"]["present_day_forcings"]
-    future_forcings = config["forcing"]["future_forcings"]
-    forcings = config["forcing"]["forcings"]
 
     forcing_files = prepare_anomalies(
         data_path,
@@ -231,8 +229,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         prefix=prefix,
         gcms=gcms,
         present_day_forcings=present_day_forcings,
-        future_forcings=future_forcings,
-        forcings=forcings,
         version=version,
         n_workers=ntasks,
         force_overwrite=force_overwrite,

@@ -685,10 +685,8 @@ def prepare_anomalies(
     output_path: Path | str,
     bucket: str,
     prefix: str,
-    gcms: list[str],
+    gcms: dict,
     present_day_forcings: list[str],
-    future_forcings: list[str],
-    forcings: list[str],
     version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
@@ -704,14 +702,11 @@ def prepare_anomalies(
         AWS S3 bucket name containing the forcing data.
     prefix : str
         S3 key prefix for the forcing data.
-    gcms : Sequence[str]
-        List of GCM names to process.
+    gcms : dict[str, list[str]]
+        Mapping of GCM names to their valid forcing combinations
+        (e.g. ``{"CESM2": ["futSST-pdSIC_pdSST-pdSIC"]}``).
     present_day_forcings : list of str
         Present-day forcing experiment names (e.g. ``["pdSST-pdSIC"]``).
-    future_forcings : list of str
-        Future forcing experiment names (e.g. ``["futSST-pdSIC"]``).
-    forcings : list of str
-        Future forcing experiment names (e.g. ``["futSST-pdSIC"]``).
     version : str
         Version string appended to the output filename.
     n_workers : int, optional
@@ -734,17 +729,18 @@ def prepare_anomalies(
     target_grid_path = output_path / Path("ismip6_grid.txt")
     target_grid_path.write_text(ismip6_grid)
 
-    height_file = forcing_path / Path("height.nc")
     start = time.perf_counter()
 
-    # Build list of all (gcm, pd_forcing, ff_forcing) tasks, filtered by valid combinations
-    tasks = [
-        (gcm, pd_forcing, ff)
-        for gcm in gcms
-        for pd_forcing in present_day_forcings
-        for ff in future_forcings
-        if f"{ff}_{pd_forcing}" in forcings
-    ]
+    # Build list of (gcm, pd_forcing, ff_forcing) tasks, filtered by per-GCM valid combinations
+    tasks = []
+    for gcm, valid_combos in gcms.items():
+        for combo in valid_combos:
+            for pd_forcing in present_day_forcings:
+                suffix = f"_{pd_forcing}"
+                if combo.endswith(suffix):
+                    ff = combo[: -len(suffix)]
+                    tasks.append((gcm, pd_forcing, ff))
+                    break
 
     def _process_anomaly(args):
         """
@@ -761,17 +757,17 @@ def prepare_anomalies(
             Path to the output file.
         """
         gcm, pd_forcing, ff = args
-        ff_tas_file = forcing_path / Path(ff) / Path(f"tas_Amon_{gcm}_{ff}.nc")
+        ff_tas_file = forcing_path / Path(gcm) / Path(ff) / Path(f"tas_Amon_{gcm}_{ff}.nc")
         if ff == "pa-futArcSIC-ext":
-            ff_pr_file = forcing_path / Path(ff) / Path(f"pr_day_{gcm}_{ff}.nc")
+            ff_pr_file = forcing_path / Path(gcm) / Path(ff) / Path(f"pr_day_{gcm}_{ff}.nc")
         else:
-            ff_pr_file = forcing_path / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
+            ff_pr_file = forcing_path / Path(gcm) / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
         if pd_forcing == "pa-pdSIC-ext":
-            pd_pr_file = forcing_path / Path(pd_forcing) / Path(f"pr_day_{gcm}_{pd_forcing}.nc")
+            pd_pr_file = forcing_path / Path(gcm) / Path(pd_forcing) / Path(f"pr_day_{gcm}_{pd_forcing}.nc")
         else:
-            pd_pr_file = forcing_path / Path(pd_forcing) / Path(f"pr_Amon_{gcm}_{pd_forcing}.nc")
+            pd_pr_file = forcing_path / Path(gcm) / Path(pd_forcing) / Path(f"pr_Amon_{gcm}_{pd_forcing}.nc")
 
-        pd_tas_file = forcing_path / Path(pd_forcing) / Path(f"tas_Amon_{gcm}_{pd_forcing}.nc")
+        pd_tas_file = forcing_path / Path(gcm) / Path(pd_forcing) / Path(f"tas_Amon_{gcm}_{pd_forcing}.nc")
         output_file = forcing_path / Path(f"{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
 
         if (not check_xr_lazy(output_file, verbose=False)) or force_overwrite:
@@ -779,7 +775,7 @@ def prepare_anomalies(
                 cdo_local = Cdo(tempdir=tmpdir)
 
                 ds = cdo_local.setmisstodis(
-                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
+                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
                     returnXDataset=True,
                     options="-f nc4 -z zip_2 -P 1",
                 )
@@ -840,8 +836,7 @@ def baseline_with_anomalies(
     Add baseline climatology to each anomaly forcing file.
 
     For precipitation and air_temp the baseline values are added to the
-    anomaly.  The ``height`` variable is taken from the anomaly file
-    unchanged.  Output files are written next to the baseline file with
+    anomaly. Output files are written next to the baseline file with
     a combined name.
 
     Parameters
@@ -878,7 +873,6 @@ def baseline_with_anomalies(
             ds = baseline.copy(deep=True)
             ds["precipitation"] = baseline["precipitation"] + anomaly["precipitation"]
             ds["air_temp"] = baseline["air_temp"] + anomaly["air_temp"]
-            ds["height"] = anomaly["height"]
 
             for var in list(ds.data_vars) + list(ds.coords):
                 ds[var].attrs.pop("missing_value", None)
