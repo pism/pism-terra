@@ -139,13 +139,9 @@ def stage(
         "regrid_file": regrid_file.resolve(),
     }
 
-    if isinstance(config["present_day_forcings"], str):
-        config["present_day_forcings"] = [config["present_day_forcings"]]
-
     gcms = config["gcms"]
     climatology = config["climatology"]
     version = config["version"]
-    present_day_forcings = config["present_day_forcings"]
 
     # Build tasks from per-GCM forcing pairs [[future, present], ...]
     tasks = [(gcm, pair[1], pair[0]) for gcm, pairs in gcms.items() for pair in pairs]
