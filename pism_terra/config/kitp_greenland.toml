@@ -165,12 +165,16 @@ model = "debm"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.c1' = 30
-'surface.debm_simple.c2' = -120
+'surface.debm_simple.c2' = -75
+'surface.debm_simple.refreeze' = 0.60
+'surface.debm_simple.refreeze_ice_melt' = "no"
+'surface.debm_simple.air_temp_all_precip_as_snow' = 272.15
+'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
 
 [calving]
 
 'calving.methods' = 'vonmises_calving,thickness_calving'
-'calving.vonmises_calving.sigma_max' = 5.0e5
+'calving.vonmises_calving.sigma_max' = 4.0e5
 'calving.thickness_calving.threshold' = 100.0
 
 [atmosphere]
