@@ -8,7 +8,7 @@ writer = ""
 [job]
 
 queue = "t2standard"
-walltime = "72:00:00"
+walltime = "01:00:00"
 nodes = 1
 
 [run_info]
