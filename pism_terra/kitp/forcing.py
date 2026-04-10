@@ -686,7 +686,6 @@ def prepare_anomalies(
     bucket: str,
     prefix: str,
     gcms: dict,
-    present_day_forcings: list[str],
     version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
@@ -702,11 +701,9 @@ def prepare_anomalies(
         AWS S3 bucket name containing the forcing data.
     prefix : str
         S3 key prefix for the forcing data.
-    gcms : dict[str, list[str]]
-        Mapping of GCM names to their valid forcing combinations
-        (e.g. ``{"CESM2": ["futSST-pdSIC_pdSST-pdSIC"]}``).
-    present_day_forcings : list of str
-        Present-day forcing experiment names (e.g. ``["pdSST-pdSIC"]``).
+    gcms : dict[str, list[list[str]]]
+        Mapping of GCM names to their forcing pairs ``[[future, present], ...]``
+        (e.g. ``{"CESM2": [["futSST-pdSIC", "pdSST-pdSIC"]]}``).
     version : str
         Version string appended to the output filename.
     n_workers : int, optional
@@ -731,16 +728,8 @@ def prepare_anomalies(
 
     start = time.perf_counter()
 
-    # Build list of (gcm, pd_forcing, ff_forcing) tasks, filtered by per-GCM valid combinations
-    tasks = []
-    for gcm, valid_combos in gcms.items():
-        for combo in valid_combos:
-            for pd_forcing in present_day_forcings:
-                suffix = f"_{pd_forcing}"
-                if combo.endswith(suffix):
-                    ff = combo[: -len(suffix)]
-                    tasks.append((gcm, pd_forcing, ff))
-                    break
+    # Build list of (gcm, pd_forcing, ff_forcing) tasks from per-GCM forcing pairs [[future, present], ...]
+    tasks = [(gcm, pair[1], pair[0]) for gcm, pairs in gcms.items() for pair in pairs]
 
     def _process_anomaly(args):
         """

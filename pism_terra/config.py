@@ -1267,6 +1267,7 @@ class CampaignConfig(BaseModel):
     ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)
+    present_day_forcings: str | list | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)
     rgi_file: str | None = Field(default=None)

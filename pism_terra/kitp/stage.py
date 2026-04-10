@@ -147,16 +147,8 @@ def stage(
     version = config["version"]
     present_day_forcings = config["present_day_forcings"]
 
-    # Build tasks from per-GCM valid forcing combinations
-    tasks = []
-    for gcm, valid_combos in gcms.items():
-        for combo in valid_combos:
-            for pd_forcing in present_day_forcings:
-                suffix = f"_{pd_forcing}"
-                if combo.endswith(suffix):
-                    ff = combo[: -len(suffix)]
-                    tasks.append((gcm, pd_forcing, ff))
-                    break
+    # Build tasks from per-GCM forcing pairs [[future, present], ...]
+    tasks = [(gcm, pair[1], pair[0]) for gcm, pairs in gcms.items() for pair in pairs]
     dfs: list[pd.DataFrame] = []
     climate_file = input_path / Path(f"{climatology}_{version}.nc")
     check_xr_lazy(climate_file)
