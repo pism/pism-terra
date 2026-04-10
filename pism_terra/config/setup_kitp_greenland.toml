@@ -14,19 +14,16 @@ resolution = "900m"
 
 bucket = "pism-cloud-data"
 prefix = "kitp/kitp_forcing_v4"
-present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
-future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pdSST-futArcSICSIT", "pa-futArcSIC-ext", "futSST-futArcSIC-SUM", "futSST-futArcSICSIT-SUM"]
-forcings = ["pdSST-futArcSICSIT_pdSST-pdSICSIT", "pa-futArcSIC-ext_pa-pdSIC-ext", "futSST-pdSIC_pdSST-pdSIC", "pdSST-futArcSIC_pdSST-pdSIC", "futSST-futArcSIC-SUM_pdSST-pdSIC"]
 
 [gcms]
 
-'AWI-CM-1-1-MR' = ["futSST-pdSIC_pdSST-pdSIC", "pdSST-futArcSIC_pdSST-pdSIC", "futSST-futArcSIC-SUM_pdSST-pdSIC"]
-'CESM1-WACCM-SC' = ["pdSST-futArcSICSIT_pdSST-pdSICSIT", "pa-futArcSIC-ext_pa-pdSIC-ext", "futSST-pdSIC_pdSST-pdSIC", "pdSST-futArcSIC_pdSST-pdSIC", "futSST-futArcSIC-SUM_pdSST-pdSIC"]
-'CESM2'= ["futSST-pdSIC_pdSST-pdSIC", "pdSST-futArcSIC_pdSST-pdSIC", "futSST-futArcSIC-SUM_pdSST-pdSIC"]
-'CNRM-CM6-1'= ["futSST-pdSIC_pdSST-pdSIC", "pdSST-futArcSIC_pdSST-pdSIC", "futSST-futArcSIC-SUM_pdSST-pdSIC"]
-'CanESM5'= ["futSST-pdSIC_pdSST-pdSIC", "pdSST-futArcSIC_pdSST-pdSIC", "futSST-futArcSIC-SUM_pdSST-pdSIC"]
-'HadGEM3-GC31-MM'= ["futSST-pdSIC_pdSST-pdSIC", "pdSST-futArcSIC_pdSST-pdSIC", "futSST-futArcSIC-SUM_pdSST-pdSIC"]
-'IPSL-CM6A-LR'= ["futSST-pdSIC_pdSST-pdSIC", "pdSST-futArcSIC_pdSST-pdSIC", "futSST-futArcSIC-SUM_pdSST-pdSIC"]
+'AWI-CM-1-1-MR' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'CESM1-WACCM-SC' = [["pdSST-futArcSICSIT", "pdSST-pdSICSIT"], ["pa-futArcSIC-ext", "pa-pdSIC-ext"], ["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'CESM2' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'CNRM-CM6-1' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'CanESM5' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'HadGEM3-GC31-MM' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'IPSL-CM6A-LR' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
 
 
 [climatology]
