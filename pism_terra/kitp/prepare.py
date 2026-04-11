@@ -87,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
 
     parser = ArgumentParser()
-    parser.add_argument("--obs-path", default="data/obs")
+    parser.add_argument("--data-path", default="data")
     parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
@@ -107,7 +107,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     config_file = args.CONFIG_FILE[0]
     force_overwrite = args.force_overwrite
     ntasks = args.ntasks
-    obs_path = Path(args.obs_path)
+    data_path = Path(args.data_path)
+    obs_path = data_path / Path(data_path)
+
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 

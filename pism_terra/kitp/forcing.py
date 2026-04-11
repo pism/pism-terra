@@ -380,7 +380,6 @@ def process_carra2(
 def process_hirham(
     data_dir: str | Path,
     output_file: str | Path,
-    base_url: str,
     vars_dict: dict,
     overwrite: bool = False,
     max_workers: int = 4,
@@ -396,8 +395,6 @@ def process_hirham(
         Directory containing the input data.
     output_file : Union[str, Path]
         Path to the output NetCDF file.
-    base_url : str
-        Base URL for downloading HIRHAM data.
     vars_dict : Dict
         Dictionary of variables to process with their attributes.
     overwrite : bool, optional
@@ -418,13 +415,7 @@ def process_hirham(
     hirham_zip_dir = hirham_dir / Path("zip")
     hirham_zip_dir.mkdir(parents=True, exist_ok=True)
 
-    responses = download_hirham(
-        base_url,
-        start_year,
-        end_year,
-        output_dir=hirham_zip_dir,
-        max_workers=max_workers,
-    )
+    responses = sorted(f for f in hirham_zip_dir.glob("*.zip") if start_year <= int(f.stem) <= end_year)
 
     responses = unzip_files(
         responses,
@@ -651,7 +642,6 @@ def prepare_hirham5_climatology(
     """
     start_time = time.perf_counter()
 
-    hirham_url = "http://ensemblesrt3.dmi.dk/data/prudence/temp/nichan/Daily2D_GrIS/"
     hirham_vars_dict: dict[str, dict[str, str]] = {
         "albedom": {"pism_name": "surface_albedo", "units": ""},
         "tas": {"pism_name": "air_temp", "units": "kelvin"},
@@ -672,7 +662,6 @@ def prepare_hirham5_climatology(
             start_year=start_year,
             end_year=end_year,
             output_file=output_file,
-            base_url=hirham_url,
             max_workers=n_workers,
         )
 
@@ -771,7 +760,9 @@ def prepare_anomalies(
                 )
 
                 # Replace inf values introduced by CDO's setmisstodis interpolation
-                ds = ds.where(np.isfinite(ds), 0.0)
+                for v in ds.data_vars:
+                    if np.issubdtype(ds[v].dtype, np.floating):
+                        ds[v] = ds[v].where(np.isfinite(ds[v]), 0.0)
 
                 ds["air_temp"].attrs["units"] = "kelvin"
                 ds["precipitation"] = ds["precipitation"] * 86400.0
