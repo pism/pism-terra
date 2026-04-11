@@ -158,9 +158,10 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     logger.info("-" * 120)
     logger.info("Boot File")
     logger.info("-" * 120)
+    obs_path = data_path / Path("obs")
     obs_files = prepare_observations(
         url,
-        data_path,
+        obs_path,
         stage_path,
         config,
         target_grid=grid_ds,
