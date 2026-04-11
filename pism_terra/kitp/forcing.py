@@ -495,7 +495,7 @@ def process_hirham(
         monstd = os.path.join(tmpdir, f"monstd_{year}.nc")
         cdo_local.setattribute(
             """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
-            input=f"""-delattribute,"air_temp_sd@standard_name" -chname,air_temp,air_temp_sd -monstd -selvar,air_temp {merged}""",
+            input=f"""-delattr,"air_temp_sd@standard_name" -chname,air_temp,air_temp_sd -monstd -selvar,air_temp {merged}""",
             output=monstd,
             options="-f nc4 -z zip_2 -P 1",
         )
