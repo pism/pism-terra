@@ -40,6 +40,7 @@ import cftime
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pint_xarray
 import rioxarray  # pylint: disable=unused-import
 import toml
 import xarray as xr
@@ -768,6 +769,9 @@ def prepare_anomalies(
                     returnXDataset=True,
                     options="-f nc4 -z zip_2 -P 1",
                 )
+
+                # Replace inf values introduced by CDO's setmisstodis interpolation
+                ds = ds.where(np.isfinite(ds), 0.0)
 
                 ds["air_temp"].attrs["units"] = "kelvin"
                 ds["precipitation"] = ds["precipitation"] * 86400.0

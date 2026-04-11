@@ -39,6 +39,7 @@ def preprocess_netcdf(
     uq_regexp: str | None = r"(RGI2000-v7\.0-C-[^/\s]+)",
     exp_dim: str = "exp_id",
     uq_dim: str | None = "uq_id",
+    gcm_dim: str | None = "gcm_id",
     drop_vars: list[str] | None = None,
     drop_dims: list[str] = ["nv4"],
     process_config: bool = True,
@@ -64,6 +65,10 @@ def preprocess_netcdf(
     uq_dim : str or None, optional
         The name of the new UQ dimension to be added to the dataset, by default "uq_id".
         If None, no UQ dimension is added.
+    gcm_dim : str or None, optional
+        The name of the GCM dimension to be added to the dataset, by default "gcm_id".
+        If None, no GCM dimension is added. The GCM name is extracted from the filename
+        by matching the pattern ``id_<gcm>_<forcing>``.
     drop_vars : list[str]| None, optional
         A list of variable names to be dropped from the dataset, by default None.
     drop_dims : list[str], optional
@@ -92,17 +97,27 @@ def preprocess_netcdf(
 
     ds = ds.drop_vars(["pism_config"], errors="ignore").drop_dims(["pism_config_axis"], errors="ignore")
 
+    expand_dims = []
+    expand_coords = {}
+
+    if gcm_dim is not None:
+        gcm_regexp = r"id_(.+?)_(?:futSST|pdSST|pa)-"
+        m_gcm_re = re.search(gcm_regexp, ds.encoding["source"])
+        if m_gcm_re is not None:
+            m_gcm_id = m_gcm_re.group(1)
+            expand_dims.append(gcm_dim)
+            expand_coords[gcm_dim] = [m_gcm_id]
+
     if uq_regexp is not None and uq_dim is not None and hasattr(ds, "command"):
         m_uq_id_re = re.search(uq_regexp, ds.command)
         assert m_uq_id_re is not None
         m_uq_id = m_uq_id_re.group(1)
-        ds = ds.expand_dims({uq_dim: [m_uq_id], exp_dim: [m_exp_id]})
-        expand_dims = [uq_dim, exp_dim]
-        expand_coords = {uq_dim: [m_uq_id], exp_dim: [m_exp_id]}
-    else:
-        ds = ds.expand_dims({exp_dim: [m_exp_id]})
-        expand_dims = [exp_dim]
-        expand_coords = {exp_dim: [m_exp_id]}
+        expand_dims.append(uq_dim)
+        expand_coords[uq_dim] = [m_uq_id]
+
+    expand_dims.append(exp_dim)
+    expand_coords[exp_dim] = [m_exp_id]
+    ds = ds.expand_dims(expand_coords)
 
     if process_config:
 
