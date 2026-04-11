@@ -138,8 +138,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     logger.info("Grid File")
     logger.info("-" * 120)
 
-    data_path = output_path / Path(f"stage_{config["version"]}")
-    data_path.mkdir(exist_ok=True)
+    stage_path = output_path / Path(f"stage_{config["version"]}")
+    stage_path.mkdir(exist_ok=True)
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
@@ -162,7 +162,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     obs_files = prepare_observations(
         url,
         obs_path,
-        data_path,
+        stage_path,
         config,
         target_grid=grid_ds,
         force_overwrite=force_overwrite,
@@ -179,7 +179,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     lat_0: float = 69.0
     lat_1: float = 80.0
 
-    ocean_forcing_file = data_path / Path(f"ocean_forcing_{bmelt_0}_{bmelt_1}_{lat_0}_{lat_1}.nc")
+    ocean_forcing_file = stage_path / Path(f"ocean_forcing_{bmelt_0}_{bmelt_1}_{lat_0}_{lat_1}.nc")
     prepare_ocean_forcing(
         input_path=obs_files["boot_file"],
         output_path=ocean_forcing_file,
@@ -196,11 +196,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     if baseline == "hirham5":
         start_year = config["climatology"][baseline]["start_year"]
         end_year = config["climatology"][baseline]["end_year"]
-        baseline_file = prepare_hirham5_climatology(
+        baseline_file = stage_path / Path(f"HIRHAM5-ERA5_YMM_{start_year}_{end_year}_{version}.nc")
+        prepare_hirham5_climatology(
+            baseline_file,
             data_path,
             start_year=start_year,
             end_year=end_year,
-            version=version,
             n_workers=ntasks,
             force_overwrite=force_overwrite,
         )

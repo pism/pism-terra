@@ -378,8 +378,8 @@ def process_carra2(
 
 
 def process_hirham(
-    data_dir: str | Path,
     output_file: str | Path,
+    data_dir: str | Path,
     vars_dict: dict,
     overwrite: bool = False,
     max_workers: int = 4,
@@ -391,10 +391,10 @@ def process_hirham(
 
     Parameters
     ----------
-    data_dir : Union[str, Path]
-        Directory containing the input data.
     output_file : Union[str, Path]
         Path to the output NetCDF file.
+    data_dir : Union[str, Path]
+        Directory containing the input data.
     vars_dict : Dict
         Dictionary of variables to process with their attributes.
     overwrite : bool, optional
@@ -609,36 +609,31 @@ def prepare_carra2_climatology(
 
 
 def prepare_hirham5_climatology(
-    output_path: Path | str,
+    output_file: Path | str,
+    data_path: Path | str,
     start_year: int,
     end_year: int,
-    version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
-) -> Path:
+):
     """
     Process baseline monthly climatology.
 
     Parameters
     ----------
-    output_path : Path or str
-        Output directory.
+    output_file : Path or str
+        Output file.
+    data_path : Path or str
+        Data path.
     start_year : int
         First year of the baseline period.
     end_year : int
         Last year of the baseline period.
-    version : str
-        Version string appended to the output filename.
     n_workers : int, optional
         Number of dask workers, by default 4.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
-
-    Returns
-    -------
-    Path
-        Path to the output climatology file.
     """
     start_time = time.perf_counter()
 
@@ -652,23 +647,18 @@ def prepare_hirham5_climatology(
         "snfall": {"pism_name": "snowfall", "units": "kg m^-2 day^-1"},
     }
 
-    output_path = Path(output_path)
-
-    output_file = output_path / Path(f"HIRHAM5-ERA5_YMM_{start_year}_{end_year}_{version}.nc")
     if (not check_xr_lazy(output_file)) or force_overwrite:
         process_hirham(
-            data_dir=output_path,
+            output_file,
+            data_path,
             vars_dict=hirham_vars_dict,
             start_year=start_year,
             end_year=end_year,
-            output_file=output_file,
             max_workers=n_workers,
         )
 
     elapsed = time.perf_counter() - start_time
     print(f"Total processing time: {elapsed:.2f} seconds")
-
-    return output_file
 
 
 def prepare_anomalies(
