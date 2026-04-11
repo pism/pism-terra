@@ -108,7 +108,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     force_overwrite = args.force_overwrite
     ntasks = args.ntasks
     data_path = Path(args.data_path)
-    obs_path = data_path / Path(data_path)
 
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
@@ -161,7 +160,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     logger.info("-" * 120)
     obs_files = prepare_observations(
         url,
-        obs_path,
+        data_path,
         stage_path,
         config,
         target_grid=grid_ds,
