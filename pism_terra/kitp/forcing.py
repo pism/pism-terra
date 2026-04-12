@@ -755,6 +755,7 @@ def prepare_anomalies(
                     if np.issubdtype(ds[v].dtype, np.floating):
                         ds[v] = ds[v].where(np.isfinite(ds[v]), 0.0)
 
+                ds = ds.drop_vars("height", errors="ignore").drop_dims("height", errors="ignore")
                 ds["air_temp"].attrs["units"] = "kelvin"
                 ds["precipitation"] = ds["precipitation"] * 86400.0
                 ds["precipitation"].attrs["units"] = "kg m^-2 day^-1"
