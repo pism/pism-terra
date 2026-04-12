@@ -237,9 +237,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     combined_files = baseline_with_anomalies(baseline_file, forcing_files)
 
-    input_files = (
-        [grid_file] + list(obs_files.values()) + [baseline_file] + [ocean_forcing_file] + forcing_files + combined_files
-    )
+    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + [ocean_forcing_file] + combined_files
 
     s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
     s3_output_path.mkdir(parents=True, exist_ok=True)
