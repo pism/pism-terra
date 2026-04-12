@@ -750,7 +750,7 @@ def prepare_anomalies(
                 )
 
                 # Replace inf values introduced by CDO's setmisstodis interpolation
-                for v in ds.data_vars:
+                for v in list(ds.data_vars) + list(ds.coords):
                     if np.issubdtype(ds[v].dtype, np.floating):
                         ds[v] = ds[v].where(np.isfinite(ds[v]), 0.0)
 
