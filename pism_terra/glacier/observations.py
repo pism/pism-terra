@@ -137,7 +137,6 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
     ds = xr.merge(dss)
     ds["u_observed"] = ds["vx"].fillna(0)
     ds["v_observed"] = ds["vy"].fillna(0)
-    ds["zeta_fixed_mask"] = xr.where(ds["v"].isnull(), 1, 0)
 
     return ds
 
@@ -245,6 +244,8 @@ def glacier_velocities_from_rgi_id(
         # Ensure y is strictly increasing (PISM requires this for regridding)
         if ds_clipped.y[0] > ds_clipped.y[-1]:
             ds_clipped = ds_clipped.sortby("y")
+        # Compute mask after reprojection so edge NaNs are captured
+        ds_clipped["zeta_fixed_mask"] = xr.where(ds_clipped["v"].isnull(), 1, 0).fillna(0)
         ds_clipped.to_netcdf(path)
 
     else:
