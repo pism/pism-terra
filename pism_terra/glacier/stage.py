@@ -176,7 +176,7 @@ def stage_glacier(
     )
 
     # Grid & bounds
-    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=8000.0)
+    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=2000.0)
     bounds = [
         grid_ds["x_bnds"].values[0][0],
         grid_ds["y_bnds"].values[0][0],
