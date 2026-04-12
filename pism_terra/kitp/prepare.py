@@ -226,7 +226,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     gcms = config["gcms"]
 
     forcing_files = prepare_anomalies(
-        data_path,
+        stage_path,
         bucket=bucket,
         prefix=prefix,
         gcms=gcms,

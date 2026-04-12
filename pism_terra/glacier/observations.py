@@ -135,8 +135,9 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
         dss.append(_ds)
 
     ds = xr.merge(dss)
-    ds["u_observed"] = ds["vx"]
-    ds["v_observed"] = ds["vy"]
+    ds["u_observed"] = ds["vx"].fillna(0)
+    ds["v_observed"] = ds["vy"].fillna(0)
+    ds["zeta_fixed_mask"] = xr.where(ds["v"].isnull(), 1, 0)
 
     return ds
 

@@ -375,8 +375,8 @@ def boot_file_from_rgi_id(
     liafr.attrs.update({"units": "1"})
     liafr = liafr.astype("bool")
 
-    ftt_mask = surface.rio.clip(glacier_projected.geometry, drop=False)
-    ftt_mask = xr.where(ftt_mask.isnull(), 1, 0)
+    # ftt_mask = surface.rio.clip(glacier_projected.geometry, drop=False)
+    ftt_mask = xr.ones_like(liafr)
     ftt_mask.name = "ftt_mask"
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
