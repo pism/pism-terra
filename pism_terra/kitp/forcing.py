@@ -706,6 +706,7 @@ def prepare_anomalies(
     target_grid_path = output_path / Path("ismip6_grid.txt")
     target_grid_path.write_text(ismip6_grid)
 
+    height_file = forcing_path / Path("height.nc")
     start = time.perf_counter()
 
     # Build list of (gcm, pd_forcing, ff_forcing) tasks from per-GCM forcing pairs [[future, present], ...]
@@ -744,7 +745,7 @@ def prepare_anomalies(
                 cdo_local = Cdo(tempdir=tmpdir)
 
                 ds = cdo_local.setmisstodis(
-                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
+                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
                     returnXDataset=True,
                     options="-f nc4 -z zip_2 -P 1",
                 )
