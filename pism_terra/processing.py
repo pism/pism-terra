@@ -101,7 +101,7 @@ def preprocess_netcdf(
     expand_coords = {}
 
     if gcm_dim is not None:
-        gcm_regexp = r"id_(.+?)_(?:futSST|pdSST|pa)-"
+        gcm_regexp = r"_gcm_(.+?)_exp_"
         m_gcm_re = re.search(gcm_regexp, ds.encoding["source"])
         if m_gcm_re is not None:
             m_gcm_id = m_gcm_re.group(1)

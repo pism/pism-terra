@@ -156,7 +156,7 @@ def stage(
         climate_file = input_path / Path(f"{climatology}_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
         check_xr_lazy(climate_file)
         files_dict["climate_file"] = climate_file.resolve()
-        files_dict["sample"] = f"{gcm}_{ff}_{pd_forcing}"
+        files_dict["sample"] = f"gcm_{gcm}_exp_{ff}_{pd_forcing}"
         dfs.append(pd.DataFrame.from_dict([files_dict]))
 
     df = pd.concat(dfs).reset_index(drop=True)
