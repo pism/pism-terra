@@ -127,7 +127,7 @@ def load_dataset(filename_or_obj: Sequence[str | Path], **kwargs) -> xr.Dataset:
             chunks=None,
             data_vars="minimal",
             coords="minimal",
-            join="outer",
+            join="inner",
             decode_times=time_coder,
             decode_timedelta=delta_coder,
         )
@@ -150,7 +150,11 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     gt2mmsle = xr.DataArray(-1 / 361.8).pint.quantify("mm/Gt")
     pctls = [0.16, 0.5, 0.84]
     cumulative_vars = ["ice_mass"]
-    flux_vars = ["tendency_of_ice_mass", "tendency_of_ice_mass_due_to_surface_mass_flux", "grounding_line_flux"]
+    flux_vars = [
+        "tendency_of_ice_mass",
+        "tendency_of_ice_mass_due_to_surface_mass_flux",
+        "tendency_of_ice_mass_due_to_discharge",
+    ]
 
     baseline_file = next(f for f in infiles if "HIRHAM5" in Path(f).name)
     baseline = xr.open_dataset(baseline_file, chunks=None, decode_times=time_coder, decode_timedelta=delta_coder)
@@ -189,7 +193,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
         )
         experiments_fluxes_pctls = (
             experiments[flux_vars]
-            .quantile(pctls, dim="gcm_id", skipna=False)
+            .quantile(pctls, dim="gcm_id", skipna=True)
             .rename({"quantile": "pctl"})
             .pint.to("Gt/yr")
             .pint.dequantify()
@@ -205,7 +209,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
         basin = experiments_pctls.sel(basin=basin_name)
         basin_baseline = baseline_computed.sel(basin=basin_name)
         with mpl.rc_context(rc=rc_params):
-            fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6.4, 4.8), height_ratios=[2, 1, 1])
+            fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[2, 1])
 
             ice_mass = basin_baseline["ice_mass"]
             ice_mass = ice_mass - ice_mass.isel(time=0)
@@ -224,7 +228,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                 ice_mass = ice_mass - ice_mass.isel(time=0)
                 slc = ice_mass * gt2mmsle
                 smb = _ds["tendency_of_ice_mass_due_to_surface_mass_flux"]
-                glf = _ds["grounding_line_flux"]
+                glf = _ds["tendency_of_ice_mass_due_to_discharge"]
                 time_vals = slc.sel(pctl=0.5).time.values
                 axs[0].fill_between(
                     time_vals,
@@ -243,29 +247,29 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                     lw=0,
                     alpha=0.25,
                 )
-                glf.sel(pctl=0.5).plot(ax=axs[2], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
-                axs[2].fill_between(
-                    time_vals,
-                    glf.sel(pctl=pctls[0]),
-                    glf.sel(pctl=pctls[-1]),
-                    color=exp["color"],
-                    lw=0,
-                    alpha=0.25,
-                )
-                glf.sel(pctl=0.5).plot(ax=axs[2], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
+                # glf.sel(pctl=0.5).plot(ax=axs[2], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
+                # axs[2].fill_between(
+                #     time_vals,
+                #     glf.sel(pctl=pctls[0]),
+                #     glf.sel(pctl=pctls[-1]),
+                #     color=exp["color"],
+                #     lw=0,
+                #     alpha=0.25,
+                # )
+                # glf.sel(pctl=0.5).plot(ax=axs[2], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
 
             axs[0].set_ylabel("Contribution to sea-level (mm)")
             axs[1].set_ylabel("Surface mass balance (Gt/yr)")
-            axs[2].set_ylabel("Grounding line flux (Gt/yr)")
+            # axs[2].set_ylabel("Grounding line flux (Gt/yr)")
             axs[0].set_xlabel(None)
             axs[0].set_title(basin_name)
             axs[1].set_title(None)
-            axs[2].set_title(None)
+            # axs[2].set_title(None)
             axs[0].axhline(y=0, ls="dotted", lw=0.5)
             axs[1].axhline(y=0, ls="dotted", lw=0.5)
-            axs[0].set_ylim(-10, 100)
+            axs[0].set_ylim(-10, 200)
             axs[1].set_ylim(-100, 500)
-            axs[2].set_ylim(-500, 0)
+            # axs[2].set_ylim(-500, 0)
             axs[-1].set_xlim(time_vals[0], time_vals[-1])
             handles, labels = axs[0].get_legend_handles_labels()
             legend_main = fig.legend(handles, labels, loc="upper left", bbox_to_anchor=(0.1, 0.9), ncol=1)
