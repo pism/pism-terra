@@ -53,8 +53,10 @@ def process_file(
     Clip a NetCDF dataset to the glacier geometry defined in an BASIN file.
 
     This function reads a NetCDF file containing geospatial data and clips it to the
-    geometry defined in a glacier outline file (e.g., BASIN shapefile). The clipped dataset
-    is saved to a new NetCDF file prefixed with "clipped_".
+    geometry defined in a glacier outline file (e.g., BASIN shapefile). Clipped spatial
+    output is written to ``<output_root>/processed_spatial/clipped_<name>.nc`` and
+    per-basin scalar sums to ``<output_root>/processed_scalar/fldsum_<name>.nc``,
+    where ``output_root`` is the parent of the input file's directory.
 
     Parameters
     ----------
@@ -73,9 +75,13 @@ def process_file(
 
     infile = Path(infile)
     infile_name = infile.name
-    infile_path = infile.parent
-    clipped_file = infile_path / Path("clipped_" + infile_name)
-    scalar_file = infile_path / Path("fldsum_" + infile_name)
+    output_root = infile.parent.parent
+    clipped_dir = output_root / "processed_spatial"
+    scalar_dir = output_root / "processed_scalar"
+    clipped_dir.mkdir(parents=True, exist_ok=True)
+    scalar_dir.mkdir(parents=True, exist_ok=True)
+    clipped_file = clipped_dir / Path("clipped_" + infile_name)
+    scalar_file = scalar_dir / Path("fldsum_" + infile_name)
 
     basin = gpd.read_file(basin_file)
 

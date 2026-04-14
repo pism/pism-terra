@@ -22,6 +22,7 @@ Postprocessing.
 """
 
 import logging
+import re
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Sequence
@@ -67,24 +68,35 @@ rc_params = {
     "font.family": "DejaVu Sans",
 }
 
+single_model_gcms = ["CESM1-WACCM-SC"]
+multi_model_gcms = [
+    "CESM1-WACCM-SC",
+    "AWI-CM-1-1-MR",
+    "CESM2",
+    "CNRM-CM6-1",
+    "CanESM5",
+    "HadGEM3-GC31-MM",
+    "IPSL-CM6A-LR",
+]
+
 BASELINE_OPTS = {"short_hand": "baseline", "color": (0, 0, 0), "ls": "dashed", "title": "Baseline"}
 
 EXPS_OPTS: dict[str, dict[str, Any]] = {
-    "pdSST-futArcSICSIT_pdSST-pdSICSIT": {
-        "color": (0.0660, 0.4430, 0.7450),
-        "ls": "solid",
-        "title": "Arctic sea ice loss (AGCM)",
-    },
-    "pa-futArcSIC-ext_pa-pdSIC-ext": {
-        "color": (0.8660, 0.3290, 0),
-        "ls": "solid",
-        "title": "Arctic sea ice loss (AOGCM)",
-    },
-    "futSST-pdSIC_pdSST-pdSIC": {
-        "color": (0.9290, 0.6940, 0.1250),
-        "ls": "solid",
-        "title": "Global SST warming",
-    },
+    # "pdSST-futArcSICSIT_pdSST-pdSICSIT": {
+    #     "color": (0.0660, 0.4430, 0.7450),
+    #     "ls": "solid",
+    #     "title": "Arctic sea ice loss (AGCM)",
+    # },
+    # "pa-futArcSIC-ext_pa-pdSIC-ext": {
+    #     "color": (0.8660, 0.3290, 0),
+    #     "ls": "solid",
+    #     "title": "Arctic sea ice loss (AOGCM)",
+    # },
+    # "futSST-pdSIC_pdSST-pdSIC": {
+    #     "color": (0.9290, 0.6940, 0.1250),
+    #     "ls": "solid",
+    #     "title": "Global SST warming",
+    # },
     "pdSST-futArcSIC_pdSST-pdSIC": {
         "color": (0.5210, 0.0860, 0.8190),
         "ls": "solid",
@@ -98,7 +110,7 @@ EXPS_OPTS: dict[str, dict[str, Any]] = {
 }
 
 
-def load_dataset(filename_or_obj: Sequence[str | Path], **kwargs) -> xr.Dataset:
+def load_dataset(filename_or_obj: Sequence[str | Path], join: str = "outer", **kwargs) -> xr.Dataset:
     """
     Load and preprocess multiple NetCDF files into a single dataset.
 
@@ -106,6 +118,8 @@ def load_dataset(filename_or_obj: Sequence[str | Path], **kwargs) -> xr.Dataset:
     ----------
     filename_or_obj : list of str or Path
         NetCDF files to open.
+    join : str, optional
+        How to combine datasets along any shared dimensions, by default "outer".
     **kwargs
         Forwarded to :func:`preprocess_netcdf`.
 
@@ -127,7 +141,7 @@ def load_dataset(filename_or_obj: Sequence[str | Path], **kwargs) -> xr.Dataset:
             chunks=None,
             data_vars="minimal",
             coords="minimal",
-            join="inner",
+            join=join,
             decode_times=time_coder,
             decode_timedelta=delta_coder,
         )
@@ -148,7 +162,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     delta_coder = xr.coders.CFTimedeltaCoder()
 
     gt2mmsle = xr.DataArray(-1 / 361.8).pint.quantify("mm/Gt")
-    pctls = [0.16, 0.5, 0.84]
+    pctls = [0.05, 0.5, 0.95]
     cumulative_vars = ["ice_mass"]
     flux_vars = [
         "tendency_of_ice_mass",
@@ -164,49 +178,110 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
 
     exp_files = [Path(f) for f in infiles if "HIRHAM5" not in Path(f).name]
 
-    logger.info("Loading experiments")
+    # Group files by experiment, then classify experiments as single- or multi-GCM
+    exp_regexp = re.compile(r"_exp_((?:futSST|pdSST|pa)-\S+?)_(?:uq_\d+_)?\d{4}-\d{2}-\d{2}")
+    gcm_regexp = re.compile(r"_gcm_(.+?)_exp_")
+    files_by_exp: dict[str, list[Path]] = {}
+    for f in exp_files:
+        m = exp_regexp.search(f.name)
+        if m:
+            files_by_exp.setdefault(m.group(1), []).append(f)
+
+    single_model_files = []
+    multi_model_files = []
+    for exp_name, files in files_by_exp.items():
+        gcms = {m.group(1) for f in files if (m := gcm_regexp.search(f.name)) is not None}
+        if gcms - set(single_model_gcms):
+            multi_model_files.extend(files)
+        else:
+            single_model_files.extend(files)
+        logger.info("  %s: %d GCMs -> %s", exp_name, len(gcms), "multi" if gcms - set(single_model_gcms) else "single")
+
+    load_kwargs: dict[str, Any] = {
+        "exp_regexp": r"_exp_((?:futSST|pdSST|pa)-\S+?)_(?:uq_\d+_)?\d{4}-\d{2}-\d{2}",
+        "uq_regexp": None,
+        "uq_dim": None,
+        "exp_dim": "exp_id",
+    }
+
+    def _prepare(ds: xr.Dataset) -> xr.Dataset:
+        """
+        Drop object-dtype vars, ensure ``basin`` dim, resample to yearly means, and quantify.
+
+        Parameters
+        ----------
+        ds : xr.Dataset
+            Input dataset.
+
+        Returns
+        -------
+        xr.Dataset
+            Prepared dataset with yearly-mean values and pint-quantified variables.
+        """
+        obj_vars = [v for v in ds.data_vars if ds[v].dtype == object]
+        ds = ds.drop_vars(obj_vars)
+        if "basin" not in ds.dims:
+            ds = ds.expand_dims({"basin": ["GIS"]})
+        return ds.resample({"time": "YE"}).mean().pint.quantify()
+
+    def _compute_pctls(ds: xr.Dataset) -> xr.Dataset:
+        """
+        Compute percentiles across ``gcm_id`` for cumulative and flux variables.
+
+        Parameters
+        ----------
+        ds : xr.Dataset
+            Pint-quantified dataset with a ``gcm_id`` dimension.
+
+        Returns
+        -------
+        xr.Dataset
+            Dataset with a ``pctl`` dimension, cumulative variables in Gt and fluxes in Gt/yr.
+        """
+        with ProgressBar():
+            cumulative = (
+                ds[cumulative_vars]
+                .pint.to("Gt")
+                .pint.dequantify()
+                .quantile(pctls, dim="gcm_id")
+                .rename({"quantile": "pctl"})
+                .compute()
+            )
+            fluxes = (
+                ds[flux_vars]
+                .pint.to("Gt/yr")
+                .pint.dequantify()
+                .quantile(pctls, dim="gcm_id")
+                .rename({"quantile": "pctl"})
+                .compute()
+            )
+        return xr.merge([cumulative, fluxes])
+
+    logger.info("Loading multi-GCM experiments")
     with dask.config.set(**{"array.slicing.split_large_chunks": False}):
-        exps_ds = load_dataset(
-            exp_files,
-            exp_regexp=r"_exp_((?:futSST|pdSST|pa)-\S+?)_(?:uq_\d+_)?\d{4}-\d{2}-\d{2}",
-            uq_regexp=None,
-            uq_dim=None,
-            exp_dim="exp_id",
-        )
+        multi_gcm_ds = _prepare(load_dataset(multi_model_files, **load_kwargs))
+    logger.info("Computing multi-GCM percentiles")
+    multi_gcm_pctls = _compute_pctls(multi_gcm_ds)
 
-    obj_vars = [v for v in exps_ds.data_vars if exps_ds[v].dtype == object]
-    experiments = exps_ds.drop_vars(obj_vars)
-    if "basin" not in experiments.dims:
-        experiments = experiments.expand_dims({"basin": ["GIS"]})
-    experiments = experiments.resample({"time": "YE"}).mean().pint.quantify()
+    logger.info("Loading single-GCM experiments")
+    with dask.config.set(**{"array.slicing.split_large_chunks": False}):
+        single_gcm_ds = _prepare(load_dataset(single_model_files, **load_kwargs))
+    logger.info("Computing single-GCM percentiles")
+    single_gcm_pctls = _compute_pctls(single_gcm_ds)
 
-    # Compute percentiles and load into memory once
-    logger.info("Computing percentiles")
-    with ProgressBar():
-        experiments_cumulative_pctls = (
-            experiments[cumulative_vars]
-            .quantile(pctls, dim="gcm_id", skipna=True)
-            .rename({"quantile": "pctl"})
-            .pint.to("Gt")
-            .pint.dequantify()
-            .compute()
-        )
-        experiments_fluxes_pctls = (
-            experiments[flux_vars]
-            .quantile(pctls, dim="gcm_id", skipna=True)
-            .rename({"quantile": "pctl"})
-            .pint.to("Gt/yr")
-            .pint.dequantify()
-            .compute()
-        )
-        experiments_pctls = xr.merge([experiments_cumulative_pctls, experiments_fluxes_pctls])
+    experiments_pctls = xr.concat(
+        [multi_gcm_pctls, single_gcm_pctls],
+        dim="exp_id",
+    )
     baseline_cumulative_computed = baseline[cumulative_vars].pint.to("Gt").pint.dequantify().compute()
     baseline_fluxes_computed = baseline[flux_vars].pint.to("Gt/yr").pint.dequantify().compute()
     baseline_computed = xr.merge([baseline_cumulative_computed, baseline_fluxes_computed])
 
     res = "2400m"
-    for basin_name in experiments_pctls.basin.values:
-        basin = experiments_pctls.sel(basin=basin_name)
+    #    for basin_name in experiments_pctls.basin.values:
+    for basin_name in ["GIS"]:
+        basin_single = single_gcm_pctls.sel(basin=basin_name)
+        basin_multi = multi_gcm_pctls.sel(basin=basin_name)
         basin_baseline = baseline_computed.sel(basin=basin_name)
         with mpl.rc_context(rc=rc_params):
             fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[2, 1])
@@ -221,32 +296,58 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             smb.plot(ax=axs[1], color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], lw=1)
 
             for exp_name, exp in EXPS_OPTS.items():
-                if exp_name not in basin.exp_id.values:
+                in_multi = exp_name in basin_multi.exp_id.values
+                in_single = exp_name in basin_single.exp_id.values
+                if not in_multi and not in_single:
                     continue
-                _ds = basin.sel(exp_id=exp_name)
-                ice_mass = _ds["ice_mass"]
-                ice_mass = ice_mass - ice_mass.isel(time=0)
-                slc = ice_mass * gt2mmsle
-                smb = _ds["tendency_of_ice_mass_due_to_surface_mass_flux"]
-                glf = _ds["tendency_of_ice_mass_due_to_discharge"]
-                time_vals = slc.sel(pctl=0.5).time.values
-                axs[0].fill_between(
-                    time_vals,
-                    slc.sel(pctl=pctls[0]),
-                    slc.sel(pctl=pctls[-1]),
-                    color=exp["color"],
-                    lw=0,
-                    alpha=0.25,
-                )
-                slc.sel(pctl=0.5).plot(ax=axs[0], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
-                axs[1].fill_between(
-                    time_vals,
-                    smb.sel(pctl=pctls[0]),
-                    smb.sel(pctl=pctls[-1]),
-                    color=exp["color"],
-                    lw=0,
-                    alpha=0.25,
-                )
+
+                if in_multi:
+                    multi_ds = basin_multi.sel(exp_id=exp_name)
+                    multi_ice_mass = multi_ds["ice_mass"]
+                    multi_ice_mass = multi_ice_mass - multi_ice_mass.isel(time=0)
+                    multi_slc = multi_ice_mass * gt2mmsle
+                    multi_smb = multi_ds["tendency_of_ice_mass_due_to_surface_mass_flux"]
+                    multi_glf = multi_ds["tendency_of_ice_mass_due_to_discharge"]
+                    multi_time_vals = multi_slc.sel(pctl=0.5).time.values
+
+                if in_single:
+                    single_ds = basin_single.sel(exp_id=exp_name)
+                    single_ice_mass = single_ds["ice_mass"]
+                    single_ice_mass = single_ice_mass - single_ice_mass.isel(time=0)
+                    single_slc = single_ice_mass * gt2mmsle
+                    single_smb = single_ds["tendency_of_ice_mass_due_to_surface_mass_flux"]
+                    single_glf = single_ds["tendency_of_ice_mass_due_to_discharge"]
+                    single_time_vals = single_slc.sel(pctl=0.5).time.values
+
+                if in_multi:
+                    axs[0].fill_between(
+                        multi_time_vals,
+                        multi_slc.sel(pctl=pctls[0]),
+                        multi_slc.sel(pctl=pctls[-1]),
+                        color=exp["color"],
+                        lw=0,
+                        alpha=0.25,
+                    )
+                    multi_slc.sel(pctl=0.5).plot(
+                        ax=axs[0], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75
+                    )
+                if in_single:
+                    single_slc.sel(pctl=0.5).plot(
+                        ax=axs[0],
+                        color=exp["color"],
+                        ls=exp["ls"],
+                        label=exp["title"] if not in_multi else None,
+                        lw=0.75,
+                    )
+                if in_multi:
+                    axs[1].fill_between(
+                        multi_time_vals,
+                        multi_smb.sel(pctl=pctls[0]),
+                        multi_smb.sel(pctl=pctls[-1]),
+                        color=exp["color"],
+                        lw=0,
+                        alpha=0.25,
+                    )
                 # glf.sel(pctl=0.5).plot(ax=axs[2], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
                 # axs[2].fill_between(
                 #     time_vals,
@@ -270,7 +371,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             axs[0].set_ylim(-10, 200)
             axs[1].set_ylim(-100, 500)
             # axs[2].set_ylim(-500, 0)
-            axs[-1].set_xlim(time_vals[0], time_vals[-1])
+            axs[-1].set_xlim(multi_time_vals[0], multi_time_vals[-1])
             handles, labels = axs[0].get_legend_handles_labels()
             legend_main = fig.legend(handles, labels, loc="upper left", bbox_to_anchor=(0.1, 0.9), ncol=1)
             legend_main.set_title(None)
