@@ -745,7 +745,7 @@ def prepare_anomalies(
                 cdo_local = Cdo(tempdir=tmpdir)
 
                 ds = cdo_local.setmisstodis(
-                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
+                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -maxc,0 -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -maxc,0 -selvar,pr {str(pd_pr_file.resolve())} ] """,
                     returnXDataset=True,
                     options="-f nc4 -z zip_2 -P 1",
                 )
