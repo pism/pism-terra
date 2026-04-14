@@ -82,21 +82,21 @@ multi_model_gcms = [
 BASELINE_OPTS = {"short_hand": "baseline", "color": (0, 0, 0), "ls": "dashed", "title": "Baseline"}
 
 EXPS_OPTS: dict[str, dict[str, Any]] = {
-    # "pdSST-futArcSICSIT_pdSST-pdSICSIT": {
-    #     "color": (0.0660, 0.4430, 0.7450),
-    #     "ls": "solid",
-    #     "title": "Arctic sea ice loss (AGCM)",
-    # },
-    # "pa-futArcSIC-ext_pa-pdSIC-ext": {
-    #     "color": (0.8660, 0.3290, 0),
-    #     "ls": "solid",
-    #     "title": "Arctic sea ice loss (AOGCM)",
-    # },
-    # "futSST-pdSIC_pdSST-pdSIC": {
-    #     "color": (0.9290, 0.6940, 0.1250),
-    #     "ls": "solid",
-    #     "title": "Global SST warming",
-    # },
+    "pdSST-futArcSICSIT_pdSST-pdSICSIT": {
+        "color": (0.0660, 0.4430, 0.7450),
+        "ls": "solid",
+        "title": "Arctic sea ice loss (AGCM)",
+    },
+    "pa-futArcSIC-ext_pa-pdSIC-ext": {
+        "color": (0.8660, 0.3290, 0),
+        "ls": "solid",
+        "title": "Arctic sea ice loss (AOGCM)",
+    },
+    "futSST-pdSIC_pdSST-pdSIC": {
+        "color": (0.9290, 0.6940, 0.1250),
+        "ls": "solid",
+        "title": "Global SST warming",
+    },
     "pdSST-futArcSIC_pdSST-pdSIC": {
         "color": (0.5210, 0.0860, 0.8190),
         "ls": "solid",
