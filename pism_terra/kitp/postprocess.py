@@ -84,6 +84,8 @@ def process_file(
     scalar_file = scalar_dir / Path("fldsum_" + infile_name)
 
     basin = gpd.read_file(basin_file)
+    if basin.crs is None or str(basin.crs) != str(crs):
+        basin = basin.to_crs(crs)
 
     start = time.time()
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
@@ -117,6 +119,8 @@ def process_file(
     for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
         ds_clipped = ds.rio.clip([row.geometry], drop=False)
         ds_sum = ds_clipped.sum(dim=["y", "x"]).compute()
+        ds_sum["area"] = row.geometry.area
+        ds_sum["area"].attrs.update({"units": "m^2"})
         dss.append(ds_sum.expand_dims({"basin": [row[column]]}))
 
     scalar = xr.concat(dss, dim="basin")

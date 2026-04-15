@@ -40,6 +40,8 @@ import xarray as xr
 from cmap import Colormap
 from cycler import cycler
 from dask.diagnostics import ProgressBar
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 from pism_terra.processing import preprocess_netcdf as preprocess
 
@@ -174,7 +176,9 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     baseline = xr.open_dataset(baseline_file, chunks=None, decode_times=time_coder, decode_timedelta=delta_coder)
     if "basin" not in baseline.dims:
         baseline = baseline.expand_dims({"basin": ["GIS"]})
-    baseline = baseline.resample({"time": "YE"}).mean().pint.quantify()
+    baseline = baseline.resample({"time": "YE"}).mean()
+    baseline = baseline.assign_coords(time=[t.replace(year=t.year - 1) for t in baseline.time.values])
+    baseline = baseline.pint.quantify()
 
     exp_files = [Path(f) for f in infiles if "HIRHAM5" not in Path(f).name]
 
@@ -222,7 +226,10 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
         ds = ds.drop_vars(obj_vars)
         if "basin" not in ds.dims:
             ds = ds.expand_dims({"basin": ["GIS"]})
-        return ds.resample({"time": "YE"}).mean().pint.quantify()
+        ds = ds.resample({"time": "YE"}).mean()
+        # Shift time coordinate by -1 year so the series starts at year 0
+        ds = ds.assign_coords(time=[t.replace(year=t.year - 1) for t in ds.time.values])
+        return ds.pint.quantify()
 
     def _compute_pctls(ds: xr.Dataset) -> xr.Dataset:
         """
@@ -284,7 +291,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
         basin_multi = multi_gcm_pctls.sel(basin=basin_name)
         basin_baseline = baseline_computed.sel(basin=basin_name)
         with mpl.rc_context(rc=rc_params):
-            fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[2, 1])
+            fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[1.618, 1])
 
             ice_mass = basin_baseline["ice_mass"]
             ice_mass = ice_mass - ice_mass.isel(time=0)
@@ -328,6 +335,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                         lw=0,
                         alpha=0.25,
                     )
+
                     multi_slc.sel(pctl=0.5).plot(
                         ax=axs[0], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75
                     )
@@ -339,6 +347,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                         label=exp["title"] if not in_multi else None,
                         lw=0.75,
                     )
+                    single_smb.sel(pctl=0.5).plot(ax=axs[1], color=exp["color"], ls=exp["ls"], lw=0.75)
                 if in_multi:
                     axs[1].fill_between(
                         multi_time_vals,
@@ -348,35 +357,44 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                         lw=0,
                         alpha=0.25,
                     )
-                # glf.sel(pctl=0.5).plot(ax=axs[2], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
-                # axs[2].fill_between(
-                #     time_vals,
-                #     glf.sel(pctl=pctls[0]),
-                #     glf.sel(pctl=pctls[-1]),
-                #     color=exp["color"],
-                #     lw=0,
-                #     alpha=0.25,
-                # )
-                # glf.sel(pctl=0.5).plot(ax=axs[2], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
+                    multi_smb.sel(pctl=0.5).plot(ax=axs[1], color=exp["color"], ls=exp["ls"], lw=0.75)
 
             axs[0].set_ylabel("Contribution to sea-level (mm)")
             axs[1].set_ylabel("Surface mass balance (Gt/yr)")
-            # axs[2].set_ylabel("Grounding line flux (Gt/yr)")
             axs[0].set_xlabel(None)
             axs[0].set_title(basin_name)
             axs[1].set_title(None)
-            # axs[2].set_title(None)
-            axs[0].axhline(y=0, ls="dotted", lw=0.5)
-            axs[1].axhline(y=0, ls="dotted", lw=0.5)
+            axs[1].axhline(y=0, color="k", ls="dotted", lw=0.5)
             axs[0].set_ylim(-10, 200)
-            axs[1].set_ylim(-100, 500)
-            # axs[2].set_ylim(-500, 0)
+            axs[1].set_ylim(-200, 500)
             axs[-1].set_xlim(multi_time_vals[0], multi_time_vals[-1])
+            # cftime axis: pick every 50th year from the actual time values
+            year_ticks = [t for t in multi_time_vals if t.year % 50 == 0]
+            axs[-1].set_xticks(year_ticks)
+            axs[-1].set_xticklabels([f"{int(t.year)}" for t in year_ticks])
             handles, labels = axs[0].get_legend_handles_labels()
             legend_main = fig.legend(handles, labels, loc="upper left", bbox_to_anchor=(0.1, 0.9), ncol=1)
             legend_main.set_title(None)
             legend_main.get_frame().set_linewidth(0.0)
             legend_main.get_frame().set_alpha(0.0)
+
+            l_median = Line2D([], [], c="k", lw=0.85, ls="solid", label="Median")
+            patch_ci = Patch(
+                facecolor="none",
+                edgecolor="k",
+                fill=False,
+                lw=0.25,
+                label=f"{int(pctls[0] * 100)}-{int(pctls[-1] * 100)}% c.i.",
+            )
+            legend_elements = fig.legend(
+                handles=[l_median, patch_ci],
+                loc="upper left",
+                bbox_to_anchor=(0.4, 0.9),
+            )
+            legend_elements.set_title(None)
+            legend_elements.get_frame().set_linewidth(0.0)
+            legend_elements.get_frame().set_alpha(0.0)
+
             fig.tight_layout()
             fig.savefig(f"pism_kitp_{basin_name}_{res}.png", dpi=300)
             fig.savefig(f"pism_kitp_{basin_name}_{res}.pdf")
