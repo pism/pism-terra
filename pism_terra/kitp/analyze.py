@@ -365,8 +365,8 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             axs[0].set_title(basin_name)
             axs[1].set_title(None)
             axs[1].axhline(y=0, color="k", ls="dotted", lw=0.5)
-            axs[0].set_ylim(-10, 200)
-            axs[1].set_ylim(-200, 500)
+            # axs[0].set_ylim(-10, 200)
+            # axs[1].set_ylim(-200, 500)
             axs[-1].set_xlim(multi_time_vals[0], multi_time_vals[-1])
             # cftime axis: pick every 50th year from the actual time values
             year_ticks = [t for t in multi_time_vals if t.year % 50 == 0]
