@@ -387,7 +387,7 @@ def boot_file_from_rgi_id(
 
     ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
 
-    if velocity_dataset is not ("none" or None):
+    if velocity_dataset not in ("none", None):
         v_filename = path / Path(f"obs_{rgi_id}.nc")
         v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=20000.0, path=v_filename)
         v = v.rio.reproject_match(surface)

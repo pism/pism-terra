@@ -276,6 +276,11 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     logger.info("Computing single-GCM percentiles")
     single_gcm_pctls = _compute_pctls(single_gcm_ds)
 
+    experiments = xr.concat(
+        [multi_gcm_ds, single_gcm_ds],
+        dim="exp_id",
+    )
+    single_gcm = experiments.sel({"gcm_id": single_model_gcms})
     experiments_pctls = xr.concat(
         [multi_gcm_pctls, single_gcm_pctls],
         dim="exp_id",
@@ -286,10 +291,12 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
 
     res = "2400m"
     #    for basin_name in experiments_pctls.basin.values:
-    for basin_name in ["GIS"]:
+    for basin_name in baseline.basin.values:
         basin_single = single_gcm_pctls.sel(basin=basin_name)
         basin_multi = multi_gcm_pctls.sel(basin=basin_name)
         basin_baseline = baseline_computed.sel(basin=basin_name)
+        basin_single_gcm = single_gcm.sel(basin=basin_name)
+
         with mpl.rc_context(rc=rc_params):
             fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[1.618, 1])
 
@@ -301,6 +308,10 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             )
             smb = basin_baseline["tendency_of_ice_mass_due_to_surface_mass_flux"]
             smb.plot(ax=axs[1], color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], lw=1)
+
+            single_l = []
+            multi_l = []
+            multi_ci = []
 
             for exp_name, exp in EXPS_OPTS.items():
                 in_multi = exp_name in basin_multi.exp_id.values
@@ -327,7 +338,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                     single_time_vals = single_slc.sel(pctl=0.5).time.values
 
                 if in_multi:
-                    axs[0].fill_between(
+                    _ci = axs[0].fill_between(
                         multi_time_vals,
                         multi_slc.sel(pctl=pctls[0]),
                         multi_slc.sel(pctl=pctls[-1]),
@@ -335,18 +346,21 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                         lw=0,
                         alpha=0.25,
                     )
+                    multi_ci.append(_ci)
 
-                    multi_slc.sel(pctl=0.5).plot(
+                    _l = multi_slc.sel(pctl=0.5).plot(
                         ax=axs[0], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75
                     )
+                    multi_l.append(_l)
                 if in_single:
-                    single_slc.sel(pctl=0.5).plot(
+                    _l = single_slc.sel(pctl=0.5).plot(
                         ax=axs[0],
                         color=exp["color"],
                         ls=exp["ls"],
                         label=exp["title"] if not in_multi else None,
                         lw=0.75,
                     )
+                    single_l.append(_l)
                     single_smb.sel(pctl=0.5).plot(ax=axs[1], color=exp["color"], ls=exp["ls"], lw=0.75)
                 if in_multi:
                     axs[1].fill_between(
@@ -365,39 +379,117 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             axs[0].set_title(basin_name)
             axs[1].set_title(None)
             axs[1].axhline(y=0, color="k", ls="dotted", lw=0.5)
-            # axs[0].set_ylim(-10, 200)
-            # axs[1].set_ylim(-200, 500)
             axs[-1].set_xlim(multi_time_vals[0], multi_time_vals[-1])
             # cftime axis: pick every 50th year from the actual time values
             year_ticks = [t for t in multi_time_vals if t.year % 50 == 0]
             axs[-1].set_xticks(year_ticks)
             axs[-1].set_xticklabels([f"{int(t.year)}" for t in year_ticks])
+            # Legend 1: multi-GCM confidence intervals
+            multi_ci_handles = [
+                Patch(facecolor=exp["color"], alpha=0.25, label=exp["title"])
+                for exp_name, exp in EXPS_OPTS.items()
+                if exp_name in basin_multi.exp_id.values
+            ]
+            if multi_ci_handles:
+                leg_ci = fig.legend(
+                    handles=multi_ci_handles,
+                    loc="upper left",
+                    bbox_to_anchor=(0.08, 0.93),
+                    ncol=1,
+                    title="5-95% c.i.",
+                )
+                leg_ci.get_frame().set_linewidth(0.0)
+                leg_ci.get_frame().set_alpha(0.0)
+                fig.add_artist(leg_ci)
+
+            # Legend 2: multi-GCM median lines
+            multi_line_handles = [
+                Line2D([], [], color=exp["color"], ls=exp["ls"], lw=0.75, label=exp["title"])
+                for exp_name, exp in EXPS_OPTS.items()
+                if exp_name in basin_multi.exp_id.values
+            ]
+            if multi_line_handles:
+                leg_multi = fig.legend(
+                    handles=multi_line_handles,
+                    loc="upper left",
+                    bbox_to_anchor=(0.08, 0.78),
+                    ncol=1,
+                    title="median",
+                )
+                leg_multi.get_frame().set_linewidth(0.0)
+                leg_multi.get_frame().set_alpha(0.0)
+                fig.add_artist(leg_multi)
+
+            # Legend 3: single-GCM lines
+            single_line_handles = [
+                Line2D([], [], color=exp["color"], ls=exp["ls"], lw=0.75, label=exp["title"])
+                for exp_name, exp in EXPS_OPTS.items()
+                if exp_name in basin_single.exp_id.values
+            ]
+            if single_line_handles:
+                leg_single = fig.legend(
+                    handles=single_line_handles,
+                    loc="upper left",
+                    bbox_to_anchor=(0.4, 0.93),
+                    ncol=1,
+                    title="median",
+                )
+                leg_single.get_frame().set_linewidth(0.0)
+                leg_single.get_frame().set_alpha(0.0)
+
+            fig.tight_layout()
+            fig.savefig(f"pism_kitp_multi_gcm_{basin_name}_{res}.png", dpi=300)
+            fig.savefig(f"pism_kitp_multi_gcm_{basin_name}_{res}.pdf")
+            plt.close(fig)
+
+            fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[1.618, 1])
+
+            ice_mass_bl = basin_baseline["ice_mass"]
+            ice_mass_bl = ice_mass_bl - ice_mass_bl.isel(time=0)
+            slc_bl = ice_mass_bl * gt2mmsle
+            slc_bl.plot(
+                ax=axs[0], color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], label=BASELINE_OPTS["title"], lw=1
+            )
+
+            smb_bl = basin_baseline["tendency_of_ice_mass_due_to_surface_mass_flux"]
+            smb_bl.plot(ax=axs[1], color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], lw=1)
+
+            ice_mass_gcm = basin_single_gcm["ice_mass"].pint.to("Gt").pint.dequantify()
+            ice_mass_gcm = ice_mass_gcm - ice_mass_gcm.isel(time=0)
+            slc_gcm = ice_mass_gcm * gt2mmsle.pint.dequantify()
+            smb_gcm = (
+                basin_single_gcm["tendency_of_ice_mass_due_to_surface_mass_flux"].pint.to("Gt/yr").pint.dequantify()
+            )
+
+            for exp_name, exp in EXPS_OPTS.items():
+
+                slc_gcm.sel({"exp_id": exp_name}).plot(
+                    ax=axs[0], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75
+                )
+                smb_gcm.sel({"exp_id": exp_name}).plot(
+                    ax=axs[1], color=exp["color"], ls=exp["ls"], add_legend=False, lw=0.75
+                )
+
             handles, labels = axs[0].get_legend_handles_labels()
             legend_main = fig.legend(handles, labels, loc="upper left", bbox_to_anchor=(0.1, 0.9), ncol=1)
             legend_main.set_title(None)
             legend_main.get_frame().set_linewidth(0.0)
             legend_main.get_frame().set_alpha(0.0)
-
-            l_median = Line2D([], [], c="k", lw=0.85, ls="solid", label="Median")
-            patch_ci = Patch(
-                facecolor="none",
-                edgecolor="k",
-                fill=False,
-                lw=0.25,
-                label=f"{int(pctls[0] * 100)}-{int(pctls[-1] * 100)}% c.i.",
-            )
-            legend_elements = fig.legend(
-                handles=[l_median, patch_ci],
-                loc="upper left",
-                bbox_to_anchor=(0.4, 0.9),
-            )
-            legend_elements.set_title(None)
-            legend_elements.get_frame().set_linewidth(0.0)
-            legend_elements.get_frame().set_alpha(0.0)
-
+            axs[0].set_ylabel("Contribution to sea-level (mm)")
+            axs[1].set_ylabel("Surface mass balance (Gt/yr)")
+            axs[0].set_xlabel(None)
+            axs[0].set_title(basin_name)
+            axs[1].set_title(None)
+            axs[1].axhline(y=0, color="k", ls="dotted", lw=0.5)
+            axs[-1].set_xlim(multi_time_vals[0], multi_time_vals[-1])
+            # cftime axis: pick every 50th year from the actual time values
+            year_ticks = [t for t in multi_time_vals if t.year % 50 == 0]
+            axs[-1].set_xticks(year_ticks)
+            axs[-1].set_xticklabels([f"{int(t.year)}" for t in year_ticks])
+            # Legend 1: multi-GCM confidence intervals
             fig.tight_layout()
-            fig.savefig(f"pism_kitp_{basin_name}_{res}.png", dpi=300)
-            fig.savefig(f"pism_kitp_{basin_name}_{res}.pdf")
+            fig.savefig(f"pism_kitp_cesm1_gcm_{basin_name}_{res}.png", dpi=300)
+            fig.savefig(f"pism_kitp_cesm1_gcm_{basin_name}_{res}.pdf")
             plt.close(fig)
 
 
