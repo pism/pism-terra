@@ -245,7 +245,7 @@ def glacier_velocities_from_rgi_id(
         if ds_clipped.y[0] > ds_clipped.y[-1]:
             ds_clipped = ds_clipped.sortby("y")
         # Compute mask after reprojection so edge NaNs are captured
-        ds_clipped["zeta_fixed_mask"] = xr.where(ds_clipped["v"].isnull(), 1, 0).fillna(0)
+        ds_clipped["zeta_fixed_mask"] = xr.where(ds_clipped["v"].isnull(), 1, 0).fillna(0).astype(int)
         ds_clipped.to_netcdf(path)
 
     else:

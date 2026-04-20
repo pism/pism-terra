@@ -419,7 +419,9 @@ def era5(
     ds = xr.merge([ds, ds_geo_], combine_attrs="override")
     ds = ds.rename({"valid_time": "time"})
 
-    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp"})
+    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
+    ds["surface"] /= 9.80665
+    ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
     ds["precipitation"] *= 1000
     ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
     ds["air_temp"].attrs.update({"units": "kelvin"})

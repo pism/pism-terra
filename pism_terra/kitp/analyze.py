@@ -291,27 +291,28 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
 
     res = "2400m"
     #    for basin_name in experiments_pctls.basin.values:
-    for basin_name in baseline.basin.values:
-        basin_single = single_gcm_pctls.sel(basin=basin_name)
-        basin_multi = multi_gcm_pctls.sel(basin=basin_name)
-        basin_baseline = baseline_computed.sel(basin=basin_name)
-        basin_single_gcm = single_gcm.sel(basin=basin_name)
+    with mpl.rc_context(rc=rc_params):
+        for basin_name in baseline.basin.values:
+            basin_single = single_gcm_pctls.sel(basin=basin_name)
+            basin_multi = multi_gcm_pctls.sel(basin=basin_name)
+            basin_baseline = baseline_computed.sel(basin=basin_name)
+            basin_single_gcm = single_gcm.sel(basin=basin_name)
 
-        with mpl.rc_context(rc=rc_params):
             fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[1.618, 1])
+
+            l = []
+            ci = []
 
             ice_mass = basin_baseline["ice_mass"]
             ice_mass = ice_mass - ice_mass.isel(time=0)
             slc = ice_mass * gt2mmsle
-            slc.plot(
+            _l = slc.plot(
                 ax=axs[0], color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], label=BASELINE_OPTS["title"], lw=1
             )
+            l.append(_l)
+
             smb = basin_baseline["tendency_of_ice_mass_due_to_surface_mass_flux"]
             smb.plot(ax=axs[1], color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], lw=1)
-
-            single_l = []
-            multi_l = []
-            multi_ci = []
 
             for exp_name, exp in EXPS_OPTS.items():
                 in_multi = exp_name in basin_multi.exp_id.values
@@ -346,12 +347,12 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                         lw=0,
                         alpha=0.25,
                     )
-                    multi_ci.append(_ci)
+                    ci.append(_ci)
 
                     _l = multi_slc.sel(pctl=0.5).plot(
                         ax=axs[0], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75
                     )
-                    multi_l.append(_l)
+                    l.append(_l)
                 if in_single:
                     _l = single_slc.sel(pctl=0.5).plot(
                         ax=axs[0],
@@ -360,7 +361,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                         label=exp["title"] if not in_multi else None,
                         lw=0.75,
                     )
-                    single_l.append(_l)
+                    l.append(_l)
                     single_smb.sel(pctl=0.5).plot(ax=axs[1], color=exp["color"], ls=exp["ls"], lw=0.75)
                 if in_multi:
                     axs[1].fill_between(
@@ -385,57 +386,26 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             axs[-1].set_xticks(year_ticks)
             axs[-1].set_xticklabels([f"{int(t.year)}" for t in year_ticks])
             # Legend 1: multi-GCM confidence intervals
-            multi_ci_handles = [
-                Patch(facecolor=exp["color"], alpha=0.25, label=exp["title"])
-                for exp_name, exp in EXPS_OPTS.items()
-                if exp_name in basin_multi.exp_id.values
-            ]
-            if multi_ci_handles:
-                leg_ci = fig.legend(
-                    handles=multi_ci_handles,
-                    loc="upper left",
-                    bbox_to_anchor=(0.08, 0.93),
-                    ncol=1,
-                    title="5-95% c.i.",
-                )
-                leg_ci.get_frame().set_linewidth(0.0)
-                leg_ci.get_frame().set_alpha(0.0)
-                fig.add_artist(leg_ci)
 
-            # Legend 2: multi-GCM median lines
-            multi_line_handles = [
-                Line2D([], [], color=exp["color"], ls=exp["ls"], lw=0.75, label=exp["title"])
-                for exp_name, exp in EXPS_OPTS.items()
-                if exp_name in basin_multi.exp_id.values
-            ]
-            if multi_line_handles:
-                leg_multi = fig.legend(
-                    handles=multi_line_handles,
-                    loc="upper left",
-                    bbox_to_anchor=(0.08, 0.78),
-                    ncol=1,
-                    title="median",
-                )
-                leg_multi.get_frame().set_linewidth(0.0)
-                leg_multi.get_frame().set_alpha(0.0)
-                fig.add_artist(leg_multi)
+            # leg_ci = fig.legend(
+            #     handles=ci,
+            #     loc="upper left",
+            #     bbox_to_anchor=(0.08, 0.93),
+            #     ncol=1,
+            #     title="5-95% c.i.",
+            # )
+            # leg_ci.get_frame().set_linewidth(0.0)
+            # leg_ci.get_frame().set_alpha(0.0)
+            # fig.add_artist(leg_ci)
 
-            # Legend 3: single-GCM lines
-            single_line_handles = [
-                Line2D([], [], color=exp["color"], ls=exp["ls"], lw=0.75, label=exp["title"])
-                for exp_name, exp in EXPS_OPTS.items()
-                if exp_name in basin_single.exp_id.values
-            ]
-            if single_line_handles:
-                leg_single = fig.legend(
-                    handles=single_line_handles,
-                    loc="upper left",
-                    bbox_to_anchor=(0.4, 0.93),
-                    ncol=1,
-                    title="median",
-                )
-                leg_single.get_frame().set_linewidth(0.0)
-                leg_single.get_frame().set_alpha(0.0)
+            leg_line = fig.legend(
+                handles=[h for item in l for h in (item if isinstance(item, list) else [item])],
+                loc="upper left",
+                bbox_to_anchor=(0.08, 0.93),
+                ncol=1,
+            )
+            leg_line.get_frame().set_linewidth(0.0)
+            leg_line.get_frame().set_alpha(0.0)
 
             fig.tight_layout()
             fig.savefig(f"pism_kitp_multi_gcm_{basin_name}_{res}.png", dpi=300)
@@ -490,6 +460,25 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             fig.tight_layout()
             fig.savefig(f"pism_kitp_cesm1_gcm_{basin_name}_{res}.png", dpi=300)
             fig.savefig(f"pism_kitp_cesm1_gcm_{basin_name}_{res}.pdf")
+            plt.close(fig)
+
+        fig, ax = plt.subplots(1, 1, figsize=(6.4, 4.8))
+
+        for exp_name, exp in EXPS_OPTS.items():
+
+            ice_mass = baseline["ice_mass"]
+            ice_mass = ice_mass - ice_mass.isel(time=0)
+            slc = ice_mass * gt2mmsle
+            slc.plot(
+                ax=ax,
+                hue="basin",
+                color=BASELINE_OPTS["color"],
+                ls=BASELINE_OPTS["ls"],
+                label=BASELINE_OPTS["title"],
+                lw=1,
+            )
+            fig.savefig(f"pism_kitp_{res}.png", dpi=300)
+            fig.savefig(f"pism_kitp_{res}.pdf")
             plt.close(fig)
 
 
