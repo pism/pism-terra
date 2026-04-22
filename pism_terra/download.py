@@ -290,9 +290,9 @@ def _cds_download_year(
     Path
         Path to the downloaded NetCDF file.
     """
-    # Include variable names in cache key to avoid collisions between different requests
+    # Include dataset and variable names in cache key to avoid collisions between different requests
     var_key = "_".join(sorted(request.get("variable", [])))
-    nc_path = dest / f"_cds_{var_key}_{year}.nc"
+    nc_path = dest / f"_cds_{dataset}_{var_key}_{year}.nc"
     if nc_path.exists() and not force_overwrite:
         return nc_path
 

@@ -392,7 +392,7 @@ def boot_file_from_rgi_id(
         v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=20000.0, path=v_filename)
         v = v.rio.reproject_match(surface)
         _v = v["v"].fillna(0)
-        ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 500, 2, 1 + (_v - 100) / (500 - 100)))
+        ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 250, 2, 1 + (_v - 100) / (250 - 100)))
         ds["tillwat"].attrs.update({"units": "m"})
         ds = xr.merge([ds, _v])
 

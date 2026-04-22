@@ -462,24 +462,37 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             fig.savefig(f"pism_kitp_cesm1_gcm_{basin_name}_{res}.pdf")
             plt.close(fig)
 
-        fig, ax = plt.subplots(1, 1, figsize=(6.4, 4.8))
+        fig, axs = plt.subplots(4, 2, sharex=True, sharey=False, figsize=(6.4, 4.8))
 
-        for exp_name, exp in EXPS_OPTS.items():
-
-            ice_mass = baseline["ice_mass"]
-            ice_mass = ice_mass - ice_mass.isel(time=0)
-            slc = ice_mass * gt2mmsle
-            slc.plot(
-                ax=ax,
-                hue="basin",
-                color=BASELINE_OPTS["color"],
-                ls=BASELINE_OPTS["ls"],
-                label=BASELINE_OPTS["title"],
-                lw=1,
+        for k, basin_name in enumerate(baseline.basin):
+            ax = axs.flatten()[k]
+            ice_mass_bl = baseline.sel(basin=basin_name)["ice_mass"].pint.to("Gt").pint.dequantify()
+            ice_mass_bl -= ice_mass_bl.isel(time=0)
+            ice_mass_bl.plot(
+                ax=ax, color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], label=BASELINE_OPTS["title"], lw=1
             )
-            fig.savefig(f"pism_kitp_{res}.png", dpi=300)
-            fig.savefig(f"pism_kitp_{res}.pdf")
-            plt.close(fig)
+
+            for exp_name, exp in EXPS_OPTS.items():
+                ice_mass_exp = (
+                    single_gcm.sel(basin=basin_name).sel(exp_id=exp_name)["ice_mass"].pint.to("Gt").pint.dequantify()
+                )
+                ice_mass_exp -= ice_mass_exp.isel(time=0)
+                ice_mass_exp.plot(ax=ax, color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
+            ax.set_title(basin_name.values)
+            ax.axhline(y=0, color="k", ls="dotted", lw=0.5)
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+        handles, labels = axs[0, 0].get_legend_handles_labels()
+        legend_main = fig.legend(handles, labels, loc="upper left", bbox_to_anchor=(0.1, 0.9), ncol=1)
+        legend_main.set_title(None)
+        legend_main.get_frame().set_linewidth(0.0)
+        legend_main.get_frame().set_alpha(0.0)
+
+        fig.supxlabel("Time")
+        fig.supylabel("Ice mass change (Gt)")
+        fig.savefig(f"pism_kitp_{res}.png", dpi=300)
+        fig.savefig(f"pism_kitp_{res}.pdf")
+        plt.close(fig)
 
 
 def main():

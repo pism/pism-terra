@@ -39,7 +39,13 @@ from shapely.geometry import Polygon
 from pism_terra.aws import download_from_s3, local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_grid
-from pism_terra.glacier.climate import create_offset_file, create_step_file, era5, pmip4, snap
+from pism_terra.glacier.climate import (
+    create_offset_file,
+    create_step_file,
+    era5,
+    pmip4,
+    snap,
+)
 from pism_terra.glacier.dem import boot_file_from_rgi_id
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
@@ -48,7 +54,12 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 xr.set_options(keep_attrs=True)
 
 CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap, "abrupt": snap}
-MODIFIER: Mapping[str, Callable] = {"snap": create_offset_file, "abrupt": create_step_file}
+MODIFIER: Mapping[str, Callable] = {
+    "pmip4": create_offset_file,
+    "era5": create_offset_file,
+    "snap": create_offset_file,
+    "abrupt": create_step_file,
+}
 
 
 def stage_glacier(
