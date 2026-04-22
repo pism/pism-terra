@@ -247,6 +247,76 @@ def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: floa
     ds.to_netcdf(file_name, encoding=encoding)
 
 
+def create_step_file(
+    file_name: str | Path,
+    t_a: float,
+    t_b: float,
+    delta_T_a: float = 0.0,
+    delta_T_b: float = 0.0,
+    frac_P_a: float = 1.0,
+    frac_P_b: float = 1.0,
+):
+    """
+    Generate a step-function offset file.
+
+    Applies ``delta_T_a`` / ``frac_P_a`` from year 1 to ``t_a`` and
+    ``delta_T_b`` / ``frac_P_b`` from ``t_a`` to ``t_b``.
+
+    Parameters
+    ----------
+    file_name : str or Path
+        The name of the file to create.
+    t_a : float
+        Year at which the step occurs (end of first interval).
+    t_b : float
+        Final year (end of second interval).
+    delta_T_a : float, optional
+        Temperature offset for the first interval, by default 0.0.
+    delta_T_b : float, optional
+        Temperature offset for the second interval, by default 0.0.
+    frac_P_a : float, optional
+        Precipitation fraction for the first interval, by default 1.0.
+    frac_P_b : float, optional
+        Precipitation fraction for the second interval, by default 1.0.
+    """
+    file_name = Path(file_name)
+
+    seconds_per_year = 365 * 24 * 3600
+
+    # Midpoints and bounds in seconds since 01-01-01
+    t0 = 0.0
+    t_a_sec = (t_a - 1) * seconds_per_year
+    t_b_sec = (t_b - 1) * seconds_per_year
+
+    mid_a = (t0 + t_a_sec) / 2.0
+    mid_b = (t_a_sec + t_b_sec) / 2.0
+
+    time = [mid_a, mid_b]
+    time_bounds = [[t0, t_a_sec], [t_a_sec, t_b_sec]]
+
+    ds = xr.Dataset(
+        data_vars={
+            "delta_T": (["time"], [delta_T_a, delta_T_b], {"units": "K"}),
+            "frac_P": (["time"], [frac_P_a, frac_P_b], {"units": "1"}),
+            "time_bounds": (["time", "bnds"], time_bounds, {}),
+        },
+        coords={
+            "time": (
+                "time",
+                time,
+                {
+                    "units": "seconds since 01-01-01",
+                    "axis": "T",
+                    "calendar": "365_day",
+                    "bounds": "time_bounds",
+                },
+            )
+        },
+    )
+    encoding = {v: {"_FillValue": None} for v in ["delta_T", "frac_P"]}
+    ds.to_netcdf(file_name, encoding=encoding)
+
+
 def snap(
     path: Path | str = ".",
     **kwargs,

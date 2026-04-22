@@ -441,7 +441,8 @@ def run_single():
         "surface.force_to_thickness.file": df["boot_file"].iloc[0],
         "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.fract_P.file": df["scalar_offset_file"].iloc[0],
+        "atmosphere.frac_P.file": df["scalar_offset_file"].iloc[0],
+        "atmosphere.precip_scaling.file": df["scalar_offset_file"].iloc[0],
         "atmosphere.given.file": df["climate_file"].iloc[0],
     }
     outline_file = df["outline"].iloc[0]

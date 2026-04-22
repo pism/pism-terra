@@ -39,7 +39,7 @@ from shapely.geometry import Polygon
 from pism_terra.aws import download_from_s3, local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_grid
-from pism_terra.glacier.climate import create_offset_file, era5, pmip4, snap
+from pism_terra.glacier.climate import create_offset_file, create_step_file, era5, pmip4, snap
 from pism_terra.glacier.dem import boot_file_from_rgi_id
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
@@ -47,7 +47,8 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 
 xr.set_options(keep_attrs=True)
 
-CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap}
+CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap, "abrupt": snap}
+MODIFIER: Mapping[str, Callable] = {"snap": create_offset_file, "abrupt": create_step_file}
 
 
 def stage_glacier(
@@ -230,8 +231,13 @@ def stage_glacier(
     domain_bounds_file = path / f"domain_{rgi_id}.gpkg"
     domain_bounds.to_file(domain_bounds_file)
 
+    clim_mod = config["climate"]
+    create_modifier = MODIFIER[clim_mod]
     scalar_offset_file = path / Path(f"scalar_offset_{rgi_id}_id_0.nc")
-    create_offset_file(scalar_offset_file, delta_T=0.0, frac_P=0.0)
+    if clim_mod == "abrupt":
+        create_modifier(scalar_offset_file, 1, 201, delta_T_a=-4.0, delta_T_b=4.0, frac_P_a=1.0, frac_P_b=1.0)
+    else:
+        create_modifier(scalar_offset_file, delta_T=0.0, frac_P=0.0)
 
     # Climate forcing
     climate_from_rgi = CLIMATE[config["climate"]]
