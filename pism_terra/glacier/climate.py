@@ -1090,11 +1090,9 @@ def prepare_snap(
             continue
 
         # --- compute weighted monthly climatology for this period (all lazy) ---
-        ds_sub = ds.sel(time=slice(start, end))
-        month_length = ds_sub.time.dt.days_in_month
-        weights = month_length.groupby("time.month") / month_length.groupby("time.month").sum()
-
-        ds_weighted = (ds_sub * weights).groupby("time.month").sum(dim="time").rename({"month": "time"})
+        ds_sel = ds.sel(time=slice(start, end))
+        ds_weighted = ds_sel.mean(dim="time")
+        ds_weighted["air_temp_sd"] = ds_sel["air_temp"].std(dim="time")
 
         # coordinate metadata on x/y
         for c, axis, stdname in (("x", "X", "projection_x_coordinate"), ("y", "Y", "projection_y_coordinate")):
@@ -1107,14 +1105,13 @@ def prepare_snap(
             if c in ds_weighted.coords:
                 ds_weighted[c].attrs.update(attrs)
 
-        month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
-        bounds_end = np.cumsum(month_lengths).astype("float64")
+        bounds_start = 0.0
+        bounds_end = 365.0
         time_mid = (bounds_start + bounds_end) / 2.0
 
         time_bounds = np.column_stack([bounds_start, bounds_end])
 
-        ds_weighted = ds_weighted.assign_coords(time=("time", time_mid))
+        ds_weighted = ds_weighted.expand_dims({"time": [time_mid]}, axis=0)
         ds_weighted["time"].attrs.update(
             {"units": "days since 0001-01-01", "calendar": "365_day", "bounds": "time_bounds"}
         )
@@ -1130,7 +1127,7 @@ def prepare_snap(
         # encoding: remove _FillValue without nuking other encodings
         encoding = {
             v: {"_FillValue": None}
-            for v in ("x", "y", "surface", "air_temp", "precipitation", "time", "time_bounds")
+            for v in ("x", "y", "surface", "air_temp", "air_temp_sd", "precipitation", "time", "time_bounds")
             if v in ds_weighted
         }
 

@@ -52,7 +52,11 @@ from rasterio.warp import Resampling, calculate_default_transform, reproject
 from tqdm.auto import tqdm
 
 from pism_terra.download import download_archive, download_file, extract_archive
-from pism_terra.glacier.climate import convert_many_tifs_concurrent, prepare_carra2
+from pism_terra.glacier.climate import (
+    convert_many_tifs_concurrent,
+    prepare_carra2,
+    prepare_snap,
+)
 from pism_terra.glacier.ice_thickness import prepare_ice_thickness_maffezzoli
 from pism_terra.glacier.rgi import prepare_rgi
 from pism_terra.log import setup_logging
@@ -137,7 +141,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     complexes = gpd.read_file(rgi_files["rgi_complexes"])
     glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
 
-    prepare_carra2(glacier_path, "carra2.nc", force_overwrite=force_overwrite, ntasks=ntasks)
+    prepare_snap(glacier_path, force_overwrite=force_overwrite, ntasks=ntasks)
+    prepare_carra2(glacier_path, "carra2.nc", force_overwrite=force_overwrite, max_workers=ntasks)
 
     ice_thickness_path = glacier_path / Path("ice_thickness")
     ice_thickness_path.mkdir(parents=True, exist_ok=True)
