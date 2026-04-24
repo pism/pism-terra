@@ -1,5 +1,11 @@
 samples = 9
-mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
+mapping = {}
+
+['atmosphere.elevation_change.temperature_lapse_rate']
+
+loc = 5
+scale = 2
+distribution = "uniform"
 
 ['atmosphere.delta_T']
 
@@ -16,7 +22,7 @@ distribution = "randint"
 ['atmosphere.precip_exponential_factor_for_temperature']
 
 loc = 0.05
-scale = 0.03
+scale = 0.04
 distribution = "uniform"
 
 ['surface.pdd.factor_ice']

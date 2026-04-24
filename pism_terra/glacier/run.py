@@ -58,7 +58,7 @@ def run_glacier(
     rgi_id: str,
     config_file: str | Path,
     template_file: Path | str,
-    outline_file: Path | str,
+    outline_file: Path | str | None,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -169,7 +169,7 @@ def run_glacier(
     ... )
     """
 
-    outline_file = Path(outline_file)
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     cfg = load_config(config_file)
 
     if resolution:
@@ -287,7 +287,7 @@ def run_glacier(
         params.update(JobConfig(**job_kwargs).as_params())
 
     run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.resolve())},
+        "rgi": {"rgi_id": rgi_id, "outline": outline_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "scalar.file": scalar_file.resolve(),
@@ -435,26 +435,28 @@ def run_single():
     campaign_config = cfg.campaign.as_params()
     df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
 
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.frac_P.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.precip_scaling.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-    }
-    outline_file = df["outline"].iloc[0]
-
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print(f"Generate Run for Glacier {rgi_id}")
-    print("-" * 80)
+    print("-" * 120)
     for idx, row in df.iterrows():
+        delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
+        frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
+        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
+        create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
+        uq = {
+            "input.file": row["boot_file"],
+            "grid.file": row["grid_file"],
+            "surface.force_to_thickness.file": row["boot_file"],
+            "atmosphere.delta_T.file": row["scalar_offset_file"],
+            "atmosphere.elevation_change.file": row["climate_file"],
+            "atmosphere.precip_scaling.file": row["scalar_offset_file"],
+            "atmosphere.given.file": row["climate_file"],
+        }
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_glacier(
             rgi_id,
             config_file,
@@ -467,7 +469,7 @@ def run_single():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
+            uq=uq,
             sample=int(row["sample"]) if "sample" in row else idx,
             pism_config_cdl=pism_config_cdl,
         )
@@ -603,25 +605,15 @@ def run_ensemble():
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
     df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
-
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "surface.force_to_thickness.file": df["boot_file"].iloc[0],
-        "atmosphere.delta_T.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "atmosphere.frac_P.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.precip_scaling.file": df["scalar_offset_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-    }
-    outline_file = df["outline"].iloc[0]
-
+    print(df)
     seed = 42
     rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
     n_samples = uq.samples
     mapping = uq.mapping
+
     uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
+
     if posterior_file is not None:
         posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
         choice_indices = rng.choice(range(len(posterior_df)), n_samples)
@@ -637,21 +629,39 @@ def run_ensemble():
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print(f"Generate Ensemble Runs for Glacier {rgi_id}")
-    print("-" * 80)
+    print("-" * 120)
+
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-    for idx, row in uq_df.iterrows():
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
+
+    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
+    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+    print(merged_df.columns)
+    for idx, row in merged_df.iterrows():
         delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
+        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
         create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        row["atmosphere.delta_T.file"] = scalar_offset_file
-        row["atmosphere.frac_P.file"] = scalar_offset_file
-        row["atmosphere.precip_scaling.file"] = scalar_offset_file
+        row_uq = row.drop(labels=list(df.columns) + ["sample"]).to_dict()
+        row_uq.update(
+            {
+                "input.file": row["boot_file"],
+                "grid.file": row["grid_file"],
+                "surface.force_to_thickness.file": row["boot_file"],
+                "atmosphere.delta_T.file": scalar_offset_file,
+                "atmosphere.elevation_change.file": row["climate_file"],
+                "atmosphere.frac_P.file": scalar_offset_file,
+                "atmosphere.given.file": row["climate_file"],
+                "atmosphere.precip_scaling.file": scalar_offset_file,
+            }
+        )
+        outline_file = row["outline_file"] if "outline_file" in row else None
+        sample = row["sample"]
         run_glacier(
             rgi_id,
             config_file,
@@ -664,8 +674,8 @@ def run_ensemble():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=row_uq,
+            sample=sample,
             pism_config_cdl=pism_config_cdl,
         )
 

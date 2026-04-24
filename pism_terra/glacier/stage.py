@@ -243,12 +243,6 @@ def stage_glacier(
     domain_bounds.to_file(domain_bounds_file)
 
     clim_mod = config["climate"]
-    create_modifier = MODIFIER[clim_mod]
-    scalar_offset_file = path / Path(f"scalar_offset_{rgi_id}_id_0.nc")
-    if clim_mod == "abrupt":
-        create_modifier(scalar_offset_file, 1, 201, delta_T_a=-4.0, delta_T_b=4.0, frac_P_a=1.0, frac_P_b=1.0)
-    else:
-        create_modifier(scalar_offset_file, delta_T=0.0, frac_P=0.0)
 
     # Climate forcing
     climate_from_rgi = CLIMATE[config["climate"]]
@@ -262,14 +256,13 @@ def stage_glacier(
     # Build file index (one row per climate file)
     files_dict = {
         "rgi_id": rgi_id,
-        "outline": glacier_file.resolve(),
+        "outline_file": glacier_file.resolve(),
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
-        "scalar_offset_file": scalar_offset_file.resolve(),
     }
     dfs: list[pd.DataFrame] = []
-    for fpath in responses:
-        row = {**files_dict, "climate_file": Path(fpath).resolve()}
+    for idx, fpath in enumerate(responses):
+        row = {**files_dict, "climate_file": Path(fpath).resolve(), "sample": idx}
         dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)
