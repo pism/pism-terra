@@ -451,9 +451,9 @@ def run_single():
             "input.file": row["boot_file"],
             "grid.file": row["grid_file"],
             "surface.force_to_thickness.file": row["boot_file"],
-            "atmosphere.delta_T.file": row["scalar_offset_file"],
+            "atmosphere.delta_T.file": scalar_offset_file,
             "atmosphere.elevation_change.file": row["climate_file"],
-            "atmosphere.precip_scaling.file": row["scalar_offset_file"],
+            "atmosphere.precip_scaling.file": scalar_offset_file,
             "atmosphere.given.file": row["climate_file"],
         }
         outline_file = row["outline_file"] if "outline_file" in row else None
