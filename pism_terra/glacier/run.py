@@ -47,6 +47,7 @@ from pism_terra.workflow import (
     merge_model,
     normalize_row,
     sort_dict_by_key,
+    validate_pism_options,
 )
 
 # one Jinja environment for all renders
@@ -57,7 +58,7 @@ def run_glacier(
     rgi_id: str,
     config_file: str | Path,
     template_file: Path | str,
-    outline_file: Path | str,
+    outline_file: Path | str | None,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -68,6 +69,7 @@ def run_glacier(
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
+    pism_config_cdl: str | Path | None = None,
 ):
     """
     Configure and generate a PISM job script for a single glacier (ensemble-ready).
@@ -122,6 +124,9 @@ def run_glacier(
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._s0042``). If neither is provided,
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+    pism_config_cdl : str or Path or None, optional
+        Path to a PISM CDL master config file. If provided, all run options
+        are validated against it before generating the command line.
 
     Raises
     ------
@@ -164,7 +169,7 @@ def run_glacier(
     ... )
     """
 
-    outline_file = Path(outline_file)
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     cfg = load_config(config_file)
 
     if resolution:
@@ -193,7 +198,6 @@ def run_glacier(
     run = {}
     for section in (
         "geometry",
-        "ocean",
         "calving",
         "iceflow",
         "reporting",
@@ -203,6 +207,7 @@ def run_glacier(
         run.update(getattr(cfg, section))
     run.update(cfg.stress_balance.selected())
     run.update(cfg.atmosphere.selected())
+    run.update(cfg.ocean.selected())
     run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.grid.as_params())
@@ -215,6 +220,7 @@ def run_glacier(
 
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
+    writer = cfg.model_dump()["run"]["writer"] if (cfg.model_dump()["run"]["writer"] is not None) else ""
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
@@ -251,7 +257,10 @@ def run_glacier(
         }
     )
 
-    run_str = dict2str(sort_dict_by_key(run))
+    if pism_config_cdl is not None:
+        validate_pism_options(run, pism_config_cdl)
+
+    run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
 
     run_opts = RunConfig(**cfg.run.model_dump())
     job_opts = JobConfig(**cfg.job.model_dump())
@@ -278,7 +287,7 @@ def run_glacier(
         params.update(JobConfig(**job_kwargs).as_params())
 
     run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline": str(outline_file.resolve())},
+        "rgi": {"rgi_id": rgi_id, "outline": outline_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "scalar.file": scalar_file.resolve(),
@@ -378,6 +387,12 @@ def run_single():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
         nargs="?",
@@ -395,6 +410,7 @@ def run_single():
 
     options = parser.parse_args()
     force_overwrite = options.force_overwrite
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(options.output_path)
     rgi_id = options.RGI_ID
@@ -421,28 +437,26 @@ def run_single():
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print(f"Generate Run for Glacier {rgi_id}")
-    print("-" * 80)
+    print("-" * 120)
     for idx, row in df.iterrows():
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
         delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
+        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
         create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
         uq = {
             "input.file": row["boot_file"],
             "grid.file": row["grid_file"],
             "surface.force_to_thickness.file": row["boot_file"],
-            "atmosphere.delta_T.file": scalar_offset_file.resolve(),
+            "atmosphere.delta_T.file": row["scalar_offset_file"],
             "atmosphere.elevation_change.file": row["climate_file"],
-            "atmosphere.fract_P.file": scalar_offset_file.resolve(),
-            "atmosphere.precip_scaling.file": scalar_offset_file.resolve(),
+            "atmosphere.precip_scaling.file": row["scalar_offset_file"],
             "atmosphere.given.file": row["climate_file"],
         }
-        outline_file = row["outline"]
-
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_glacier(
             rgi_id,
             config_file,
@@ -457,6 +471,7 @@ def run_single():
             debug=debug,
             uq=uq,
             sample=int(row["sample"]) if "sample" in row else idx,
+            pism_config_cdl=pism_config_cdl,
         )
 
     if options.execute and not options.debug:
@@ -536,6 +551,12 @@ def run_ensemble():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
         nargs="?",
@@ -558,6 +579,7 @@ def run_ensemble():
 
     options = parser.parse_args()
     force_overwrite = options.force_overwrite
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(options.output_path)
     rgi_id = options.RGI_ID
@@ -589,7 +611,9 @@ def run_ensemble():
     uq = load_uq(uq_file)
     n_samples = uq.samples
     mapping = uq.mapping
+
     uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
+
     if posterior_file is not None:
         posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
         choice_indices = rng.choice(range(len(posterior_df)), n_samples)
@@ -615,30 +639,28 @@ def run_ensemble():
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
 
     merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
-    if "sample_df" in merged_df.columns and "sample_uq" in merged_df.columns:
-        merged_df["sample"] = (
-            merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
-        )
-        merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
-    elif "sample" not in merged_df.columns:
-        merged_df["sample"] = range(len(merged_df))
-
+    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
     for idx, row in merged_df.iterrows():
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
         delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
+        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
         create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        row_uq = {
-            "input.file": row["boot_file"],
-            "grid.file": row["grid_file"],
-            "surface.force_to_thickness.file": row["boot_file"],
-            "atmosphere.delta_T.file": scalar_offset_file.resolve(),
-            "atmosphere.frac_P.file": scalar_offset_file.resolve(),
-            "atmosphere.precip_scaling.file": scalar_offset_file.resolve(),
-            "atmosphere.elevation_change.file": row["climate_file"],
-            "atmosphere.given.file": row["climate_file"],
-        }
-        outline_file = row["outline"]
+        row_uq = row.drop(labels=list(df.columns) + ["sample"]).to_dict()
+        row_uq.update(
+            {
+                "input.file": row["boot_file"],
+                "grid.file": row["grid_file"],
+                "surface.force_to_thickness.file": row["boot_file"],
+                "atmosphere.delta_T.file": scalar_offset_file,
+                "atmosphere.elevation_change.file": row["climate_file"],
+                "atmosphere.frac_P.file": scalar_offset_file,
+                "atmosphere.given.file": row["climate_file"],
+                "atmosphere.precip_scaling.file": scalar_offset_file,
+            }
+        )
+        outline_file = row["outline_file"] if "outline_file" in row else None
+        sample = row["sample"]
         run_glacier(
             rgi_id,
             config_file,
@@ -652,7 +674,8 @@ def run_ensemble():
             walltime=walltime,
             debug=debug,
             uq=row_uq,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            sample=sample,
+            pism_config_cdl=pism_config_cdl,
         )
 
     if options.bucket:

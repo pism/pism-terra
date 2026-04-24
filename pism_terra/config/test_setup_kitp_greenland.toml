@@ -1,6 +1,6 @@
 ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rate", "tas" = "ice_surface_temp", "TF" = "theta_ocean", "geothermal_heat_flux1" = "bheatflx"}
 gcms = ["CESM1-WACCM-SC"]
-version = "v1"
+version = "v2"
 bucket = "pism-cloud-data"
 prefix = "kitp_greenland_input_testing"
 

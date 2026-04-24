@@ -43,6 +43,7 @@ from pism_terra.workflow import (
     merge_model,
     normalize_row,
     sort_dict_by_key,
+    validate_pism_options,
 )
 
 # one Jinja environment for all renders
@@ -52,7 +53,7 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 def run_kitp(
     config_file: str | Path,
     template_file: Path | str,
-    outline_file: Path | str,
+    outline_file: Path | str | None,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -63,6 +64,7 @@ def run_kitp(
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
+    pism_config_cdl: str | Path | None = None,
 ):
     """
     Configure and generate a PISM job script for a single glacier (ensemble-ready).
@@ -114,6 +116,9 @@ def run_kitp(
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._s0042``). If neither is provided,
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+    pism_config_cdl : str or Path or None, optional
+        Path to a PISM CDL master config file. If provided, all run options
+        are validated against it before generating the command line.
 
     Raises
     ------
@@ -156,7 +161,6 @@ def run_kitp(
     ... )
     """
 
-    outline_file = Path(outline_file)
     cfg = load_config(config_file)
 
     if resolution:
@@ -183,7 +187,6 @@ def run_kitp(
     run = {}
     for section in (
         "geometry",
-        "ocean",
         "calving",
         "iceflow",
         "reporting",
@@ -192,6 +195,7 @@ def run_kitp(
     ):
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
+    run.update(cfg.ocean.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.frontal_melt.selected())
     run.update(cfg.grid.as_params())
@@ -219,7 +223,7 @@ def run_kitp(
         name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
     else:
         name_options = f"id_{sample}"
-        run.update({"output.experiment_id": sample})
+        # run.update({"output.experiment_id": sample})
 
     uq_clean = normalize_row(uq) if uq is not None else {}
     # Prefer explicit `sample` arg; else default from uq['sample']
@@ -244,6 +248,9 @@ def run_kitp(
             "output.scalar.file": scalar_file.resolve(),
         }
     )
+
+    if pism_config_cdl is not None:
+        validate_pism_options(run, pism_config_cdl)
 
     run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
 
@@ -271,8 +278,9 @@ def run_kitp(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     run_toml = {
-        "basin": {"basin": "Mouginot/Rignot", "outline": str(outline_file.resolve())},
+        "basin": {"basin": "Mouginot/Rignot", "outline": outline_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "state": str(state_file.resolve()),
@@ -359,6 +367,12 @@ def run_single():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -380,22 +394,25 @@ def run_single():
     ntasks = options.ntasks
     nodes = options.nodes
     walltime = options.walltime
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    input_path = path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
 
-    bucket = campaign_config["bucket"]
-    prefix = campaign_config["prefix"]
+    s3_bucket: str = campaign_config["bucket"] if "bucket" in campaign_config else "pism-cloud-data"
+    s3_prefix: str = campaign_config["prefix"] if "prefix" in campaign_config else "kitp/input"
+    version: str = campaign_config["version"] if "version" in campaign_config else "v2"
+    s3_path = f"""{s3_prefix}/{version}"""
 
-    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-    outline_file = df["outline_file"].iloc[0]
+    input_path = path / Path(s3_path)
+    input_path.mkdir(parents=True, exist_ok=True)
+
+    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -409,9 +426,16 @@ def run_single():
             "input.file": row["boot_file"],
             "input.regrid.file": row["regrid_file"],
             "energy.bedrock_thermal.file": row["heatflux_file"],
+            "geometry.front_retreat.prescribed.file": row["boot_file"],
             "grid.file": row["grid_file"],
+            "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.given.file": row["climate_file"],
+            "ocean.given.file": row["ocean_file"],
+            "surface.pdd.std_dev.file": row["climate_file"],
+            "surface.debm_simple.std_dev.file": row["climate_file"],
+            "surface.debm_simple.albedo_input.file": row["climate_file"],
         }
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_kitp(
             config_file,
             template_file,
@@ -425,6 +449,7 @@ def run_single():
             debug=debug,
             uq=uq,
             sample=row["sample"] if "sample" in row else idx,
+            pism_config_cdl=pism_config_cdl,
         )
 
 
@@ -485,6 +510,12 @@ def run_ensemble():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -519,6 +550,7 @@ def run_ensemble():
     ntasks = options.ntasks
     nodes = options.nodes
     walltime = options.walltime
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -530,20 +562,11 @@ def run_ensemble():
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
 
-    bucket = campaign_config["bucket"]
-    prefix = campaign_config["prefix"]
-
-    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-    outline_file = df["outline_file"].iloc[0]
-
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "atmosphere.elevation_change.file": df["climate_file"].iloc[0],
-        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
-    }
+    s3_bucket: str = campaign_config.get("bucket", "pism-cloud-data")
+    s3_prefix: str = campaign_config.get("prefix", "kitp/input")
+    version: str = campaign_config.get("version", "v2")
+    s3_path = f"""{s3_prefix}/{version}"""
+    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite)
 
     seed = 42
     rng = np.random.default_rng(seed=seed)
@@ -567,31 +590,51 @@ def run_ensemble():
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Generate Ensemble Runs for Greenland")
-    print("-" * 80)
+    print("-" * 120)
+
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-    for df_idx, df_row in df.iterrows():
-        df_sample = df_row["sample"] if "sample" in df_row else df_idx
-        for idx, row in uq_df.iterrows():
-            sample = (df_sample + "_uq_" + str(int((row["sample"])))) if "sample" in row else (df_idx + "_" + idx)
-            run_kitp(
-                config_file,
-                template_file,
-                outline_file,
-                path=path,
-                resolution=resolution,
-                nodes=nodes,
-                ntasks=ntasks,
-                queue=queue,
-                walltime=walltime,
-                debug=debug,
-                uq=default,
-                sample=sample,
-            )
+
+    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
+    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+
+    for _, row in merged_df.iterrows():
+        row_uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "geometry.front_retreat.prescribed.file": row["boot_file"],
+            "grid.file": row["grid_file"],
+            "atmosphere.elevation_change.file": row["boot_file"],
+            "atmosphere.given.file": row["climate_file"],
+            "ocean.given.file": row["ocean_file"],
+            "surface.pdd.std_dev.file": row["climate_file"],
+            "surface.debm_simple.std_dev.file": row["climate_file"],
+            "surface.debm_simple.albedo_input.file": row["climate_file"],
+        }
+        row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
+        outline_file = row["outline_file"] if "outline_file" in row else None
+        sample = row["sample"]
+        run_kitp(
+            config_file,
+            template_file,
+            outline_file,
+            path=path,
+            resolution=resolution,
+            nodes=nodes,
+            ntasks=ntasks,
+            queue=queue,
+            walltime=walltime,
+            debug=debug,
+            uq=row_uq,
+            sample=sample,
+            pism_config_cdl=pism_config_cdl,
+        )
 
 
 if __name__ == "__main__":

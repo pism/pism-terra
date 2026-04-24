@@ -22,12 +22,14 @@
 Prepare KITP Greenland data sets.
 """
 
+import logging
 import os
 import re
+import shutil
 import tempfile
 import time
 from argparse import ArgumentParser
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
@@ -38,6 +40,7 @@ import cftime
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pint_xarray
 import rioxarray  # pylint: disable=unused-import
 import toml
 import xarray as xr
@@ -45,78 +48,338 @@ import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from cdo import Cdo
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
+from pyproj import Proj
 from tqdm import tqdm
 
 from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain
-from pism_terra.download import download_hirham, unzip_files
-from pism_terra.raster import create_ds
+from pism_terra.download import carra_download_request, download_hirham, unzip_files
+from pism_terra.grids import load_grid
+from pism_terra.raster import add_time_bounds, create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
+logger = logging.getLogger(__name__)
+
 xr.set_options(keep_attrs=True)
 
-hirham_grid = """
-gridtype = projection
-xname = rlon
-xsize = 402
-ysize = 602
-xfirst = -16
-xinc = 0.05
-xunits = degree
-yname = rlat
-yfirst = -14
-yinc = 0.05
-yunits = degree
-grid_mapping_name = rotated_latitude_longitude
-grid_north_pole_longitude = 160
-grid_north_pole_latitude = 18
-north_pole_grid_longitude = 0
-"""
-
-bedmachine_grid = """
-gridtype = projection
-xsize     = 10218
-ysize     = 18346
-xunits   = "meter"
-yunits   = "meter"
-xfirst    = -65300
-xinc      = 150
-yfirst    = -3384425
-yinc      = 150
-grid_mapping = crs
-grid_mapping_name = polar_stereographic
-straight_vertical_longitude_from_pole = -39.
-standard_parallel = 71.
-latitude_of_projection_origin = 90.
-false_easting = 0.
-false_northing = 0.
-"""
-
-ismip6_grid = """
-gridtype = projection
-xsize     = 1496
-ysize     = 2700
-xunits   = "meter"
-yunits   = "meter"
-xfirst    = -640000
-xinc      = 1000
-yfirst    = -3355000
-yinc      = 1000
-grid_mapping = crs
-grid_mapping_name = polar_stereographic
-straight_vertical_longitude_from_pole = -45.
-standard_parallel = 70.
-latitude_of_projection_origin = 90.
-false_easting = 0.
-false_northing = 0.
-"""
+hirham_grid = load_grid("hirham")
+bedmachine_grid = load_grid("bedmachine")
+carra2_grid = load_grid("carra2")
+ismip6_grid = load_grid("ismip6")
 
 
-def process_hirham_cdo(
+def process_carra2(
     data_dir: str | Path,
     output_file: str | Path,
-    base_url: str,
+    year: list[str | int] = [
+        "1986",
+        "1987",
+        "1988",
+        "1991",
+        "1992",
+        "1993",
+        "1996",
+        "1997",
+        "1998",
+        "2001",
+        "2002",
+        "2003",
+        "2006",
+        "2007",
+        "2008",
+        "2011",
+        "2012",
+        "2013",
+        "2016",
+        "2017",
+        "2018",
+        "2021",
+        "2022",
+        "2023",
+    ],
+    max_workers: int = 8,
+    force_overwrite: bool = False,
+    **kwargs,
+):
+    """
+    Download monthly CARRA2 reanalysis and write a NetCDF.
+
+    Parameters
+    ----------
+    data_dir : Union[str, Path]
+        Directory containing the input data.
+    output_file : Union[str, Path]
+        Path to the output NetCDF file.
+    year : list[str | int]
+        List of years to download.
+    max_workers : int, default 5
+        Maximum number of concurrent CDS download requests.
+    force_overwrite : bool, default False
+        If ``True``, recompute intermediate and output files even if they exist.
+    **kwargs
+        Additional keyword arguments forwarded to :func:`download_request`
+        (e.g., alternate ``variable`` sequences, custom authentication/session
+        options, or client settings). These are passed unchanged to the CDS
+        retrieval helper.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the provided RGI path is missing.
+    ValueError
+        If the glacier ID cannot be found or the geometry is invalid.
+    Exception
+        Any errors propagated from the CDS request, reprojection, or I/O.
+
+    Notes
+    -----
+    - Output variables:
+      - ``air_temp`` (K) from CARRA ``t2m``.
+      - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
+    - ``time_bounds`` are added for CF-style climatological metadata.
+    - If missing values are detected in the regional subset, the function
+      patches them from the global reanalysis (same period).
+    """
+
+    print("")
+    print("Generate historical climate")
+    print("-" * 120)
+
+    carra2_path = data_dir / Path("carra2")
+    carra2_path.mkdir(exist_ok=True)
+    carra2_grid_path = carra2_path / Path("carra2_grid.txt")
+    carra2_grid_path.write_text(carra2_grid)
+    target_grid_path = carra2_path / Path("ismip6_grid.txt")
+    target_grid_path.write_text(ismip6_grid)
+
+    precipitation_dataset = "reanalysis-pan-carra-means"
+    precipitation_request = {
+        "time_aggregation": "monthly",
+        "level_type": "single_levels",
+        "variable": ["total_precipitation"],
+        "product_type": "forecast_based",
+        "year": year,
+        "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+        "data_format": "netcdf",
+        "area": [90, -180, 40, 180],
+    }
+
+    precipitation_files = carra_download_request(
+        precipitation_dataset,
+        precipitation_request,
+        file_path=carra2_path / Path("pr.nc"),
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    temperature_dataset = "reanalysis-pan-carra-means"
+    temperature_request = {
+        "time_aggregation": "daily",
+        "level_type": "single_levels",
+        "variable": ["2m_temperature"],
+        "product_type": "analysis_based",
+        "year": year,
+        "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+        "day": [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30",
+            "31",
+        ],
+        "data_format": "netcdf",
+        "area": [90, -180, 40, 180],
+    }
+
+    temperature_files = carra_download_request(
+        temperature_dataset,
+        temperature_request,
+        file_path=carra2_path / Path("tas.nc"),
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    logger.info(
+        "Downloaded %d precipitation files, %d temperature files", len(precipitation_files), len(temperature_files)
+    )
+
+    grid = str(carra2_grid_path.resolve())
+    cdo = Cdo()
+    cdo.debug = True
+
+    # --- Step 1: per-year batches (setgrid, settaxis, monmean/monstd) ---
+
+    pr_sorted = sorted(precipitation_files)
+    tas_sorted = sorted(temperature_files)
+
+    batches = []
+    for yr, pr_f, tas_f in zip(year, pr_sorted, tas_sorted):
+        batch_out = str((carra2_path / f"batch_{yr}.nc").resolve())
+        batches.append((yr, str(pr_f), str(tas_f), batch_out))
+
+    def _process_carra2_batch(args):
+        """
+        Process a single year-batch: fix grid/time, compute monmean/monstd, merge.
+
+        Parameters
+        ----------
+        args : tuple
+            A ``(yr, pr_f, tas_f, batch_out)`` tuple with the year string,
+            precipitation file, temperature file, and output path.
+
+        Returns
+        -------
+        str
+            Path to the merged output file.
+        """
+        yr, pr_f, tas_f, batch_out = args
+        tmp = carra2_path
+        cdo_local = Cdo(tempdir=tmp)
+
+        # Precipitation: monthly means (already monthly data, just fix grid + time)
+        pr_fixed = os.path.join(tmp, f"pr_{yr}.nc")
+        cdo_local.setgrid(
+            grid,
+            input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation """
+            f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {pr_f}""",
+            output=pr_fixed,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Temperature: aggregate daily -> monthly mean
+        tas_mm = os.path.join(tmp, f"tas_mm_{yr}.nc")
+        cdo_local.monmean(
+            input=f"""-setgrid,{grid} -chname,t2m,air_temp """
+            f"""-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {tas_f}""",
+            output=tas_mm,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Temperature: aggregate daily -> monthly std
+        tas_mstd = os.path.join(tmp, f"tas_mstd_{yr}.nc")
+        cdo_local.setattribute(
+            """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
+            input=f"""-chname,air_temp,air_temp_sd -monstd -setgrid,{grid} -chname,t2m,air_temp """
+            f"""-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {tas_f}""",
+            output=tas_mstd,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Merge pr + tas_mm + tas_mstd for this year
+        cdo_local.merge(
+            input=f"{pr_fixed} {tas_mm} {tas_mstd}",
+            output=batch_out,
+            options="-f nc4 -z zip_2",
+        )
+        # Clean up per-year intermediate files only (not the shared directory)
+        for f in (pr_fixed, tas_mm, tas_mstd):
+            Path(f).unlink(missing_ok=True)
+        return batch_out
+
+    # Only process batches that don't already exist (unless force_overwrite)
+    batches_to_run = [b for b in batches if (not check_xr_lazy(b[3])) or force_overwrite]
+    if batches_to_run:
+        logger.info("CDO: processing %d year batches (setgrid + monmean/monstd)...", len(batches_to_run))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_carra2_batch, b): b for b in batches_to_run}
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Processing CARRA2 batches"):
+                future.result()
+    else:
+        logger.info("CDO: all %d year batches already exist, skipping.", len(batches))
+
+    batch_files = sorted(b[3] for b in batches)
+
+    # --- Step 2: mergetime all year batches, then ymonmean ---
+    merged_file = carra2_path / "merged_monthly.nc"
+    if (not check_xr_lazy(merged_file)) or force_overwrite:
+        logger.info("CDO: merging %d year batches...", len(batch_files))
+        cdo.mergetime(
+            input=" ".join(batch_files),
+            output=str(merged_file.resolve()),
+            options=f"-f nc4 -z zip_2 -P {max_workers}",
+        )
+
+    # --- Step 3: multi-year monthly mean + remap ---
+    if (not check_xr_lazy(output_file)) or force_overwrite:
+        logger.info("CDO: computing multi-year monthly mean and remapping to target grid...")
+        ds = cdo.remapycon(
+            str(target_grid_path.resolve()),
+            input=f"-ymonmean {merged_file}",
+            options=f"-f nc4 -z zip_2 -P {max_workers}",
+            returnXDataset=True,
+        )
+
+        # Compute ymonstd for air_temp separately
+        logger.info("CDO: computing multi-year monthly std for air_temp...")
+        ds_std = cdo.remapycon(
+            str(target_grid_path.resolve()),
+            input=f"-selvar,air_temp_sd -ymonmean {merged_file}",
+            options=f"-f nc4 -z zip_2 -P {max_workers}",
+            returnXDataset=True,
+        )
+        ds["air_temp_sd"] = ds_std["air_temp_sd"]
+
+        logger.info("CDO: done")
+
+        ds = ds.drop_vars("time_bnds", errors="ignore")
+
+        month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
+        bounds_end = np.cumsum(month_lengths).astype("float64")
+        time_mid = (bounds_start + bounds_end) / 2.0
+
+        time_bounds = np.column_stack([bounds_start, bounds_end])
+
+        ds = ds.assign_coords(time=("time", time_mid))
+        ds["time"].attrs.update(
+            {
+                "standard_name": "time",
+                "units": "days since 0001-01-01",
+                "calendar": "365_day",
+                "bounds": "time_bounds",
+            }
+        )
+        ds["time_bounds"] = (("time", "nv"), time_bounds)
+
+        for var in list(ds.data_vars) + list(ds.coords):
+            ds[var].attrs.pop("missing_value", None)
+            ds[var].attrs.pop("_FillValue", None)
+            ds[var].encoding["missing_value"] = None
+            ds[var].encoding["_FillValue"] = None
+
+        ds.to_netcdf(output_file)
+
+
+def process_hirham(
+    output_file: str | Path,
+    data_dir: str | Path,
     vars_dict: dict,
     overwrite: bool = False,
     max_workers: int = 4,
@@ -128,12 +391,10 @@ def process_hirham_cdo(
 
     Parameters
     ----------
-    data_dir : Union[str, Path]
-        Directory containing the input data.
     output_file : Union[str, Path]
         Path to the output NetCDF file.
-    base_url : str
-        Base URL for downloading HIRHAM data.
+    data_dir : Union[str, Path]
+        Directory containing the input data.
     vars_dict : Dict
         Dictionary of variables to process with their attributes.
     overwrite : bool, optional
@@ -154,13 +415,7 @@ def process_hirham_cdo(
     hirham_zip_dir = hirham_dir / Path("zip")
     hirham_zip_dir.mkdir(parents=True, exist_ok=True)
 
-    responses = download_hirham(
-        base_url,
-        start_year,
-        end_year,
-        output_dir=hirham_zip_dir,
-        max_workers=max_workers,
-    )
+    responses = sorted(f for f in hirham_zip_dir.glob("*.zip") if start_year <= int(f.stem) <= end_year)
 
     responses = unzip_files(
         responses,
@@ -221,13 +476,36 @@ def process_hirham_cdo(
             Path to the merged output file.
         """
         year, batch, batch_out = args
-        cdo_local = Cdo()
-        cdo_local.monmean(
-            input=f"""-setrtomiss,1e10,1e40 -setrtomiss,-1e40,-1e10 -setmissval,-9e33 -selvar,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall+rainfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -mergetime """
+        tmpdir = tempfile.mkdtemp()
+        cdo_local = Cdo(tempdir=tmpdir)
+        merged = os.path.join(tmpdir, f"merged_{year}.nc")
+        cdo_local.setrtomiss(
+            "-1e40,-1e10",
+            input=f"""-setmissval,-9e33 -selvar,surface_albedo,surface_runoff_flux,surface_melt_flux,climatic_mass_balance,precipitation,air_temp -setreftime,{start_year}-01-01 -settbounds,day -settaxis,"{year}-01-01" -setattribute,precipitation@standard_name="precipitation_flux" -setattribute,precipitation@units="kg m^-2 day^-1"  -aexpr,"precipitation=snowfall" -chname,{chname} -setattribute,{setattribute} -selvar,{",".join(vars_dict.keys())} -setgrid,{str(hirham_grid_path.resolve())} -mergetime """
             + " ".join(batch),
+            output=merged,
+            options="-f nc4 -z zip_2 -P 1",
+        )
+        monmean = os.path.join(tmpdir, f"monmean_{year}.nc")
+        cdo_local.monmean(
+            input=merged,
+            output=monmean,
+            options="-f nc4 -z zip_2 -P 1",
+        )
+        monstd = os.path.join(tmpdir, f"monstd_{year}.nc")
+        cdo_local.setattribute(
+            """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
+            input=f"""-chname,air_temp,air_temp_sd -monstd -selvar,air_temp {merged}""",
+            output=monstd,
+            options="-f nc4 -z zip_2 -P 1",
+        )
+        cdo_local.merge(
+            input=f"{monmean} {monstd}",
             output=batch_out,
             options="-f nc4 -z zip_2 -P 1",
         )
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
         return batch_out
 
     batch_files = []
@@ -282,10 +560,9 @@ def process_hirham_cdo(
     print(f"Time elapsed {time_elapsed:.0f}s")
 
 
-def prepare_baseline_climatology(
+def prepare_carra2_climatology(
     output_path: Path | str,
-    start_year: int,
-    end_year: int,
+    year: list[str | int],
     version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
@@ -297,10 +574,8 @@ def prepare_baseline_climatology(
     ----------
     output_path : Path or str
         Output directory.
-    start_year : int
-        First year of the baseline period.
-    end_year : int
-        Last year of the baseline period.
+    year : list[str] or list[int]
+        List of years.
     version : str
         Version string appended to the output filename.
     n_workers : int, optional
@@ -316,25 +591,14 @@ def prepare_baseline_climatology(
     """
     start_time = time.perf_counter()
 
-    hirham_url = "http://ensemblesrt3.dmi.dk/data/prudence/temp/nichan/Daily2D_GrIS/"
-    hirham_vars_dict: dict[str, dict[str, str]] = {
-        "tas": {"pism_name": "air_temp", "units": "kelvin"},
-        "gld": {"pism_name": "climatic_mass_balance", "units": "kg m^-2 day^-1"},
-        "rainfall": {"pism_name": "rainfall", "units": "kg m^-2 day^-1"},
-        "snfall": {"pism_name": "snowfall", "units": "kg m^-2 day^-1"},
-    }
-
     output_path = Path(output_path)
 
-    output_file = output_path / Path(f"HIRHAM5-ERA5_YMM_{start_year}_{end_year}_{version}.nc")
+    output_file = output_path / Path(f"CARRA2_YMM_{version}.nc")
     if (not check_xr_lazy(output_file)) or force_overwrite:
-        process_hirham_cdo(
+        process_carra2(
             data_dir=output_path,
-            vars_dict=hirham_vars_dict,
-            start_year=start_year,
-            end_year=end_year,
             output_file=output_file,
-            base_url=hirham_url,
+            year=year,
             max_workers=n_workers,
         )
 
@@ -344,13 +608,64 @@ def prepare_baseline_climatology(
     return output_file
 
 
+def prepare_hirham5_climatology(
+    output_file: Path | str,
+    data_path: Path | str,
+    start_year: int,
+    end_year: int,
+    n_workers: int = 4,
+    force_overwrite: bool = False,
+):
+    """
+    Process baseline monthly climatology.
+
+    Parameters
+    ----------
+    output_file : Path or str
+        Output file.
+    data_path : Path or str
+        Data path.
+    start_year : int
+        First year of the baseline period.
+    end_year : int
+        Last year of the baseline period.
+    n_workers : int, optional
+        Number of dask workers, by default 4.
+    force_overwrite : bool, default ``False``
+        If ``True``, downstream helpers may regenerate intermediate/final artifacts
+        even if cache files exist.
+    """
+    start_time = time.perf_counter()
+
+    hirham_vars_dict: dict[str, dict[str, str]] = {
+        "albedom": {"pism_name": "surface_albedo", "units": ""},
+        "tas": {"pism_name": "air_temp", "units": "kelvin"},
+        "gld": {"pism_name": "climatic_mass_balance", "units": "kg m^-2 day^-1"},
+        "rogl": {"pism_name": "surface_runoff_flux", "units": "kg m^-2 day^-1"},
+        "snmel": {"pism_name": "surface_melt_flux", "units": "kg m^-2 day^-1"},
+        "rainfall": {"pism_name": "rainfall", "units": "kg m^-2 day^-1"},
+        "snfall": {"pism_name": "snowfall", "units": "kg m^-2 day^-1"},
+    }
+
+    if (not check_xr_lazy(output_file)) or force_overwrite:
+        process_hirham(
+            output_file,
+            data_path,
+            vars_dict=hirham_vars_dict,
+            start_year=start_year,
+            end_year=end_year,
+            max_workers=n_workers,
+        )
+
+    elapsed = time.perf_counter() - start_time
+    print(f"Total processing time: {elapsed:.2f} seconds")
+
+
 def prepare_anomalies(
     output_path: Path | str,
     bucket: str,
     prefix: str,
-    gcms: list[str],
-    present_day_forcings: list[str],
-    future_forcings: list[str],
+    gcms: dict,
     version: str,
     n_workers: int = 4,
     force_overwrite: bool = False,
@@ -366,12 +681,9 @@ def prepare_anomalies(
         AWS S3 bucket name containing the forcing data.
     prefix : str
         S3 key prefix for the forcing data.
-    gcms : Sequence[str]
-        List of GCM names to process.
-    present_day_forcings : list of str
-        Present-day forcing experiment names (e.g. ``["pdSST-pdSIC"]``).
-    future_forcings : list of str
-        Future forcing experiment names (e.g. ``["futSST-pdSIC"]``).
+    gcms : dict[str, list[list[str]]]
+        Mapping of GCM names to their forcing pairs ``[[future, present], ...]``
+        (e.g. ``{"CESM2": [["futSST-pdSIC", "pdSST-pdSIC"]]}``).
     version : str
         Version string appended to the output filename.
     n_workers : int, optional
@@ -397,8 +709,8 @@ def prepare_anomalies(
     height_file = forcing_path / Path("height.nc")
     start = time.perf_counter()
 
-    # Build list of all (gcm, pd_forcing, ff_forcing) tasks
-    tasks = [(gcm, pd_forcing, ff) for gcm in gcms for pd_forcing in present_day_forcings for ff in future_forcings]
+    # Build list of (gcm, pd_forcing, ff_forcing) tasks from per-GCM forcing pairs [[future, present], ...]
+    tasks = [(gcm, pair[1], pair[0]) for gcm, pairs in gcms.items() for pair in pairs]
 
     def _process_anomaly(args):
         """
@@ -415,17 +727,17 @@ def prepare_anomalies(
             Path to the output file.
         """
         gcm, pd_forcing, ff = args
-        ff_tas_file = forcing_path / Path(ff) / Path(f"tas_Amon_{gcm}_{ff}.nc")
+        ff_tas_file = forcing_path / Path(gcm) / Path(ff) / Path(f"tas_Amon_{gcm}_{ff}.nc")
         if ff == "pa-futArcSIC-ext":
-            ff_pr_file = forcing_path / Path(ff) / Path(f"pr_day_{gcm}_{ff}.nc")
+            ff_pr_file = forcing_path / Path(gcm) / Path(ff) / Path(f"pr_day_{gcm}_{ff}.nc")
         else:
-            ff_pr_file = forcing_path / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
+            ff_pr_file = forcing_path / Path(gcm) / Path(ff) / Path(f"pr_Amon_{gcm}_{ff}.nc")
         if pd_forcing == "pa-pdSIC-ext":
-            pd_pr_file = forcing_path / Path(pd_forcing) / Path(f"pr_day_{gcm}_{pd_forcing}.nc")
+            pd_pr_file = forcing_path / Path(gcm) / Path(pd_forcing) / Path(f"pr_day_{gcm}_{pd_forcing}.nc")
         else:
-            pd_pr_file = forcing_path / Path(pd_forcing) / Path(f"pr_Amon_{gcm}_{pd_forcing}.nc")
+            pd_pr_file = forcing_path / Path(gcm) / Path(pd_forcing) / Path(f"pr_Amon_{gcm}_{pd_forcing}.nc")
 
-        pd_tas_file = forcing_path / Path(pd_forcing) / Path(f"tas_Amon_{gcm}_{pd_forcing}.nc")
+        pd_tas_file = forcing_path / Path(gcm) / Path(pd_forcing) / Path(f"tas_Amon_{gcm}_{pd_forcing}.nc")
         output_file = forcing_path / Path(f"{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
 
         if (not check_xr_lazy(output_file, verbose=False)) or force_overwrite:
@@ -433,11 +745,17 @@ def prepare_anomalies(
                 cdo_local = Cdo(tempdir=tmpdir)
 
                 ds = cdo_local.setmisstodis(
-                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -selvar,pr {str(pd_pr_file.resolve())} ] """,
+                    input=f"""-remapycon,{str(target_grid_path.resolve())} -chname,pr,precipitation,tas,air_temp -merge -setattribute,height@units="m",height@standard_name="surface_altitude" -selvar,height {height_file} -sub -merge [ -selvar,tas {str(ff_tas_file.resolve())} -maxc,0 -selvar,pr {str(ff_pr_file.resolve())} ] -merge [ -selvar,tas {str(pd_tas_file.resolve())} -maxc,0 -selvar,pr {str(pd_pr_file.resolve())} ] """,
                     returnXDataset=True,
                     options="-f nc4 -z zip_2 -P 1",
                 )
 
+                # Replace inf values introduced by CDO's setmisstodis interpolation
+                for v in list(ds.data_vars) + list(ds.coords):
+                    if np.issubdtype(ds[v].dtype, np.floating):
+                        ds[v] = ds[v].where(np.isfinite(ds[v]), 0.0)
+
+                ds = ds.drop_vars("height", errors="ignore").drop_dims("height", errors="ignore")
                 ds["air_temp"].attrs["units"] = "kelvin"
                 ds["precipitation"] = ds["precipitation"] * 86400.0
                 ds["precipitation"].attrs["units"] = "kg m^-2 day^-1"
@@ -494,8 +812,7 @@ def baseline_with_anomalies(
     Add baseline climatology to each anomaly forcing file.
 
     For precipitation and air_temp the baseline values are added to the
-    anomaly.  The ``height`` variable is taken from the anomaly file
-    unchanged.  Output files are written next to the baseline file with
+    anomaly. Output files are written next to the baseline file with
     a combined name.
 
     Parameters
@@ -532,7 +849,6 @@ def baseline_with_anomalies(
             ds = baseline.copy(deep=True)
             ds["precipitation"] = baseline["precipitation"] + anomaly["precipitation"]
             ds["air_temp"] = baseline["air_temp"] + anomaly["air_temp"]
-            ds["height"] = anomaly["height"]
 
             for var in list(ds.data_vars) + list(ds.coords):
                 ds[var].attrs.pop("missing_value", None)
@@ -547,3 +863,118 @@ def baseline_with_anomalies(
         result.append(output_file)
 
     return result
+
+
+ICE_DENSITY = 910.0  # kg m^-3
+
+
+def prepare_ocean_forcing(
+    input_path: str | Path,
+    output_path: str | Path,
+    bmelt_0: float = 228.0,
+    bmelt_1: float = 10.0,
+    lat_0: float = 69.0,
+    lat_1: float = 80.0,
+    process_mask: bool = False,
+    crs: str = "EPSG:3413",
+) -> None:
+    """
+    Write latitude-dependent ocean forcing.
+
+    Parameters
+    ----------
+    input_path : str or Path
+        Path to the input NetCDF file.
+    output_path : str or Path
+        Path to the output NetCDF file.
+    bmelt_0 : float
+        Southern basal melt rate in m yr-1.
+    bmelt_1 : float
+        Northern basal melt rate in m yr-1.
+    lat_0 : float
+        Latitude for the southern melt rate.
+    lat_1 : float
+        Latitude for the northern melt rate.
+    process_mask : bool
+        If True, zero out melt on non-ocean cells.
+    crs : str
+        Coordinate reference system string.
+    """
+
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    ds = xr.open_dataset(input_path)
+    proj = Proj(crs)
+
+    x = ds["x"].values
+    y = ds["y"].values
+    X, Y = np.meshgrid(x, y)
+    _, Lat = proj(X, Y, inverse=True)
+
+    # Convert melt rates: m yr-1 -> kg m-2 yr-1
+    bmelt_0_kg = bmelt_0 * ICE_DENSITY
+    bmelt_1_kg = bmelt_1 * ICE_DENSITY
+
+    # Linear interpolation: bmelt = a * lat + b
+    a = (bmelt_1_kg - bmelt_0_kg) / (lat_1 - lat_0)
+    b_intercept = bmelt_0_kg - a * lat_0
+
+    bmelt = a * Lat + b_intercept
+    bmelt = np.clip(bmelt, min(bmelt_0_kg, bmelt_1_kg), max(bmelt_0_kg, bmelt_1_kg))
+
+    if process_mask and "mask" in ds:
+        land_mask = (ds["mask"].values != 0) & (ds["mask"].values != 3)
+        if land_mask.ndim == 3:
+            land_mask = land_mask[0]
+        bmelt[land_mask] = 0.0
+
+    ds.close()
+
+    # Build output dataset
+    time_mid = np.array([187.5])
+    time_bnds = np.array([[0.0, 365.0]])
+
+    time_coord = xr.Variable(
+        "time",
+        time_mid,
+        attrs={
+            "units": "days since 0001-01-01",
+            "calendar": "365_day",
+            "standard_name": "time",
+            "axis": "T",
+            "bounds": "time_bnds",
+        },
+    )
+
+    out = xr.Dataset(
+        {
+            "shelfbmassflux": xr.Variable(
+                ("time", "y", "x"),
+                bmelt[np.newaxis, :, :],
+                attrs={"units": "kg m-2 yr-1", "grid_mapping": "mapping"},
+            ),
+            "shelfbtemp": xr.Variable(
+                ("time", "y", "x"),
+                np.zeros((1, len(y), len(x))),
+                attrs={"units": "deg_C", "grid_mapping": "mapping"},
+            ),
+            "time_bnds": xr.Variable(("time", "nb2"), time_bnds),
+        },
+        coords={
+            "time": time_coord,
+            "x": xr.Variable("x", x, attrs={"units": "m", "standard_name": "projection_x_coordinate", "axis": "X"}),
+            "y": xr.Variable("y", y, attrs={"units": "m", "standard_name": "projection_y_coordinate", "axis": "Y"}),
+        },
+    )
+    out.rio.write_crs(crs, inplace=True)
+
+    for var in list(ds.data_vars) + list(ds.coords):
+        ds[var].attrs.pop("missing_value", None)
+        ds[var].attrs.pop("_FillValue", None)
+        ds[var].encoding["missing_value"] = None
+        ds[var].encoding["_FillValue"] = None
+
+    encoding: dict[str, dict[str, Any]] = {var: {"_FillValue": None} for var in list(out.data_vars) + list(out.coords)}
+    encoding["shelfbmassflux"].update({"zlib": True, "complevel": 2})
+    encoding["shelfbtemp"].update({"zlib": True, "complevel": 2})
+    out.to_netcdf(output_path, encoding=encoding)

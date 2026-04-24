@@ -125,22 +125,27 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
     dss = []
     for c in components:
         url = f"""https://its-live-data.s3-us-west-2.amazonaws.com/velocity_mosaic/v2/static/cog_global/ITS_LIVE_velocity_120m_0000_v02_{c}.vrt"""
-        ds = (
+        _ds = (
             rxr.open_rasterio(url, parse_coordinates=True, chunks={"x": 1024, "y": 1024}, masked=True)
             .isel(band=0)
             .drop_vars("band")
         )
-        ds.name = c
-        dss.append(ds)
+        _ds.name = c
+        _ds.attrs.update({"units": "m year^-1"})
+        dss.append(_ds)
 
-    return xr.merge(dss)
+    ds = xr.merge(dss)
+    ds["u_observed"] = ds["vx"].fillna(0)
+    ds["v_observed"] = ds["vy"].fillna(0)
+
+    return ds
 
 
 def glacier_velocities_from_rgi_id(
     rgi_id: str,
     rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     product_name: str = "its_live",
-    buffer_distance: float = 2000.0,
+    buffer_distance: float = 10000.0,
     path: Path | str = "tmp.nc",
     force_overwrite: bool = False,
 ) -> xr.Dataset:
@@ -233,7 +238,14 @@ def glacier_velocities_from_rgi_id(
 
         ds = get_velocities_by_bounds(bounds, product_name=product_name)
         glacier_projected = glacier.to_crs(crs)
-        ds_clipped = ds.rio.clip(glacier_projected.geometry)
+        ds_clipped = ds.rio.clip(glacier_projected.geometry, drop=False)
+        # Reproject to the glacier's target CRS to match the PISM grid
+        ds_clipped = ds_clipped.rio.reproject(dst_crs)
+        # Ensure y is strictly increasing (PISM requires this for regridding)
+        if ds_clipped.y[0] > ds_clipped.y[-1]:
+            ds_clipped = ds_clipped.sortby("y")
+        # Compute mask after reprojection so edge NaNs are captured
+        ds_clipped["zeta_fixed_mask"] = xr.where(ds_clipped["v"].isnull(), 1, 0).fillna(0).astype(int)
         ds_clipped.to_netcdf(path)
 
     else:

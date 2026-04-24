@@ -25,9 +25,11 @@ Prepare Climate.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Iterable, Sequence
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
 
 import cdsapi
@@ -40,12 +42,14 @@ import pandas as pd
 import rioxarray as rxr
 import s3fs
 import xarray as xr
+from cdo import Cdo
 from dask.diagnostics import ProgressBar
 from tqdm.auto import tqdm
 
 from pism_terra.aws import s3_to_local
 from pism_terra.download import (
     FileInfo,
+    carra_download_request,
     download_archive,
     download_file,
     download_netcdf,
@@ -55,10 +59,15 @@ from pism_terra.download import (
     save_netcdf,
 )
 from pism_terra.glacier.dem import get_glacier_from_rgi_id
+from pism_terra.grids import load_grid
 from pism_terra.raster import add_time_bounds
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
+logger = logging.getLogger(__name__)
+
 xr.set_options(keep_attrs=True)
+
+carra2_grid = load_grid("carra2")
 
 
 def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | None:
@@ -133,6 +142,263 @@ def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | Non
         return None
 
 
+def prepare_carra2(
+    data_dir: str | Path,
+    output_file: str | Path,
+    year: list[str | int] = [
+        "1986",
+        "1987",
+        "1988",
+        "1991",
+        "1992",
+        "1993",
+        "1996",
+        "1997",
+        "1998",
+        "2001",
+        "2002",
+        "2003",
+        "2006",
+        "2007",
+        "2008",
+        "2011",
+        "2012",
+        "2013",
+        "2016",
+        "2017",
+        "2018",
+        "2021",
+        "2022",
+        "2023",
+    ],
+    max_workers: int = 8,
+    force_overwrite: bool = False,
+    **kwargs,
+):
+    """
+    Download monthly CARRA2 reanalysis and write a NetCDF.
+
+    Parameters
+    ----------
+    data_dir : Union[str, Path]
+        Directory containing the input data.
+    output_file : Union[str, Path]
+        Path to the output NetCDF file.
+    year : list[str | int]
+        List of years to download.
+    max_workers : int, default 5
+        Maximum number of concurrent CDS download requests.
+    force_overwrite : bool, default False
+        If ``True``, recompute intermediate and output files even if they exist.
+    **kwargs
+        Additional keyword arguments forwarded to :func:`download_request`
+        (e.g., alternate ``variable`` sequences, custom authentication/session
+        options, or client settings). These are passed unchanged to the CDS
+        retrieval helper.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the provided RGI path is missing.
+    ValueError
+        If the glacier ID cannot be found or the geometry is invalid.
+    Exception
+        Any errors propagated from the CDS request, reprojection, or I/O.
+
+    Notes
+    -----
+    - Output variables:
+      - ``air_temp`` (K) from CARRA ``t2m``.
+      - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
+    - ``time_bounds`` are added for CF-style climatological metadata.
+    - If missing values are detected in the regional subset, the function
+      patches them from the global reanalysis (same period).
+    """
+
+    print("")
+    print("Generate historical climate")
+    print("-" * 120)
+
+    carra2_path = data_dir / Path("carra2")
+    carra2_path.mkdir(exist_ok=True)
+    carra2_grid_path = carra2_path / Path("carra2_grid.txt")
+    carra2_grid_path.write_text(carra2_grid)
+
+    precipitation_dataset = "reanalysis-pan-carra-means"
+    precipitation_request = {
+        "time_aggregation": "monthly",
+        "level_type": "single_levels",
+        "variable": ["total_precipitation"],
+        "product_type": "forecast_based",
+        "year": year,
+        "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+        "data_format": "netcdf",
+        "area": [90, -180, 40, 180],
+    }
+
+    precipitation_files = carra_download_request(
+        precipitation_dataset,
+        precipitation_request,
+        file_path=carra2_path / Path("pr.nc"),
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    temperature_dataset = "reanalysis-pan-carra-means"
+    temperature_request = {
+        "time_aggregation": "daily",
+        "level_type": "single_levels",
+        "variable": ["2m_temperature"],
+        "product_type": "analysis_based",
+        "year": year,
+        "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+        "day": [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30",
+            "31",
+        ],
+        "data_format": "netcdf",
+        "area": [90, -180, 40, 180],
+    }
+
+    temperature_files = carra_download_request(
+        temperature_dataset,
+        temperature_request,
+        file_path=carra2_path / Path("tas.nc"),
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    logger.info(
+        "Downloaded %d precipitation files, %d temperature files", len(precipitation_files), len(temperature_files)
+    )
+
+    grid = str(carra2_grid_path.resolve())
+    cdo = Cdo()
+    cdo.debug = True
+
+    # --- Step 1: per-year batches (setgrid, settaxis, monmean/monstd) ---
+
+    pr_sorted = sorted(precipitation_files)
+    tas_sorted = sorted(temperature_files)
+
+    batches = []
+    for yr, pr_f, tas_f in zip(year, pr_sorted, tas_sorted):
+        batch_out = str((carra2_path / f"batch_{yr}.nc").resolve())
+        batches.append((yr, str(pr_f), str(tas_f), batch_out))
+
+    def _process_carra2_batch(args):
+        """
+        Process a single year-batch: fix grid/time, compute monmean/monstd, merge.
+
+        Parameters
+        ----------
+        args : tuple
+            A ``(yr, pr_f, tas_f, batch_out)`` tuple with the year string,
+            precipitation file, temperature file, and output path.
+
+        Returns
+        -------
+        str
+            Path to the merged output file.
+        """
+        yr, pr_f, tas_f, batch_out = args
+        tmp = carra2_path
+        cdo_local = Cdo(tempdir=tmp)
+
+        # Precipitation: monthly means (already monthly data, just fix grid + time)
+        pr_fixed = os.path.join(tmp, f"pr_{yr}.nc")
+        cdo_local.setgrid(
+            grid,
+            input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation """
+            f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {pr_f}""",
+            output=pr_fixed,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Temperature: aggregate daily -> monthly mean
+        tas_mm = os.path.join(tmp, f"tas_mm_{yr}.nc")
+        cdo_local.monmean(
+            input=f"""-setgrid,{grid} -chname,t2m,air_temp """
+            f"""-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {tas_f}""",
+            output=tas_mm,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Temperature: aggregate daily -> monthly std
+        tas_mstd = os.path.join(tmp, f"tas_mstd_{yr}.nc")
+        cdo_local.setattribute(
+            """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
+            input=f"""-chname,air_temp,air_temp_sd -monstd -setgrid,{grid} -chname,t2m,air_temp """
+            f"""-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {tas_f}""",
+            output=tas_mstd,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Merge pr + tas_mm + tas_mstd for this year
+        cdo_local.merge(
+            input=f"{pr_fixed} {tas_mm} {tas_mstd}",
+            output=batch_out,
+            options="-f nc4 -z zip_2",
+        )
+        # Clean up per-year intermediate files only (not the shared directory)
+        for f in (pr_fixed, tas_mm, tas_mstd):
+            Path(f).unlink(missing_ok=True)
+        return batch_out
+
+    # Only process batches that don't already exist (unless force_overwrite)
+    batches_to_run = [b for b in batches if (not check_xr_lazy(b[3])) or force_overwrite]
+    if batches_to_run:
+        logger.info("CDO: processing %d year batches (setgrid + monmean/monstd)...", len(batches_to_run))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_carra2_batch, b): b for b in batches_to_run}
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Processing CARRA2 batches"):
+                future.result()
+    else:
+        logger.info("CDO: all %d year batches already exist, skipping.", len(batches))
+
+    batch_files = sorted(b[3] for b in batches)
+
+    # --- Step 2: mergetime all year batches, then ymonmean ---
+    merged_file = carra2_path / "merged_monthly.nc"
+    if (not check_xr_lazy(merged_file)) or force_overwrite:
+        logger.info("CDO: merging %d year batches...", len(batch_files))
+        cdo.mergetime(
+            input=" ".join(batch_files),
+            output=str(merged_file.resolve()),
+            options=f"-f nc4 -z zip_2 -P {max_workers}",
+        )
+    _ = output_file
+
+
 def convert_many_tifs_concurrent(
     tifs: Iterable[Path],
     outdir: Path,
@@ -191,12 +457,12 @@ def convert_many_tifs_concurrent(
         futs = [ex.submit(_process_one_tif, Path(p), outdir, force_overwrite) for p in tifs]
         try:
 
-            for fut in tqdm(as_completed(futs), total=len(futs), desc="Processing files (parallel)"):
+            for fut in tqdm(cf_as_completed(futs), total=len(futs), desc="Processing files (parallel)"):
                 out = fut.result()
                 if out is not None:
                     rets.append(out)
         except ImportError:
-            for fut in as_completed(futs):
+            for fut in cf_as_completed(futs):
                 out = fut.result()
                 if out is not None:
                     rets.append(out)
@@ -228,6 +494,76 @@ def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: floa
         data_vars={
             "delta_T": (["time"], dT, {"units": "K"}),
             "frac_P": (["time"], fP, {"units": "1"}),
+            "time_bounds": (["time", "bnds"], time_bounds, {}),
+        },
+        coords={
+            "time": (
+                "time",
+                time,
+                {
+                    "units": "seconds since 01-01-01",
+                    "axis": "T",
+                    "calendar": "365_day",
+                    "bounds": "time_bounds",
+                },
+            )
+        },
+    )
+    encoding = {v: {"_FillValue": None} for v in ["delta_T", "frac_P"]}
+    ds.to_netcdf(file_name, encoding=encoding)
+
+
+def create_step_file(
+    file_name: str | Path,
+    t_a: float,
+    t_b: float,
+    delta_T_a: float = 0.0,
+    delta_T_b: float = 0.0,
+    frac_P_a: float = 1.0,
+    frac_P_b: float = 1.0,
+):
+    """
+    Generate a step-function offset file.
+
+    Applies ``delta_T_a`` / ``frac_P_a`` from year 1 to ``t_a`` and
+    ``delta_T_b`` / ``frac_P_b`` from ``t_a`` to ``t_b``.
+
+    Parameters
+    ----------
+    file_name : str or Path
+        The name of the file to create.
+    t_a : float
+        Year at which the step occurs (end of first interval).
+    t_b : float
+        Final year (end of second interval).
+    delta_T_a : float, optional
+        Temperature offset for the first interval, by default 0.0.
+    delta_T_b : float, optional
+        Temperature offset for the second interval, by default 0.0.
+    frac_P_a : float, optional
+        Precipitation fraction for the first interval, by default 1.0.
+    frac_P_b : float, optional
+        Precipitation fraction for the second interval, by default 1.0.
+    """
+    file_name = Path(file_name)
+
+    seconds_per_year = 365 * 24 * 3600
+
+    # Midpoints and bounds in seconds since 01-01-01
+    t0 = 0.0
+    t_a_sec = (t_a - 1) * seconds_per_year
+    t_b_sec = (t_b - 1) * seconds_per_year
+
+    mid_a = (t0 + t_a_sec) / 2.0
+    mid_b = (t_a_sec + t_b_sec) / 2.0
+
+    time = [mid_a, mid_b]
+    time_bounds = [[t0, t_a_sec], [t_a_sec, t_b_sec]]
+
+    ds = xr.Dataset(
+        data_vars={
+            "delta_T": (["time"], [delta_T_a, delta_T_b], {"units": "K"}),
+            "frac_P": (["time"], [frac_P_a, frac_P_b], {"units": "1"}),
             "time_bounds": (["time", "bnds"], time_bounds, {}),
         },
         coords={
@@ -414,7 +750,9 @@ def era5(
         ds_global_ = (
             ds_global.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
         )
-        ds = xr.where(np.isnan(ds), ds_global_, ds)
+        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
+        for v in common_vars:
+            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
 
     ds = xr.merge([ds, ds_geo_], combine_attrs="override")
     ds = ds.rename({"valid_time": "time"})

@@ -1,0 +1,32 @@
+samples = 150
+mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
+
+['surface.debm_simple.c1']
+
+loc = 5
+scale = 45
+distribution = "uniform"
+
+['surface.debm_simple.c2']
+
+loc = -130
+scale = 100
+distribution = "uniform"
+
+['surface.debm_simple.air_temp_all_precip_as_snow']
+
+loc = 271.15
+scale = 1
+distribution = "uniform"
+
+['surface.debm_simple.air_temp_all_precip_as_rain']
+
+loc = 273.15
+scale = 4
+distribution = "uniform"
+
+['surface.debm_simple.refreeze']
+
+loc = 0.2
+scale = 0.6
+distribution = "uniform"

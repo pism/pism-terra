@@ -259,52 +259,103 @@ def extract_archive(
     return extracted_files
 
 
-def download_request(
-    dataset: str = "reanalysis-era5-single-levels-monthly-means",
-    area: Sequence[float] = (90.0, -90.0, 45.0, 90.0),
-    years: Iterable[int] = range(1980, 2025),
-    variable: Sequence[str] = ("2m_temperature", "total_precipitation"),
+def _cds_download_year(
+    client: cdsapi.Client,
+    dataset: str,
+    request: dict,
+    year: str,
+    dest: Path,
+    force_overwrite: bool = False,
+) -> Path:
+    """
+    Download a single year from CDS and return the path to the file.
+
+    Parameters
+    ----------
+    client : cdsapi.Client
+        Authenticated CDS API client.
+    dataset : str
+        CDS dataset identifier.
+    request : dict
+        Base CDS request dict (without ``year``).
+    year : str
+        Four-digit year string to download.
+    dest : Path
+        Directory to save the downloaded file.
+    force_overwrite : bool, default False
+        Re-download even if the file already exists.
+
+    Returns
+    -------
+    Path
+        Path to the downloaded NetCDF file.
+    """
+    # Include dataset and variable names in cache key to avoid collisions between different requests
+    var_key = "_".join(sorted(request.get("variable", [])))
+    nc_path = dest / f"_cds_{dataset}_{var_key}_{year}.nc"
+    if nc_path.exists() and not force_overwrite:
+        return nc_path
+
+    req = {**request, "year": [year]}
+    result = client.retrieve(dataset, req)
+
+    if result.asset["type"] == "application/zip":
+        dl_path = dest / f"_cds_{year}.zip"
+    else:
+        dl_path = nc_path
+
+    result.download(dl_path)
+
+    if str(dl_path).endswith(".zip"):
+        extracted = extract_archive(dl_path, extract_to=dest / f"_cds_{year}", force_overwrite=True, verbose=False)
+        # Return the first NetCDF found
+        nc_files = [p for p in extracted if str(p).endswith(".nc")]
+        if nc_files:
+            return Path(nc_files[0])
+        raise FileNotFoundError(f"No NetCDF files found in archive for year {year}")
+
+    return nc_path
+
+
+def carra_download_request(
+    dataset: str,
+    request: dict,
     file_path: Path | str = "tmp.nc",
     force_overwrite: bool = False,
+    max_workers: int = 5,
 ) -> xr.Dataset:
     """
-    Download monthly ERA5 reanalysis from CDS and return it as an xarray Dataset.
+    Download reanalysis data from CDS and return it as an xarray Dataset.
 
-    Sends a request to the Copernicus Climate Data Store (CDS) API for monthly
-    averages of the specified single-level variables over ``area`` and ``years``.
-    If CDS returns multiple NetCDF files (e.g., one per year), they are opened
-    and merged into a single dataset. The merged dataset is cached at ``path`` and
-    re-used on subsequent calls unless ``force_overwrite=True``.
+    By default, sends a request to the Copernicus Climate Data Store (CDS)
+    API for monthly ERA5 averages. For other datasets (e.g., CARRA), pass a
+    fully formed ``request_override`` dict — it will be used as-is, ignoring
+    ``area``, ``year``, and ``variable``.
+
+    Requests are split by year and submitted concurrently (up to
+    ``max_workers`` in parallel) so the CDS queue processes them faster.
 
     Parameters
     ----------
     dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
-        CDS dataset identifier to retrieve. Use a different name to target
-        ERA5-Land or other collections.
-    area : sequence of float, default ``(90, -90, 45, 90)``
-        Geographic bounding box **[North, West, South, East]** in degrees (WGS84).
-        Note the CDS-specific ordering.
-    years : iterable of int, default ``range(1980, 2025)``
-        Years to request (e.g., ``range(1980, 2025)`` or ``[1990, 1991]``).
-    variable : sequence of str, default ``("2m_temperature", "total_precipitation")``
-        ERA5 variable names to download (e.g., ``"2m_temperature"``,
-        ``"total_precipitation"``, ``"geopotential"``). Availability depends on
-        the chosen ``dataset``.
+        CDS dataset identifier to retrieve.
+    request : dict
+        Used as the CDS request verbatim.
+        ERA5 request. The ``year`` key will be split for parallel download.
+        Useful for CARRA or other datasets with different request schemas.
     file_path : str or pathlib.Path, default ``"tmp.nc"``
         Cache file. If it exists and opens successfully, it is re-used unless
         ``force_overwrite`` is set.
     force_overwrite : bool, default ``False``
         If ``True``, ignore any existing cache at ``path`` and perform a fresh
         download.
+    max_workers : int, default 5
+        Maximum number of concurrent CDS requests.
 
     Returns
     -------
     xarray.Dataset
-        Dataset containing requested monthly means. Typical variables include:
-        - ``t2m`` : 2-m air temperature [K]
-        - ``tp`` : total precipitation [m]
-        Coordinates may include a monthly ``valid_time``; when present it is
-        floored to daily resolution.
+        Dataset containing the requested data.
 
     Raises
     ------
@@ -314,29 +365,128 @@ def download_request(
         Problems opening/writing downloaded files.
     ValueError
         Incompatible files for merge.
-    Exception
-        Other I/O/decoding errors during assembly.
 
     Notes
     -----
     - Requires a valid CDS API key in ``~/.cdsapirc``.
-    - The request uses ``product_type="monthly_averaged_reanalysis"``,
-      months ``"01"``–``"12"``, and time ``"00:00"``.
     - If CDS provides a ZIP, contents are extracted before loading/merging.
     """
 
     file_path = Path(file_path)
 
-    request = {
-        "product_type": ["monthly_averaged_reanalysis"],
-        "variable": list(variable),
-        "year": list(years),
-        "month": [f"{m:02d}" for m in range(1, 13)],
-        "time": ["00:00"],
-        "data_format": "netcdf",
-        "download_format": "unarchived",
-        "area": list(area),  # [N, W, S, E]
-    }
+    client = cdsapi.Client()
+
+    path = file_path.parent
+    carra2_path = path / Path("_".join(v for v in request["variable"]))
+    carra2_path.mkdir(exist_ok=True)
+
+    file_path.unlink(missing_ok=True)
+
+    years = [str(y) for y in request.pop("year")]
+    # Remove "year" from the base request; each worker adds its own.
+
+    result: list[Path] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_cds_download_year, client, dataset, request, yr, carra2_path, force_overwrite): yr
+            for yr in years
+        }
+        pbar = tqdm(as_completed(futures), total=len(futures), desc="Downloading years", unit="yr")
+        for future in pbar:
+            yr = futures[future]
+            try:
+                nc = future.result()
+                result.append(nc)
+                pbar.set_postfix_str(f"{yr} done")
+            except Exception as e:
+                pbar.set_postfix_str(f"{yr} failed")
+                print(f"Failed to download year {yr}: {e}")
+
+    return result
+
+
+def download_request(
+    dataset: str = "reanalysis-era5-single-levels-monthly-means",
+    area: Sequence[float] | None = (90.0, -90.0, 45.0, 90.0),
+    year: Iterable[int] = range(1980, 2025),
+    variable: Sequence[str] = ("2m_temperature", "total_precipitation"),
+    file_path: Path | str = "tmp.nc",
+    force_overwrite: bool = False,
+    request_override: dict | None = None,
+    max_workers: int = 5,
+) -> xr.Dataset:
+    """
+    Download reanalysis data from CDS and return it as an xarray Dataset.
+
+    By default, sends a request to the Copernicus Climate Data Store (CDS)
+    API for monthly ERA5 averages. For other datasets (e.g., CARRA), pass a
+    fully formed ``request_override`` dict — it will be used as-is, ignoring
+    ``area``, ``year``, and ``variable``.
+
+    Requests are split by year and submitted concurrently (up to
+    ``max_workers`` in parallel) so the CDS queue processes them faster.
+
+    Parameters
+    ----------
+    dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
+        CDS dataset identifier to retrieve.
+    area : sequence of float or None, default ``(90, -90, 45, 90)``
+        Geographic bounding box **[North, West, South, East]** in degrees (WGS84).
+        Ignored when ``request_override`` is provided.
+
+    year : iterable of int, default ``range(1980, 2025)``
+        Years to request. Ignored when ``request_override`` is provided.
+    variable : sequence of str, default ``("2m_temperature", "total_precipitation")``
+        Variable names to download. Ignored when ``request_override`` is provided.
+    file_path : str or pathlib.Path, default ``"tmp.nc"``
+        Cache file. If it exists and opens successfully, it is re-used unless
+        ``force_overwrite`` is set.
+    force_overwrite : bool, default ``False``
+        If ``True``, ignore any existing cache at ``path`` and perform a fresh
+        download.
+    request_override : dict or None, optional
+        If provided, used as the CDS request verbatim, replacing the default
+        ERA5 request. The ``year`` key will be split for parallel download.
+        Useful for CARRA or other datasets with different request schemas.
+    max_workers : int, default 5
+        Maximum number of concurrent CDS requests.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset containing the requested data.
+
+    Raises
+    ------
+    cdsapi.api.ClientError
+        CDS request/authentication/parameter failures.
+    OSError
+        Problems opening/writing downloaded files.
+    ValueError
+        Incompatible files for merge.
+
+    Notes
+    -----
+    - Requires a valid CDS API key in ``~/.cdsapirc``.
+    - If CDS provides a ZIP, contents are extracted before loading/merging.
+    """
+
+    file_path = Path(file_path)
+
+    if request_override is not None:
+        request = request_override
+    else:
+        request = {
+            "product_type": ["monthly_averaged_reanalysis"],
+            "variable": list(variable),
+            "year": [str(y) for y in year],
+            "month": [f"{m:02d}" for m in range(1, 13)],
+            "time": ["00:00"],
+            "data_format": "netcdf",
+            "download_format": "unarchived",
+        }
+        if area is not None:
+            request["area"] = list(area)
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
@@ -346,38 +496,48 @@ def download_request(
         path = file_path.parent
         file_path.unlink(missing_ok=True)
 
-        g = client.retrieve(dataset, request)
+        years = [str(y) for y in request.pop("year")]
+        print(years)
+        # Remove "year" from the base request; each worker adds its own.
 
-        if g.asset["type"] == "application/zip":
-            p = path / f"archive_{file_path.stem}.zip"
-        else:
-            p = path / f"archive_{file_path.stem}.nc"
+        downloaded: list[Path] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_cds_download_year, client, dataset, request, yr, path, force_overwrite): yr
+                for yr in years
+            }
+            pbar = tqdm(as_completed(futures), total=len(futures), desc="Downloading years", unit="yr")
+            for future in pbar:
+                yr = futures[future]
+                try:
+                    nc = future.result()
+                    downloaded.append(nc)
+                    pbar.set_postfix_str(f"{yr} done")
+                except Exception as e:
+                    pbar.set_postfix_str(f"{yr} failed")
+                    print(f"Failed to download year {yr}: {e}")
 
-        f = client.retrieve(dataset, request).download(p)
+        dss = []
+        for nc in sorted(downloaded):
+            ds_part = xr.open_dataset(nc, decode_times=time_coder, decode_timedelta=True)
+            if "valid_time" in ds_part.coords:
+                ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
+            dss.append(ds_part)
 
-        if str(f).endswith(".zip"):
-            era_files = extract_archive(f, extract_to=path, force_overwrite=force_overwrite)
-            dss = []
-            for era_file in era_files:
-                ds_part = xr.open_dataset(era_file, decode_times=time_coder, decode_timedelta=True)
-                if "valid_time" in ds_part.coords:
-                    ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
-                dss.append(ds_part)
-            ds = xr.merge(dss).drop_vars(["number", "expver"], errors="ignore")
-        else:
-            ds = xr.open_dataset(f, decode_times=time_coder, decode_timedelta=True).drop_vars(
-                ["number", "expver"], errors="ignore"
-            )
+        ds = xr.merge(dss).drop_vars(["number", "expver"], errors="ignore")
 
-        ds = ds.sortby("latitude")
-        ds["latitude"].attrs["stored_direction"] = "increasing"
-        ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
-        ds.rio.write_crs("EPSG:4326", inplace=True)
+        if "latitude" in ds.coords:
+            ds = ds.sortby("latitude")
+            ds["latitude"].attrs["stored_direction"] = "increasing"
+            ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
+            ds.rio.write_crs("EPSG:4326", inplace=True)
+
         ds.to_netcdf(file_path)
     else:
         ds = xr.open_dataset(file_path, decode_times=time_coder, decode_timedelta=True)
-        ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
-        ds.rio.write_crs("EPSG:4326", inplace=True)
+        if "latitude" in ds.coords:
+            ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
+            ds.rio.write_crs("EPSG:4326", inplace=True)
 
     return ds
 
@@ -627,7 +787,8 @@ def download_earthaccess(filter_str: str | None = None, result_dir: Path | str =
             if filter_str in granule["umm"]["DataGranule"]["Identifiers"][0]["Identifier"]
         ]
     earthaccess.get_s3_credentials(results=results)
-    return earthaccess.download(results, p)
+    result = earthaccess.download(results, p)
+    return [Path(f) for f in result]
 
 
 def download_netcdf(

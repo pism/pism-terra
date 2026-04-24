@@ -1,0 +1,224 @@
+[run]
+
+executable = "pism"
+mpi = "mpirun -np  {{ ntasks }}"
+ntasks = 20
+writer = ""
+
+[job]
+
+queue = "t2small"
+walltime = "01:00:00"
+nodes = 1
+
+[run_info]
+
+'run_info.institution' = "University of Alaska Fairbanks"
+'run_info.title' = "PISM-TERRA KITP Greenland Sea Ice Run"
+
+[campaign]
+
+boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+bucket = "pism-cloud-data"
+climatology = "HIRHAM5-ERA5_YMM_1990_2019"
+future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pa-futArcSIC-ext"]
+gcms = "CESM1-WACCM-SC"
+grid_file = "ismip7_greenland_grid.nc"
+heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
+ocean_file = "ocean_forcing_228.0_10.0_69.0_80.0.nc"
+outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+prefix = "kitp/input"
+present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
+regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
+version = "v3"
+
+[time]
+
+'time.start' = "0001-01-01"
+'time.end' =  "0002-01-01"
+'time.calendar' =  "365_day"
+'time.reference_date' = "0001-01-01"
+
+[time_stepping]
+
+'time_stepping.adaptive_ratio' = 0.12
+'time_stepping.skip.enabled' = "yes"
+'time_stepping.skip.max' = 100
+
+['geometry']
+
+'geometry.front_retreat.use_cfl' = 'yes'
+'geometry.part_grid.enabled' = 'yes'
+'geometry.remove_icebergs' = 'yes'
+
+['input']
+
+'input.bootstrap' = "yes"
+'input.forcing.time_extrapolation' = "yes"
+'input.forcing.buffer_size' = 37
+'input.regrid.file' =  "none"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume"
+
+[reporting]
+
+'output.format' = "netcdf4_parallel"
+'output.compression_level' = 2
+'output.size' = "medium"
+'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
+'output.spatial.file' = "none"
+'output.spatial.times' = "yearly"
+'output.spatial.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,mass_fluxes,pdd_fluxes,grounding_line_flux"
+'output.scalar.file' = "none"
+'output.scalar.times' = "monthly"
+'output.checkpoint.interval' = 24
+'output.spatial.stop_missing' = 'no'
+'output.ISMIP6' = "no"
+'output.experiment_id_max_length' = 100
+
+[grid]
+
+resolution = "4800m"
+'grid.Lbz' = 2000
+'grid.Lz' = 4000
+'grid.Mbz' = 51
+'grid.Mz' = 101
+'grid.registration' = "center"
+'grid.allow_extrapolation' = "yes"
+
+[energy]
+
+model = "enthalpy"
+
+[energy.options.enthalpy]
+
+'energy.model' = "enthalpy"
+'energy.bedrock_thermal.file' = "none"
+'stress_balance.blatter.flow_law' = "gpbld"
+'stress_balance.sia.flow_law' = "gpbld"
+'stress_balance.ssa.flow_law' = "gpbld"
+
+[stress_balance]
+
+model = 'hybrid'
+
+[stress_balance.options.blatter]
+
+'stress_balance.model' = "blatter"
+'stress_balance.blatter.Mz' = 10
+'stress_balance.blatter.coarsening_factor' = 3
+'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.sia.max_diffusivity' = 1000000.0
+bp_ksp_monitor =  ""
+bp_ksp_view_singularvalues = ""
+bp_snes_monitor_ratio = ""
+bp_pc_type = "mg"
+bp_mg_levels_ksp_type = "richardson"
+bp_mg_levels_pc_type ="sor"
+bp_mg_coarse_ksp_type = "preonly"
+bp_mg_coarse_pc_type = "lu"
+bp_pc_mg_levels = 3
+bp_snes_ksp_ew = 1
+bp_snes_ksp_ew_version = 3
+bp_snes_rtol = 1e-3
+bp_ksp_rtol = 1e-3
+
+[stress_balance.options.hybrid]
+
+'stress_balance.model' = "ssa+sia"
+'stress_balance.ssa.method' = "fd"
+'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.sia.max_diffusivity' = 100000.0
+
+[iceflow]
+
+'basal_resistance.pseudo_plastic.enabled' = 'yes'
+'basal_resistance.pseudo_plastic.q' = 0.7508221
+'basal_yield_stress.model' = 'mohr_coulomb'
+'basal_yield_stress.mohr_coulomb.till_effective_fraction_overburden' = 0.01845403
+'basal_yield_stress.mohr_coulomb.topg_to_phi.enabled' = "yes"
+'basal_yield_stress.mohr_coulomb.topg_to_phi.phi_max' = 42.79528
+'basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min' = 7.193718
+'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_max' = 243.8239
+'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_min' = -369.6359
+'stress_balance.blatter.enhancement_factor' = 2.608046
+'stress_balance.sia.enhancement_factor' = 2.608046
+'stress_balance.ssa.Glen_exponent' = 3.309718
+
+[surface]
+
+model = "debm"
+
+[surface.options.pdd]
+
+'surface.models' = "pdd"
+'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
+
+[surface.options.debm]
+
+'surface.models' = "debm_simple"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.albedo_input.file' = "none"
+'surface.debm_simple.albedo_input.periodic' = "yes"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 30
+'surface.debm_simple.c2' = -120
+
+[calving]
+
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.vonmises_calving.sigma_max' = 5.0e5
+'calving.thickness_calving.threshold' = 100.0
+
+[atmosphere]
+
+model = "given"
+
+[atmosphere.options.given]
+
+'atmosphere.models' = "given,elevation_change"
+'atmosphere.elevation_change.temperature_lapse_rate' = 6
+'atmosphere.elevation_change.file' = "none"
+'atmosphere.given.file' = "none"
+'atmosphere.given.periodic' = "yes"
+
+[ocean]
+
+model = "given"
+
+[ocean.options.given]
+
+'ocean.models' = "given"
+'ocean.given.file' = "none"
+'ocean.given.periodic' = "yes"
+
+[hydrology]
+
+model = "null"
+
+[hydrology.options.null]
+
+'hydrology.model' = "null"
+'hydrology.null_diffuse_till_water' = "yes"
+
+[hydrology.options.routing]
+
+'hydrology.model' = "routing"
+'hydrology.routing.include_floating_ice' = "yes"
+'hydrology.surface_input.file' = "none"
+
+
+[frontal_melt]
+
+model = "off"
+
+[frontal_melt.options.off]
+
+[frontal_melt.options.routing]
+
+'frontal_melt.routing.file' = "none"
+'frontal_melt.routing.parameter_a' = 3e-4
+'frontal_melt.routing.parameter_b' = 0.15
+'frontal_melt.routing.power_alpha' = 0.39
+'frontal_melt.routing.power_beta' = 1.18

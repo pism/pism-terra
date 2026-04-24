@@ -1,8 +1,10 @@
 [run]
 
 executable = "pism"
-mpi = ""
-ntasks = 8
+mpi = "mpirun -np  {{ ntasks }}"
+ntasks = 6
+writer = ": -n 1 pism_async_writer -d"
+
 
 [job]
 
@@ -29,13 +31,13 @@ velocity = "its_live"
 [time]
 
 'time.start' = "1978-01-01"
-'time.end' =  "1978-07-01"
+'time.end' =  "1980-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 250
+'time_stepping.adaptive_ratio' = 200
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -53,21 +55,20 @@ velocity = "its_live"
 
 [reporting]
 
-'output.format' = "netcdf4_serial"
+'output.format' = "netcdf4_parallel"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
-'output.spatial.file' = "none"
-'output.spatial.times' = "monthly"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
 'output.scalar.times' = "daily"
-'output.scalar.file' = "none"
+'output.spatial.file' = "none"
+'output.spatial.times' = "yearly"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
 'output.checkpoint.interval' = 24
-'output.extra.stop_missing' = 'no'
+'output.spatial.stop_missing' = 'no'
 
 [grid]
 
-resolution = "1000m"
+resolution = "500m"
 'grid.Lbz' = 0
 'grid.Lz' = 2000
 'grid.Mbz' = 1
@@ -100,8 +101,8 @@ model = 'blatter'
 [stress_balance.options.blatter]
 
 'stress_balance.model' = "blatter"
-'stress_balance.blatter.Mz' = 17
-'stress_balance.blatter.coarsening_factor' = 4
+'stress_balance.blatter.Mz' = 10
+'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.blatter.use_eta_transform' = 'yes'
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.surface_gradient_method' = 'eta'
@@ -141,20 +142,26 @@ bp_ksp_rtol = 1e-3
 
 [surface]
 
-model = "pdd"
-
-[surface.options.cosipy]
-
-'surface.models' = "given,forcing"
+model = "debm"
 
 [surface.options.pdd]
 
-'surface.models' = "pdd,forcing"
+'surface.models' = "pdd"
+'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
+
+[surface.options.debm]
+
+'surface.models' = "debm_simple"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 30
+'surface.debm_simple.c2' = -120
 
 [calving]
 
 'calving.methods' = 'vonmises_calving'
 'calving.vonmises_calving.sigma_max' = 7.5e5
+
 [atmosphere]
 
 model = "given"
@@ -168,8 +175,17 @@ model = "given"
 
 [ocean]
 
-'ocean.constant.melt_rate' = 0.0
+model = "constant"
+
+[ocean.options.given]
+
+'ocean.model' = "given"
+'ocean.given.file' = "none"
+'ocean.given.periodic' = "yes"
+
+[ocean.options.constant]
 'ocean.models' = 'constant'
+'ocean.constant.melt_rate' = 0.0
 
 [hydrology]
 

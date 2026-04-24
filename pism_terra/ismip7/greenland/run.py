@@ -43,6 +43,7 @@ from pism_terra.workflow import (
     merge_model,
     normalize_row,
     sort_dict_by_key,
+    validate_pism_options,
 )
 
 # one Jinja environment for all renders
@@ -52,6 +53,7 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 def run_greenland(
     config_file: str | Path,
     template_file: Path | str,
+    outline_file: Path | str | None,
     path: str | Path = "result",
     resolution: None | str = None,
     nodes: None | int = None,
@@ -62,6 +64,7 @@ def run_greenland(
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
+    pism_config_cdl: str | Path | None = None,
 ):
     """
     Configure and generate a PISM job script for a single glacier (ensemble-ready).
@@ -80,6 +83,8 @@ def run_greenland(
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template (e.g., SLURM/LSF script). The
         context is populated from validated ``RunConfig`` and ``JobConfig``.
+    outline_file : str or pathlib.Path
+        Path to a geopandas file with the glacier outline.
     path : str or pathlib.Path, optional
         Base output directory. A subfolder ``<path>/<rgi_id>`` is created with
         ``output/`` and ``run_scripts/`` subdirectories. Default is ``"result"``.
@@ -111,6 +116,9 @@ def run_greenland(
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._s0042``). If neither is provided,
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+    pism_config_cdl : str or Path or None, optional
+        Path to a PISM CDL master config file. If provided, all run options
+        are validated against it before generating the command line.
 
     Raises
     ------
@@ -179,7 +187,6 @@ def run_greenland(
     run = {}
     for section in (
         "geometry",
-        "ocean",
         "calving",
         "iceflow",
         "reporting",
@@ -189,6 +196,7 @@ def run_greenland(
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
     run.update(cfg.energy.selected())
+    run.update(cfg.ocean.selected())
     run.update(cfg.frontal_melt.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.hydrology.selected())
@@ -240,6 +248,9 @@ def run_greenland(
         }
     )
 
+    if pism_config_cdl is not None:
+        validate_pism_options(run, pism_config_cdl)
+
     run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
 
     run_opts = RunConfig(**cfg.run.model_dump())
@@ -266,7 +277,9 @@ def run_greenland(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     run_toml = {
+        "basin": {"basin": "Mouginot/Rignot", "outline": outline_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "state": str(state_file.resolve()),
@@ -353,6 +366,12 @@ def run_single():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -374,6 +393,7 @@ def run_single():
     ntasks = options.ntasks
     nodes = options.nodes
     walltime = options.walltime
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -390,30 +410,32 @@ def run_single():
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "frontal_melt.routing.file": df["frontal_melt_file"].iloc[0],
-        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "surface.given.file": df["climate_file"].iloc[0],
-        "hydrology.surface_input.file": df["surface_input_file"].iloc[0],
-        "ocean.th.file": df["ocean_file"].iloc[0],
-    }
-
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Generate Run for ISMIP7")
-    print("-" * 80)
+    print("-" * 120)
     for idx, row in df.iterrows():
+        uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "frontal_melt.routing.file": row["frontal_melt_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
+            "grid.file": row["grid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "atmosphere.given.file": row["climate_file"],
+            "surface.given.file": row["climate_file"],
+            "hydrology.surface_input.file": row["surface_input_file"],
+            "ocean.th.file": row["ocean_file"],
+        }
+        sample = int(row["sample"]) if "sample" in row else idx
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_greenland(
             config_file,
             template_file,
+            outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
@@ -421,8 +443,9 @@ def run_single():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=uq,
+            sample=sample,
+            pism_config_cdl=pism_config_cdl,
         )
 
 
@@ -483,6 +506,12 @@ def run_ensemble():
         default=False,
     )
     parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -517,6 +546,7 @@ def run_ensemble():
     ntasks = options.ntasks
     nodes = options.nodes
     walltime = options.walltime
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -532,16 +562,6 @@ def run_ensemble():
     prefix = campaign_config["prefix"]
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "surface.given.file": df["climate_file"].iloc[0],
-        "ocean.th.file": df["ocean_file"].iloc[0],
-    }
 
     seed = 42
     rng = np.random.default_rng(seed=seed)
@@ -565,17 +585,39 @@ def run_ensemble():
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Generate Ensemble Runs for Greenland")
-    print("-" * 80)
+    print("-" * 120)
+
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-    for idx, row in uq_df.iterrows():
+
+    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
+    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+
+    for _, row in merged_df.iterrows():
+        row_uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "frontal_melt.routing.file": row["frontal_melt_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
+            "grid.file": row["grid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "atmosphere.given.file": row["climate_file"],
+            "surface.given.file": row["climate_file"],
+            "hydrology.surface_input.file": row["surface_input_file"],
+            "ocean.th.file": row["ocean_file"],
+        }
+        row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
+        sample = row["sample"]
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_greenland(
             config_file,
             template_file,
+            outline_file,
             path=path,
             resolution=resolution,
             nodes=nodes,
@@ -583,8 +625,9 @@ def run_ensemble():
             queue=queue,
             walltime=walltime,
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=row_uq,
+            sample=sample,
+            pism_config_cdl=pism_config_cdl,
         )
 
 

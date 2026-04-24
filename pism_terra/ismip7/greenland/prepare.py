@@ -21,8 +21,10 @@
 Prepare ISMIP7 Greenland data sets.
 """
 
+import logging
 import os
 import re
+import shutil
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -46,11 +48,14 @@ from pism_terra.ismip7.greenland.forcing import (
     prepare_ismip7_forcing,
     prepare_observations,
 )
+from pism_terra.log import setup_logging
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -98,20 +103,21 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
+    setup_logging(output_path / "prepare.log")
+
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print("Preparing ISMIP7 Greenland data")
-    print("-" * 120)
-    print("")
+    logger.info("=" * 120)
+    logger.info("\n%s", banner)
+    logger.info("=" * 120)
+    logger.info("Preparing ISMIP7 Greenland data")
+    logger.info("-" * 120)
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
 
-    print("-" * 120)
-    print("Grid File")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Grid File")
+    logger.info("-" * 120)
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
@@ -127,18 +133,18 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     grid_ds.to_netcdf(grid_file, encoding=encoding)
     check_xr_fully(grid_file)
 
-    print("-" * 120)
-    print("Calfin Glacier Fronts File")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Calfin Glacier Fronts File")
+    logger.info("-" * 120)
 
     retreat_file = prepare_calfin(
         output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
     )
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
-    print("-" * 120)
-    print("Boot File")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Boot File")
+    logger.info("-" * 120)
     surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
     obs_files = prepare_observations(
         url,
@@ -152,10 +158,22 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     for v in obs_files.values():
         check_xr_lazy(v)
 
-    print("-" * 120)
-    print("Forcings")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Forcings")
+    logger.info("-" * 120)
     forcing_files = prepare_ismip7_forcing(data_path, output_path, config)
+    logger.info("Forcing files: %s", forcing_files)
+    input_files = [grid_file] + list(obs_files.values()) + [retreat_file] + list(forcing_files)
+
+    s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
+    s3_output_path.mkdir(parents=True, exist_ok=True)
+    logger.info("-" * 120)
+    logger.info("Copying input files to %s", s3_output_path)
+    logger.info("-" * 120)
+    for f in input_files:
+        dest = s3_output_path / Path(f).name
+        shutil.copy2(f, dest)
+        logger.info("  %s", dest)
 
     return {
         "config": config,

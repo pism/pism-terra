@@ -1,0 +1,20 @@
+ismip7_to_pism = {"acabf" = "climatic_mass_balance", "runoff" = "water_input_rate", "tas" = "ice_surface_temp", "TF" = "theta_ocean", "geothermal_heat_flux1" = "bheatflx"}
+gcms = ["CESM2-WACCM"]
+version = "v1"
+bucket = "pism-cloud-data"
+prefix = "ismip7/greenland/input"
+
+[domain]
+
+x_bounds = [-653000.0, 879700.0]
+y_bounds = [-3384350.0, -632750.0]
+resolution = "900m"
+
+[pathway]
+
+ssp585 = {"historical" = [1978, 2015], "projection" = [2015, 2299], version = 1 }
+
+[forcing]
+
+climate = {fields = ["acabf", "runoff", "tas"], short_hand = "SDBN1"}
+ocean = {fields = ["TF"], short_hand = "none"}

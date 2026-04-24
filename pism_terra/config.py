@@ -707,7 +707,7 @@ class JobConfig(BaseModelWithDot):
     @classmethod
     def _hhmmss(cls, v: str | None) -> str | None:
         """
-        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS``.
+        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS`` or ``HHH:MM:SS``.
 
         Parameters
         ----------
@@ -775,6 +775,9 @@ class PismConfig(BaseModelWithDot):
     atmosphere : dict of str to Any, optional
         Additional atmosphere-related options to pass through (keys are
         typically dotted, e.g., ``"atmosphere.given.file"``). Defaults to ``{}``.
+    ocean : dict of str to Any, optional
+        Additional ocean-related options to pass through (keys are
+        typically dotted, e.g., ``"ocean.given.file"``). Defaults to ``{}``.
     geometry : dict of str to Any, optional
         Geometry-related options to pass through. Defaults to ``{}``.
     ocean : dict of str to Any, optional
@@ -821,11 +824,11 @@ class PismConfig(BaseModelWithDot):
     stress_balance: StressBalanceConfig
     grid: GridConfig
     atmosphere: AtmosphereConfig
+    ocean: OceanConfig
     surface: SurfaceConfig
     frontal_melt: FrontalMeltConfig
     hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
-    ocean: dict[str, Any] = {}
     calving: dict[str, Any] = {}
     iceflow: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
@@ -1134,6 +1137,16 @@ class AtmosphereConfig(ModelWithOptions):
     SECTION = "atmosphere"
 
 
+class OceanConfig(ModelWithOptions):
+    """
+    Ocean model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "ocean"
+
+
 class SurfaceConfig(ModelWithOptions):
     """
     Surface model configuration.
@@ -1203,6 +1216,8 @@ class CampaignConfig(BaseModel):
         S3 bucket (e.g., ``"pism-cloud7-data"``).
     climate : str or None
         Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
+    climatology : str or None
+        Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
     end_year : str, float, or None
@@ -1221,6 +1236,8 @@ class CampaignConfig(BaseModel):
         Ice thickness data source identifier (e.g., ``"millan2022"``).
     name : str or None
         Human-readable campaign name.
+    ocean_file : str or None
+        Ocean forcing file name.
     pathway : str or None
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     prefix : str or None
@@ -1229,29 +1246,33 @@ class CampaignConfig(BaseModel):
         Path to the retreat NetCDF file (relative to the input directory).
     start_year : str, float, or None
         Start year of the forcing period.
+    end_year : str, float, or None
+        End year of the forcing period.
     version : str or None
         Dataset or experiment version string.
     """
 
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
+    climatology: str | None = Field(default=None)
     dem: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
-    gcms: str | list | None = Field(default=None)
-    present_day_forcings: str | list | None = Field(default=None)
-    future_forcings: str | list | None = Field(default=None)
+    gcms: str | list | dict | None = Field(default=None)
     boot_file: str | None = Field(default=None)
     outline_file: str | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     heatflux_file: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
     name: str | None = Field(default=None)
+    ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)
+    present_day_forcings: str | list | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)
     rgi_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
+    end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:

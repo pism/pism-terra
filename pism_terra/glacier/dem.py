@@ -375,8 +375,8 @@ def boot_file_from_rgi_id(
     liafr.attrs.update({"units": "1"})
     liafr = liafr.astype("bool")
 
-    ftt_mask = surface.rio.clip(glacier_projected.geometry, drop=False)
-    ftt_mask = xr.where(ftt_mask.isnull(), 1, 0)
+    # ftt_mask = surface.rio.clip(glacier_projected.geometry, drop=False)
+    ftt_mask = xr.ones_like(liafr)
     ftt_mask.name = "ftt_mask"
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")
@@ -387,12 +387,12 @@ def boot_file_from_rgi_id(
 
     ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
 
-    if velocity_dataset is not ("none" or None):
+    if velocity_dataset not in ("none", None):
         v_filename = path / Path(f"obs_{rgi_id}.nc")
-        v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=5000.0, path=v_filename)
+        v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=20000.0, path=v_filename)
         v = v.rio.reproject_match(surface)
         _v = v["v"].fillna(0)
-        ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 500, 2, 1 + (_v - 100) / (500 - 100)))
+        ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 250, 2, 1 + (_v - 100) / (250 - 100)))
         ds["tillwat"].attrs.update({"units": "m"})
         ds = xr.merge([ds, _v])
 

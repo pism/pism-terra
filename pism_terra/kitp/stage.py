@@ -45,9 +45,9 @@ xr.set_options(keep_attrs=True)
 
 def stage(
     config: dict,
-    path: str | Path = "input_files",
-    bucket: str = "pism-cloud-data",
-    prefix: str = "kitp/input",
+    bucket: str,
+    prefix: str,
+    output_path: str | Path,
     force_overwrite: bool = False,
 ) -> pd.DataFrame:
     """
@@ -69,16 +69,16 @@ def stage(
             Path to the heatflux NetCDF file relative to the input directory.
         - ``"regrid_file"`` : str
             Path to the regrid NetCDF file relative to the input directory.
-        - ``"gcm"`` : str
-            GCM model name.
+        - ``"gcms"`` : dict[str, list[str]]
+            Mapping of GCM names to their valid forcing combinations.
         - ``"version"`` : str
             Dataset version.
-    path : str or pathlib.Path, default ``"input_files"``
-        Output directory. Created if missing. All staged artifacts are written here.
-    bucket : str, default ``"pism-cloud-data"``
+    bucket : str
         AWS S3 bucket name to sync KITP input data from.
-    prefix : str, default ``"kitp_greenland_input"``
+    prefix : str
         S3 key prefix (folder path within the bucket).
+    output_path : str or pathlib.Path`
+        Output directory. Created if missing. All staged artifacts are written here.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
@@ -102,14 +102,14 @@ def stage(
     print("")
 
     # Outputs dir
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    input_path = path / Path("input")
+    input_path = output_path / Path(prefix)
+
     if force_overwrite:
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)
-
     s3_to_local(bucket, prefix=prefix, dest=input_path)
 
     grid_file = input_path / Path(config["grid_file"])
@@ -124,6 +124,9 @@ def stage(
     regrid_file = input_path / Path(config["regrid_file"])
     check_xr_lazy(regrid_file)
 
+    ocean_file = input_path / Path(config["ocean_file"])
+    check_xr_lazy(ocean_file)
+
     outline_file = input_path / Path(config["outline_file"])
 
     # Build file index (one row per climate file)
@@ -131,32 +134,29 @@ def stage(
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
         "heatflux_file": heatflux_file.resolve(),
-        "regrid_file": regrid_file.resolve(),
+        "ocean_file": ocean_file.resolve(),
         "outline_file": outline_file.resolve(),
+        "regrid_file": regrid_file.resolve(),
     }
 
-    for key in ("gcms", "present_day_forcings", "future_forcings"):
-        if isinstance(config[key], str):
-            config[key] = [config[key]]
-
     gcms = config["gcms"]
+    climatology = config["climatology"]
     version = config["version"]
-    present_day_forcings = config["present_day_forcings"]
-    future_forcings = config["future_forcings"]
 
-    tasks = [(gcm, pd_forcing, ff) for gcm in gcms for pd_forcing in present_day_forcings for ff in future_forcings]
+    # Build tasks from per-GCM forcing pairs [[future, present], ...]
+    tasks = [(gcm, pair[1], pair[0]) for gcm, pairs in gcms.items() for pair in pairs]
     dfs: list[pd.DataFrame] = []
-    climate_file = input_path / Path(f"HIRHAM5-ERA5_YMM_1990_2019_{version}.nc")
+    climate_file = input_path / Path(f"{climatology}_{version}.nc")
     check_xr_lazy(climate_file)
     files_dict["climate_file"] = climate_file.resolve()
-    files_dict["sample"] = "HIRHAM5-ERA5_YMM_1990_2019"
+    files_dict["sample"] = climatology
     dfs.append(pd.DataFrame.from_dict([files_dict]))
     for task in tasks:
         gcm, pd_forcing, ff = task
-        climate_file = input_path / Path(f"HIRHAM5-ERA5_YMM_1990_2019_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
+        climate_file = input_path / Path(f"{climatology}_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
         check_xr_lazy(climate_file)
         files_dict["climate_file"] = climate_file.resolve()
-        files_dict["sample"] = f"{gcm}_{ff}_{pd_forcing}"
+        files_dict["sample"] = f"gcm_{gcm}_exp_{ff}_{pd_forcing}"
         dfs.append(pd.DataFrame.from_dict([files_dict]))
 
     df = pd.concat(dfs).reset_index(drop=True)
@@ -196,21 +196,25 @@ def main():
     )
 
     options, unknown = parser.parse_known_args()
-    path = options.output_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
+    output_path = options.output_path
+    output_path.mkdir(parents=True, exist_ok=True)
 
     cfg = load_config(config_file)
     config = cfg.campaign.as_params()
 
-    path.mkdir(parents=True, exist_ok=True)
+    s3_bucket: str = config.pop("bucket", "pism-cloud-data")
+    s3_prefix: str = config.pop("prefix", "kitp/input")
+    version: str = config.pop("version", "v2")
+    s3_path = f"""{s3_prefix}/{version}"""
 
-    is_df = stage(config, path=path, force_overwrite=force_overwrite)
-    is_df.to_csv(path / Path("input") / Path("ismip7_greenland_files.csv"))
+    is_df = stage(config, s3_bucket, s3_path, output_path, force_overwrite=force_overwrite)
+    is_df.to_csv(output_path / Path(s3_path) / Path("ismip7_greenland_files.csv"))
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/kitp_greenland" if options.bucket_prefix else "kitp_greenland"
-        local_to_s3(path, bucket=options.bucket, prefix=prefix)
+        local_to_s3(output_path, bucket=options.bucket, prefix=prefix)
 
 
 if __name__ == "__main__":

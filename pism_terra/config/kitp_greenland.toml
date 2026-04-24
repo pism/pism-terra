@@ -2,13 +2,13 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 8
+ntasks = 160
 writer = ""
 
 [job]
 
-queue = "t2small"
-walltime = "48:00:00"
+queue = "t2standard"
+walltime = "96:00:00"
 nodes = 1
 
 [run_info]
@@ -18,22 +18,32 @@ nodes = 1
 
 [campaign]
 
-bucket = "pism-cloud-data"
-prefix = "kitp/input"
-version = "v1"
-gcms = "CESM1-WACCM-SC"
-present_day_forcings = ["pdSST-pdSIC", "pdSST-pdSICSIT", "pa-pdSIC-ext"]
-future_forcings = ["futSST-pdSIC", "pdSST-futArcSIC", "pa-futArcSIC-ext"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+bucket = "pism-cloud-data"
+climatology = "HIRHAM5-ERA5_YMM_1990_2019"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
+ocean_file = "ocean_forcing_228.0_10.0_69.0_80.0.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+prefix = "kitp/input"
+regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
+retreat_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+version = "v4"
+
+[campaign.gcms]
+
+'AWI-CM-1-1-MR' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'CESM1-WACCM-SC' = [["pdSST-futArcSICSIT", "pdSST-pdSICSIT"], ["pa-futArcSIC-ext", "pa-pdSIC-ext"], ["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'CESM2' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'CNRM-CM6-1' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'CanESM5' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'HadGEM3-GC31-MM' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
+'IPSL-CM6A-LR' = [["futSST-pdSIC", "pdSST-pdSIC"], ["pdSST-futArcSIC", "pdSST-pdSIC"], ["futSST-futArcSIC-SUM", "pdSST-pdSIC"]]
 
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0300-01-01"
+'time.end' =  "0301-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -48,6 +58,7 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
+'geometry.front_retreat.prescribed.file' = "none"
 
 ['input']
 
@@ -64,12 +75,12 @@ outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "yearly"
-'output.spatial.vars' = "bmelt,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,mass_fluxes"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,mass_fluxes,grounding_line_flux,pdd_fluxes"
 'output.scalar.file' = "none"
 'output.scalar.times' = "monthly"
 'output.checkpoint.interval' = 24
-'output.extra.stop_missing' = 'no'
+'output.spatial.stop_missing' = 'no'
 'output.ISMIP6' = "no"
 'output.experiment_id_max_length' = 100
 
@@ -102,8 +113,8 @@ model = 'hybrid'
 [stress_balance.options.blatter]
 
 'stress_balance.model' = "blatter"
-'stress_balance.blatter.Mz' = 17
-'stress_balance.blatter.coarsening_factor' = 4
+'stress_balance.blatter.Mz' = 10
+'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.max_diffusivity' = 1000000.0
 bp_ksp_monitor =  ""
@@ -144,27 +155,62 @@ bp_ksp_rtol = 1e-3
 
 [surface]
 
-model = "pdd"
+model = "debm"
 
 [surface.options.pdd]
 
 'surface.models' = "pdd"
+'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
+
+[surface.options.debm]
+
+'surface.models' = "debm_simple"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.albedo_input.file' = "none"
+'surface.debm_simple.albedo_input.periodic' = "yes"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 30
+'surface.debm_simple.c2' = -75
+'surface.debm_simple.refreeze' = 0.60
+'surface.debm_simple.refreeze_ice_melt' = "no"
+'surface.debm_simple.air_temp_all_precip_as_snow' = 272.15
+'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
 
 [calving]
 
-'calving.methods' = 'vonmises_calving'
-'calving.vonmises_calving.sigma_max' = 7.5e5
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.vonmises_calving.sigma_max' = 4.0e5
+'calving.thickness_calving.threshold' = 100.0
 
 [atmosphere]
 
-model = "given"
+model = "given_elevation_change"
 
 [atmosphere.options.given]
 
 'atmosphere.models' = "given"
 'atmosphere.given.file' = "none"
+'atmosphere.given.periodic' = "yes"
+
+[atmosphere.options.given_elevation_change]
+
+'atmosphere.models' = "given,elevation_change"
+'atmosphere.given.file' = "none"
+'atmosphere.given.periodic' = "yes"
+'atmosphere.elevation_change.temperature_lapse_rate' = 6
+'atmosphere.elevation_change.file' = "none"
 
 [ocean]
+
+model = "given"
+
+[ocean.options.given]
+
+'ocean.models' = "given"
+'ocean.given.file' = "none"
+'ocean.given.periodic' = "yes"
 
 [hydrology]
 

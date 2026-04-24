@@ -24,12 +24,13 @@ pathway = "historical"
 version = "1"
 start_year = "1980"
 end_year = "1981"
-gcm = "CESM2-WACCM"
+gcms = "CESM2-WACCM"
 boot_file = "boot_g2400m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
 regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
 retreat_file = "pism_g2400m_frontretreat_calfin_1972_2019_ME.nc"
 heatflux_file  = "heatflux_g2400m_GreenlandObsISMIP7-v1.3.nc"
+outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 
 [time]
 
@@ -68,9 +69,9 @@ heatflux_file  = "heatflux_g2400m_GreenlandObsISMIP7-v1.3.nc"
 'output.scalar.times' = 'daily'
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "bmelt,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,tauc,tillwat"
+'output.spatial.vars' = "bmelt,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,topg,ice_mass,mass_fluxes"
 'output.checkpoint.interval' = 24
-'output.extra.stop_missing' = 'no'
+'output.spatial.stop_missing' = 'no'
 'output.ISMIP6' = "no"
 
 [grid]
@@ -97,13 +98,13 @@ model = "enthalpy"
 
 [stress_balance]
 
-model = 'blatter'
+model = 'hybrid'
 
 [stress_balance.options.blatter]
 
 'stress_balance.model' = "blatter"
-'stress_balance.blatter.Mz' = 17
-'stress_balance.blatter.coarsening_factor' = 4
+'stress_balance.blatter.Mz' = 10
+'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.max_diffusivity' = 1000000.0
 'time_stepping.adaptive_ratio' = 100
@@ -154,8 +155,9 @@ model = "given"
 
 [calving]
 
-'calving.methods' = 'vonmises_calving'
-'calving.vonmises_calving.sigma_max' = 7.5e5
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.vonmises_calving.sigma_max' = 5.0e5
+'calving.thickness_calving.threshold' = 100.0
 
 [atmosphere]
 
@@ -197,7 +199,7 @@ model = "routing"
 [frontal_melt.options.routing]
 
 'frontal_melt.routing.file' = "none"
-'frontal_melt.routing.parameter_a' = 3e-4
-'frontal_melt.routing.parameter_b' = 0.15
+'frontal_melt.routing.parameter_a' = 4.89e-4
+'frontal_melt.routing.parameter_b' = 0.2445
 'frontal_melt.routing.power_alpha' = 0.39
 'frontal_melt.routing.power_beta' = 1.18

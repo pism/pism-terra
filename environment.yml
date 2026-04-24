@@ -2,16 +2,17 @@ name: pism-terra
 channels:
   - conda-forge
 dependencies:
-  - python=3.12
+  - python
   - pip
   # runtime requirements
   - boto3
   - botocore
   - cdsapi
   - python-cdo
-  # - cf_units  # FIXME: Breaks this environment; doesn't appear to be needed
   - cf_xarray
   - cftime
+  - cmap
+  - cmweather
   - dask[distributed,dataframe]
   - dem_stitcher
   - earthaccess
@@ -21,6 +22,7 @@ dependencies:
   - jinja2
   - joblib
   - matplotlib
+  - nc-time-axis
   - netCDF4
   - numpy
   - pandas

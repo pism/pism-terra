@@ -1,0 +1,17 @@
+gridtype = projection
+xsize     = 2869
+ysize     = 2869
+xunits   = "meter"
+yunits   = "meter"
+xfirst    = -3585000
+xinc      = 2500
+yfirst    = -3585000
+yinc      = 2500
+grid_mapping = crs
+grid_mapping_name = polar_stereographic
+straight_vertical_longitude_from_pole = -30.
+standard_parallel = 90.
+latitude_of_projection_origin = 90.
+earth_radius = 6371229.
+false_easting = 172840.374543307
+false_northing = 645049.059394855

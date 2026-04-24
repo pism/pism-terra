@@ -24,6 +24,8 @@ Workflow management.
 from __future__ import annotations
 
 import contextlib
+import logging
+import re
 from pathlib import Path
 from typing import Any, Iterable, TypeVar
 
@@ -36,7 +38,63 @@ import xarray as xr
 from pydantic import BaseModel
 from tqdm.auto import tqdm
 
+logger = logging.getLogger(__name__)
+
 T = TypeVar("T", bound=BaseModel)
+
+
+def parse_cdl_options(cdl_file: str | Path) -> set[str]:
+    """
+    Parse a PISM CDL file and return the set of valid configuration parameter names.
+
+    Extracts names from lines matching ``pism_config:<name> = ...``, ignoring
+    metadata suffixes (``_doc``, ``_type``, ``_units``, ``_option``, ``_choices``,
+    ``_valid_min``, ``_valid_max``).
+
+    Parameters
+    ----------
+    cdl_file : str or Path
+        Path to the CDL file (e.g., ``pism_config.cdl``).
+
+    Returns
+    -------
+    set of str
+        Valid PISM configuration parameter names.
+    """
+    pattern = re.compile(r"^\s*pism_config:(\S+)\s*=")
+    suffixes = ("_doc", "_type", "_units", "_option", "_choices", "_valid_min", "_valid_max")
+    options: set[str] = set()
+    with open(cdl_file, encoding="utf-8") as fh:
+        for line in fh:
+            m = pattern.match(line)
+            if m:
+                name = m.group(1).rstrip(";")
+                if not any(name.endswith(s) for s in suffixes):
+                    options.add(name)
+    return options
+
+
+def validate_pism_options(run: dict[str, Any], cdl_file: str | Path) -> None:
+    """
+    Validate that all keys in a PISM run dictionary are recognized config parameters.
+
+    Prints a warning for each key not found in the master CDL file.
+
+    Parameters
+    ----------
+    run : dict
+        Dictionary of PISM run options (dotted keys like ``"surface.pdd.factor_ice"``).
+    cdl_file : str or Path
+        Path to the PISM CDL master config file.
+    """
+    valid = parse_cdl_options(cdl_file)
+    invalid = sorted(k for k in run if k not in valid)
+    if invalid:
+        logger.warning("%d unrecognized PISM option(s):", len(invalid))
+        for k in invalid:
+            logger.warning("  - %s", k)
+    else:
+        logger.info("All %d PISM options are valid.", len(run))
 
 
 def merge_model(base_model: T, **overrides: Any) -> T:
@@ -627,8 +685,10 @@ def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     p = Path(path).resolve()
     is_ok: bool
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
     try:
-        ds = xr.open_dataset(p)
+        ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_lazy(ds)  # your sampled checker
         if verbose:
             print(f"{p} is valid ✓")
@@ -676,8 +736,10 @@ def check_xr_fully(path: Path | str) -> bool:
     """
     p = Path(path).resolve()
     is_ok: bool
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
     try:
-        ds = xr.open_dataset(p)
+        ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_fully(ds)  # your full-load checker
         print(f"{p} is valid ✓")
         is_ok = True

@@ -21,6 +21,7 @@
 Prepare ISMIP7 Greenland data sets.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -47,13 +48,17 @@ from pism_terra.ismip7.greenland.forcing import prepare_observations
 from pism_terra.kitp.forcing import (
     baseline_with_anomalies,
     prepare_anomalies,
-    prepare_baseline_climatology,
+    prepare_carra2_climatology,
+    prepare_hirham5_climatology,
+    prepare_ocean_forcing,
 )
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -82,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
 
     parser = ArgumentParser()
-    parser.add_argument("--obs-path", default="data/obs")
+    parser.add_argument("--data-path", default="data")
     parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
@@ -102,25 +107,38 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     config_file = args.CONFIG_FILE[0]
     force_overwrite = args.force_overwrite
     ntasks = args.ntasks
-    obs_path = Path(args.obs_path)
+    data_path = Path(args.data_path)
+
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    logging.basicConfig(level=logging.WARNING, format=log_format)
+    for handler in logging.root.handlers:
+        handler.setLevel(logging.WARNING)
+    file_handler = logging.FileHandler(output_path / "prepare.log")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logging.getLogger("pism_terra").setLevel(logging.INFO)
+    logging.getLogger("pism_terra").addHandler(file_handler)
+
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print("Preparing ISMIP7 Greenland data")
-    print("-" * 120)
-    print("")
+    logger.info("=" * 120)
+    logger.info("\n%s", banner)
+    logger.info("=" * 120)
+    logger.info("Preparing ISMIP7 Greenland data")
+    logger.info("-" * 120)
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
     version = config["version"]
 
-    print("-" * 120)
-    print("Grid File")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Grid File")
+    logger.info("-" * 120)
+
+    stage_path = output_path / Path(f"stage_{config["version"]}")
+    stage_path.mkdir(exist_ok=True)
 
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
@@ -131,19 +149,20 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     resolution, _ = int(match.group(1)), match.group(2)
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution)
-    grid_file = output_path / Path("ismip7_greenland_grid.nc")
+    grid_file = data_path / Path("ismip7_greenland_grid.nc")
     encoding = {var: {"_FillValue": None} for var in list(grid_ds.data_vars) + list(grid_ds.coords)}
     grid_ds.to_netcdf(grid_file, encoding=encoding)
     check_xr_fully(grid_file)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
-    print("-" * 120)
-    print("Boot File")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Boot File")
+    logger.info("-" * 120)
+    obs_path = data_path / Path("obs")
     obs_files = prepare_observations(
         url,
         obs_path,
-        output_path,
+        stage_path,
         config,
         target_grid=grid_ds,
         force_overwrite=force_overwrite,
@@ -151,37 +170,66 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     for v in obs_files.values():
         check_xr_lazy(v)
 
-    print("-" * 120)
-    print("Baseline Climatology")
-    print("-" * 120)
-    start_year = config["pathway"]["baseline"]["start_year"]
-    end_year = config["pathway"]["baseline"]["end_year"]
-    baseline_file = prepare_baseline_climatology(
-        output_path,
-        start_year=start_year,
-        end_year=end_year,
-        version=version,
-        n_workers=ntasks,
-        force_overwrite=force_overwrite,
+    logger.info("-" * 120)
+    logger.info("Ocean Forcing")
+    logger.info("-" * 120)
+
+    bmelt_0: float = 228.0
+    bmelt_1: float = 10.0
+    lat_0: float = 69.0
+    lat_1: float = 80.0
+
+    ocean_forcing_file = stage_path / Path(f"ocean_forcing_{bmelt_0}_{bmelt_1}_{lat_0}_{lat_1}.nc")
+    prepare_ocean_forcing(
+        input_path=obs_files["boot_file"],
+        output_path=ocean_forcing_file,
+        bmelt_0=bmelt_0,
+        bmelt_1=bmelt_1,
+        lat_0=lat_0,
+        lat_1=lat_1,
     )
 
-    print("-" * 120)
-    print("Anomaly Forcing")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Baseline Climatology")
+    logger.info("-" * 120)
+    baseline = config["baseline"]
+    if baseline == "hirham5":
+        start_year = config["climatology"][baseline]["start_year"]
+        end_year = config["climatology"][baseline]["end_year"]
+        baseline_file = stage_path / Path(f"HIRHAM5-ERA5_YMM_{start_year}_{end_year}_{version}.nc")
+        prepare_hirham5_climatology(
+            baseline_file,
+            data_path,
+            start_year=start_year,
+            end_year=end_year,
+            n_workers=ntasks,
+            force_overwrite=force_overwrite,
+        )
+    elif baseline == "carra2":
+        year = config["climatology"][baseline]["year"]
+        baseline_file = prepare_carra2_climatology(
+            data_path,
+            year=year,
+            version=version,
+            n_workers=ntasks,
+            force_overwrite=force_overwrite,
+        )
+    else:
+        raise ValueError(f"Unknown baseline {baseline!r}. Supported: 'hirham5', 'carra2'.")
+
+    logger.info("-" * 120)
+    logger.info("Anomaly Forcing")
+    logger.info("-" * 120)
 
     bucket = config["forcing"]["bucket"]
     prefix = config["forcing"]["prefix"]
     gcms = config["gcms"]
-    present_day_forcings = config["forcing"]["present_day_forcings"]
-    future_forcings = config["forcing"]["future_forcings"]
 
     forcing_files = prepare_anomalies(
-        output_path,
+        stage_path,
         bucket=bucket,
         prefix=prefix,
         gcms=gcms,
-        present_day_forcings=present_day_forcings,
-        future_forcings=future_forcings,
         version=version,
         n_workers=ntasks,
         force_overwrite=force_overwrite,
@@ -189,17 +237,17 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     combined_files = baseline_with_anomalies(baseline_file, forcing_files)
 
-    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + forcing_files + combined_files
+    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + [ocean_forcing_file] + combined_files
 
-    s3_output_path = output_path / Path(config["prefix"])
+    s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
     s3_output_path.mkdir(parents=True, exist_ok=True)
-    print("-" * 120)
-    print(f"Copying input files to {s3_output_path}")
-    print("-" * 120)
+    logger.info("-" * 120)
+    logger.info("Copying input files to %s", s3_output_path)
+    logger.info("-" * 120)
     for f in input_files:
         dest = s3_output_path / Path(f).name
         shutil.copy2(f, dest)
-        print(f"  {dest}")
+        logger.info("  %s", dest)
 
     return {
         "config": config,

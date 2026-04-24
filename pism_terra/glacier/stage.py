@@ -39,7 +39,13 @@ from shapely.geometry import Polygon
 from pism_terra.aws import download_from_s3, local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_grid
-from pism_terra.glacier.climate import create_offset_file, era5, pmip4, snap
+from pism_terra.glacier.climate import (
+    create_offset_file,
+    create_step_file,
+    era5,
+    pmip4,
+    snap,
+)
 from pism_terra.glacier.dem import boot_file_from_rgi_id
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
@@ -47,7 +53,13 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 
 xr.set_options(keep_attrs=True)
 
-CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap}
+CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap, "abrupt": snap}
+MODIFIER: Mapping[str, Callable] = {
+    "pmip4": create_offset_file,
+    "era5": create_offset_file,
+    "snap": create_offset_file,
+    "abrupt": create_step_file,
+}
 
 
 def stage_glacier(
@@ -176,7 +188,7 @@ def stage_glacier(
     )
 
     # Grid & bounds
-    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=8000.0)
+    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=2000.0)
     bounds = [
         grid_ds["x_bnds"].values[0][0],
         grid_ds["y_bnds"].values[0][0],
@@ -230,8 +242,7 @@ def stage_glacier(
     domain_bounds_file = path / f"domain_{rgi_id}.gpkg"
     domain_bounds.to_file(domain_bounds_file)
 
-    scalar_offset_file = path / Path(f"scalar_offset_{rgi_id}_id_0.nc")
-    create_offset_file(scalar_offset_file, delta_T=0.0, frac_P=0.0)
+    clim_mod = config["climate"]
 
     # Climate forcing
     climate_from_rgi = CLIMATE[config["climate"]]
@@ -245,14 +256,13 @@ def stage_glacier(
     # Build file index (one row per climate file)
     files_dict = {
         "rgi_id": rgi_id,
-        "outline": glacier_file.resolve(),
+        "outline_file": glacier_file.resolve(),
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
-        "scalar_offset_file": scalar_offset_file.resolve(),
     }
     dfs: list[pd.DataFrame] = []
-    for fpath in responses:
-        row = {**files_dict, "climate_file": Path(fpath).resolve()}
+    for idx, fpath in enumerate(responses):
+        row = {**files_dict, "climate_file": Path(fpath).resolve(), "sample": idx}
         dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)
