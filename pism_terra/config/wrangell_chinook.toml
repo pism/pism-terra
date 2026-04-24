@@ -2,7 +2,7 @@
 
 executable = "pism"
 mpi = ""
-ntasks = 8
+ntasks = 40
 
 [job]
 
