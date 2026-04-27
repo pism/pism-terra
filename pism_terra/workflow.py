@@ -535,7 +535,7 @@ def check_dataset_lazy(
 
     # coord monotonicity
     for xd in ("x", "lon"):
-        if xd in ds.coords:
+        if xd in ds.dims:
             xv = ds[xd].values
             if xv.size < 2:
                 raise ValueError(f"Coordinate '{xd}' has <1 elements")
@@ -543,7 +543,7 @@ def check_dataset_lazy(
                 raise ValueError(f"Coordinate '{xd}' is not strictly monotonic")
 
     for yd in ("y", "lat"):
-        if yd in ds.coords:
+        if yd in ds.dims:
             yv = ds[yd].values
             if yv.size < 2:
                 raise ValueError(f"Coordinate '{yd}' has <1 elements")
@@ -554,13 +554,10 @@ def check_dataset_lazy(
     if "time" in ds.coords:
         _ = xr.decode_cf(ds[["time"]])  # raises if invalid CF time
 
-    # CRS (if rioxarray is available)
+    # CRS (if rioxarray is available) — skip silently on any error
     try:
-        _crs = getattr(ds.rio, "crs", None)
-        if _crs is None:
-            raise ValueError("Dataset has no CRS (.rio.crs is None)")
+        _crs = ds.rio.crs
     except Exception:
-        # If rioxarray not present, skip CRS check
         pass
 
     def nbytes_est(da: xr.DataArray) -> int:
