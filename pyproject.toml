@@ -88,7 +88,7 @@ docs = [
 combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
 pism-glacier-execute = "pism_terra.glacier.execute:main"
 pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
-pism-glacier-prepare = "pism_terra.glacier.prepare:main"
+pism-glacier-prepare = "pism_terra.glacier.prepare:cli"
 pism-glacier-run = "pism_terra.glacier.run:run_single"
 pism-glacier-run-ensemble = "pism_terra.glacier.run:run_ensemble"
 pism-glacier-stage = "pism_terra.glacier.stage:main"
@@ -102,6 +102,7 @@ pism-kitp-prepare = "pism_terra.kitp.prepare:cli"
 pism-kitp-run = "pism_terra.kitp.run:run_single"
 pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
 pism-kitp-stage = "pism_terra.kitp.stage:main"
+pism-s4f-prepare = "pism_terra.glacier.s4f:main"
 
 [tool.setuptools.packages.find]
 include = ["pism_terra*"]

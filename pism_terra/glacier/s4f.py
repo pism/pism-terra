@@ -21,7 +21,6 @@
 Staging.
 """
 
-import shutil
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
@@ -68,7 +67,7 @@ MODIFIER: Mapping[str, Callable] = {
 }
 
 
-def stage_glacier(
+def s4f_glacier(
     config: dict,
     rgi_id: str,
     path: str | Path = "input_files",
@@ -98,15 +97,14 @@ def stage_glacier(
     rgi_id : str
         Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
     path : str or pathlib.Path, default ``"input_files"``
-        Final output directory. Created if missing. Holds the artifacts that
-        downstream tooling consumes: glacier outline GPKG, boot NetCDF,
-        grid NetCDF, and climate forcing NetCDF.
+        Final output directory. Created if missing. Holds only the
+        Cloud Optimized GeoTIFF outputs (one per spatial variable in the boot
+        dataset).
     staging_path : str or pathlib.Path or None, optional
-        Working directory for intermediate files (RGI table cache, DEM tifs,
-        ice-thickness/velocity intermediates, ERA5/PMIP4 raw downloads,
-        debug GPKGs, domain-bounds polygon). Created if missing. If ``None``
-        (default), falls back to ``path`` (legacy behavior — everything in
-        one directory).
+        Working directory for intermediate files (RGI table cache, glacier
+        outline GPKG, DEM tifs, ice-thickness/velocity intermediates). Created
+        if missing. If ``None`` (default), falls back to ``path`` (legacy
+        behavior — everything in one directory).
     resolution : float, default ``100.0``
         Target grid resolution (meters), used both for grid construction and in
         output filenames.
@@ -158,11 +156,11 @@ def stage_glacier(
     print("=" * 120)
     print(banner)
     print("=" * 120)
-    print(f"Stage Glacier {rgi_id}")
+    print(f"S4F Planning Glacier {rgi_id}")
     print("-" * 120)
     print("")
 
-    # Output dirs: `path` holds final artifacts; `staging_path` holds intermediates.
+    # Output dirs: `path` holds only COGs; `staging_path` holds intermediates.
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     staging_path = Path(staging_path) if staging_path is not None else path
@@ -182,23 +180,13 @@ def stage_glacier(
     if glacier.empty:
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
-    glacier_file = path / f"rgi_{rgi_id}.gpkg"
+    glacier_file = staging_path / f"rgi_{rgi_id}.fgb"
     dst_crs = glacier["epsg"].values[0]
     glacier_projected = glacier.to_crs(dst_crs)
     glacier.to_file(glacier_file)
 
     x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=2_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
-    cells_file = staging_path / f"rgi_{rgi_id}_cells.gpkg"
-    gdf_cells = grid_cells_from_dataset(grid_ds)
-    gdf_cells.to_file(cells_file)
-    points_file = staging_path / f"rgi_{rgi_id}_points.gpkg"
-    gdf_points = grid_points_from_dataset(grid_ds)
-    gdf_points.to_file(points_file)
-
-    # Output filenames
-    boot_file = path / f"bootfile_{rgi_id}.nc"
-    grid_file = path / f"grid_{rgi_id}.nc"
 
     # Build boot dataset (DEM/thickness/bed) — caches go to staging
     boot_ds = boot_file_from_grid(
@@ -215,72 +203,21 @@ def stage_glacier(
     )
 
     print("")
-    print("Saving bootfile")
+    print("Saving Cloud Optimized GeoTIFFs")
     print("-" * 120)
-    boot_file.unlink(missing_ok=True)
-    boot_ds.to_netcdf(boot_file, engine="netcdf4")
-    check_xr_lazy(boot_file)
-
-    grid_ds.attrs.update({"domain": rgi_id})
-    grid_file.unlink(missing_ok=True)
-    grid_ds.to_netcdf(grid_file, engine="netcdf4")
-    check_xr_fully(grid_file)
-
-    # Save domain extent polygon as a GPKG (intermediate, used for sanity checks)
-    x_point_list = [
-        grid_ds.x_bnds[0][0],
-        grid_ds.x_bnds[0][0],
-        grid_ds.x_bnds[0][1],
-        grid_ds.x_bnds[0][1],
-        grid_ds.x_bnds[0][0],
-    ]
-    y_point_list = [
-        grid_ds.y_bnds[0][0],
-        grid_ds.y_bnds[0][1],
-        grid_ds.y_bnds[0][1],
-        grid_ds.y_bnds[0][0],
-        grid_ds.y_bnds[0][0],
-    ]
-    domain_bounds_geom = Polygon(zip(x_point_list, y_point_list))
-    domain_bounds = gpd.GeoDataFrame(index=[0], crs=dst_crs, geometry=[domain_bounds_geom])
-    domain_bounds_file = staging_path / f"domain_{rgi_id}.gpkg"
-    domain_bounds.to_file(domain_bounds_file)
-
-    clim_mod = config["climate"]
-
-    # Climate forcing — built into staging, then final outputs moved to `path`
-    climate_from_rgi = CLIMATE[config["climate"]]
-    responses = climate_from_rgi(
-        rgi_id=rgi_id, rgi=rgi, path=staging_path, force_overwrite=force_overwrite
-    )  # list[Path]
-    # Normalize to list[Path]
-    if isinstance(responses, (str, Path)):
-        responses = [Path(responses)]
-    else:
-        responses = [Path(p) for p in responses]
-    if staging_path.resolve() != path.resolve():
-        moved: list[Path] = []
-        for src in responses:
-            dst = path / src.name
-            dst.unlink(missing_ok=True)
-            shutil.move(str(src), str(dst))
-            moved.append(dst)
-        responses = moved
-
-    # Build file index (one row per climate file)
-    files_dict = {
-        "rgi_id": rgi_id,
-        "outline_file": glacier_file.resolve(),
-        "boot_file": boot_file.resolve(),
-        "grid_file": grid_file.resolve(),
-    }
-    dfs: list[pd.DataFrame] = []
-    for idx, fpath in enumerate(responses):
-        row = {**files_dict, "climate_file": Path(fpath).resolve(), "sample": idx}
-        dfs.append(pd.DataFrame.from_dict([row]))
-
-    df = pd.concat(dfs).reset_index(drop=True)
-    return df
+    for var in boot_ds.data_vars:
+        da = boot_ds[var]
+        if not {"x", "y"}.issubset(set(da.dims)):
+            continue
+        cog_path = path / f"{rgi_id}_{var}.tif"
+        out = da.astype("uint8") if da.dtype == bool else da
+        out.rio.to_raster(cog_path, driver="COG", compress="DEFLATE")
+        print(cog_path)
+        if var == "surface":
+            cog_clipped_path = path / f"{rgi_id}_{var}_clipped.tif"
+            out_clipped = out.rio.clip(glacier_projected.geometry, drop=False)
+            out_clipped.rio.to_raster(cog_clipped_path, driver="COG", compress="DEFLATE")
+            print(cog_clipped_path)
 
 
 def main():
@@ -310,11 +247,6 @@ def main():
         default=False,
     )
     parser.add_argument(
-        "RGI_ID",
-        help="RGI ID.",
-        nargs=1,
-    )
-    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -324,31 +256,47 @@ def main():
     path = options.output_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
-    rgi_id = options.RGI_ID[0]
+
+    path.mkdir(parents=True, exist_ok=True)
 
     cfg = load_config(config_file)
     config = cfg.campaign.as_params()
 
-    path.mkdir(parents=True, exist_ok=True)
-    glacier_path = path / Path(rgi_id)
-    glacier_path.mkdir(parents=True, exist_ok=True)
+    print("RGI Database")
+    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_file"]}"""
+    rgi_local = path / config["rgi_file"]
+    if not rgi_local.exists():
+        print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
+        download_from_s3(rgi_s3_uri, rgi_local)
+    else:
+        print(f"Using cached {rgi_local}")
+    rgi = gpd.read_file(rgi_local)
 
-    input_path = glacier_path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
-    staging_path = glacier_path / Path("staging")
-    staging_path.mkdir(parents=True, exist_ok=True)
-    glacier_df = stage_glacier(
-        config,
-        rgi_id,
-        path=input_path,
-        staging_path=staging_path,
-        force_overwrite=force_overwrite,
-    )
-    glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))
+    rgi_cloud = path / config["rgi_file"].replace("gpkg", "fgb")
+    print(rgi_cloud)
+    rgi.to_file(rgi_cloud)
 
-    if options.bucket:
-        prefix = f"{options.bucket}/{rgi_id}" if options.bucket_prefix else rgi_id
-        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
+    for rgi_id in rgi.rgi_id:
+        glacier_path = path / Path(rgi_id)
+        glacier_path.mkdir(parents=True, exist_ok=True)
+
+        input_path = glacier_path / Path("input")
+        input_path.mkdir(parents=True, exist_ok=True)
+        staging_path = glacier_path / Path("staging")
+        staging_path.mkdir(parents=True, exist_ok=True)
+        s4f_glacier(
+            config,
+            rgi_id,
+            path=input_path,
+            staging_path=staging_path,
+            force_overwrite=force_overwrite,
+        )
+
+    print(config)
+    bucket = config["bucket"]
+    prefix = config["prefix"]
+    print("Now run")
+    print(f"""aws s3 sync {path} s3://{bucket}/{prefix}/planning --exclude "*/staging/*" """)
 
 
 if __name__ == "__main__":

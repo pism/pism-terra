@@ -31,20 +31,33 @@ def setup_logging(log_file: str | Path) -> None:
 
     Sets up two handlers:
 
-    - **Console** (root): INFO level with ``%(message)s`` format for clean
-      terminal output.
+    - **Console** (root): WARNING level so per-step INFO chatter does not
+      interleave with tqdm progress bars on the terminal.
     - **File**: INFO level with full
       ``%(asctime)s - %(name)s - %(levelname)s - %(message)s`` format for
       detailed log files.
+
+    The ``pism_terra`` logger is set to INFO so all package-level INFO records
+    are captured by the file handler (and bubble up to console only at WARNING+).
 
     Parameters
     ----------
     log_file : str or Path
         Path to the log file. Parent directories must already exist.
     """
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     file_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    logging.basicConfig(level=logging.WARNING, format=file_format)
+    for handler in logging.root.handlers:
+        handler.setLevel(logging.WARNING)
+
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter(file_format))
-    logging.getLogger("pism_terra").addHandler(file_handler)
+
+    pkg_logger = logging.getLogger("pism_terra")
+    pkg_logger.setLevel(logging.INFO)
+    pkg_logger.addHandler(file_handler)
+
+    # Quiet noisy third-party INFO chatter (CDS API, AWS, etc.) on the console.
+    for name in ("cdsapi", "datapi", "multiurl", "ecmwf", "botocore", "s3transfer", "boto3"):
+        logging.getLogger(name).setLevel(logging.WARNING)

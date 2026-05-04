@@ -24,28 +24,25 @@ Prepare DEM.
 
 from __future__ import annotations
 
+import collections
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
-import geopandas as gpd
-import numpy as np
 import rasterio
 import rioxarray as rxr
 import xarray as xr
 from dem_stitcher import stitch_dem
+from pyproj import Transformer
 
-from pism_terra.domain import create_domain
 from pism_terra.glacier.ice_thickness import get_ice_thickness
-from pism_terra.glacier.observations import glacier_velocities_from_rgi_id
-from pism_terra.raster import reproject_file
-from pism_terra.vector import get_glacier_from_rgi_id
+from pism_terra.glacier.observations import glacier_velocities_from_grid
 from pism_terra.workflow import check_rio
 
 xr.set_options(keep_attrs=True)
 
 
 def get_surface_dem_by_bounds(
-    bounds: tuple[float, float, float, float],
+    bounds: Sequence[float],
     dataset: Literal["glo_30", "arcticdem"],
     path: str | Path = "input",
     force_overwrite: bool = False,
@@ -111,9 +108,9 @@ def get_surface_dem_by_bounds(
     """
     out_dir = Path(path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    geoid_file = out_dir / f"{dataset}.tif"
+    geo_file = out_dir / f"{dataset}.tif"
     # Reuse if present and readable
-    if (not check_rio(geoid_file)) or force_overwrite:
+    if (not check_rio(geo_file)) or force_overwrite:
         X, p = stitch_dem(
             bounds,
             dem_name=dataset,
@@ -132,54 +129,49 @@ def get_surface_dem_by_bounds(
             }
         )
 
-        with rasterio.open(geoid_file, "w", **p) as src:
+        with rasterio.open(geo_file, "w", **p) as src:
             src.write(X, 1)  # write band 1
             src.update_tags(AREA_OR_POINT="Point")
 
-    return geoid_file
+    return geo_file
 
 
 def prepare_surface(
-    bounds: tuple[float, float, float, float],
-    crs: str,
+    target_grid: xr.Dataset,
     dataset: Literal["glo_30", "arcticdem"],
     path: str | Path = "input_files",
-    resolution: float = 50.0,
     **kwargs,
-) -> tuple[Path, Path]:
+) -> xr.DataArray:
     """
-    Prepare a surface DEM and matching target grid over a glacier extent.
+    Prepare a surface DEM aligned to a target grid.
 
     Workflow:
-    (1) Download/mosaic a DEM over ``bounds`` (geographic),
-    (2) reproject/resample it to ``crs`` at ``resolution``,
-    (3) crop to a 100 m–aligned box in projected coordinates,
-    (4) generate a regular target grid covering that box, and
-    (5) write both the surface (NetCDF) and the target grid (NetCDF) to ``path``.
+    (1) Derive a geographic (WGS84) bounding box from ``target_grid``.
+    (2) Download/mosaic a DEM over that bounding box.
+    (3) Reproject/resample it to match ``target_grid`` (CRS, extent, resolution).
+    (4) Write the result to ``surface.nc`` under ``path`` and return it.
 
     Parameters
     ----------
-    bounds : tuple of float
-        Geographic bounding box as ``(minx, miny, maxx, maxy)`` in WGS84 degrees.
-    crs : str
-        Target coordinate reference system (e.g., ``"EPSG:32606"``).
+    target_grid : xarray.Dataset
+        Target grid dataset providing the destination CRS (via ``spatial_ref``)
+        and the cell-edge bounds (``x_bnds``/``y_bnds``) used to derive both the
+        geographic query bounds and the destination grid for reprojection.
     dataset : str, default ``"glo_30"``
         DEM source identifier passed to :func:`get_surface_dem_by_bounds`.
     path : str or pathlib.Path, default ``"input_files"``
         Output directory for generated files. Created if missing.
-    resolution : float, default ``50.0``
-        Target grid spacing (meters) used during reprojection and grid creation.
     **kwargs
         Additional keyword arguments forwarded to :func:`get_surface_dem_by_bounds`
         (e.g., ``force_overwrite=True``). These do not affect the reprojection
-        or grid creation steps directly.
+        step directly.
 
     Returns
     -------
-    tuple of pathlib.Path
-        ``(surface_file, target_grid_file)``:
-        - ``surface_file``: NetCDF with variable ``surface`` (meters).
-        - ``target_grid_file``: NetCDF with the regular grid (coords/bounds).
+    xarray.DataArray
+        Surface elevation (meters) on ``target_grid``, with
+        ``standard_name="land_ice_elevation"``. Also written to
+        ``Path(path) / "surface.nc"``.
 
     Raises
     ------
@@ -194,59 +186,41 @@ def prepare_surface(
     -----
     - The surface variable is named ``"surface"`` with
       ``standard_name="land_ice_elevation"`` and ``units="m"``.
-    - Cropping aligns the domain to multiples of 100 m in projected x/y:
-      ``x_min = ceil(min(x)/100)*100`` and ``x_max = floor(max(x)/100)*100``
-      (similarly for y).
-    - After interpolation to the target grid, missing values are filled with 0.
+    - After reprojection to the target grid, missing values are filled with 0.
       Adjust if downstream tooling expects masked NaNs instead.
-
-    Examples
-    --------
-    >>> surf_nc, grid_nc = prepare_surface(
-    ...     bounds=(214.1, 59.0, 219.7, 63.9),
-    ...     crs="EPSG:32606",
-    ...     dem_name="glo_30",
-    ...     path="input_files",
-    ...     resolution=50.0,
-    ...     force_overwrite=True,  # forwarded via **kwargs
-    ... )
     """
 
-    geoid_file = get_surface_dem_by_bounds(bounds, dataset=dataset, path=path, **kwargs)
-    projected_file = reproject_file(geoid_file, crs, resolution)
+    bounds = [
+        target_grid.x_bnds.values[0][0],
+        target_grid.y_bnds.values[0][0],
+        target_grid.x_bnds.values[-1][-1],
+        target_grid.y_bnds.values[-1][-1],
+    ]
+    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    t = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
+    geo_bounds = t.transform_bounds(*bounds)
 
-    surface = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
+    geo_file = get_surface_dem_by_bounds(geo_bounds, dataset=dataset, path=path, **kwargs)
+    surface = rxr.open_rasterio(geo_file).squeeze().drop_vars("band", errors="ignore")
     surface.name = "surface"
     surface.attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
 
-    # Round in projected meters to a 100 m grid
-    x_min = np.ceil((surface.x.min()) / 100) * 100
-    x_max = np.floor((surface.x.max()) / 100) * 100
-    y_min = np.ceil((surface.y.min()) / 100) * 100
-    y_max = np.floor((surface.y.max()) / 100) * 100
-
-    target_grid = create_domain([x_min, x_max], [y_min, y_max], resolution=resolution, crs=crs)
-
-    surface = surface.interp_like(target_grid).fillna(0)
+    surface_reprojected = surface.rio.reproject_match(target_grid).fillna(0)
 
     surface_file = Path(path) / "surface.nc"
-    surface.to_netcdf(surface_file)
+    surface_reprojected.to_netcdf(surface_file)
 
-    target_grid_file = Path(path) / "target_grid.nc"
-    target_grid.to_netcdf(target_grid_file)
-
-    return surface_file, target_grid_file
+    return surface_reprojected
 
 
-def boot_file_from_rgi_id(
+def boot_file_from_grid(
+    target_grid: xr.Dataset,
     rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path,
+    geometries: collections.abc.Iterable,
     dem_dataset: Literal["glo_30", "arcticdem"],
     ice_thickness_dataset: Literal["maffezzoli", "millan"],
     velocity_dataset: Literal["none", "its_live"] | None,
-    buffer_distance: float = 5000.0,
     path: str | Path = "input_files",
-    resolution: float = 50.0,
     **kwargs,
 ) -> xr.Dataset:
     """
@@ -263,25 +237,23 @@ def boot_file_from_rgi_id(
 
     Parameters
     ----------
+    target_grid : xarray.Dataset
+        Target grid dataset (with ``x``/``y`` coords, ``x_bnds``/``y_bnds`` cell-edge
+        bounds, and ``spatial_ref`` carrying the destination CRS) onto which all
+        derived fields are aligned.
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-06-00014"``.
-    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
-        In-memory RGI table or a path to a GeoPackage/shape readable by
-        :func:`geopandas.read_file`. Must contain a row with ``rgi_id`` and an
-        ``epsg`` column specifying the glacier CRS.
+    geometries : iterable of shapely geometries
+        Glacier outline(s) in ``target_grid``'s CRS, used for clipping the DEM
+        and constructing masks.
     dem_dataset : str, default ``"glo_30"``
         DEM source for surface preparation (e.g., ``"glo_30"``, ``"arcticdem"``).
     ice_thickness_dataset : str, default ``"maffezzoli"``
         Source for ice thickness (e.g., ``"glo_30"``, ``"arcticdem"``).
     velocity_dataset : str, default ``"its_live"``
         Source for velocities (e.g., ``"none"``, ``"its_live"``).
-    buffer_distance : float, default ``5000.0``
-        Buffer distance **in meters** applied to the glacier polygon in the projected CRS
-        to define the working extent for DEM/thickness.
     path : str or pathlib.Path, default ``"input_files"``
         Working directory used by helper routines to cache/write intermediate rasters/grids.
-    resolution : float, default ``50.0``
-        Target grid spacing (meters) for reprojection/resampling.
     **kwargs
         Forwarded to :func:`prepare_surface` (e.g., ``force_overwrite=True``) and any
         downstream helpers it calls. Does not alter variable naming/semantics.
@@ -319,8 +291,6 @@ def boot_file_from_rgi_id(
         Mosaic/reproject a DEM over a geographic bounding box and build the target grid.
     get_ice_thickness
         Interpolate glacier ice thickness onto a target grid.
-    create_domain
-        Create a regular xarray grid with specified bounds and resolution.
     glacier_velocities_from_rgi_id
         Retrieve observed surface velocities for the glacier domain.
 
@@ -337,39 +307,25 @@ def boot_file_from_rgi_id(
 
     print("")
     print("Generate DEM")
-    print("-" * 80)
+    print("-" * 120)
 
-    # Accept GeoDataFrame or a path to the RGI layer
-    if isinstance(rgi, (str, Path)):
-        rgi = gpd.read_file(rgi)
+    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
 
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
-    glacier_series = glacier.iloc[0]
-    dst_crs = glacier_series["epsg"]
-
-    glacier_projected = glacier.to_crs(dst_crs)
-    geometry_buffered_projected = glacier_projected.geometry.buffer(buffer_distance)
-    geometry_buffered_geoid = geometry_buffered_projected.to_crs("EPSG:4326").iloc[0]
-
-    bounds_geoid_buffered = geometry_buffered_geoid.bounds
-    surface_file, target_grid_file = prepare_surface(
-        bounds_geoid_buffered, dst_crs, dataset=dem_dataset, path=path, resolution=resolution
-    )
-    surface = xr.open_dataarray(surface_file)
+    surface = prepare_surface(target_grid, dataset=dem_dataset, path=path)
     surface = surface.where(surface > 0.0, 0.0)
-    target_grid = xr.open_dataset(target_grid_file)
 
     ice_thickness = get_ice_thickness(
-        glacier, dataset=ice_thickness_dataset, path=path, target_grid=target_grid, target_crs=dst_crs, **kwargs
+        rgi_id, dataset=ice_thickness_dataset, path=path, target_grid=target_grid, target_crs=dst_crs, **kwargs
     )
-    ice_thickness = ice_thickness.rio.clip(glacier_projected.geometry, drop=False).fillna(0)
+    ice_thickness = ice_thickness.rio.reproject_match(target_grid)
+    ice_thickness = ice_thickness.rio.clip(geometries, drop=False).fillna(0)
     ice_thickness = ice_thickness.where(ice_thickness > 0.0, 0.0)
 
     bed = surface - ice_thickness
     bed.name = "bed"
     bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
 
-    liafr = surface.rio.clip(glacier_projected.geometry, drop=False)
+    liafr = surface.rio.clip(geometries, drop=False)
     liafr = xr.where(liafr.isnull(), 0, 1)
     liafr.name = "land_ice_area_fraction_retreat"
     liafr.attrs.update({"units": "1"})
@@ -385,15 +341,19 @@ def boot_file_from_rgi_id(
     tillwat.name = "tillwat"
     tillwat.attrs.update({"units": "m"})
 
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat])
-
+    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat], compat="no_conflicts")
     if velocity_dataset not in ("none", None):
         v_filename = path / Path(f"obs_{rgi_id}.nc")
-        v = glacier_velocities_from_rgi_id(rgi_id, rgi, buffer_distance=20000.0, path=v_filename)
-        v = v.rio.reproject_match(surface)
+        v = glacier_velocities_from_grid(target_grid, geometries, path=v_filename)
         _v = v["v"].fillna(0)
         ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 250, 2, 1 + (_v - 100) / (250 - 100)))
         ds["tillwat"].attrs.update({"units": "m"})
-        ds = xr.merge([ds, _v])
+        ds["v"] = v["v"]
 
-    return ds.fillna(0)
+    ds = ds.fillna(0)
+    if hasattr(ds["spatial_ref"], "GeoTransform"):
+        del ds["spatial_ref"].attrs["GeoTransform"]
+    for name in ("x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
+        if name in ds:
+            ds[name].encoding.update({"_FillValue": None})
+    return ds

@@ -58,9 +58,9 @@ from pism_terra.download import (
     parse_filename,
     save_netcdf,
 )
-from pism_terra.glacier.dem import get_glacier_from_rgi_id
 from pism_terra.grids import load_grid
 from pism_terra.raster import add_time_bounds
+from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
 logger = logging.getLogger(__name__)
@@ -754,7 +754,7 @@ def era5(
         for v in common_vars:
             ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
 
-    ds = xr.merge([ds, ds_geo_], combine_attrs="override")
+    ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
     ds = ds.rename({"valid_time": "time"})
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
@@ -915,8 +915,6 @@ def pmip4(
     maxx = (np.ceil(maxx * 10) / 10) % 360
     miny = np.floor(miny * 10) / 10
     maxy = np.ceil(maxy * 10) / 10
-
-    print(f"Bounding box {minx}, {maxx}, {miny}, {maxy}")
 
     fs = s3fs.S3FileSystem(anon=True)
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)

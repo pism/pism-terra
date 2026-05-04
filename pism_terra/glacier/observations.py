@@ -23,6 +23,7 @@
 Prepare observations.
 """
 
+import collections
 from pathlib import Path
 
 import geopandas as gpd
@@ -38,6 +39,7 @@ from pism_terra.workflow import check_xr_lazy
 def get_velocities_by_bounds(
     bounds: tuple[float, float, float, float],
     product_name: str = "its_live",
+    src_crs: str | None = None,
 ) -> xr.Dataset:
     """
     Retrieve and subset a velocity product over a specified geographic bounding box.
@@ -48,11 +50,13 @@ def get_velocities_by_bounds(
     Parameters
     ----------
     bounds : tuple of float
-        Geographic bounding box in EPSG:4326 coordinates, formatted as
-        (minx, miny, maxx, maxy).
+        Bounding box ``(minx, miny, maxx, maxy)`` in the CRS given by ``src_crs``.
     product_name : {"its_live"}, optional
         The name of the velocity product to query. Currently only "its_live" is supported.
         Default is "its_live".
+    src_crs : str or None, optional
+        CRS of ``bounds`` (e.g., ``"EPSG:3413"``). If ``None``, ``"EPSG:4326"``
+        (longitude/latitude) is assumed.
 
     Returns
     -------
@@ -71,8 +75,9 @@ def get_velocities_by_bounds(
     - This function currently only supports the ITS_LIVE global velocity mosaic.
     """
 
-    # Define source CRS
-    src_crs = "EPSG:4326"
+    # Define source CRS if not given.
+    if src_crs is None:
+        src_crs = "EPSG:4326"
 
     # Load dataset
     if product_name == "its_live":
@@ -86,7 +91,6 @@ def get_velocities_by_bounds(
     # Transform bounds to destination CRS
     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
     bbox_out = transformer.transform_bounds(*bounds)
-
     # Clip dataset
     subset = ds.rio.clip_box(minx=bbox_out[0], miny=bbox_out[1], maxx=bbox_out[2], maxy=bbox_out[3])
 
@@ -141,36 +145,33 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
     return ds
 
 
-def glacier_velocities_from_rgi_id(
-    rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
+def glacier_velocities_from_grid(
+    target_grid: xr.Dataset,
+    geometries: collections.abc.Iterable,
     product_name: str = "its_live",
-    buffer_distance: float = 10000.0,
     path: Path | str = "tmp.nc",
     force_overwrite: bool = False,
 ) -> xr.Dataset:
     """
     Generate observed glacier surface velocities for a glacier by RGI ID.
 
-    Extracts the glacier geometry, builds a buffered extent, fetches a velocity
+    Extracts the glacier geometry, builds an extent, fetches a velocity
     product (e.g., ITS_LIVE) over that region, clips it to the glacier outline,
     and returns the result as an xarray dataset. A cached NetCDF at ``path`` is
     reused unless ``force_overwrite=True``.
 
     Parameters
     ----------
-    rgi_id : str
-        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
-    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
-        In-memory RGI table or a path to a GeoPackage/shape readable by
-        :func:`geopandas.read_file`. Must contain the feature with ``rgi_id``
-        and an ``epsg`` column for the glacier CRS.
+    target_grid : xarray.Dataset
+        Target grid dataset whose ``x``/``y`` extent (in the grid's projected CRS,
+        as recorded in ``spatial_ref``) defines the velocity query region. The
+        velocity product is reprojected/aligned to this grid.
+    geometries : iterable of shapely geometries
+        Glacier outline(s) in ``target_grid``'s CRS. Used to clip the velocity
+        dataset to the glacier footprint.
     product_name : str, default ``"its_live"``
         Velocity product to retrieve (e.g., ``"its_live"``). Passed to
         :func:`get_velocities_by_bounds`.
-    buffer_distance : float, default ``2000.0``
-        Buffer (meters) applied to the glacier polygon in its projected CRS to
-        form the query extent for the velocity product.
     path : str or pathlib.Path, default ``"tmp.nc"``
         Cache file for the clipped velocity dataset. When present and valid
         (per :func:`check_xr_lazy`), it is opened instead of re-downloading.
@@ -184,63 +185,27 @@ def glacier_velocities_from_rgi_id(
         on the source product but typically include components (e.g., ``u``,
         ``v`` or ``vx``, ``vy``) and possibly speed (e.g., ``v``). CRS is
         recorded via :mod:`rioxarray`.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the provided RGI path does not exist.
-    ValueError
-        If ``rgi_id`` is missing from the RGI layer or CRS info is invalid.
-    Exception
-        Propagated I/O, reprojection, or decoding errors from helper functions.
-
-    See Also
-    --------
-    get_glacier_from_rgi_id
-        Look up the glacier feature/CRS from the RGI table.
-    get_velocities_by_bounds
-        Fetch velocity data for a geographic bounding box.
-    check_xr_lazy
-        Lightweight validity check for an on-disk xarray dataset.
-
-    Notes
-    -----
-    - Buffering is performed in the glacier’s projected CRS (meters) and the
-      buffered geometry is reprojected to WGS84 only to compute geographic
-      bounds for the velocity query.
-    - On cache reuse, the code sets the dataset CRS to the glacier CRS; on a
-      fresh download, CRS comes from the source product. If you require a
-      specific target CRS, reproject with ``.rio.reproject_match(...)``.
     """
 
     print("")
     print("Generate Velocity Observations")
-    print("-" * 80)
+    print("-" * 120)
 
     crs = "EPSG:3857"
-
-    if isinstance(rgi, str | Path):
-        rgi = gpd.read_file(rgi)
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
-    glacier_series = glacier.iloc[0]
-    dst_crs = glacier_series["epsg"]
 
     if (not check_xr_lazy(path)) or force_overwrite:
 
         path = Path(path)
         path.unlink(missing_ok=True)
 
-        glacier_projected = glacier.to_crs(dst_crs)
-        geometry_buffered_projected = glacier_projected.geometry.buffer(buffer_distance)
-        geometry_buffered_geoid = geometry_buffered_projected.to_crs("EPSG:4326").iloc[0]
-
-        bounds = geometry_buffered_geoid.bounds
-
-        ds = get_velocities_by_bounds(bounds, product_name=product_name)
-        glacier_projected = glacier.to_crs(crs)
-        ds_clipped = ds.rio.clip(glacier_projected.geometry, drop=False)
+        bounds = [target_grid.x.values[0], target_grid.y.values[0], target_grid.x.values[-1], target_grid.y.values[-1]]
+        dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+        t = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
+        geo_bounds = t.transform_bounds(*bounds)
+        ds = get_velocities_by_bounds(geo_bounds, product_name=product_name)
+        ds.to_netcdf("mv.nc")
         # Reproject to the glacier's target CRS to match the PISM grid
-        ds_clipped = ds_clipped.rio.reproject(dst_crs)
+        ds_clipped = ds.rio.reproject_match(target_grid).rio.clip(geometries, drop=False)
         # Ensure y is strictly increasing (PISM requires this for regridding)
         if ds_clipped.y[0] > ds_clipped.y[-1]:
             ds_clipped = ds_clipped.sortby("y")
@@ -250,5 +215,5 @@ def glacier_velocities_from_rgi_id(
 
     else:
         ds_clipped = xr.open_dataset(path)
-        ds_clipped.rio.write_crs(crs, inplace=True)
+    ds_clipped.rio.write_crs(crs, inplace=True)
     return ds_clipped

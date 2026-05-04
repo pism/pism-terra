@@ -245,23 +245,24 @@ def prepare_ice_thickness_maffezzoli(
 
 
 def get_ice_thickness(
-    glacier,
+    rgi_id: str,
     target_grid: xr.Dataset | xr.DataArray,
     dataset: Literal["millan", "maffezzoli"] = "maffezzoli",
     path: str | Path = "input_files",
     **kwargs,
-):
+) -> xr.DataArray:
     """
     Prepare ice thickness data for a given glacier and target grid.
 
     This function dispatches to a dataset-specific loader to prepare an
     ice thickness field interpolated to the resolution and bounds of a
-    specified target grid. Currently only the "millan" dataset is supported.
+    specified target grid.
 
     Parameters
     ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Glacier geometry to match against ice thickness tiles.
+    rgi_id : str
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``) used to locate
+        the relevant ice thickness tiles.
     target_grid : xarray.Dataset or xarray.DataArray
         Grid to which the output ice thickness will be interpolated.
     dataset : str, optional
@@ -285,9 +286,9 @@ def get_ice_thickness(
     """
     logger.info("Getting ice thickness from dataset '%s'", dataset)
     if dataset == "maffezzoli":
-        thickness = get_ice_thickness_maffezzoli(glacier, target_grid, path=path, **kwargs)
+        thickness = get_ice_thickness_maffezzoli(rgi_id, target_grid, path=path, **kwargs)
     elif dataset == "millan":
-        thickness = get_ice_thickness_millan(glacier, target_grid, path=path, **kwargs)
+        thickness = get_ice_thickness_millan(rgi_id, target_grid, path=path, **kwargs)
     else:
         raise NotImplementedError(f"Ice thickness dataset '{dataset}' not implemented.")
     thickness = thickness.where(thickness > 0, 0)
@@ -297,15 +298,16 @@ def get_ice_thickness(
 
 
 def get_ice_thickness_maffezzoli(
-    glacier, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
+    rgi_id: str, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
 ):
     """
     Load and interpolate Maffezzoli et al. (2026) ice thickness data to a target grid.
 
     Parameters
     ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Geometry of the glacier to extract overlapping thickness rasters.
+    rgi_id : str
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``) used to locate
+        the overlapping Maffezzoli thickness rasters.
     target_grid : xarray.Dataset or xarray.DataArray
         Target grid to which ice thickness should be interpolated.
     path : str or pathlib.Path, default ``"input_files"``
@@ -329,17 +331,16 @@ def get_ice_thickness_maffezzoli(
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
+    prefix: str = kwargs.pop("prefix", "glacier")
 
     out_dir = Path(path)
-    thickness_file = out_dir / "thickness_maffezzoli.nc"
+    thickness_file = out_dir / f"thickness_maffezzoli_{rgi_id}.nc"
 
     if (not check_xr_lazy(thickness_file)) or force_overwrite:
         thickness_file.unlink(missing_ok=True)
 
-        rgi_id = glacier.iloc[0]["rgi_id"]
-        o1region = glacier.iloc[0]["o1region"]
-        region = f"RGI2000-v7.0-C-{o1region}"
-        s3_uri = f"s3://{bucket}/glaciers/ice_thickness/maffezzoli/{region}/{rgi_id}_thickness.tif"
+        region = "-".join(rgi_id.split("-")[:-1])
+        s3_uri = f"s3://{bucket}/{prefix}/ice_thickness/maffezzoli/{region}/{rgi_id}_thickness.tif"
         local_tif = out_dir / f"{rgi_id}_thickness.tif"
         logger.info("Downloading Maffezzoli thickness for %s from S3", rgi_id)
         download_from_s3(s3_uri, local_tif)
@@ -437,66 +438,6 @@ def get_ice_thickness_millan(
     thickness = xr.open_dataarray(thickness_file)
 
     return thickness
-
-
-def get_ice_thickness_farinotti(glacier):
-    """
-    Load and interpolate Farniotti et al (2019) ice thickness data to a target grid.
-
-    This function identifies all Millan ice thickness raster files that overlap
-    the input glacier geometry, reprojects them to the specified CRS and resolution,
-    interpolates them onto the target grid, and returns the summed result.
-
-    Parameters
-    ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Geometry of the glacier to extract overlapping thickness rasters.
-
-    Returns
-    -------
-    xarray.DataArray
-        Interpolated and summed ice thickness field on the target grid.
-
-    Notes
-    -----
-    - Uses `rioxarray` to load and project raster files.
-    - All overlapping rasters are summed to produce the final thickness field.
-    - Assumes a fixed reprojected resolution of 50 meters.
-    """
-
-    path = Path("data/ice_thickness")
-    path.mkdir(parents=True, exist_ok=True)
-
-    region = glacier["o1region"]
-    url = f"https://www.research-collection.ethz.ch/bitstream/handle/20.500.11850/315707/composite_thickness_RGI60-{region}.zip"
-    archive = download_archive(url)
-    extract_archive(archive, extract_to=path)
-
-    ice_thickness_files = list(Path(f"data/ice_thickness/RGI60-{region}").rglob("*.tif"))
-
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
-
-        overlapping_rasters = [f.result() for f in cf_as_completed(futures) if f.result() is not None]
-
-    # Step 1: List all .tif files
-    tif_files = overlapping_rasters
-
-    # Step 2: Open all files as datasets
-    src_files_to_mosaic = [rasterio.open(fp) for fp in tif_files]
-
-    # Step 3: Merge them
-    mosaic, out_transform = merge(src_files_to_mosaic)
-
-    # Step 4: Get metadata from first file, update with new shape and transform
-    out_meta = src_files_to_mosaic[0].meta.copy()
-    out_meta.update(
-        {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
-    )
-
-    # Step 5: Write the result to disk
-    with rasterio.open("merged.tif", "w", **out_meta) as dest:
-        dest.write(mosaic)
 
 
 def add_malaspina_bed(

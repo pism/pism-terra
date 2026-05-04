@@ -24,6 +24,9 @@ Vector Functions.
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
+import shapely
+import xarray as xr
 
 
 def glaciers_in_complex(rgi_c_id: str, rgi_g: gpd.GeoDataFrame) -> list:
@@ -119,3 +122,52 @@ def aggregate(n, df):
         merged_df = df.iloc[[n]]
         merged_df.iloc[0].geometry = geom
         return merged_df
+
+
+def grid_points_from_dataset(ds: xr.Dataset) -> gpd.GeoDataFrame:
+    """
+    Build a GeoDataFrame of grid cell centers from a domain dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with ``x`` and ``y`` coordinates (cell centers) and a
+        ``spatial_ref`` variable carrying CRS information in ``crs_wkt``.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        One Point geometry per cell center, in the dataset's CRS.
+    """
+    xs, ys = np.meshgrid(ds.x.values, ds.y.values)
+    points = shapely.points(xs.ravel(), ys.ravel())
+    return gpd.GeoDataFrame(geometry=points, crs=ds.spatial_ref.attrs.get("crs_wkt"))
+
+
+def grid_cells_from_dataset(ds: xr.Dataset) -> gpd.GeoDataFrame:
+    """
+    Build a GeoDataFrame of grid cell polygons from a domain dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with ``x_bnds`` and ``y_bnds`` cell-edge bounds, a ``domain``
+        variable, and a ``spatial_ref`` variable carrying CRS information in
+        ``crs_wkt``.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        One rectangular Polygon per grid cell, with a ``domain`` column
+        copied from ``ds.domain`` and the dataset's CRS.
+    """
+    x0, x1 = ds.x_bnds.values[:, 0], ds.x_bnds.values[:, 1]
+    y0, y1 = ds.y_bnds.values[:, 0], ds.y_bnds.values[:, 1]
+    X0, Y0 = np.meshgrid(x0, y0)
+    X1, Y1 = np.meshgrid(x1, y1)
+    polys = shapely.box(X0.ravel(), Y0.ravel(), X1.ravel(), Y1.ravel())
+    return gpd.GeoDataFrame(
+        {"domain": ds.domain.values.flatten()},
+        geometry=polys,
+        crs=ds.spatial_ref.attrs.get("crs_wkt"),
+    )

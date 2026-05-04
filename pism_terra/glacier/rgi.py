@@ -128,6 +128,7 @@ def prepare_rgi_region(
 def prepare_rgi(
     regions: list,
     output_path: Path,
+    glaciers: pd.DataFrame | list[str] | None = None,
     extract_path: Path | str = "rgi_archive",
     force_overwrite: bool = False,
     ntasks: int = 8,
@@ -147,6 +148,17 @@ def prepare_rgi(
     output_path : Path
         Root directory for output files.  A ``rgi/`` subdirectory is created
         inside it.
+    glaciers : pandas.DataFrame, list of str, or None, optional
+        Optional whitelist of RGI IDs. May contain glacier IDs (``...-G-...``),
+        complex IDs (``...-C-...``), or both. If a DataFrame is given, the
+        ``rgi_id`` column is used. The output is restricted to:
+
+        - any complex IDs listed,
+        - any glacier IDs listed, and
+        - the parent complexes of any listed glaciers (so glacier outlines
+          always come paired with their containing complex).
+
+        If None (default), no filtering is applied.
     extract_path : str or Path, optional
         Path to the directory where the archive will be extracted. Default is "rgi".
     force_overwrite : bool, default False
@@ -245,6 +257,23 @@ def prepare_rgi(
             result = future.result()
             if not result.empty:
                 rgi_g.loc[result.index, "rgi_id_c"] = result.values
+
+    if glaciers is not None:
+        if isinstance(glaciers, pd.DataFrame):
+            wanted = glaciers["rgi_id"].astype(str).tolist()
+        else:
+            wanted = [str(g) for g in glaciers]
+
+        wanted_g = {i for i in wanted if "-G-" in i}
+        wanted_c = {i for i in wanted if "-C-" in i}
+
+        if wanted_g:
+            parents = rgi_g.loc[rgi_g["rgi_id"].isin(wanted_g), "rgi_id_c"].dropna().unique()
+            wanted_c.update(parents.tolist())
+
+        rgi_c = rgi_c[rgi_c["rgi_id"].isin(wanted_c)].copy()
+        rgi_g = rgi_g[rgi_g["rgi_id"].isin(wanted_g)].copy()
+        logger.info("Filtered to %d complexes and %d glaciers", len(rgi_c), len(rgi_g))
 
     complex_path = output_path / "rgi_c.gpkg"
     logger.info("Saving complexes to %s", complex_path)

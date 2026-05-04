@@ -22,6 +22,7 @@ Create domains.
 
 import geopandas as gpd
 import numpy as np
+import shapely
 import xarray as xr
 
 
@@ -118,6 +119,38 @@ def get_bounds(
         np.maximum(center - Ly, center + Ly),
     ]
     return x_bnds, y_bnds
+
+
+def get_bounds_from_geometry(geom: shapely.geometry, buffer_dist: float = 2000.0, dx: float = 1000.0):
+    """
+    Compute a ``dx``-aligned bounding box around a buffered geometry.
+
+    The geometry is buffered by ``buffer_dist`` (in the geometry's CRS units),
+    then its bounds are snapped inward to a multiple of ``dx``.
+
+    Parameters
+    ----------
+    geom : shapely.geometry.base.BaseGeometry or geopandas.GeoSeries
+        Geometry (or GeoSeries) to buffer and bound. Must expose ``.buffer``
+        and a ``.bounds`` accessor with ``minx``/``maxx``/``miny``/``maxy``.
+    buffer_dist : float, default ``2000.0``
+        Buffer distance applied to the geometry, in CRS units (typically meters).
+    dx : float, default ``1000.0``
+        Grid spacing used to snap the bounds. ``x_min``/``y_min`` are rounded up
+        and ``x_max``/``y_max`` are rounded down to the nearest multiple of ``dx``.
+
+    Returns
+    -------
+    tuple of list of float
+        ``([x_min, x_max], [y_min, y_max])`` aligned to ``dx``.
+    """
+    bounds = geom.buffer(buffer_dist).bounds
+    x_min = np.ceil((bounds.minx.item()) / dx) * dx
+    x_max = np.floor((bounds.maxx.item()) / dx) * dx
+    y_min = np.ceil((bounds.miny.item()) / dx) * dx
+    y_max = np.floor((bounds.maxy.item()) / dx) * dx
+
+    return [x_min, x_max], [y_min, y_max]
 
 
 def create_grid(

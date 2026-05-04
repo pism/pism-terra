@@ -18,7 +18,7 @@
 
 # pylint: disable=too-many-positional-arguments,unused-import,broad-exception-caught
 """
-Prepare RGI data sets.
+Prepare S4F data sets.
 """
 
 import logging
@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
-    Prepare RGI input data sets.
+    Prepare RGI glacier input data sets.
 
     This function is the programmatic entry point. It parses command-line style
     arguments, creates the target grid, downloads and processes observation data,
@@ -108,9 +108,11 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     )
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
+    parser.add_argument("GLACIER_FILES", nargs="*")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config_file = args.CONFIG_FILE[0]
+    glacier_files = args.GLACIER_FILES
     force_overwrite = args.force_overwrite
     ntasks = args.ntasks
     output_path = Path(args.OUTPUT_PATH[0])
@@ -123,26 +125,36 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     logger.info("=" * 120)
     logger.info("\n%s", banner)
     logger.info("=" * 120)
-    logger.info("Preparing RGI data")
+    logger.info("Preparing S4F data")
     logger.info("-" * 120)
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
     regions = pd.DataFrame.from_dict(config["regions"], orient="index", columns=["name"])
     regions["region"] = regions.index.astype(str).str.zfill(2) + "_" + regions["name"]
 
+    if len(glacier_files) > 0:
+        glaciers = []
+        for glacier_file in glacier_files:
+            _glaciers = pd.read_csv(Path(glacier_file))
+            glaciers.append(_glaciers)
+        glaciers = pd.concat(glaciers)
+        glaciers["o1regions"] = glaciers["rgi_id"].str.extract(r"-G-(\d{2})-")
+        o1regions = glaciers["o1regions"].unique().astype(int).astype(str)
+        regions = regions[regions.index.isin(o1regions)]
+    else:
+        glaciers = None
     glacier_path = output_path / Path("glacier")
     glacier_path.mkdir(parents=True, exist_ok=True)
 
     rgi_path = glacier_path / Path("rgi")
     rgi_path.mkdir(parents=True, exist_ok=True)
 
-    rgi_files = prepare_rgi(regions["region"], output_path=rgi_path, force_overwrite=force_overwrite, ntasks=ntasks)
+    rgi_files = prepare_rgi(
+        regions["region"], glaciers=glaciers, output_path=rgi_path, force_overwrite=force_overwrite, ntasks=ntasks
+    )
 
     complexes = gpd.read_file(rgi_files["rgi_complexes"])
     glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
-
-    prepare_snap(glacier_path, force_overwrite=force_overwrite, ntasks=ntasks)
-    prepare_carra2(glacier_path, "carra2.nc", force_overwrite=force_overwrite, max_workers=ntasks)
 
     ice_thickness_path = glacier_path / Path("ice_thickness")
     ice_thickness_path.mkdir(parents=True, exist_ok=True)

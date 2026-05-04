@@ -22,6 +22,7 @@ Module for downloading data.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tarfile
@@ -43,6 +44,10 @@ from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3
 from pism_terra.workflow import check_xr_lazy
+
+# Silence noisy third-party INFO chatter that interleaves with tqdm bars.
+for _name in ("cdsapi", "datapi", "multiurl", "ecmwf", "botocore", "s3transfer", "boto3"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 
 class FileInfo(NamedTuple):
