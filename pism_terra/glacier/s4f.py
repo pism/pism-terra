@@ -18,7 +18,9 @@
 # pylint: disable=unused-import,unused-variable,broad-exception-caught,too-many-positional-arguments
 
 """
-Staging.
+S4F Mission Planning.
+
+Methods to assist with Snow4Flow Mission Planning.
 """
 
 import time
@@ -218,6 +220,9 @@ def s4f_glacier(
             out_clipped = out.rio.clip(glacier_projected.geometry, drop=False)
             out_clipped.rio.to_raster(cog_clipped_path, driver="COG", compress="DEFLATE")
             print(cog_clipped_path)
+        if var == "bed":
+            nc_path = path / f"{rgi_id}_{var}.nc"
+            out.to_netcdf(nc_path)
 
 
 def main():
