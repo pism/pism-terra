@@ -76,7 +76,7 @@ def s4f_glacier(
     staging_path: str | Path | None = None,
     resolution: float = 100.0,
     force_overwrite: bool = False,
-) -> pd.DataFrame:
+) -> dict:
     """
     Stage glacier inputs (boot, grid, outline, climate) and return a file index.
 
@@ -207,22 +207,29 @@ def s4f_glacier(
     print("")
     print("Saving Cloud Optimized GeoTIFFs")
     print("-" * 120)
+    boot_files = {}
     for var in boot_ds.data_vars:
         da = boot_ds[var]
         if not {"x", "y"}.issubset(set(da.dims)):
             continue
-        cog_path = path / f"{rgi_id}_{var}.tif"
+        m_id = f"{rgi_id}_{var}"
+        cog_path = path / f"{m_id}.tif"
         out = da.astype("uint8") if da.dtype == bool else da
         out.rio.to_raster(cog_path, driver="COG", compress="DEFLATE")
         print(cog_path)
+        boot_files[m_id] = cog_path
         if var == "surface":
-            cog_clipped_path = path / f"{rgi_id}_{var}_clipped.tif"
+            cog_clipped_path = path / f"{m_id}_clipped.tif"
             out_clipped = out.rio.clip(glacier_projected.geometry, drop=False)
             out_clipped.rio.to_raster(cog_clipped_path, driver="COG", compress="DEFLATE")
             print(cog_clipped_path)
         if var == "bed":
-            nc_path = path / f"{rgi_id}_{var}.nc"
-            out.to_netcdf(nc_path)
+            encoding = {var: {"zlib": True, "complevel": 2, "shuffle": True}}
+            nc_path = path / f"{m_id}.nc"
+            out.to_netcdf(nc_path, encoding=encoding)
+            print(nc_path)
+            boot_files[m_id] = nc_path
+    return boot_files
 
 
 def main():
@@ -281,6 +288,7 @@ def main():
     print(rgi_cloud)
     rgi.to_file(rgi_cloud)
 
+    all_nc_files: list[Path] = []
     for rgi_id in rgi.rgi_id:
         glacier_path = path / Path(rgi_id)
         glacier_path.mkdir(parents=True, exist_ok=True)
@@ -289,15 +297,24 @@ def main():
         input_path.mkdir(parents=True, exist_ok=True)
         staging_path = glacier_path / Path("staging")
         staging_path.mkdir(parents=True, exist_ok=True)
-        s4f_glacier(
+        glacier_boot_files = s4f_glacier(
             config,
             rgi_id,
             path=input_path,
             staging_path=staging_path,
             force_overwrite=force_overwrite,
         )
+        all_nc_files.extend(Path(p) for p in glacier_boot_files.values() if Path(p).suffix == ".nc")
 
-    print(config)
+    total_bytes = sum(p.stat().st_size for p in all_nc_files if p.exists())
+    if total_bytes >= 1 << 30:
+        size = f"{total_bytes / (1 << 30):.2f} GB"
+    elif total_bytes >= 1 << 20:
+        size = f"{total_bytes / (1 << 20):.2f} MB"
+    else:
+        size = f"{total_bytes / (1 << 10):.2f} KB"
+    print(f"Total size of {len(all_nc_files)} NetCDF files: {size}")
+
     bucket = config["bucket"]
     prefix = config["prefix"]
     print("Now run")
