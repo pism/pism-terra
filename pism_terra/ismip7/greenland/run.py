@@ -86,8 +86,8 @@ def run_greenland(
     outline_file : str or pathlib.Path
         Path to a geopandas file with the glacier outline.
     path : str or pathlib.Path, optional
-        Base output directory. A subfolder ``<path>/<rgi_id>`` is created with
-        ``output/`` and ``run_scripts/`` subdirectories. Default is ``"result"``.
+        Base output directory. ``output/`` and ``run_scripts/`` subdirectories
+        are created inside it. Default is ``"result"``.
     resolution : str or None, optional
         Grid resolution (e.g., ``"200m"``). If ``None``, the value from
         ``[grid].resolution`` in the config is used.
@@ -141,20 +141,20 @@ def run_greenland(
     --------
     Basic use with config and template:
 
-    >>> run_glacier(
-    ...     rgi_id="RGI2000-v7.0-C-01-04374",
+    >>> run_greenland(
     ...     config_file="config/init_stampede3.toml",
     ...     template_file="templates/stampede3.j2",
+    ...     outline_file=None,
     ...     path="result",
     ... )
 
     Ensemble member with overrides from a pandas row (e.g., Latin Hypercube):
 
     >>> row = df_samples.loc[17]  # contains dotted keys + 'sample'
-    >>> run_glacier(
-    ...     rgi_id="RGI2000-v7.0-C-01-04374",
+    >>> run_greenland(
     ...     config_file="config/init_stampede3.toml",
     ...     template_file="templates/stampede3.j2",
+    ...     outline_file=None,
     ...     uq=row,             # dotted PISM flags to override
     ...     sample=None,        # will be inferred from row['sample'] if present
     ...     ntasks=112,         # optional template/run override

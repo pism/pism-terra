@@ -186,7 +186,7 @@ def prepare_carra2(
         Path to the output NetCDF file.
     year : list[str | int]
         List of years to download.
-    max_workers : int, default 5
+    max_workers : int, default 8
         Maximum number of concurrent CDS download requests.
     force_overwrite : bool, default False
         If ``True``, recompute intermediate and output files even if they exist.
@@ -195,15 +195,6 @@ def prepare_carra2(
         (e.g., alternate ``variable`` sequences, custom authentication/session
         options, or client settings). These are passed unchanged to the CDS
         retrieval helper.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the provided RGI path is missing.
-    ValueError
-        If the glacier ID cannot be found or the geometry is invalid.
-    Exception
-        Any errors propagated from the CDS request, reprojection, or I/O.
 
     Notes
     -----
@@ -601,9 +592,8 @@ def snap(
     -------
     list[pathlib.Path]
         Paths to the three 30-year climatology NetCDF files:
-        ``snap_1920_1949.nc``, ``snap_1950_1979.nc``, ``snap_1980_2009.nc``.
-        Additionally, the full stack ``snap_1900_2015.nc`` is written in
-        ``path`` as a side effect.
+        ``snap_cru_TS40_1920_1949.nc``, ``snap_cru_TS40_1950_1979.nc``,
+        ``snap_cru_TS40_1980_2009.nc``.
     """
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
@@ -649,14 +639,14 @@ def era5(
     rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
         In-memory RGI table or a path to a GeoPackage readable by
         :func:`geopandas.read_file`.
-    years : list of int or Iterable of int, default ``range(1980, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2025)``
         Years to request from ERA5.
-    dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
+    dataset : str, default ``"reanalysis-era5-land-monthly-means"``
         CDS dataset name for monthly single-level means (ERA5). Adjust if you
         intend to query ERA5-Land or other products.
     buffer_distance : float, default ``0.1``
         Buffer (degrees) applied to the glacier footprint before subsetting.
-    path : str or pathlib.Path, default ``"era5.nc"``
+    path : str or pathlib.Path, default ``"."``
         Output directory or filename base. The function writes a file named
         ``era5_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
         otherwise the provided filename is used.
@@ -790,11 +780,6 @@ def jif_cosipy(url: str, download_path: Path | str, path: Path | str) -> None:
         The path to the original file.
     path : str, Path
         The path to the processed file.
-
-    Returns
-    -------
-    xr.Dataset
-        An xarray Dataset containing COSIPY.
     """
 
     if Path(download_path).exists():
@@ -994,9 +979,8 @@ def prepare_snap(
     -------
     list[pathlib.Path]
         Paths to the three 30-year climatology NetCDF files:
-        ``snap_1920_1949.nc``, ``snap_1950_1979.nc``, ``snap_1980_2009.nc``.
-        Additionally, the full stack ``snap_1900_2015.nc`` is written in
-        ``path`` as a side effect.
+        ``snap_cru_TS40_1920_1949.nc``, ``snap_cru_TS40_1950_1979.nc``,
+        ``snap_cru_TS40_1980_2009.nc``.
 
     Raises
     ------
@@ -1023,9 +1007,9 @@ def prepare_snap(
 
     Examples
     --------
-    >>> out_paths = prepare_snap("RGI2000-v7.0-C-01-04374", path="snap_outputs", force_overwrite=True)
+    >>> out_paths = prepare_snap(path="snap_outputs", force_overwrite=True)
     >>> [p.name for p in out_paths]
-    ['snap_1920_1949.nc', 'snap_1950_1979.nc', 'snap_1980_2009.nc']
+    ['snap_cru_TS40_1920_1949.nc', 'snap_cru_TS40_1950_1979.nc', 'snap_cru_TS40_1980_2009.nc']
     """
 
     print("")

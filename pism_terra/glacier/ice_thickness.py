@@ -53,7 +53,7 @@ def get_maffezzoli_url(url_template: str, region: str) -> str:
     Parameters
     ----------
     url_template : str
-        A string with `{region}` and `{outline_type}` placeholders to be replaced.
+        A string with a `{region}` placeholder to be replaced.
     region : str
         The region code to insert into the template.
 
@@ -85,11 +85,10 @@ def prepare_ice_thickness_maffezzoli(
         Complex outlines with an ``rgi_id`` and ``o1region`` column.
     glaciers : geopandas.GeoDataFrame
         Glacier outlines with ``rgi_id``, ``rgi_id_c``, and ``o1region`` columns.
-    output_path : Path
-        Roor directory for output files.
-    extract_path : Path or str, optional
+    output_path : Path or str
+        Root directory for output files.
+    extract_path : Path or str
         Subdirectory under *output_path* for extracted archives.
-        Defaults to ``"ice_thickness"``.
     ntasks : int, default 8
         Maximum number of parallel workers.
     force_overwrite : bool, default False
@@ -223,7 +222,7 @@ def prepare_ice_thickness_maffezzoli(
         region_c = complexes[complexes["o1region"] == region.zfill(2)]
         region_g = glaciers[glaciers["o1region"] == region.zfill(2)]
         for _, row in region_c.iterrows():
-            merge_tasks.append((row["rgi_id"], region_g, region, row["epsg"]))
+            merge_tasks.append((row["rgi_id"], region_g, region, row["crs"]))
 
     with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(merge_tasks)))) as executor:
         futures = {
@@ -265,9 +264,8 @@ def get_ice_thickness(
         the relevant ice thickness tiles.
     target_grid : xarray.Dataset or xarray.DataArray
         Grid to which the output ice thickness will be interpolated.
-    dataset : str, optional
-        The name of the ice thickness dataset to use. Currently only "millan" is implemented.
-        Default is "millan".
+    dataset : {"millan", "maffezzoli"}, default ``"maffezzoli"``
+        The name of the ice thickness dataset to use.
     path : str or pathlib.Path, default ``"input_files"``
         Working directory used by helper routines to cache/write intermediate rasters/grids.
     **kwargs
@@ -320,13 +318,12 @@ def get_ice_thickness_maffezzoli(
     Returns
     -------
     xarray.DataArray
-        Interpolated and summed ice thickness field on the target grid.
+        Interpolated ice thickness field on the target grid.
 
     Notes
     -----
     - Uses `rioxarray` to load and project raster files.
-    - All overlapping rasters are summed to produce the final thickness field.
-    - Assumes a fixed reprojected resolution of 50 meters.
+    - Assumes a fixed reprojected resolution of 100 meters.
     """
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
@@ -346,7 +343,7 @@ def get_ice_thickness_maffezzoli(
         download_from_s3(s3_uri, local_tif)
 
         logger.info("Reprojecting thickness to %s", kwargs["target_crs"])
-        projected_file = reproject_file(local_tif, dst_crs=kwargs["target_crs"], resolution=50)
+        projected_file = reproject_file(local_tif, dst_crs=kwargs["target_crs"], resolution=100)
         da = rxr.open_rasterio(projected_file).sel(band=1).drop_vars("band")
         logger.info("Interpolating thickness to target grid")
         thickness = da.interp_like(target_grid)

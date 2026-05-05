@@ -64,13 +64,14 @@ def process_file(
         Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
     basin_file : str or Path
         Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
-        the geometry to clip the dataset to. Must include an `epsg` column to define the CRS.
+        the geometry to clip the dataset to.
     client : dask.Client
         Dask client.
-    column : str
-        Column.
-    crs : str
-        CRS code.
+    column : str, default "SUBREGION1"
+        Name of the column in ``basin_file`` used to identify basins (e.g.
+        ``"GIS"`` is selected for the merged-basin clip).
+    crs : str, default "EPSG:3413"
+        CRS code applied to the input dataset before clipping.
     """
 
     infile = Path(infile)
@@ -140,18 +141,16 @@ def process_file(
 
 def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
     """
-    Configure and print a PISM model run command for a glacier.
+    Postprocess KITP output by clipping spatial output to basin geometries.
 
-    This function reads glacier metadata from a CSV file and simulation settings
-    from a TOML configuration file, then builds and prints a full PISM command-line
-    string for executing a model run. It sets up output directories and constructs
-    appropriate output filenames.
+    Reads a TOML run-configuration, opens the configured ``spatial`` output
+    NetCDF, and clips it to the basin outline using a Dask client.
 
     Parameters
     ----------
     config_file : str or Path
-        Path to a TOML file containing PISM run configuration, including time,
-        energy model, stress balance model, and reporting options.
+        Path to a TOML file containing PISM run configuration with at least
+        ``[basin].outline`` and ``[output].spatial`` keys.
     n_workers : int, optional
         Number of Dask workers, by default 4.
     """

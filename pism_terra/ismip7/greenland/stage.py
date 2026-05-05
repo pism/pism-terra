@@ -73,8 +73,8 @@ def stage(
             Path to the retreat NetCDF file relative to the input directory.
         - ``"pathway"`` : str
             ISMIP7 pathway identifier.
-        - ``"gcm"`` : str
-            GCM model name.
+        - ``"gcms"`` : str or list[str]
+            GCM model name(s).
         - ``"version"`` : str
             Dataset version.
         - ``"start_year"`` : int
@@ -94,10 +94,10 @@ def stage(
     Returns
     -------
     pandas.DataFrame
-        Single-row DataFrame with absolute-path columns including
+        DataFrame with one row per GCM and absolute-path columns including
         ``boot_file``, ``grid_file``, ``heatflux_file``, ``regrid_file``,
-        ``retreat_file``, ``climate_file``, ``ocean_file``,
-        ``surface_input_file``, and ``frontal_melt_file``.
+        ``retreat_file``, ``outline_file``, ``climate_file``, ``ocean_file``,
+        ``surface_input_file``, ``frontal_melt_file``, and ``sample``.
     """
 
     f = Figlet(font="standard")

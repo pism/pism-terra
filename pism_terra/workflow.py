@@ -727,7 +727,7 @@ def check_xr_fully(path: Path | str) -> bool:
 
     Notes
     -----
-    Prefer :func:`check_xr_sampled` for very large datasets to avoid
+    Prefer :func:`check_xr_lazy` for very large datasets to avoid
     out-of-memory errors. This variant is useful when the dataset is expected
     to fit comfortably in memory and you want a strong integrity check.
     """

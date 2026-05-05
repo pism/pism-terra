@@ -111,7 +111,9 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
         - "v": velocity magnitude
         - "vx": x-component of velocity
         - "vy": y-component of velocity
-        Defaults to ["v", "vx", "vy"].
+        - "vx_error": x-component error
+        - "vy_error": y-component error
+        Defaults to ["v", "vx", "vy", "vx_error", "vy_error"].
 
     Returns
     -------

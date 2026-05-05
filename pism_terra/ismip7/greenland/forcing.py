@@ -153,8 +153,8 @@ def _process_single_forcing(
 
     Returns
     -------
-    Path
-        Path to the output NetCDF file.
+    list[Path]
+        Paths to the historical, projection, and merged NetCDF files.
     """
     os.environ["HDF5_LOG_LEVEL"] = "0"
     cdo = Cdo()

@@ -54,8 +54,9 @@ def stage(
     Stage KITP Greenland inputs and return a file index.
 
     Syncs pre-built input data from S3, validates each file, and returns
-    a single-row DataFrame with absolute paths to all staged artifacts
-    (boot, grid, heatflux, regrid, retreat, climate, and ocean files).
+    a DataFrame with absolute paths to all staged artifacts (boot, grid,
+    heatflux, regrid, ocean, outline, and climate files), one row per
+    GCM/forcing combination plus a baseline-climatology row.
 
     Parameters
     ----------
@@ -69,8 +70,14 @@ def stage(
             Path to the heatflux NetCDF file relative to the input directory.
         - ``"regrid_file"`` : str
             Path to the regrid NetCDF file relative to the input directory.
-        - ``"gcms"`` : dict[str, list[str]]
-            Mapping of GCM names to their valid forcing combinations.
+        - ``"ocean_file"`` : str
+            Path to the ocean-forcing NetCDF file relative to the input directory.
+        - ``"outline_file"`` : str
+            Path to the basin outline file relative to the input directory.
+        - ``"gcms"`` : dict[str, list[list[str]]]
+            Mapping of GCM names to their forcing pairs ``[[future, present], ...]``.
+        - ``"climatology"`` : str
+            Baseline climatology stem used to build climate filenames.
         - ``"version"`` : str
             Dataset version.
     bucket : str
@@ -86,10 +93,10 @@ def stage(
     Returns
     -------
     pandas.DataFrame
-        Single-row DataFrame with absolute-path columns including
-        ``boot_file``, ``grid_file``, ``heatflux_file``, ``regrid_file``,
-        ``retreat_file``, ``climate_file``, ``ocean_file``,
-        ``surface_input_file``, and ``frontal_melt_file``.
+        DataFrame with one row per GCM/forcing pair (plus a baseline-only
+        row), with absolute-path columns ``boot_file``, ``grid_file``,
+        ``heatflux_file``, ``ocean_file``, ``outline_file``, ``regrid_file``,
+        and ``climate_file``, plus a ``sample`` identifier column.
     """
 
     f = Figlet(font="standard")

@@ -244,10 +244,9 @@ class UQConfig(BaseModel):
     ----------
     samples : int, default=1
         Number of draws to use when generating ensemble samples. Must be > 0.
-    mapping : str or None, optional
-        Optional column name indicating a mapping key (e.g., to join against a
-        lookup table of file paths). Not interpreted by validation; simply
-        preserved for downstream use.
+    mapping : dict or None, optional
+        Optional mapping (e.g., to join against a lookup table of file paths).
+        Not interpreted by validation; simply preserved for downstream use.
     tree : dict[str, DistSpec]
         Flat mapping from dotted variable names to validated :class:`DistSpec`
         objects.
@@ -755,9 +754,13 @@ class PismConfig(BaseModelWithDot):
 
     Attributes
     ----------
+    campaign : CampaignConfig
+        Campaign-level metadata (data sources, forcing scenario, file references).
     run : RunConfig
         Execution settings (launcher template, executable path/name,
         number of MPI ranks) with support for rendering Jinja placeholders.
+    run_info : InfoConfig
+        Run metadata such as institution and title.
     job : JobConfig
         Scheduler options such as queue/partition, walltime, and number of
         nodes. Unknown keys are forbidden in this section.
@@ -772,30 +775,28 @@ class PismConfig(BaseModelWithDot):
     grid : GridConfig
         Horizontal/vertical grid settings and registration. Derives
         ``grid.dx``/``grid.dy`` from ``resolution`` when not explicitly set.
-    atmosphere : dict of str to Any, optional
-        Additional atmosphere-related options to pass through (keys are
-        typically dotted, e.g., ``"atmosphere.given.file"``). Defaults to ``{}``.
-    ocean : dict of str to Any, optional
-        Additional ocean-related options to pass through (keys are
-        typically dotted, e.g., ``"ocean.given.file"``). Defaults to ``{}``.
+    atmosphere : AtmosphereConfig
+        Atmosphere model selection and its option set.
+    ocean : OceanConfig
+        Ocean model selection and its option set.
+    surface : SurfaceConfig
+        Surface model selection and its option set.
+    frontal_melt : FrontalMeltConfig
+        Frontal melt model selection and its option set.
+    hydrology : HydrologyConfig
+        Hydrology model selection and its option set.
     geometry : dict of str to Any, optional
         Geometry-related options to pass through. Defaults to ``{}``.
-    ocean : dict of str to Any, optional
-        Ocean-related options to pass through. Defaults to ``{}``.
     calving : dict of str to Any, optional
         Calving-related options to pass through. Defaults to ``{}``.
     iceflow : dict of str to Any, optional
         Ice-flow-related options to pass through. Defaults to ``{}``.
-    frontal_melt : dict of str to Any, optional
-        Frontal melt-related options to pass through. Defaults to ``{}``.
-    hydrology : dict of str to Any, optional
-        Hydrology-related options to pass through. Defaults to ``{}``.
-    surface : dict of str to Any, optional
-        Surface-related options to pass through. Defaults to ``{}``.
     reporting : dict of str to Any, optional
         Reporting/output options to pass through. Defaults to ``{}``.
     input : dict of str to Any, optional
         Input file options to pass through. Defaults to ``{}``.
+    time_stepping : dict of str to Any, optional
+        Time-stepping-related options to pass through. Defaults to ``{}``.
 
     Notes
     -----
@@ -1208,10 +1209,6 @@ class CampaignConfig(BaseModel):
 
     Attributes
     ----------
-    boot_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
-    outline_file : str or None
-        Path to GPKG basin file (relative to the input directory).
     bucket : str or None
         S3 bucket (e.g., ``"pism-cloud7-data"``).
     climate : str or None
@@ -1220,18 +1217,18 @@ class CampaignConfig(BaseModel):
         Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
-    end_year : str, float, or None
-        End year of the forcing period.
     velocity : str or None
         Velocity data source identifier (e.g., ``"its_live"``).
-    gcm : str, list, or None
+    gcms : str, list, dict, or None
         GCM model name(s) used for climate forcing.
     boot_file : str or None
-        Path to the grid NetCDF boot (relative to the input directory).
+        Path to the boot NetCDF file (relative to the input directory).
+    outline_file : str or None
+        Path to GPKG basin file (relative to the input directory).
     grid_file : str or None
         Path to the grid NetCDF file (relative to the input directory).
     heatflux_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
+        Path to the heat flux NetCDF file (relative to the input directory).
     ice_thickness : str or None
         Ice thickness data source identifier (e.g., ``"millan2022"``).
     name : str or None
@@ -1242,8 +1239,14 @@ class CampaignConfig(BaseModel):
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     prefix : str or None
         path to data in bucket (e.g., ``"ismip7_greenland_input"``).
+    present_day_forcings : str, list, or None
+        Present-day forcing identifier(s).
+    regrid_file : str or None
+        Path to a file used for regridding (relative to the input directory).
     retreat_file : str or None
         Path to the retreat NetCDF file (relative to the input directory).
+    rgi_file : str or None
+        Path to the RGI file (relative to the input directory).
     start_year : str, float, or None
         Start year of the forcing period.
     end_year : str, float, or None

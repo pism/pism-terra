@@ -330,24 +330,20 @@ def carra_download_request(
     max_workers: int = 5,
 ) -> xr.Dataset:
     """
-    Download reanalysis data from CDS and return it as an xarray Dataset.
+    Download CARRA-style reanalysis data from CDS and return the file paths.
 
-    By default, sends a request to the Copernicus Climate Data Store (CDS)
-    API for monthly ERA5 averages. For other datasets (e.g., CARRA), pass a
-    fully formed ``request_override`` dict — it will be used as-is, ignoring
-    ``area``, ``year``, and ``variable``.
-
-    Requests are split by year and submitted concurrently (up to
-    ``max_workers`` in parallel) so the CDS queue processes them faster.
+    The ``request`` dict is used verbatim as the CDS request. Requests are
+    split by year and submitted concurrently (up to ``max_workers`` in
+    parallel) so the CDS queue processes them faster.
 
     Parameters
     ----------
-    dataset : str, default ``"reanalysis-era5-single-levels-monthly-means"``
+    dataset : str
         CDS dataset identifier to retrieve.
     request : dict
-        Used as the CDS request verbatim.
-        ERA5 request. The ``year`` key will be split for parallel download.
-        Useful for CARRA or other datasets with different request schemas.
+        CDS request used verbatim. The ``year`` key will be split for
+        parallel download. Useful for CARRA or other datasets with different
+        request schemas.
     file_path : str or pathlib.Path, default ``"tmp.nc"``
         Cache file. If it exists and opens successfully, it is re-used unless
         ``force_overwrite`` is set.
@@ -359,8 +355,8 @@ def carra_download_request(
 
     Returns
     -------
-    xarray.Dataset
-        Dataset containing the requested data.
+    list of pathlib.Path
+        Paths to the downloaded NetCDF files (one per year).
 
     Raises
     ------

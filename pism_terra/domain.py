@@ -84,10 +84,10 @@ def get_bounds(
     ds : xarray.Dataset
         The input dataset containing the x and y coordinates.
     base_resolution : int, optional
-        The base resolution in meters, by default 150.
+        The base resolution in meters, by default 50.
     multipliers : list or numpy.ndarray, optional
         A list or array of multipliers to compute the set of grid resolutions,
-        by default [1, 2, 4].
+        by default [1, 2, 4, 5, 10, 20].
 
     Returns
     -------
@@ -171,12 +171,12 @@ def create_grid(
     ds : xarray.Dataset
         The dataset containing the x and y coordinates.
     buffer_distance : float, optional
-        The buffer_distance distance around the geometry, by default 500.
+        The buffer_distance distance around the geometry, by default 1000.0.
     base_resolution : int, optional
-        The base resolution in meters, by default 150.
+        The base resolution in meters, by default 50.
     multipliers : list or numpy.ndarray, optional
         A list or array of multipliers to compute the set of grid resolutions,
-        by default [1, 2, 4].
+        by default [1, 2, 4, 5, 8, 10, 20].
     crs : str, optional
         The coordinate reference system (CRS) for the domain, by default "EPSG:3413".
 

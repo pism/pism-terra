@@ -119,18 +119,17 @@ def process_file(infile: str | Path, rgi_file: str | Path, client: Client):
 
 def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
     """
-    Configure and print a PISM model run command for a glacier.
+    Postprocess PISM glacier output files (spatial and state) for a configured run.
 
-    This function reads glacier metadata from a CSV file and simulation settings
-    from a TOML configuration file, then builds and prints a full PISM command-line
-    string for executing a model run. It sets up output directories and constructs
-    appropriate output filenames.
+    Reads simulation paths from a TOML configuration file and clips the
+    ``spatial`` and ``state`` output NetCDFs to the glacier outline using a
+    Dask client.
 
     Parameters
     ----------
     config_file : str or Path
-        Path to a TOML file containing PISM run configuration, including time,
-        energy model, stress balance model, and reporting options.
+        Path to a TOML file containing PISM run configuration, including the
+        RGI outline path and output filenames.
     n_workers : int, optional
         Number of Dask workers, by default 4.
     """

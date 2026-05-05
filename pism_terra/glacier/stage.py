@@ -92,7 +92,7 @@ def stage_glacier(
     config : dict
         Configuration mapping. Must contain at least:
         - ``"dem"`` : str
-            DEM source passed to :func:`boot_file_from_rgi_id`.
+            DEM source passed to :func:`boot_file_from_grid`.
         - ``"climate"`` : str
             Key in :data:`CLIMATE` (e.g., ``"pmip4"``) selecting the climate builder.
     rgi_id : str
@@ -112,15 +112,15 @@ def stage_glacier(
         output filenames.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
-        even if cache files exist (e.g., passed to :func:`boot_file_from_rgi_id`
+        even if cache files exist (e.g., passed to :func:`boot_file_from_grid`
         and to the selected climate builder via :data:`CLIMATE`).
 
     Returns
     -------
     pandas.DataFrame
         One row per produced **climate** file, with absolute-path columns:
-        ``rgi_id``, ``outline`` (GPKG), ``boot_file`` (NetCDF),
-        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF).
+        ``rgi_id``, ``outline_file`` (GPKG), ``boot_file`` (NetCDF),
+        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF), and ``sample`` (int).
 
     Raises
     ------
@@ -135,9 +135,9 @@ def stage_glacier(
 
     See Also
     --------
-    boot_file_from_rgi_id
+    boot_file_from_grid
         Builds the boot (DEM, thickness, bed, masks) dataset around the glacier.
-    create_grid
+    create_domain
         Creates the target model grid and bounds.
     CLIMATE
         Mapping from climate name (e.g., ``"pmip4"``) to a function that generates
@@ -145,8 +145,6 @@ def stage_glacier(
 
     Notes
     -----
-    - Applies :func:`apply_perimeter_band` to clean DEM edges.
-    - Enforces simple constraints (non-negative thickness; bed below surface).
     - Writes two vector layers:
         - Glacier outline: ``rgi_{rgi_id}.gpkg`` (same CRS as RGI entry).
         - Domain bounds polygon: ``domain_{rgi_id}.gpkg``.

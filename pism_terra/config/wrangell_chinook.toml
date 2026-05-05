@@ -23,7 +23,7 @@ climate = "snap"
 dem = "glo_30"
 ice_thickness = "maffezzoli"
 velocity = "its_live"
-prefix = "glacier"
+prefix = "rgi"
 rgi_file = "rgi_c.gpkg"
 
 [time]

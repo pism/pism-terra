@@ -18,7 +18,7 @@ climate = "era5"
 dem = "glo_30"
 ice_thickness = "maffezzoli"
 name = "Calibration"
-prefix = "glacier"
+prefix = "rgi"
 rgi_file = "rgi_c.gpkg"
 velocity = "its_live"
 

@@ -78,24 +78,28 @@ def s4f_glacier(
     force_overwrite: bool = False,
 ) -> dict:
     """
-    Stage glacier inputs (boot, grid, outline, climate) and return a file index.
+    Stage glacier inputs (boot dataset and Cloud Optimized GeoTIFFs).
 
     For the glacier identified by ``rgi_id``, this function:
-    (1) loads the glacier geometry (GeoDataFrame or GPKG),
-    (2) builds a DEM/thickness/bed “boot” dataset,
-    (3) creates a target model grid and derives simple perimeter masks,
-    (4) writes the boot and grid NetCDF files and the glacier outline/domain bounds as GPKG,
-    (5) generates climate forcing files using the configured climate builder,
-    and (6) returns a tidy table (one row per **climate** file) with absolute paths.
+    (1) loads the glacier geometry (downloading the RGI vector file from S3
+        if needed),
+    (2) builds a DEM/thickness/bed/velocity “boot” dataset via
+        :func:`boot_file_from_grid`,
+    (3) creates a target model grid,
+    (4) writes one Cloud Optimized GeoTIFF per spatial variable in the boot
+        dataset (plus a NetCDF copy of ``bed`` and a clipped surface tif),
+    and (5) returns a mapping of variable identifiers to written file paths.
 
     Parameters
     ----------
     config : dict
         Configuration mapping. Must contain at least:
-        - ``"dem"`` : str
-            DEM source passed to :func:`boot_file_from_rgi_id`.
-        - ``"climate"`` : str
-            Key in :data:`CLIMATE` (e.g., ``"pmip4"``) selecting the climate builder.
+
+        - ``"bucket"`` and ``"prefix"`` : str — S3 location for the RGI file.
+        - ``"rgi_file"`` : str — RGI filename inside the prefix.
+        - ``"dem"`` : str — DEM source passed to :func:`boot_file_from_grid`.
+        - ``"ice_thickness"`` : str — ice thickness source.
+        - ``"velocity"`` : str — velocity source.
     rgi_id : str
         Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
     path : str or pathlib.Path, default ``"input_files"``
@@ -104,30 +108,27 @@ def s4f_glacier(
         dataset).
     staging_path : str or pathlib.Path or None, optional
         Working directory for intermediate files (RGI table cache, glacier
-        outline GPKG, DEM tifs, ice-thickness/velocity intermediates). Created
-        if missing. If ``None`` (default), falls back to ``path`` (legacy
-        behavior — everything in one directory).
+        outline FlatGeobuf, DEM tifs, ice-thickness/velocity intermediates).
+        Created if missing. If ``None`` (default), falls back to ``path``
+        (legacy behavior — everything in one directory).
     resolution : float, default ``100.0``
         Target grid resolution (meters), used both for grid construction and in
         output filenames.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
-        even if cache files exist (e.g., passed to :func:`boot_file_from_rgi_id`
-        and to the selected climate builder via :data:`CLIMATE`).
+        even if cache files exist (e.g., passed to :func:`boot_file_from_grid`).
 
     Returns
     -------
-    pandas.DataFrame
-        One row per produced **climate** file, with absolute-path columns:
-        ``rgi_id``, ``outline`` (GPKG), ``boot_file`` (NetCDF),
-        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF).
+    dict
+        Mapping from variable identifier ``f"{rgi_id}_{var}"`` to the absolute
+        path of the written Cloud Optimized GeoTIFF (or NetCDF, in the case of
+        ``bed``).
 
     Raises
     ------
     KeyError
-        If required keys (e.g., ``"dem"``, ``"climate"``) are missing in ``config``.
-    FileNotFoundError
-        If an RGI path is provided and does not exist.
+        If required keys are missing in ``config``.
     ValueError
         If ``rgi_id`` is not found in the RGI layer or geometry/CRS is invalid.
     Exception
@@ -135,22 +136,15 @@ def s4f_glacier(
 
     See Also
     --------
-    boot_file_from_rgi_id
+    boot_file_from_grid
         Builds the boot (DEM, thickness, bed, masks) dataset around the glacier.
-    create_grid
+    create_domain
         Creates the target model grid and bounds.
-    CLIMATE
-        Mapping from climate name (e.g., ``"pmip4"``) to a function that generates
-        climate NetCDF file(s) for the glacier domain.
 
     Notes
     -----
-    - Applies :func:`apply_perimeter_band` to clean DEM edges.
-    - Enforces simple constraints (non-negative thickness; bed below surface).
-    - Writes two vector layers:
-        - Glacier outline: ``rgi_{rgi_id}.gpkg`` (same CRS as RGI entry).
-        - Domain bounds polygon: ``domain_{rgi_id}.gpkg``.
-    - The returned DataFrame is convenient for downstream orchestration/fan-out.
+    - Writes the glacier outline as ``rgi_{rgi_id}.fgb`` (FlatGeobuf) in
+      ``staging_path``.
     """
 
     f = Figlet(font="standard")
@@ -183,7 +177,7 @@ def s4f_glacier(
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
     glacier_file = staging_path / f"rgi_{rgi_id}.fgb"
-    dst_crs = glacier["epsg"].values[0]
+    dst_crs = glacier["crs"].values[0]
     glacier_projected = glacier.to_crs(dst_crs)
     glacier.to_file(glacier_file)
 

@@ -87,10 +87,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     Returns
     -------
     dict[str, Any]
-        Results dictionary containing:
-
-        - ``"config"``: dict
-          The parsed TOML configuration used for processing.
+        Mapping returned by :func:`prepare_rgi` (e.g. ``"rgi_complexes"``
+        and ``"rgi_glaciers"`` paths).
     """
 
     parser = ArgumentParser()
@@ -129,7 +127,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     logger.info("-" * 120)
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
-    regions = pd.DataFrame.from_dict(config["regions"], orient="index", columns=["name"])
+    regions = pd.DataFrame.from_dict(config["regions"], orient="index")
     regions["region"] = regions.index.astype(str).str.zfill(2) + "_" + regions["name"]
 
     if len(glacier_files) > 0:
@@ -150,7 +148,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     rgi_path.mkdir(parents=True, exist_ok=True)
 
     rgi_files = prepare_rgi(
-        regions["region"], glaciers=glaciers, output_path=rgi_path, force_overwrite=force_overwrite, ntasks=ntasks
+        regions, glaciers=glaciers, output_path=rgi_path, force_overwrite=force_overwrite, ntasks=ntasks
     )
 
     complexes = gpd.read_file(rgi_files["rgi_complexes"])

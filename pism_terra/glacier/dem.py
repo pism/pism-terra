@@ -60,9 +60,8 @@ def get_surface_dem_by_bounds(
     ----------
     bounds : tuple of float
         Geographic bounding box ``(minx, miny, maxx, maxy)`` in degrees (WGS84).
-    dataset : str, default ``"glo_30"``
-        DEM source identifier recognized by :func:`stitch_dem`
-        (e.g., ``"glo_30"``, ``"arcticdem"``).
+    dataset : {"glo_30", "arcticdem"}
+        DEM source identifier recognized by :func:`stitch_dem`.
     path : str or pathlib.Path, default ``"input"``
         Output directory for the GeoTIFF. Created if it does not exist.
     force_overwrite : bool, default ``False``
@@ -102,7 +101,7 @@ def get_surface_dem_by_bounds(
     Examples
     --------
     >>> tif = get_surface_dem_by_bounds((214.1, 59.0, 219.7, 63.9),
-    ...                                 dem_name="glo_30", path="input")
+    ...                                 dataset="glo_30", path="input")
     >>> tif.exists()
     True
     """
@@ -157,7 +156,7 @@ def prepare_surface(
         Target grid dataset providing the destination CRS (via ``spatial_ref``)
         and the cell-edge bounds (``x_bnds``/``y_bnds``) used to derive both the
         geographic query bounds and the destination grid for reprojection.
-    dataset : str, default ``"glo_30"``
+    dataset : {"glo_30", "arcticdem"}
         DEM source identifier passed to :func:`get_surface_dem_by_bounds`.
     path : str or pathlib.Path, default ``"input_files"``
         Output directory for generated files. Created if missing.
@@ -246,12 +245,12 @@ def boot_file_from_grid(
     geometries : iterable of shapely geometries
         Glacier outline(s) in ``target_grid``'s CRS, used for clipping the DEM
         and constructing masks.
-    dem_dataset : str, default ``"glo_30"``
-        DEM source for surface preparation (e.g., ``"glo_30"``, ``"arcticdem"``).
-    ice_thickness_dataset : str, default ``"maffezzoli"``
-        Source for ice thickness (e.g., ``"glo_30"``, ``"arcticdem"``).
-    velocity_dataset : str, default ``"its_live"``
-        Source for velocities (e.g., ``"none"``, ``"its_live"``).
+    dem_dataset : {"glo_30", "arcticdem"}
+        DEM source for surface preparation.
+    ice_thickness_dataset : {"maffezzoli", "millan"}
+        Source for ice thickness.
+    velocity_dataset : {"none", "its_live"} or None
+        Source for velocities.
     path : str or pathlib.Path, default ``"input_files"``
         Working directory used by helper routines to cache/write intermediate rasters/grids.
     **kwargs
@@ -268,7 +267,7 @@ def boot_file_from_grid(
         - ``land_ice_area_fraction_retreat`` : bool — 1 where DEM is ice-free after clipping.
         - ``ftt_mask`` : bool — complementary outside-footprint mask (1 outside).
         - ``tillwat`` : float32, m — simple basal water proxy (here ``0`` or ``2`` m based on speed).
-        - ``v`` and related velocity fields (from :func:`glacier_velocities_from_rgi_id`), reprojected
+        - ``v`` and related velocity fields (from :func:`glacier_velocities_from_grid`), reprojected
           to the surface grid, if available.
 
         CRS is recorded via the rioxarray accessor (``.rio.crs``); spatial dims are set with
@@ -291,7 +290,7 @@ def boot_file_from_grid(
         Mosaic/reproject a DEM over a geographic bounding box and build the target grid.
     get_ice_thickness
         Interpolate glacier ice thickness onto a target grid.
-    glacier_velocities_from_rgi_id
+    glacier_velocities_from_grid
         Retrieve observed surface velocities for the glacier domain.
 
     Notes

@@ -57,7 +57,7 @@ def get_rgi_url(url_template: str, region: str, outline_type: str = "C") -> str:
 
 
 def prepare_rgi_region(
-    region: str,
+    region,
     outline_type: str = "C",
     url_template: str = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-C/RGI2000-v7.0-{outline_type}-{region}.zip",
     extract_path: Path | str = "rgi_archive",
@@ -73,14 +73,16 @@ def prepare_rgi_region(
 
     Parameters
     ----------
-    region : str or None
-        The region code (e.g., "01_alaska", "06_iceland") used to fill in the URL template.
+    region : pandas.Series or Mapping
+        Region descriptor with a ``"region"`` key (e.g., ``"01_alaska"``) used
+        to fill in the URL template. May optionally include a ``"crs"`` entry
+        to override the auto-derived UTM CRS.
     outline_type : str, optional
        Either C or G (complex or glacier).
     url_template : str, optional
         URL template containing a `{region}` placeholder. Defaults to the NSIDC RGI v7 template.
     extract_path : str or Path, optional
-        Path to the directory where the archive will be extracted. Default is "rgi".
+        Path to the directory where the archive will be extracted. Default is "rgi_archive".
     area_threshold : float, optional
         Minimum glacier area (in square kilometers) for inclusion in the result. Defaults to 1.0.
     force_overwrite : bool, default False
@@ -89,9 +91,9 @@ def prepare_rgi_region(
     Returns
     -------
     geopandas.GeoDataFrame
-        A GeoDataFrame of glaciers in the region, each with added columns:
-        - "crs": EPSG code string based on hemisphere and UTM zone
-        - "epsg_code": Integer EPSG code for reprojection
+        A GeoDataFrame of glaciers in the region with an added column:
+        - "crs": EPSG code string based on hemisphere and UTM zone (or the
+          ``crs`` value from the supplied ``region`` if present).
 
     See Also
     --------
@@ -104,29 +106,30 @@ def prepare_rgi_region(
     """
 
     extract_path = Path(extract_path)
-    url = get_rgi_url(url_template, region, outline_type)
+    region_code = region["region"]
+    url = get_rgi_url(url_template, region_code, outline_type)
     archive_dest = extract_path / Path(url.rsplit("/", 1)[-1])
-    logger.info("Downloading RGI region %s (%s)", region, outline_type)
+    logger.info("Downloading RGI region %s (%s)", region_code, outline_type)
     archive = download_archive(url, dest=archive_dest, force_overwrite=force_overwrite, verbose=False)
-    logger.info("Extracting RGI region %s (%s)", region, outline_type)
+    logger.info("Extracting RGI region %s (%s)", region_code, outline_type)
     extract_archive(archive, extract_path, force_overwrite=force_overwrite, verbose=False)
 
-    logger.info("Processing RGI region %s (%s)", region, outline_type)
-    rgi = gpd.read_file(extract_path / f"RGI2000-v7.0-{outline_type}-{region}.shp")
+    logger.info("Processing RGI region %s (%s)", region_code, outline_type)
+    rgi = gpd.read_file(extract_path / f"RGI2000-v7.0-{outline_type}-{region_code}.shp")
     rgi = rgi[rgi["area_km2"] > area_threshold]
-    rgi["epsg"] = rgi.apply(
-        lambda row: f"""EPSG:{32600 + int(row["utm_zone"]) if row["cenlat"] >= 0 else 32700 + int(row["utm_zone"])}""",
-        axis=1,
-    )
-    rgi["epsg_code"] = rgi.apply(
-        lambda row: f"""{32600 + int(row["utm_zone"]) if row["cenlat"] >= 0 else 32700 + int(row["utm_zone"])}""",
-        axis=1,
-    )
+    crs_value = region.get("crs") if hasattr(region, "get") else None
+    if isinstance(crs_value, str) and crs_value:
+        rgi["crs"] = crs_value
+    else:
+        rgi["crs"] = rgi.apply(
+            lambda row: f"""EPSG:{32600 + int(row["utm_zone"]) if row["cenlat"] >= 0 else 32700 + int(row["utm_zone"])}""",
+            axis=1,
+        )
     return rgi
 
 
 def prepare_rgi(
-    regions: list,
+    regions: pd.DataFrame,
     output_path: Path,
     glaciers: pd.DataFrame | list[str] | None = None,
     extract_path: Path | str = "rgi_archive",
@@ -143,8 +146,9 @@ def prepare_rgi(
 
     Parameters
     ----------
-    regions : list
-        Region codes (e.g. ``["01_alaska", "06_iceland"]``).
+    regions : pandas.DataFrame
+        Table of regions with at least a ``"region"`` column whose values are
+        region codes such as ``"01_alaska"`` or ``"06_iceland"``.
     output_path : Path
         Root directory for output files.  A ``rgi/`` subdirectory is created
         inside it.
@@ -160,7 +164,7 @@ def prepare_rgi(
 
         If None (default), no filtering is applied.
     extract_path : str or Path, optional
-        Path to the directory where the archive will be extracted. Default is "rgi".
+        Path to the directory where the archive will be extracted. Default is "rgi_archive".
     force_overwrite : bool, default False
         If True, re-download the file even if it already exists locally.
     ntasks : int, default 8
@@ -190,27 +194,27 @@ def prepare_rgi(
         futures = {
             executor.submit(
                 prepare_rgi_region,
-                region,
+                row,
                 outline_type=outline_type,
                 url_template=url_template,
                 extract_path=rgi_archive_path,
                 force_overwrite=force_overwrite,
-            ): (region, outline_type)
-            for region in regions
+            ): (row["region"], outline_type)
+            for _, row in regions.iterrows()
             for outline_type in outline_types
         }
 
         pbar = tqdm(cf_as_completed(futures), total=len(futures), desc="Downloading RGI regions")
         for future in pbar:
-            region, outline_type = futures[future]
+            region_code, outline_type = futures[future]
             try:
                 rgis.append(future.result())
-                pbar.set_postfix_str(f"{region} ({outline_type}) ✓")
+                pbar.set_postfix_str(f"{region_code} ({outline_type}) ✓")
             except Exception as err:
-                failed.append((region, outline_type, err))
-                pbar.set_postfix_str(f"{region} ({outline_type}) ✗")
-    for region, outline_type, exc in failed:
-        logger.error("Failed region: %s, outline_type: %s with error: %s", region, outline_type, exc)
+                failed.append((region_code, outline_type, err))
+                pbar.set_postfix_str(f"{region_code} ({outline_type}) ✗")
+    for region_code, outline_type, exc in failed:
+        logger.error("Failed region: %s, outline_type: %s with error: %s", region_code, outline_type, exc)
 
     logger.info("Concatenating %d RGI dataframes", len(rgis))
     rgi = pd.concat(rgis, ignore_index=True)

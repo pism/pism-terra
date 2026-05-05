@@ -1,0 +1,5 @@
+[regions]
+
+1 = {name = "alaska", crs = "EPSG:3338"}
+3 = {name = "arctic_canada_north", crs = "ESRI:102001"}
+7 = {name = "svalbard_jan_mayen", crs = "ESRI:102013"}

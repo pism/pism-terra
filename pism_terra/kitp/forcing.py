@@ -113,7 +113,7 @@ def process_carra2(
         Path to the output NetCDF file.
     year : list[str | int]
         List of years to download.
-    max_workers : int, default 5
+    max_workers : int, default 8
         Maximum number of concurrent CDS download requests.
     force_overwrite : bool, default False
         If ``True``, recompute intermediate and output files even if they exist.
@@ -122,15 +122,6 @@ def process_carra2(
         (e.g., alternate ``variable`` sequences, custom authentication/session
         options, or client settings). These are passed unchanged to the CDS
         retrieval helper.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the provided RGI path is missing.
-    ValueError
-        If the glacier ID cannot be found or the geometry is invalid.
-    Exception
-        Any errors propagated from the CDS request, reprojection, or I/O.
 
     Notes
     -----
@@ -671,7 +662,7 @@ def prepare_anomalies(
     force_overwrite: bool = False,
 ) -> list[Path]:
     """
-    Process forcing data for all GCMs and forcings in parallel.
+    Process forcing data for all GCMs and forcings.
 
     Parameters
     ----------

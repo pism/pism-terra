@@ -82,8 +82,11 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     dict[str, Any]
         Results dictionary containing:
 
-        - ``"config"``: dict
-          The parsed TOML configuration used for processing.
+        - ``"config"`` : dict — parsed TOML configuration.
+        - ``"grid_file"`` : Path — generated grid NetCDF.
+        - ``"boot_file"`` : Path — observation-derived boot NetCDF.
+        - ``"heatflux_file"`` : Path — geothermal heat-flux NetCDF.
+        - ``"baseline_file"`` : Path — baseline climatology NetCDF.
     """
 
     parser = ArgumentParser()
