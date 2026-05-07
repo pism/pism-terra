@@ -31,14 +31,20 @@ def main():
 
     args, unknowns = parser.parse_known_args()
 
-    cds_api_url = os.environ.get("CDS_API_URL")
-    cds_api_key = os.environ.get("CDS_API_KEY")
-    if (cds_api_file := Path.home() / ".cdsapirc").exists():
-        warnings.warn(
-            "CDS API credentials provided in both environment variables and the `~/.cdsapirc` file. Preferring file."
-        )
-    else:
-        cds_api_file.write_text(f"url: {cds_api_url}\nkey: {cds_api_key}\n")
+    # Hand off credentials to ecmwf-datastores-client. It accepts either env
+    # vars (ECMWF_DATASTORES_URL / ECMWF_DATASTORES_KEY) or ~/.ecmwfdatastoresrc.
+    # We accept either CDS_API_* (legacy) or ECMWF_DATASTORES_* and write the
+    # config file when the rc file isn't already present.
+    cds_url = os.environ.get("ECMWF_DATASTORES_URL") or os.environ.get("CDS_API_URL")
+    cds_key = os.environ.get("ECMWF_DATASTORES_KEY") or os.environ.get("CDS_API_KEY")
+    if (cds_rc_file := Path.home() / ".ecmwfdatastoresrc").exists():
+        if cds_url or cds_key:
+            warnings.warn(
+                "ECMWF Data Stores credentials provided in both environment variables "
+                "and the `~/.ecmwfdatastoresrc` file. Preferring file."
+            )
+    elif cds_url and cds_key:
+        cds_rc_file.write_text(f"url: {cds_url}\nkey: {cds_key}\n")
 
     eps = entry_points(group="console_scripts")
     (process_entry_point,) = {process for process in eps if process.name == args.process}

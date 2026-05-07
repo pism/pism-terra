@@ -51,10 +51,14 @@ from rasterio.merge import merge
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from tqdm.auto import tqdm
 
-from pism_terra.download import download_archive, download_file, extract_archive
+from pism_terra.download import (
+    download_archive,
+    download_file,
+    download_gebco,
+    extract_archive,
+)
 from pism_terra.glacier.climate import (
     convert_many_tifs_concurrent,
-    prepare_carra2,
     prepare_snap,
 )
 from pism_terra.glacier.ice_thickness import prepare_ice_thickness_maffezzoli
@@ -168,6 +172,30 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         extract_path=output_path,
         force_overwrite=force_overwrite,
         ntasks=ntasks,
+    )
+
+    gebco_path = glacier_path / Path("gebco")
+    gebco_path.mkdir(parents=True, exist_ok=True)
+    gebco_nc = download_gebco(target_dir=output_path)
+    cog_gebco_p = gebco_path / Path("bathymetry.tif")
+
+    # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
+    # geotransform; rxr.open_rasterio treats netCDF as a generic raster and
+    # loses the georeferencing.
+    ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
+    da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+    if da.rio.crs is None:
+        da = da.rio.write_crs("EPSG:4326")
+    predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
+    da.rio.to_raster(
+        cog_gebco_p,
+        driver="COG",
+        compress="DEFLATE",
+        predictor=predictor,
+        blocksize=512,
+        bigtiff="YES",
+        overview_resampling="AVERAGE",
+        num_threads="ALL_CPUS",
     )
 
     return rgi_files

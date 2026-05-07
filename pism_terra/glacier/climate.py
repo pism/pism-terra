@@ -32,7 +32,6 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
 
-import cdsapi
 import cf_xarray
 import cftime
 import dask
@@ -44,6 +43,7 @@ import s3fs
 import xarray as xr
 from cdo import Cdo
 from dask.diagnostics import ProgressBar
+from pyproj import Transformer
 from tqdm.auto import tqdm
 
 from pism_terra.aws import s3_to_local
@@ -142,9 +142,10 @@ def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | Non
         return None
 
 
-def prepare_carra2(
-    data_dir: str | Path,
-    output_file: str | Path,
+def carra2(
+    target_grid: xr.Dataset,
+    rgi_id: str,
+    path: str | Path,
     year: list[str | int] = [
         "1986",
         "1987",
@@ -174,16 +175,21 @@ def prepare_carra2(
     max_workers: int = 8,
     force_overwrite: bool = False,
     **kwargs,
-):
+) -> Path:
     """
     Download monthly CARRA2 reanalysis and write a NetCDF.
 
     Parameters
     ----------
-    data_dir : Union[str, Path]
-        Directory containing the input data.
-    output_file : Union[str, Path]
-        Path to the output NetCDF file.
+    target_grid : xarray.Dataset
+        Target grid dataset providing the destination CRS (via ``spatial_ref``)
+        and extent used to subset/regrid the downloaded CARRA2 fields.
+    rgi_id : str
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-01-09429"``). Used in the
+        output filename ``carra2_<rgi_id>.nc`` and downstream metadata.
+    path : str or pathlib.Path
+        Working/output directory. The final NetCDF and intermediate
+        ``carra2/`` cache subfolder are written under this path.
     year : list[str | int]
         List of years to download.
     max_workers : int, default 8
@@ -195,6 +201,11 @@ def prepare_carra2(
         (e.g., alternate ``variable`` sequences, custom authentication/session
         options, or client settings). These are passed unchanged to the CDS
         retrieval helper.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path to the written NetCDF file.
 
     Notes
     -----
@@ -210,10 +221,23 @@ def prepare_carra2(
     print("Generate historical climate")
     print("-" * 120)
 
-    carra2_path = data_dir / Path("carra2")
+    carra2_filename = path / Path(f"carra2_{rgi_id}.nc")
+
+    carra2_path = path / Path("carra2")
     carra2_path.mkdir(exist_ok=True)
     carra2_grid_path = carra2_path / Path("carra2_grid.txt")
     carra2_grid_path.write_text(carra2_grid)
+
+    bounds = [
+        target_grid.x_bnds.values[0][0],
+        target_grid.y_bnds.values[0][0],
+        target_grid.x_bnds.values[-1][-1],
+        target_grid.y_bnds.values[-1][-1],
+    ]
+    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    t = Transformer.from_crs(dst_crs, "EPSG:4326")
+    geo_bounds = t.transform_bounds(*bounds)
+    area = [geo_bounds[2], geo_bounds[1], geo_bounds[0], geo_bounds[3]]
 
     precipitation_dataset = "reanalysis-pan-carra-means"
     precipitation_request = {
@@ -224,7 +248,7 @@ def prepare_carra2(
         "year": year,
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
         "data_format": "netcdf",
-        "area": [90, -180, 40, 180],
+        "area": area,
     }
 
     precipitation_files = carra_download_request(
@@ -277,7 +301,7 @@ def prepare_carra2(
             "31",
         ],
         "data_format": "netcdf",
-        "area": [90, -180, 40, 180],
+        "area": area,
     }
 
     temperature_files = carra_download_request(
@@ -378,16 +402,16 @@ def prepare_carra2(
 
     batch_files = sorted(b[3] for b in batches)
 
-    # --- Step 2: mergetime all year batches, then ymonmean ---
-    merged_file = carra2_path / "merged_monthly.nc"
-    if (not check_xr_lazy(merged_file)) or force_overwrite:
+    # --- Step 2: mergetime all year batches  ---
+    if (not check_xr_lazy(carra2_filename)) or force_overwrite:
         logger.info("CDO: merging %d year batches...", len(batch_files))
         cdo.mergetime(
             input=" ".join(batch_files),
-            output=str(merged_file.resolve()),
+            output=str(carra2_filename.resolve()),
             options=f"-f nc4 -z zip_2 -P {max_workers}",
         )
-    _ = output_file
+
+    return carra2_filename
 
 
 def convert_many_tifs_concurrent(
@@ -613,39 +637,30 @@ def snap(
 
 
 def era5(
+    target_grid: xr.Dataset,
     rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
     years: list[int] | Iterable[int] = range(1978, 2025),
     dataset: str = "reanalysis-era5-land-monthly-means",
-    buffer_distance: float = 0.1,
     path: Path | str = ".",
     **kwargs,
 ) -> Path:
     """
     Download monthly ERA5 reanalysis over a glacier bounding box and write a NetCDF.
 
-    Given a glacier ``rgi_id``, this function:
-    (1) loads the glacier geometry (GeoDataFrame or GPKG),
-    (2) builds a buffered lon/lat bounding box (WGS84),
-    (3) requests ERA5 monthly means (2 m air temperature and total precipitation),
-    (4) optionally fills missing values using a global product,
-    (5) adds a representative geopotential (converted to meters),
-    (6) writes a CF-compliant NetCDF under ``path`` and returns its absolute path.
-
     Parameters
     ----------
+    target_grid : xarray.Dataset
+        Target grid dataset providing the destination CRS (via ``spatial_ref``)
+        and extent. Used to derive the geographic bounding box for the ERA5
+        request.
     rgi_id : str
-        Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``.
-    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
-        In-memory RGI table or a path to a GeoPackage readable by
-        :func:`geopandas.read_file`.
+        Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
+        output filename.
     years : list of int or Iterable of int, default ``range(1978, 2025)``
         Years to request from ERA5.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
         CDS dataset name for monthly single-level means (ERA5). Adjust if you
         intend to query ERA5-Land or other products.
-    buffer_distance : float, default ``0.1``
-        Buffer (degrees) applied to the glacier footprint before subsetting.
     path : str or pathlib.Path, default ``"."``
         Output directory or filename base. The function writes a file named
         ``era5_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
@@ -693,23 +708,21 @@ def era5(
 
     print("")
     print("Generate historical climate")
-    print("-" * 80)
+    print("-" * 120)
 
     era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
 
-    if isinstance(rgi, (str, Path)):
-        rgi = gpd.read_file(rgi)
-
     years = list(years)
 
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id).to_crs("EPSG:4326")
-    minx, miny, maxx, maxy = glacier.iloc[0]["geometry"].buffer(buffer_distance).bounds
-    area = [
-        np.ceil(maxy * 10) / 10,
-        np.floor(minx * 10) / 10,
-        np.floor(miny * 10) / 10,
-        np.ceil(maxx * 10) / 10,
+    bounds = [
+        target_grid.x_bnds.values[0][0],
+        target_grid.y_bnds.values[0][0],
+        target_grid.x_bnds.values[-1][-1],
+        target_grid.y_bnds.values[-1][-1],
     ]
+    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    t = Transformer.from_crs(dst_crs, "EPSG:4326")
+    area = t.transform_bounds(*bounds)
 
     print(f"Bounding box {area}")
 
@@ -725,7 +738,11 @@ def era5(
         .squeeze()
         .drop_vars("time", errors="ignore")
     )
-    ds_geo_ = ds_geo.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
+    ds_geo_ = (
+        ds_geo.rio.write_crs("EPSG:4326")
+        .rio.reproject_match(ds, resampling="average")
+        .rename({"x": "longitude", "y": "latitude"})
+    )
 
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
@@ -738,7 +755,9 @@ def era5(
             "reanalysis-era5-single-levels-monthly-means", area, years, file_path=era5_filename_3, **kwargs
         )
         ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326").rio.reproject_match(ds).rename({"x": "longitude", "y": "latitude"})
+            ds_global.rio.write_crs("EPSG:4326")
+            .rio.reproject_match(ds, resampling="average")
+            .rename({"x": "longitude", "y": "latitude"})
         )
         common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
         for v in common_vars:

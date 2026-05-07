@@ -482,7 +482,7 @@ def add_malaspina_bed(
         rxr.open_rasterio(bed_file, mask=True)
         .squeeze()
         .drop_vars("band", errors="ignore")
-        .rio.reproject_match(ds["bed"])
+        .rio.reproject_match(ds["bed"], resampling="average")
     )
     clipped_da = da.rio.clip(outline.geometry, drop=False)
     clipped_da = clipped_da.where(clipped_da != -9999.0, other=np.nan).drop_vars("spatial_ref")

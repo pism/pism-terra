@@ -293,7 +293,9 @@ def prepare_observations(
         ds_bm_regridded = ds_bm[["bed", "thickness", "surface", "mask"]].regrid.conservative(target_grid)
         gebco_p = download_gebco(target_dir=input_path)
         gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
-        gebco_bm_regridded = gebco.rio.reproject_match(ds_bm_regridded.rio.write_crs("EPSG:3413")).compute()
+        gebco_bm_regridded = gebco.rio.reproject_match(
+            ds_bm_regridded.rio.write_crs("EPSG:3413"), resampling="average"
+        ).compute()
         ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(
             ds_bm_regridded["bed"].notnull(), gebco_bm_regridded["elevation"]
         )

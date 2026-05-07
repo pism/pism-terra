@@ -18,8 +18,8 @@ nodes = 1
 [campaign]
 
 bucket = "pism-cloud-data"
-climate = "era5"
-dem = "glo_30"
+climate = "carra2"
+dem = "glo_90"
 ice_thickness = "maffezzoli"
 bathymetry = "gebco"
 name = "Calibration"

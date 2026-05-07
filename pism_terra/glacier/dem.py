@@ -35,7 +35,10 @@ from dem_stitcher import stitch_dem
 from pyproj import Transformer
 
 from pism_terra.glacier.ice_thickness import get_ice_thickness
-from pism_terra.glacier.observations import glacier_velocities_from_grid
+from pism_terra.glacier.observations import (
+    bathymetry_from_grid,
+    glacier_velocities_from_grid,
+)
 from pism_terra.workflow import check_rio
 
 xr.set_options(keep_attrs=True)
@@ -204,7 +207,7 @@ def prepare_surface(
     surface.name = "surface"
     surface.attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
 
-    surface_reprojected = surface.rio.reproject_match(target_grid).fillna(0)
+    surface_reprojected = surface.rio.reproject_match(target_grid, resampling="average").fillna(0)
 
     surface_file = Path(path) / "surface.nc"
     surface_reprojected.to_netcdf(surface_file)
@@ -218,6 +221,7 @@ def boot_file_from_grid(
     geometries: collections.abc.Iterable,
     dem_dataset: Literal["glo_30", "arcticdem"],
     ice_thickness_dataset: Literal["maffezzoli", "millan"],
+    bathymetry_dataset: Literal["none", "gebco"] | None,
     velocity_dataset: Literal["none", "its_live"] | None,
     path: str | Path = "input_files",
     **kwargs,
@@ -225,13 +229,6 @@ def boot_file_from_grid(
     """
     Build a glacier “boot” dataset (surface, thickness, bed, masks, aux vars) from an RGI ID.
 
-    Steps:
-    (1) Locate the glacier geometry by ``rgi_id`` (GeoDataFrame or file-based RGI).
-    (2) Buffer the glacier polygon in its native projected CRS (meters).
-    (3) Mosaic/reproject a DEM over the buffered extent at ``resolution``.
-    (4) Interpolate glacier ice thickness onto the target grid.
-    (5) Derive bed elevation and boolean masks from DEM clipping.
-    (6) Optionally fetch observed velocities and create a simple ``tillwat`` field.
     Returns a regular 2-D xarray Dataset in the glacier’s projected CRS.
 
     Parameters
@@ -249,6 +246,11 @@ def boot_file_from_grid(
         DEM source for surface preparation.
     ice_thickness_dataset : {"maffezzoli", "millan"}
         Source for ice thickness.
+    bathymetry_dataset : {"none", "gebco"} or None
+        Source for ocean bathymetry. When set, a cloud raster (e.g.
+        ``s3://.../<bathymetry_dataset>/bathymetry.tif``) is fetched, clipped
+        to the target grid, and used to fill ``bed`` where ``surface <= 0``.
+        ``"none"`` or ``None`` disables bathymetry merging.
     velocity_dataset : {"none", "its_live"} or None
         Source for velocities.
     path : str or pathlib.Path, default ``"input_files"``
@@ -295,8 +297,6 @@ def boot_file_from_grid(
 
     Notes
     -----
-    - Buffering is done in the glacier’s projected CRS (meters). The buffered geometry is
-      converted to WGS84 only to derive geographic bounds for DEM staging.
     - ``land_ice_area_fraction_retreat`` and ``ftt_mask`` are derived from DEM clipping and
       are intentionally simple; refine as needed for your application.
     - ``tillwat`` is a coarse proxy here: set to ``2 m`` where reprojected speed ``v >= 100 m/yr``,
@@ -308,6 +308,9 @@ def boot_file_from_grid(
     print("Generate DEM")
     print("-" * 120)
 
+    bucket: str = kwargs.pop("bucket", "pism-cloud-data")
+    prefix: str = kwargs.pop("prefix", "rgi")
+
     dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
 
     surface = prepare_surface(target_grid, dataset=dem_dataset, path=path)
@@ -316,12 +319,17 @@ def boot_file_from_grid(
     ice_thickness = get_ice_thickness(
         rgi_id, dataset=ice_thickness_dataset, path=path, target_grid=target_grid, target_crs=dst_crs, **kwargs
     )
-    ice_thickness = ice_thickness.rio.reproject_match(target_grid)
+    ice_thickness = ice_thickness.rio.reproject_match(target_grid, resampling="average")
     ice_thickness = ice_thickness.rio.clip(geometries, drop=False).fillna(0)
     ice_thickness = ice_thickness.where(ice_thickness > 0.0, 0.0)
 
     bed = surface - ice_thickness
-    bed.name = "bed"
+    if bathymetry_dataset not in ("none", None):
+        bathymetry_uri = f"/vsis3/{bucket}/{prefix}/{bathymetry_dataset}/bathymetry.tif"
+        bathymetry_p = path / Path("bathymetry.nc")
+        bathymetry = bathymetry_from_grid(target_grid, uri=bathymetry_uri, path=bathymetry_p)
+        bed = bed.where(surface > 0.0, bathymetry)
+        bed.name = "bed"
     bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
 
     liafr = surface.rio.clip(geometries, drop=False)
@@ -352,6 +360,25 @@ def boot_file_from_grid(
     ds = ds.fillna(0)
     if hasattr(ds["spatial_ref"], "GeoTransform"):
         del ds["spatial_ref"].attrs["GeoTransform"]
+
+    # Drop the leftover `band` scalar coord that rxr.open_rasterio leaves on
+    # some inputs (e.g. ice thickness, velocity). If it survives in the merged
+    # Dataset, xarray auto-emits ``coordinates = "band"`` on every variable on
+    # write, which trips up QGIS.
+    ds = ds.drop_vars("band", errors="ignore")
+    for var in ds.data_vars:
+        ds[var].attrs.pop("coordinates", None)
+        ds[var].encoding.pop("coordinates", None)
+
+    # Re-attach the CRS as a CF grid_mapping link on every data variable
+    # and stamp standard_name/units onto x/y so GDAL recognises them as
+    # projected eastings/northings (otherwise the geotransform is dropped).
+    ds = ds.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
+
+    # Mark the file as CF so GDAL picks the netCDF driver (and reads
+    # grid_mapping → CRS) instead of falling through to the HDF5 driver.
+    ds.attrs["Conventions"] = "CF-1.8"
+
     for name in ("x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
         if name in ds:
             ds[name].encoding.update({"_FillValue": None})

@@ -27,19 +27,21 @@ import os
 import re
 import tarfile
 import tempfile
+import time
 import zipfile
 from collections.abc import Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import urlparse
 
 import boto3
-import cdsapi
 import earthaccess
 import numpy as np
 import requests
 import xarray as xr
+from ecmwf.datastores import Client as _DatastoresClient
+from ecmwf.datastores import Remote as _DatastoresRemote
 from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3
@@ -264,62 +266,174 @@ def extract_archive(
     return extracted_files
 
 
-def _cds_download_year(
-    client: cdsapi.Client,
-    dataset: str,
-    request: dict,
-    year: str,
-    dest: Path,
-    force_overwrite: bool = False,
-) -> Path:
+def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path) -> Path:
     """
-    Download a single year from CDS and return the path to the file.
+    Build a collision-resistant cache filename for a per-year CDS download.
 
     Parameters
     ----------
-    client : cdsapi.Client
-        Authenticated CDS API client.
     dataset : str
-        CDS dataset identifier.
+        CDS dataset identifier (used in the filename).
     request : dict
-        Base CDS request dict (without ``year``).
+        CDS request dict; only ``request["variable"]`` is read, to avoid
+        cache collisions when different variables are requested for the
+        same dataset/year.
     year : str
-        Four-digit year string to download.
+        Four-digit year string.
     dest : Path
-        Directory to save the downloaded file.
-    force_overwrite : bool, default False
-        Re-download even if the file already exists.
+        Directory the cache file lives in.
 
     Returns
     -------
     Path
-        Path to the downloaded NetCDF file.
+        Path of the form ``<dest>/_cds_<dataset>_<variables>_<year>.nc``.
     """
-    # Include dataset and variable names in cache key to avoid collisions between different requests
     var_key = "_".join(sorted(request.get("variable", [])))
-    nc_path = dest / f"_cds_{dataset}_{var_key}_{year}.nc"
-    if nc_path.exists() and not force_overwrite:
-        return nc_path
+    return dest / f"_cds_{dataset}_{var_key}_{year}.nc"
 
-    req = {**request, "year": [year]}
-    result = client.retrieve(dataset, req)
 
-    if result.asset["type"] == "application/zip":
+def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: Path) -> Path:
+    """
+    Wait on a previously-submitted CDS job and download its result.
+
+    Parameters
+    ----------
+    remote : ecmwf.datastores.Remote
+        Job handle returned by :meth:`Client.submit`.
+    year : str
+        Four-digit year string (used for filenames and zip extraction folder).
+    dest : Path
+        Directory in which to write the downloaded file.
+    nc_path : Path
+        Final NetCDF cache path used when the server returns a NetCDF directly.
+
+    Returns
+    -------
+    Path
+        Path to the resulting NetCDF file (extracted from a ZIP if needed).
+    """
+    results = remote.get_results()  # blocks until the job is finished
+
+    if results.content_type == "application/zip":
         dl_path = dest / f"_cds_{year}.zip"
     else:
         dl_path = nc_path
 
-    result.download(dl_path)
+    results.download(str(dl_path))
 
     if str(dl_path).endswith(".zip"):
         extracted = extract_archive(dl_path, extract_to=dest / f"_cds_{year}", force_overwrite=True, verbose=False)
-        # Return the first NetCDF found
         nc_files = [p for p in extracted if str(p).endswith(".nc")]
         if nc_files:
             return Path(nc_files[0])
         raise FileNotFoundError(f"No NetCDF files found in archive for year {year}")
 
     return nc_path
+
+
+def _cds_download_years(
+    client: _DatastoresClient,
+    dataset: str,
+    request: dict,
+    years: Sequence[str],
+    dest: Path,
+    force_overwrite: bool = False,
+    max_workers: int = 5,
+    desc: str = "Downloading years",
+    verbose: bool = True,
+) -> list[Path]:
+    """
+    Download many CDS years using a submit-all-then-download pattern.
+
+    All requests are submitted up front (cheap HTTP POSTs) so the server
+    queues them concurrently. Results are then waited on and downloaded in
+    parallel via a thread pool of size ``max_workers``.
+
+    Parameters
+    ----------
+    client : ecmwf.datastores.Client
+        Authenticated ECMWF Data Stores client.
+    dataset : str
+        CDS dataset identifier.
+    request : dict
+        Base CDS request dict (without ``year``).
+    years : sequence of str
+        Years to retrieve.
+    dest : Path
+        Directory in which to write per-year NetCDF files.
+    force_overwrite : bool, default False
+        Re-download even if a cached file already exists.
+    max_workers : int, default 5
+        Maximum number of concurrent download/wait workers.
+    desc : str, default "Downloading years"
+        Progress-bar description.
+    verbose : bool, default True
+        If True, show submission/heartbeat progress and CDS request IDs.
+        Set False for quieter logs.
+
+    Returns
+    -------
+    list of Path
+        Per-year NetCDF paths (in submission order). Failed years are logged
+        and omitted.
+    """
+    # Phase 1: submit (or reuse cached) — sequential, no waiting
+    pending: list[tuple[str, Path, _DatastoresRemote]] = []  # (year, nc_path, remote)
+    cached: list[Path] = []
+    submit_pbar = tqdm(years, desc="Submitting", unit="yr", disable=not verbose)
+    for yr in submit_pbar:
+        nc_path = _cds_year_cache_path(dataset, request, yr, dest)
+        if nc_path.exists() and not force_overwrite:
+            cached.append(nc_path)
+            submit_pbar.set_postfix_str(f"{yr} cached")
+            continue
+        remote = client.submit(dataset, {**request, "year": [yr]})
+        pending.append((yr, nc_path, remote))
+        submit_pbar.set_postfix_str(f"{yr} → {remote.request_id}")
+
+    if verbose and pending:
+        ids = ", ".join(f"{yr}={r.request_id}" for yr, _, r in pending)
+        tqdm.write(f"Submitted {len(pending)} CDS jobs (cached={len(cached)}): {ids}")
+
+    if not pending:
+        return cached
+
+    # Phase 2: wait + download in parallel. Periodically poll job status
+    # so something prints even when CDS is slow.
+    downloaded: list[Path] = list(cached)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_cds_finish_year, remote, yr, dest, nc_path): yr for yr, nc_path, remote in pending}
+        pbar = tqdm(total=len(futures), desc=desc, unit="yr")
+        remaining = dict(futures)  # future -> year
+        last_status_log = 0.0
+        while remaining:
+            done, _ = wait(list(remaining), timeout=60.0, return_when=FIRST_COMPLETED)
+            for future in done:
+                yr = remaining.pop(future)
+                try:
+                    downloaded.append(future.result())
+                    pbar.set_postfix_str(f"{yr} done")
+                except Exception as exc:
+                    pbar.set_postfix_str(f"{yr} failed")
+                    tqdm.write(f"Failed to download year {yr}: {exc}")
+                pbar.update(1)
+            # Heartbeat: every ~60 s with no completions, print job statuses
+            if not done and verbose:
+                now = time.time()
+                if now - last_status_log > 60:
+                    last_status_log = now
+                    statuses = {}
+                    for yr in remaining.values():
+                        # The (yr, nc_path, remote) tuple in pending mirrors futures' order
+                        try:
+                            remote = next(r for y, _, r in pending if y == yr)
+                            statuses[yr] = remote.status
+                        except Exception:
+                            statuses[yr] = "?"
+                    summary = ", ".join(f"{yr}={s}" for yr, s in sorted(statuses.items()))
+                    tqdm.write(f"[CDS heartbeat] {summary}")
+        pbar.close()
+    return downloaded
 
 
 def carra_download_request(
@@ -360,8 +474,9 @@ def carra_download_request(
 
     Raises
     ------
-    cdsapi.api.ClientError
-        CDS request/authentication/parameter failures.
+    Exception
+        CDS request/authentication/parameter failures (raised by
+        :mod:`ecmwf.datastores`).
     OSError
         Problems opening/writing downloaded files.
     ValueError
@@ -369,13 +484,14 @@ def carra_download_request(
 
     Notes
     -----
-    - Requires a valid CDS API key in ``~/.cdsapirc``.
+    - Requires a valid CDS API key in ``~/.ecmwfdatastoresrc``
+      (or ``ECMWF_DATASTORES_URL`` / ``ECMWF_DATASTORES_KEY`` env vars).
     - If CDS provides a ZIP, contents are extracted before loading/merging.
     """
 
     file_path = Path(file_path)
 
-    client = cdsapi.Client()
+    client = _DatastoresClient()
 
     path = file_path.parent
     carra2_path = path / Path("_".join(v for v in request["variable"]))
@@ -386,24 +502,15 @@ def carra_download_request(
     years = [str(y) for y in request.pop("year")]
     # Remove "year" from the base request; each worker adds its own.
 
-    result: list[Path] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_cds_download_year, client, dataset, request, yr, carra2_path, force_overwrite): yr
-            for yr in years
-        }
-        pbar = tqdm(as_completed(futures), total=len(futures), desc="Downloading years", unit="yr")
-        for future in pbar:
-            yr = futures[future]
-            try:
-                nc = future.result()
-                result.append(nc)
-                pbar.set_postfix_str(f"{yr} done")
-            except Exception as e:
-                pbar.set_postfix_str(f"{yr} failed")
-                print(f"Failed to download year {yr}: {e}")
-
-    return result
+    return _cds_download_years(
+        client,
+        dataset,
+        request,
+        years,
+        carra2_path,
+        force_overwrite=force_overwrite,
+        max_workers=max_workers,
+    )
 
 
 def download_request(
@@ -459,8 +566,9 @@ def download_request(
 
     Raises
     ------
-    cdsapi.api.ClientError
-        CDS request/authentication/parameter failures.
+    Exception
+        CDS request/authentication/parameter failures (raised by
+        :mod:`ecmwf.datastores`).
     OSError
         Problems opening/writing downloaded files.
     ValueError
@@ -468,7 +576,8 @@ def download_request(
 
     Notes
     -----
-    - Requires a valid CDS API key in ``~/.cdsapirc``.
+    - Requires a valid CDS API key in ``~/.ecmwfdatastoresrc``
+      (or ``ECMWF_DATASTORES_URL`` / ``ECMWF_DATASTORES_KEY`` env vars).
     - If CDS provides a ZIP, contents are extracted before loading/merging.
     """
 
@@ -492,31 +601,23 @@ def download_request(
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
     if (not check_xr_lazy(file_path)) or force_overwrite:
-        client = cdsapi.Client()
+        client = _DatastoresClient()
 
         path = file_path.parent
         file_path.unlink(missing_ok=True)
 
         years = [str(y) for y in request.pop("year")]
-        print(years)
-        # Remove "year" from the base request; each worker adds its own.
+        # Remove "year" from the base request; each call adds its own.
 
-        downloaded: list[Path] = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_cds_download_year, client, dataset, request, yr, path, force_overwrite): yr
-                for yr in years
-            }
-            pbar = tqdm(as_completed(futures), total=len(futures), desc="Downloading years", unit="yr")
-            for future in pbar:
-                yr = futures[future]
-                try:
-                    nc = future.result()
-                    downloaded.append(nc)
-                    pbar.set_postfix_str(f"{yr} done")
-                except Exception as e:
-                    pbar.set_postfix_str(f"{yr} failed")
-                    print(f"Failed to download year {yr}: {e}")
+        downloaded = _cds_download_years(
+            client,
+            dataset,
+            request,
+            years,
+            path,
+            force_overwrite=force_overwrite,
+            max_workers=max_workers,
+        )
 
         dss = []
         for nc in sorted(downloaded):
@@ -849,16 +950,16 @@ def download_netcdf(
 
 
 def download_gebco(
-    url: str = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2025/ice_surface_elevation/netcdf/gebco_2025.zip?download=1",
+    url: str = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/ice_surface_elevation/netcdf/GEBCO_2026.zip?download=1",
     target_dir: os.PathLike | str = ".",
 ) -> Path:
     """
-    Download and extract GEBCO 2025 ice surface elevation NetCDF if needed.
+    Download and extract GEBCO 2026 ice surface elevation NetCDF if needed.
 
     Parameters
     ----------
     url : str, optional
-        URL to the GEBCO 2025 ZIP archive.
+        URL to the GEBCO 2026 ZIP archive.
     target_dir : str or PathLike, optional
         Directory where the ZIP and NetCDF file should be stored.
 
@@ -893,7 +994,7 @@ def download_gebco(
                 total=total,
                 unit="B",
                 unit_scale=True,
-                desc="Downloading gebco_2025.zip",
+                desc="Downloading gebco_2026.zip",
             ) as pbar,
         ):
             for chunk in r.iter_content(chunk_size=chunk_size):

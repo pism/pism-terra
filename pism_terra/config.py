@@ -1209,6 +1209,8 @@ class CampaignConfig(BaseModel):
 
     Attributes
     ----------
+    bathymetry : str or None
+        bathymetry data source identifier (e.g., ``"gebco"``).
     bucket : str or None
         S3 bucket (e.g., ``"pism-cloud7-data"``).
     climate : str or None
@@ -1255,6 +1257,7 @@ class CampaignConfig(BaseModel):
         Dataset or experiment version string.
     """
 
+    bathymetry: str | None = Field(default=None)
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
     climatology: str | None = Field(default=None)

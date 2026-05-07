@@ -33,7 +33,7 @@ import xarray as xr
 from pyproj import Transformer
 
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_xr_lazy
+from pism_terra.workflow import check_rio, check_xr_lazy
 
 
 def get_velocities_by_bounds(
@@ -205,9 +205,8 @@ def glacier_velocities_from_grid(
         t = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
         geo_bounds = t.transform_bounds(*bounds)
         ds = get_velocities_by_bounds(geo_bounds, product_name=product_name)
-        ds.to_netcdf("mv.nc")
         # Reproject to the glacier's target CRS to match the PISM grid
-        ds_clipped = ds.rio.reproject_match(target_grid).rio.clip(geometries, drop=False)
+        ds_clipped = ds.rio.reproject_match(target_grid, resampling="average").rio.clip(geometries, drop=False)
         # Ensure y is strictly increasing (PISM requires this for regridding)
         if ds_clipped.y[0] > ds_clipped.y[-1]:
             ds_clipped = ds_clipped.sortby("y")
@@ -219,3 +218,71 @@ def glacier_velocities_from_grid(
         ds_clipped = xr.open_dataset(path)
     ds_clipped.rio.write_crs(crs, inplace=True)
     return ds_clipped
+
+
+def bathymetry_from_grid(
+    target_grid: xr.Dataset,
+    uri: str,
+    path: Path | str = "tmp.nc",
+    force_overwrite: bool = False,
+) -> xr.DataArray:
+    """
+    Build a glacier-domain bathymetry/elevation field from a cloud raster.
+
+    Opens a remote raster (typically a Cloud Optimized GeoTIFF on S3 referenced
+    via ``/vsis3/`` or ``/vsicurl/``), clips it to the geographic bounds of
+    ``target_grid``, reprojects to ``target_grid``'s CRS/extent, and returns the
+    result as a DataArray. A cached NetCDF at ``path`` is reused unless
+    ``force_overwrite=True``.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        Target grid dataset whose ``x``/``y`` extent (in the grid's projected
+        CRS, as recorded in ``spatial_ref``) defines the query region. The
+        bathymetry raster is reprojected/aligned to this grid.
+    uri : str
+        Path/URI of the source raster. Local paths and GDAL VSI URIs are both
+        accepted (e.g., ``"/vsis3/bucket/key.tif"`` or
+        ``"/vsicurl/https://.../bathymetry.tif"``).
+    path : str or pathlib.Path, default ``"tmp.nc"``
+        Cache file for the clipped/reprojected output. When present and valid
+        (per :func:`check_rio`), it is opened instead of re-fetching.
+    force_overwrite : bool, default ``False``
+        If ``True``, ignore any existing cache at ``path`` and regenerate.
+
+    Returns
+    -------
+    xarray.DataArray
+        Bathymetry/elevation values (float32, meters) on ``target_grid`` with
+        CRS attached via :mod:`rioxarray`.
+    """
+
+    print("")
+    print("Generate Bathymetry")
+    print("-" * 120)
+
+    if (not check_rio(path)) or force_overwrite:
+
+        path = Path(path)
+        path.unlink(missing_ok=True)
+
+        bounds = [target_grid.x.values[0], target_grid.y.values[0], target_grid.x.values[-1], target_grid.y.values[-1]]
+        dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+        t = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
+        geo_bounds = t.transform_bounds(*bounds)
+
+        da = rxr.open_rasterio(uri, masked=True, chunks={"x": 1024, "y": 1024}).squeeze()
+        sub = da.rio.clip_box(*geo_bounds, crs=da.rio.crs)
+        out = sub.rio.reproject_match(target_grid, resampling="average").astype("float32")
+        out.encoding = {}  # drop stale int16 dtype/fill from the source COG
+        out = out.rio.write_crs(dst_crs).rio.write_grid_mapping()
+        out.name = "bathymetry"
+        # Strip stale per-band attrs that confuse xarray on re-read
+        for k in ("scale_factor", "add_offset", "AREA_OR_POINT"):
+            out.attrs.pop(k, None)
+        out.to_netcdf(path)
+
+    else:
+        out = xr.open_dataset(path)["bathymetry"]
+    return out

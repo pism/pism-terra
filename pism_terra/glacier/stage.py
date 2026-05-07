@@ -42,6 +42,7 @@ from pism_terra.aws import download_from_s3, local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import (
+    carra2,
     create_offset_file,
     create_step_file,
     era5,
@@ -50,16 +51,12 @@ from pism_terra.glacier.climate import (
 )
 from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.raster import apply_perimeter_band
-from pism_terra.vector import (
-    get_glacier_from_rgi_id,
-    grid_cells_from_dataset,
-    grid_points_from_dataset,
-)
+from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
-CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap, "abrupt": snap}
+CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "carra2": carra2, "era5": era5, "snap": snap, "abrupt": snap}
 MODIFIER: Mapping[str, Callable] = {
     "pmip4": create_offset_file,
     "era5": create_offset_file,
@@ -181,18 +178,12 @@ def stage_glacier(
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
     glacier_file = path / f"rgi_{rgi_id}.gpkg"
-    dst_crs = glacier["epsg"].values[0]
+    dst_crs = glacier["crs"].values[0]
     glacier_projected = glacier.to_crs(dst_crs)
     glacier.to_file(glacier_file)
 
     x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=2_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
-    cells_file = staging_path / f"rgi_{rgi_id}_cells.gpkg"
-    gdf_cells = grid_cells_from_dataset(grid_ds)
-    gdf_cells.to_file(cells_file)
-    points_file = staging_path / f"rgi_{rgi_id}_points.gpkg"
-    gdf_points = grid_points_from_dataset(grid_ds)
-    gdf_points.to_file(points_file)
 
     # Output filenames
     boot_file = path / f"bootfile_{rgi_id}.nc"
@@ -206,6 +197,7 @@ def stage_glacier(
         dem_dataset=config["dem"],
         ice_thickness_dataset=config["ice_thickness"],
         velocity_dataset=config["velocity"],
+        bathymetry_dataset=config["bathymetry"],
         path=staging_path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],
@@ -249,7 +241,7 @@ def stage_glacier(
     # Climate forcing — built into staging, then final outputs moved to `path`
     climate_from_rgi = CLIMATE[config["climate"]]
     responses = climate_from_rgi(
-        rgi_id=rgi_id, rgi=rgi, path=staging_path, force_overwrite=force_overwrite
+        grid_ds, rgi_id=rgi_id, path=staging_path, force_overwrite=force_overwrite
     )  # list[Path]
     # Normalize to list[Path]
     if isinstance(responses, (str, Path)):

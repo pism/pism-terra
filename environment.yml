@@ -7,7 +7,6 @@ dependencies:
   # runtime requirements
   - boto3
   - botocore
-  - cdsapi
   - python-cdo
   - cf_xarray
   - cftime
@@ -16,11 +15,14 @@ dependencies:
   - dask[distributed,dataframe]
   - dem_stitcher
   - earthaccess
+  - ecmwf-datastores-client
   - geocube
   - geopandas
   - h5netcdf
   - jinja2
   - joblib
+  - libgdal-hdf5
+  - libgdal-netcdf
   - matplotlib
   - nc-time-axis
   - netCDF4

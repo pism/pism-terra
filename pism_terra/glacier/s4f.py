@@ -192,6 +192,7 @@ def s4f_glacier(
         dem_dataset=config["dem"],
         ice_thickness_dataset=config["ice_thickness"],
         velocity_dataset=config["velocity"],
+        bathymetry_dataset=config["bathymetry"],
         path=staging_path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],
@@ -279,7 +280,6 @@ def main():
     rgi = gpd.read_file(rgi_local)
 
     rgi_cloud = path / config["rgi_file"].replace("gpkg", "fgb")
-    print(rgi_cloud)
     rgi.to_file(rgi_cloud)
 
     all_nc_files: list[Path] = []
