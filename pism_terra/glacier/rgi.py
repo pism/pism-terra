@@ -275,8 +275,12 @@ def prepare_rgi(
             parents = rgi_g.loc[rgi_g["rgi_id"].isin(wanted_g), "rgi_id_c"].dropna().unique()
             wanted_c.update(parents.tolist())
 
+        # Keep ALL glaciers whose parent complex is in the wanted set, so that
+        # downstream per-complex aggregations (e.g. ice-thickness merging) see
+        # every member glacier of each requested complex — not just the ones
+        # the user listed individually.
         rgi_c = rgi_c[rgi_c["rgi_id"].isin(wanted_c)].copy()
-        rgi_g = rgi_g[rgi_g["rgi_id"].isin(wanted_g)].copy()
+        rgi_g = rgi_g[rgi_g["rgi_id_c"].isin(wanted_c) | rgi_g["rgi_id"].isin(wanted_g)].copy()
         logger.info("Filtered to %d complexes and %d glaciers", len(rgi_c), len(rgi_g))
 
     complex_path = output_path / "rgi_c.gpkg"

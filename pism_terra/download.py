@@ -982,25 +982,29 @@ def download_gebco(
     for nc_path in existing_nc_files:
         if check_xr_lazy(nc_path):
             return nc_path
-    # 2. No valid NetCDF found, download ZIP
-    zip_path = target_dir / "gebco_2025.zip"
-    with requests.get(url, stream=True, timeout=300) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("Content-Length", 0))
-        chunk_size = 1024 * 1024  # 1 MB
-        with (
-            open(zip_path, "wb") as f,
-            tqdm(
-                total=total,
-                unit="B",
-                unit_scale=True,
-                desc="Downloading gebco_2026.zip",
-            ) as pbar,
-        ):
-            for chunk in r.iter_content(chunk_size=chunk_size):
-                if chunk:  # filter out keep-alive chunks
-                    f.write(chunk)
-                    pbar.update(len(chunk))
+    # 2. No valid NetCDF found. Reuse a previously-downloaded zip if present;
+    #    otherwise stream the archive from the upstream URL.
+    zip_path = target_dir / "gebco.zip"
+    if not zip_path.exists():
+        with requests.get(url, stream=True, timeout=300) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length", 0))
+            chunk_size = 1024 * 1024  # 1 MB
+            tmp = zip_path.with_suffix(zip_path.suffix + ".part")
+            with (
+                open(tmp, "wb") as f,
+                tqdm(
+                    total=total,
+                    unit="B",
+                    unit_scale=True,
+                    desc="Downloading gebco.zip",
+                ) as pbar,
+            ):
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    if chunk:  # filter out keep-alive chunks
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+            tmp.rename(zip_path)
     # 3. Extract ZIP
     print(f"Extracting {zip_path} to {target_dir}")
     with zipfile.ZipFile(zip_path, "r") as zf:

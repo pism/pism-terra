@@ -16,7 +16,7 @@
 # along with PISM; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
-# pylint: disable=too-many-positional-arguments,unused-import
+# pylint: disable=too-many-positional-arguments,unused-import,broad-exception-caught
 """
 Prepare ISMIP7 Greenland data sets.
 """
@@ -26,6 +26,8 @@ import os
 import re
 import time
 from argparse import ArgumentParser
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -33,6 +35,7 @@ import cf_xarray
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import requests
 import rioxarray  # pylint: disable=unused-import
 import toml
 import xarray as xr
@@ -45,6 +48,7 @@ from tqdm.auto import tqdm
 from pism_terra.domain import create_domain
 from pism_terra.download import (
     download_earthaccess,
+    download_file,
     download_gebco,
     download_netcdf,
     file_localizer,
@@ -56,6 +60,184 @@ from pism_terra.workflow import check_xr_fully, check_xr_lazy
 xr.set_options(keep_attrs=True)
 
 logger = logging.getLogger(__name__)
+
+
+ISMIP7_GLOBUS_BASE = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS"
+
+
+def _make_url(year, gcm, pathway, short_hand, m_var, version):
+    """
+    Build the Globus HTTPS URL for one ISMIP7 GrIS forcing file.
+
+    Mirrors the public Globus directory layout::
+
+        {base}/{gcm}/{pathway}/{short_hand}/{m_var}/{version}/<file>.nc
+
+    where ``<file>`` is ``{m_var}_GrIS_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc``
+    (without the ``short_hand`` segments when it equals ``"none"``).
+
+    Parameters
+    ----------
+    year : int
+        Year of the forcing file.
+    gcm : str
+        GCM name (e.g. ``"CESM2-WACCM"``).
+    pathway : str
+        Emissions pathway (e.g. ``"historical"``, ``"ssp585"``).
+    short_hand : str
+        Short-hand identifier for the forcing type (e.g. ``"SDBN1-1000m"``)
+        or ``"none"`` when the variable lives in a per-GCM/pathway tree
+        without the short-hand segment.
+    m_var : str
+        Variable name (e.g. ``"acabf"``, ``"tas"``).
+    version : str
+        Version string (e.g. ``"v1"``).
+
+    Returns
+    -------
+    str
+        Globus HTTPS URL for the file.
+    """
+    fname = (
+        f"{m_var}_GrIS_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc"
+        if short_hand != "none"
+        else f"{m_var}_GrIS_{gcm}_{pathway}_{version}_{year}.nc"
+    )
+    parts = [ISMIP7_GLOBUS_BASE, gcm, pathway]
+    if short_hand != "none":
+        parts.append(short_hand)
+    parts.extend([m_var, version, fname])
+    return "/".join(parts)
+
+
+class GlobusAuthRequired(RuntimeError):
+    """Globus refused the download because no valid bearer token was supplied."""
+
+
+def _globus_headers() -> dict[str, str]:
+    """
+    Build header.
+
+    Build the Authorization header for Globus HTTPS downloads, if a token
+    is available. Reads ``GLOBUS_ACCESS_TOKEN`` from the environment.
+
+    Returns
+    -------
+    dict
+        Authorization header.
+    """
+    token = os.environ.get("GLOBUS_ACCESS_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _download_one(url: str, dest: Path, force_overwrite: bool = False, timeout: int = 600) -> Path:
+    """
+    Download a single ISMIP7 NetCDF from Globus to ``dest``.
+
+    Streams the response to a temporary ``.part`` file and renames on
+    completion so partial downloads never look like valid caches. If
+    ``dest`` already exists and ``force_overwrite`` is False, it is
+    returned unchanged.
+
+    If ``GLOBUS_ACCESS_TOKEN`` is set in the environment, it is sent as a
+    Bearer token in the ``Authorization`` header. If the server tries to
+    redirect to ``auth.globus.org`` (i.e. the collection requires login),
+    the function aborts with :class:`GlobusAuthRequired` rather than
+    chasing the auth flow.
+
+    Parameters
+    ----------
+    url : str
+        Source URL (typically built by :func:`_make_url`).
+    dest : Path
+        Local target path.
+    force_overwrite : bool, default False
+        Re-download even if ``dest`` is already present.
+    timeout : int, default 600
+        Per-request timeout in seconds.
+
+    Returns
+    -------
+    Path
+        ``dest`` (after a successful download or as a cache hit).
+
+    Raises
+    ------
+    GlobusAuthRequired
+        If the request gets redirected to Globus Auth (collection requires
+        authenticated access).
+    """
+    if dest.exists() and not force_overwrite:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    headers = _globus_headers()
+    with requests.get(url, headers=headers, stream=True, timeout=timeout, allow_redirects=False) as r:
+        # Follow data-server redirects (g-…data.globus.org → real node) but
+        # bail loudly on auth redirects so we don't hammer auth.globus.org.
+        while r.is_redirect:
+            location = r.headers.get("Location", "")
+            if "auth.globus.org" in location:
+                raise GlobusAuthRequired(
+                    "Globus collection requires authentication. "
+                    "Set GLOBUS_ACCESS_TOKEN with a valid Bearer token "
+                    "(see notes in pism_terra.ismip7.greenland.forcing)."
+                )
+            r.close()
+            r = requests.get(location, headers=headers, stream=True, timeout=timeout, allow_redirects=False)
+        r.raise_for_status()
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 20):
+                if chunk:
+                    f.write(chunk)
+    tmp.rename(dest)
+    return dest
+
+
+def _download_many(
+    pairs: Sequence[tuple[str, Path]],
+    max_workers: int = 2,
+    desc: str = "Downloading ISMIP7",
+    force_overwrite: bool = False,
+) -> list[Path]:
+    """
+    Download a list of ``(url, dest)`` pairs in parallel.
+
+    Parameters
+    ----------
+    pairs : sequence of (str, pathlib.Path)
+        URLs to fetch and the local destinations to write them to.
+    max_workers : int, default 8
+        Number of concurrent download workers.
+    desc : str, default "Downloading ISMIP7"
+        Progress-bar description.
+    force_overwrite : bool, default False
+        Re-download even if a cached file already exists at the destination.
+
+    Returns
+    -------
+    list of Path
+        Paths to all successfully downloaded files (in completion order).
+    """
+    results: list[Path] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_download_one, url, dest, force_overwrite): (url, dest) for url, dest in pairs}
+        pbar = tqdm(cf_as_completed(futures), total=len(futures), desc=desc, unit="file")
+        for fut in pbar:
+            url, dest = futures[fut]
+            try:
+                results.append(fut.result())
+                pbar.set_postfix_str(f"{dest.name} ✓")
+            except GlobusAuthRequired as exc:
+                # Don't keep hammering: cancel remaining work and surface a clear error.
+                pbar.set_postfix_str("auth required — aborting")
+                for pending in futures:
+                    pending.cancel()
+                raise exc
+            except Exception as exc:
+                pbar.set_postfix_str(f"{dest.name} ✗")
+                logger.error("Failed to download %s: %s", url, exc)
+    return results
 
 
 def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version):
@@ -161,35 +343,51 @@ def _process_single_forcing(
     cdo.debug = True
 
     grid_file = file_localizer("s3://pism-cloud-data/ismip7_extra/grid.txt", dest=output_path)
+    tas_replace = ""
 
     output_files = []
 
+    # Build (url, local_path) pairs for every (variable, year) we need, across
+    # both historical and projection epochs. Then download everything in
+    # parallel before any cdo step touches the files.
+    download_pairs: list[tuple[str, Path]] = []
+    for pathway_name, start_year, end_year in (
+        ("historical", hist_start_year, hist_end_year),
+        (pathway, proj_start_year, proj_end_year),
+    ):
+        for m_var in fields:
+            for year in range(start_year, end_year):
+                url = _make_url(year, gcm, pathway_name, short_hand, m_var, version)
+                local = Path(_make_path(year, base_path, gcm, pathway_name, short_hand, m_var, version))
+                download_pairs.append((url, local))
+
+    _download_many(download_pairs, desc=f"Download {gcm}/{forcing}")
+
+    # cdo merges run on the downloaded local paths.
     hist_merge_cmds = []
     for m_var in fields:
-        urls = [
+        paths = [
             _make_path(year, base_path, gcm, "historical", short_hand, m_var, version)
             for year in range(hist_start_year, hist_end_year)
         ]
         k, v = m_var, ismip7_to_pism[m_var]
-        tas_replace = "-setrtoc,0,230,230 -setrtoc,303,403,303" if m_var == "tas" else ""
         merge_cmd = (
             f"-chname,{k},{v} {tas_replace} -setgrid,{str(grid_file)} -mergetime [ "
-            + " ".join(str(f) for f in urls)
+            + " ".join(str(f) for f in paths)
             + " ]"
         )
         hist_merge_cmds.append(merge_cmd)
 
     proj_merge_cmds = []
     for m_var in fields:
-        urls = [
+        paths = [
             _make_path(year, base_path, gcm, pathway, short_hand, m_var, version)
             for year in range(proj_start_year, proj_end_year)
         ]
         k, v = m_var, ismip7_to_pism[m_var]
-        tas_replace = "-setrtoc,0,230,230 -setrtoc,303,403,303" if m_var == "tas" else ""
         merge_cmd = (
             f"-chname,{k},{v} {tas_replace} -setgrid,{str(grid_file)} -mergetime [ "
-            + " ".join(str(f) for f in urls)
+            + " ".join(str(f) for f in paths)
             + " ]"
         )
         proj_merge_cmds.append(merge_cmd)
@@ -543,11 +741,11 @@ def prepare_ismip7_forcing(
     # Build list of tasks
     tasks = []
 
-    for gcm in config["gcms"]:
-        for pathway in config["pathway"]:
-            version = "v" + str(config["pathway"][pathway]["version"])
-            hist_start_year, hist_end_year = config["pathway"][pathway]["historical"]
-            proj_start_year, proj_end_year = config["pathway"][pathway]["projection"]
+    for gcm, _gcm_config in config["gcms"].items():
+        for pathway, _pathway_config in _gcm_config.items():
+            version = "v" + str(_pathway_config["version"])
+            hist_start_year, hist_end_year = _pathway_config["historical"]
+            proj_start_year, proj_end_year = _pathway_config["projection"]
             for forcing, forcing_dict in config["forcing"].items():
                 short_hand = forcing_dict["short_hand"]
                 fields = forcing_dict["fields"]

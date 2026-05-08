@@ -59,6 +59,7 @@ from pism_terra.download import (
 )
 from pism_terra.glacier.climate import (
     convert_many_tifs_concurrent,
+    prepare_carra2,
     prepare_snap,
 )
 from pism_terra.glacier.ice_thickness import prepare_ice_thickness_maffezzoli
@@ -145,38 +146,39 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         regions = regions[regions.index.isin(o1regions)]
     else:
         glaciers = None
+    # Final outputs land under glacier_path; everything intermediate lives in
+    # staging_path so the user can `rm -rf staging` after a clean run without
+    # losing anything that downstream tools need.
     glacier_path = output_path / Path("glacier")
     glacier_path.mkdir(parents=True, exist_ok=True)
+    staging_path = output_path / Path("staging")
+    staging_path.mkdir(parents=True, exist_ok=True)
 
+    # --- RGI ---
     rgi_path = glacier_path / Path("rgi")
     rgi_path.mkdir(parents=True, exist_ok=True)
+    rgi_staging = staging_path / Path("rgi")
+    rgi_staging.mkdir(parents=True, exist_ok=True)
 
     rgi_files = prepare_rgi(
-        regions, glaciers=glaciers, output_path=rgi_path, force_overwrite=force_overwrite, ntasks=ntasks
+        regions,
+        glaciers=glaciers,
+        output_path=rgi_path,
+        extract_path=rgi_staging,
+        force_overwrite=force_overwrite,
+        ntasks=ntasks,
     )
 
     complexes = gpd.read_file(rgi_files["rgi_complexes"])
     glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
 
-    ice_thickness_path = glacier_path / Path("ice_thickness")
-    ice_thickness_path.mkdir(parents=True, exist_ok=True)
-
-    maffezzoli_path = ice_thickness_path / Path("maffezzoli")
-    maffezzoli_path.mkdir(parents=True, exist_ok=True)
-
-    prepare_ice_thickness_maffezzoli(
-        regions.index,
-        complexes=complexes,
-        glaciers=glaciers,
-        output_path=maffezzoli_path,
-        extract_path=output_path,
-        force_overwrite=force_overwrite,
-        ntasks=ntasks,
-    )
-
+    # --- GEBCO ---
+    # Source NetCDF download lands in staging; only the COG goes to glacier/.
     gebco_path = glacier_path / Path("gebco")
     gebco_path.mkdir(parents=True, exist_ok=True)
-    gebco_nc = download_gebco(target_dir=output_path)
+    gebco_staging = staging_path / Path("gebco")
+    gebco_staging.mkdir(parents=True, exist_ok=True)
+    gebco_nc = download_gebco(target_dir=gebco_staging)
     cog_gebco_p = gebco_path / Path("bathymetry.tif")
 
     # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
@@ -197,6 +199,43 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         overview_resampling="AVERAGE",
         num_threads="ALL_CPUS",
     )
+
+    # --- Ice thickness ---
+    ice_thickness_path = glacier_path / Path("ice_thickness")
+    ice_thickness_path.mkdir(parents=True, exist_ok=True)
+    maffezzoli_path = ice_thickness_path / Path("maffezzoli")
+    maffezzoli_path.mkdir(parents=True, exist_ok=True)
+    ice_thickness_staging = staging_path / Path("ice_thickness")
+    ice_thickness_staging.mkdir(parents=True, exist_ok=True)
+
+    prepare_ice_thickness_maffezzoli(
+        regions.index,
+        complexes=complexes,
+        glaciers=glaciers,
+        output_path=maffezzoli_path,
+        extract_path=ice_thickness_staging,
+        force_overwrite=force_overwrite,
+        ntasks=ntasks,
+    )
+
+    # --- Climate (CARRA2) ---
+    # Run the download/merge under staging, then move only the merged product
+    # into glacier/climate. Year-by-year CDS intermediates stay in staging.
+    climate_path = glacier_path / Path("climate")
+    climate_path.mkdir(parents=True, exist_ok=True)
+    carra2_staging = staging_path / Path("carra2")
+    carra2_staging.mkdir(parents=True, exist_ok=True)
+
+    carra2_staging_file = prepare_carra2(carra2_staging)
+    carra2_final = climate_path / Path(carra2_staging_file.name)
+    if carra2_staging_file.is_dir():
+        # Zarr store — copytree
+        if carra2_final.exists():
+            shutil.rmtree(carra2_final)
+        shutil.copytree(carra2_staging_file, carra2_final)
+    else:
+        # NetCDF or other single-file output
+        shutil.copy2(carra2_staging_file, carra2_final)
 
     return rgi_files
 

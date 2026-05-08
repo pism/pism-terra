@@ -38,6 +38,7 @@ import dask
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import rasterio
 import rioxarray as rxr
 import s3fs
 import xarray as xr
@@ -68,6 +69,14 @@ logger = logging.getLogger(__name__)
 xr.set_options(keep_attrs=True)
 
 carra2_grid = load_grid("carra2")
+
+# CARRA2 is on a polar-stereographic projection on a 6371229 m sphere.
+# Mirrors the parameters in pism_terra/grids/carra2.txt.
+CARRA2_PROJ = (
+    "+proj=stere +lat_0=90 +lat_ts=90 +lon_0=-30 "
+    "+x_0=172840.374543307 +y_0=645049.059394855 "
+    "+R=6371229 +units=m +no_defs"
+)
 
 
 def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | None:
@@ -142,9 +151,7 @@ def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | Non
         return None
 
 
-def carra2(
-    target_grid: xr.Dataset,
-    rgi_id: str,
+def prepare_carra2(
     path: str | Path,
     year: list[str | int] = [
         "1986",
@@ -181,12 +188,6 @@ def carra2(
 
     Parameters
     ----------
-    target_grid : xarray.Dataset
-        Target grid dataset providing the destination CRS (via ``spatial_ref``)
-        and extent used to subset/regrid the downloaded CARRA2 fields.
-    rgi_id : str
-        Glacier identifier (e.g., ``"RGI2000-v7.0-C-01-09429"``). Used in the
-        output filename ``carra2_<rgi_id>.nc`` and downstream metadata.
     path : str or pathlib.Path
         Working/output directory. The final NetCDF and intermediate
         ``carra2/`` cache subfolder are written under this path.
@@ -221,23 +222,12 @@ def carra2(
     print("Generate historical climate")
     print("-" * 120)
 
-    carra2_filename = path / Path(f"carra2_{rgi_id}.nc")
+    path = Path(path)
 
-    carra2_path = path / Path("carra2")
-    carra2_path.mkdir(exist_ok=True)
-    carra2_grid_path = carra2_path / Path("carra2_grid.txt")
+    carra2_filename = path / "carra2.zarr"
+
+    carra2_grid_path = path / "carra2_grid.txt"
     carra2_grid_path.write_text(carra2_grid)
-
-    bounds = [
-        target_grid.x_bnds.values[0][0],
-        target_grid.y_bnds.values[0][0],
-        target_grid.x_bnds.values[-1][-1],
-        target_grid.y_bnds.values[-1][-1],
-    ]
-    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
-    t = Transformer.from_crs(dst_crs, "EPSG:4326")
-    geo_bounds = t.transform_bounds(*bounds)
-    area = [geo_bounds[2], geo_bounds[1], geo_bounds[0], geo_bounds[3]]
 
     precipitation_dataset = "reanalysis-pan-carra-means"
     precipitation_request = {
@@ -248,13 +238,13 @@ def carra2(
         "year": year,
         "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
         "data_format": "netcdf",
-        "area": area,
+        "area": [90, -180, 40, 180],
     }
 
     precipitation_files = carra_download_request(
         precipitation_dataset,
         precipitation_request,
-        file_path=carra2_path / Path("pr.nc"),
+        file_path=path / Path("pr.nc"),
         max_workers=max_workers,
         **kwargs,  # pass the full CARRA request dict
     )
@@ -301,13 +291,13 @@ def carra2(
             "31",
         ],
         "data_format": "netcdf",
-        "area": area,
+        "area": [90, -180, 40, 180],
     }
 
     temperature_files = carra_download_request(
         temperature_dataset,
         temperature_request,
-        file_path=carra2_path / Path("tas.nc"),
+        file_path=path / Path("tas.nc"),
         max_workers=max_workers,
         **kwargs,  # pass the full CARRA request dict
     )
@@ -327,7 +317,7 @@ def carra2(
 
     batches = []
     for yr, pr_f, tas_f in zip(year, pr_sorted, tas_sorted):
-        batch_out = str((carra2_path / f"batch_{yr}.nc").resolve())
+        batch_out = str((path / f"batch_{yr}.nc").resolve())
         batches.append((yr, str(pr_f), str(tas_f), batch_out))
 
     def _process_carra2_batch(args):
@@ -346,7 +336,7 @@ def carra2(
             Path to the merged output file.
         """
         yr, pr_f, tas_f, batch_out = args
-        tmp = carra2_path
+        tmp = path
         cdo_local = Cdo(tempdir=tmp)
 
         # Precipitation: monthly means (already monthly data, just fix grid + time)
@@ -405,11 +395,14 @@ def carra2(
     # --- Step 2: mergetime all year batches  ---
     if (not check_xr_lazy(carra2_filename)) or force_overwrite:
         logger.info("CDO: merging %d year batches...", len(batch_files))
-        cdo.mergetime(
+        ds = cdo.mergetime(
             input=" ".join(batch_files),
-            output=str(carra2_filename.resolve()),
             options=f"-f nc4 -z zip_2 -P {max_workers}",
+            returnXDataset=True,
         )
+        ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
+        ds = ds.rio.write_crs(CARRA2_PROJ).rio.write_grid_mapping("spatial_ref").rio.write_coordinate_system()
+        ds.to_zarr(carra2_filename, mode="w")
 
     return carra2_filename
 
@@ -636,6 +629,142 @@ def snap(
     return snap_files
 
 
+def carra2(
+    target_grid: xr.Dataset,
+    rgi_id: str,
+    path: Path | str = ".",
+    bucket: str = "pism-cloud-data",
+    prefix: str = "",
+    force_overwrite: bool = False,
+) -> Path:
+    """
+    Subset and reproject CARRA2 reanalysis to a glacier's target grid.
+
+    Opens the cloud-hosted CARRA2 Zarr store on S3, lazily clips it to the
+    bounding box of ``target_grid`` (after transforming the box into CARRA2
+    coordinates), reprojects the subset onto ``target_grid``, and writes a
+    compressed NetCDF.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        Target grid dataset providing the destination CRS (via ``spatial_ref``)
+        and extent. Used to derive the bounding box for the CARRA2 subset.
+    rgi_id : str
+        Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
+        output filename.
+    path : str or pathlib.Path, default ``"."``
+        Output directory. The function writes
+        ``carra2_<rgi_id>.nc`` inside this directory.
+    bucket : str, default ``"pism-cloud-data"``
+        S3 bucket hosting the CARRA2 Zarr store.
+    prefix : str, default ``""``
+        Optional S3 key prefix; the full URI becomes
+        ``s3://<bucket>/<prefix>/climate/carra2.zarr``.
+    force_overwrite : bool, default ``False``
+        If True, regenerate the output even if the cached NetCDF exists.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path to the written NetCDF file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the Zarr store cannot be opened.
+    ValueError
+        If ``target_grid`` lacks a CRS or the bbox cannot be transformed.
+
+    Notes
+    -----
+    - Output variables and their units are inherited from the source CARRA2
+      Zarr store (typically ``air_temp`` in K and ``precipitation`` in
+      kg m^-2 day^-1).
+    - Compression: zlib level 2 + shuffle.
+    """
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+    print("")
+    print("Generate historical climate")
+    print("-" * 120)
+
+    carra2_filename = path / Path(f"carra2_{rgi_id}.nc")
+    if carra2_filename.exists() and not force_overwrite and check_xr_lazy(carra2_filename):
+        print(f"Using cached {carra2_filename}")
+        return carra2_filename
+
+    # Bounding box of the target grid in its own (projected) CRS.
+    bounds = (
+        float(target_grid.x_bnds.values[0][0]),
+        float(target_grid.y_bnds.values[0][0]),
+        float(target_grid.x_bnds.values[-1][-1]),
+        float(target_grid.y_bnds.values[-1][-1]),
+    )
+    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+
+    uri = f"s3://{bucket}/{prefix}/climate/carra2.zarr".replace("//", "/").replace("s3:/", "s3://")
+    print(f"Opening {uri}")
+    ds = xr.open_zarr(
+        uri,
+        consolidated=True,
+        storage_options={"anon": True},
+        chunks={},
+    )
+
+    # Make sure rioxarray knows which dims are spatial and what the CRS is.
+    if "x" in ds.dims and "y" in ds.dims:
+        ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
+    elif "lon" in ds.dims and "lat" in ds.dims:
+        ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+
+    # Recover CRS from whichever grid-mapping variable the Zarr writer used.
+    # CARRA2 stores it as a *data variable* (not a coord) named "crs"; other
+    # writers use "spatial_ref", "polar_stereographic", "lambert_conformal_conic", etc.
+    if ds.rio.crs is None:
+        crs_wkt = None
+        # First, follow any data variable's CF grid_mapping pointer.
+        for var in ds.data_vars:
+            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get("grid_mapping")
+            if gm and gm in ds.variables:  # checks both data_vars and coords
+                crs_wkt = ds[gm].attrs.get("crs_wkt") or ds[gm].attrs.get("spatial_ref")
+                if crs_wkt:
+                    break
+        # Fall back to scanning every variable for a CRS-shaped attr.
+        if not crs_wkt:
+            for name in ds.variables:
+                attrs = ds[name].attrs
+                crs_wkt = attrs.get("crs_wkt") or attrs.get("spatial_ref")
+                if crs_wkt:
+                    break
+        if not crs_wkt:
+            raise ValueError(
+                f"Could not recover a CRS from the CARRA2 Zarr store at {uri}. "
+                f"Variables present: {list(ds.variables)}"
+            )
+        ds = ds.rio.write_crs(crs_wkt)
+
+    # Transform the target bbox into CARRA2 coordinates and clip there.
+    t = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
+    minx, miny, maxx, maxy = t.transform_bounds(*bounds)
+    sub = ds.rio.clip_box(minx=minx, miny=miny, maxx=maxx, maxy=maxy, crs=ds.rio.crs)
+
+    # Reproject the subset onto the target grid.
+    out = sub.rio.reproject_match(target_grid, resampling="bilinear")
+
+    # Re-attach CF grid_mapping after the reproject.
+    out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
+    out.attrs["Conventions"] = "CF-1.8"
+
+    # Compressed NetCDF (zlib level 2 + shuffle for floats).
+    encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
+    carra2_filename.unlink(missing_ok=True)
+    out.to_netcdf(carra2_filename, encoding=encoding, engine="netcdf4")
+
+    return carra2_filename
+
+
 def era5(
     target_grid: xr.Dataset,
     rgi_id: str,
@@ -740,7 +869,7 @@ def era5(
     )
     ds_geo_ = (
         ds_geo.rio.write_crs("EPSG:4326")
-        .rio.reproject_match(ds, resampling="average")
+        .rio.reproject_match(ds, resampling="bilinear")
         .rename({"x": "longitude", "y": "latitude"})
     )
 
@@ -756,7 +885,7 @@ def era5(
         )
         ds_global_ = (
             ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling="average")
+            .rio.reproject_match(ds, resampling="bilinear")
             .rename({"x": "longitude", "y": "latitude"})
         )
         common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))

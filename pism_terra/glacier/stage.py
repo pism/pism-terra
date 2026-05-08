@@ -238,10 +238,16 @@ def stage_glacier(
 
     clim_mod = config["climate"]
 
+    print(config)
     # Climate forcing — built into staging, then final outputs moved to `path`
     climate_from_rgi = CLIMATE[config["climate"]]
     responses = climate_from_rgi(
-        grid_ds, rgi_id=rgi_id, path=staging_path, force_overwrite=force_overwrite
+        grid_ds,
+        rgi_id=rgi_id,
+        path=staging_path,
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        force_overwrite=force_overwrite,
     )  # list[Path]
     # Normalize to list[Path]
     if isinstance(responses, (str, Path)):

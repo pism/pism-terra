@@ -101,7 +101,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config_file = args.CONFIG_FILE[0]
-    data_path = Path(args.DATA_PATH[0])
+    _ = Path(args.DATA_PATH[0])
     force_overwrite = args.force_overwrite
     obs_path = Path(args.obs_path)
     output_path = Path(args.OUTPUT_PATH[0])
@@ -130,6 +130,14 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     if match is None:
         raise ValueError(f"Cannot parse resolution string: {resolution_str!r}")
     resolution, _ = int(match.group(1)), match.group(2)
+
+    logger.info("-" * 120)
+    logger.info("Forcings")
+    logger.info("-" * 120)
+
+    base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
+
+    forcing_files = prepare_ismip7_forcing(base_url, output_path, config)
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
@@ -162,10 +170,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     for v in obs_files.values():
         check_xr_lazy(v)
 
-    logger.info("-" * 120)
-    logger.info("Forcings")
-    logger.info("-" * 120)
-    forcing_files = prepare_ismip7_forcing(data_path, output_path, config)
     logger.info("Forcing files: %s", forcing_files)
     input_files = [grid_file] + list(obs_files.values()) + [retreat_file] + list(forcing_files)
 

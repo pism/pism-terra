@@ -36,6 +36,7 @@ dependencies = [
     "ecmwf-datastores-client",
     "geocube",
     "geopandas",
+    "globus-cli",
     "h5netcdf",
     "jinja2",
     "matplotlib",
