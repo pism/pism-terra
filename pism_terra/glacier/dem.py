@@ -208,7 +208,7 @@ def prepare_surface(
     surface.name = "surface"
     surface.attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
 
-    surface_reprojected = surface.rio.reproject_match(target_grid, resampling="average").fillna(0)
+    surface_reprojected = surface.rio.reproject_match(target_grid, resampling=Resampling.bilinear).fillna(0)
 
     surface_file = Path(path) / "surface.nc"
     surface_reprojected.to_netcdf(surface_file)
