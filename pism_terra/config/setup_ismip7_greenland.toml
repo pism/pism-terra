@@ -15,5 +15,5 @@ resolution = "900m"
 
 [forcing]
 
-climate = {fields = ["acabf", "runoff", "tas"], short_hand = "SDBN1-1000m"}
-ocean = {fields = ["TF"], short_hand = "none"}
+climate = {fields = ["acabf", "dacabfdz", "runoff", "tas"], short_hand = "SDBN1-1000m"}
+ocean = {fields = ["TF", "so"], short_hand = "none"}

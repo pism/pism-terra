@@ -1,7 +1,7 @@
 [run]
 
 executable = "pism"
-mpi = "mpirun -np  {{ ntasks }}"
+mpi = "mpirun -np  {{ ntasks }} apptainer run ${container}"
 ntasks = 40
 
 [job]
