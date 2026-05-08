@@ -49,6 +49,7 @@ from cdo import Cdo
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
 from pyproj import Proj
+from rasterio.enums import Resampling
 from tqdm import tqdm
 
 from pism_terra.aws import s3_to_local

@@ -43,6 +43,7 @@ import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from cdo import Cdo
 from dask.distributed import Client, as_completed
 from pyfiglet import Figlet
+from rasterio.enums import Resampling
 from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
@@ -492,7 +493,7 @@ def prepare_observations(
         gebco_p = download_gebco(target_dir=input_path)
         gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
         gebco_bm_regridded = gebco.rio.reproject_match(
-            ds_bm_regridded.rio.write_crs("EPSG:3413"), resampling="average"
+            ds_bm_regridded.rio.write_crs("EPSG:3413"), resampling=Resampling.bilinear
         ).compute()
         ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(
             ds_bm_regridded["bed"].notnull(), gebco_bm_regridded["elevation"]

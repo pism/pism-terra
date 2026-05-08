@@ -45,6 +45,7 @@ import xarray as xr
 from cdo import Cdo
 from dask.diagnostics import ProgressBar
 from pyproj import Transformer
+from rasterio.enums import Resampling
 from tqdm.auto import tqdm
 
 from pism_terra.aws import s3_to_local
@@ -751,7 +752,7 @@ def carra2(
     sub = ds.rio.clip_box(minx=minx, miny=miny, maxx=maxx, maxy=maxy, crs=ds.rio.crs)
 
     # Reproject the subset onto the target grid.
-    out = sub.rio.reproject_match(target_grid, resampling="bilinear")
+    out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
 
     # Re-attach CF grid_mapping after the reproject.
     out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
@@ -885,7 +886,7 @@ def era5(
         )
         ds_global_ = (
             ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling="bilinear")
+            .rio.reproject_match(ds, resampling=Resampling.bilinear)
             .rename({"x": "longitude", "y": "latitude"})
         )
         common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))

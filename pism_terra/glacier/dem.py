@@ -33,6 +33,7 @@ import rioxarray as rxr
 import xarray as xr
 from dem_stitcher import stitch_dem
 from pyproj import Transformer
+from rasterio.enums import Resampling
 
 from pism_terra.glacier.ice_thickness import get_ice_thickness
 from pism_terra.glacier.observations import (
@@ -319,7 +320,7 @@ def boot_file_from_grid(
     ice_thickness = get_ice_thickness(
         rgi_id, dataset=ice_thickness_dataset, path=path, target_grid=target_grid, target_crs=dst_crs, **kwargs
     )
-    ice_thickness = ice_thickness.rio.reproject_match(target_grid, resampling="average")
+    ice_thickness = ice_thickness.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
     ice_thickness = ice_thickness.rio.clip(geometries, drop=False).fillna(0)
     ice_thickness = ice_thickness.where(ice_thickness > 0.0, 0.0)
 

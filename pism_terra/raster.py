@@ -345,7 +345,7 @@ def reproject_file(src_file: str | Path, dst_crs: str | dict, resolution: float)
                         src_crs=src.crs,
                         dst_transform=transform,
                         dst_crs=dst_crs,
-                        resampling=Resampling.average,
+                        resampling=Resampling.bilinear,
                         resolution=resolution,
                     )
             return projected_file.name
