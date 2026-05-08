@@ -522,6 +522,7 @@ def download_request(
     force_overwrite: bool = False,
     request_override: dict | None = None,
     max_workers: int = 5,
+    **kwargs,
 ) -> xr.Dataset:
     """
     Download reanalysis data from CDS and return it as an xarray Dataset.
@@ -558,6 +559,8 @@ def download_request(
         Useful for CARRA or other datasets with different request schemas.
     max_workers : int, default 5
         Maximum number of concurrent CDS requests.
+    **kwargs
+        Additional keyword arguments for compatibility. Currently not used.
 
     Returns
     -------
@@ -580,6 +583,8 @@ def download_request(
       (or ``ECMWF_DATASTORES_URL`` / ``ECMWF_DATASTORES_KEY`` env vars).
     - If CDS provides a ZIP, contents are extracted before loading/merging.
     """
+
+    _ = kwargs
 
     file_path = Path(file_path)
 
