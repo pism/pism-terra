@@ -870,7 +870,7 @@ def era5(
     )
     ds_geo_ = (
         ds_geo.rio.write_crs("EPSG:4326")
-        .rio.reproject_match(ds, resampling="bilinear")
+        .rio.reproject_match(ds, resampling=Resampling.bilinear)
         .rename({"x": "longitude", "y": "latitude"})
     )
 
