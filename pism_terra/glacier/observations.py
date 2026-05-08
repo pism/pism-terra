@@ -31,7 +31,7 @@ import rasterio
 import rioxarray as rxr
 import xarray as xr
 from pyproj import Transformer
-from rasterior.enums import Resampling
+from rasterio.enums import Resampling
 
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_rio, check_xr_lazy
