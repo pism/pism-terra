@@ -782,6 +782,12 @@ def carra2(
     out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
     out.attrs["Conventions"] = "CF-1.8"
 
+    # Clear stale encoding inherited from the Zarr source so netCDF4 doesn't
+    # see half-prescribed datetime encoding (e.g., dtype=int64 with no units).
+    for name in list(out.coords) + list(out.data_vars):
+        for k in ("dtype", "_FillValue", "units", "calendar", "chunks", "preferred_chunks"):
+            out[name].encoding.pop(k, None)
+
     # Compressed NetCDF (zlib level 2 + shuffle for floats).
     encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
     carra2_filename.unlink(missing_ok=True)
