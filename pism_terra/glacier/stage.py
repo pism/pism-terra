@@ -33,6 +33,7 @@ import cf_xarray
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyogrio
 import rioxarray
 import xarray as xr
 from pyfiglet import Figlet
@@ -171,7 +172,10 @@ def stage_glacier(
         download_from_s3(rgi_s3_uri, rgi_local)
     else:
         print(f"Using cached {rgi_local}")
-    rgi = gpd.read_file(rgi_local)
+    # NOTE: gpd.read_file/to_file (via pyogrio's geopandas wrapper) corrupts the
+    # heap on some envs and crashes the next libgdal allocation (e.g. inside
+    # dem_stitcher). Calling pyogrio directly avoids the trigger.
+    rgi = pyogrio.read_dataframe(rgi_local, use_arrow=False)
 
     glacier = get_glacier_from_rgi_id(rgi, rgi_id)
     if glacier.empty:
@@ -180,7 +184,7 @@ def stage_glacier(
     glacier_file = path / f"rgi_{rgi_id}.gpkg"
     dst_crs = glacier["crs"].values[0]
     glacier_projected = glacier.to_crs(dst_crs)
-    glacier.to_file(glacier_file)
+    pyogrio.write_dataframe(glacier, glacier_file)
 
     x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=2_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
@@ -234,7 +238,7 @@ def stage_glacier(
     domain_bounds_geom = Polygon(zip(x_point_list, y_point_list))
     domain_bounds = gpd.GeoDataFrame(index=[0], crs=dst_crs, geometry=[domain_bounds_geom])
     domain_bounds_file = staging_path / f"domain_{rgi_id}.gpkg"
-    domain_bounds.to_file(domain_bounds_file)
+    pyogrio.write_dataframe(domain_bounds, domain_bounds_file)
 
     clim_mod = config["climate"]
 

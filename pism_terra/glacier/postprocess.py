@@ -73,7 +73,7 @@ def process_file(infile: str | Path, rgi_file: str | Path, client: Client):
     scalar_file = infile_path / Path("fldsum_" + infile_name)
 
     rgi = gpd.read_file(rgi_file)
-    crs = rgi.iloc[0]["epsg"]
+    crs = rgi.iloc[0]["crs"]
     rgi_projected = rgi.to_crs(crs)
     geometry = rgi_projected.geometry
 

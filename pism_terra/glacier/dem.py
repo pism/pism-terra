@@ -28,8 +28,8 @@ import collections
 from pathlib import Path
 from typing import Literal, Sequence
 
-import rasterio
-import rioxarray as rxr
+import numpy as np
+import rioxarray as rxr  # noqa: F401  -- registers the .rio accessor
 import xarray as xr
 from dem_stitcher import stitch_dem
 from pyproj import Transformer
@@ -40,7 +40,7 @@ from pism_terra.glacier.observations import (
     bathymetry_from_grid,
     glacier_velocities_from_grid,
 )
-from pism_terra.workflow import check_rio
+from pism_terra.workflow import check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
@@ -52,13 +52,13 @@ def get_surface_dem_by_bounds(
     force_overwrite: bool = False,
 ) -> Path:
     """
-    Create (or reuse) a surface DEM GeoTIFF for a geographic bounding box.
+    Create (or reuse) a surface DEM NetCDF for a geographic bounding box.
 
-    Mosaics/exports a DEM over ``bounds`` via :func:`stitch_dem`, writes a
-    single-band GeoTIFF with appropriate tags, and returns the output path.
-    If a file with the expected name already exists under ``path`` and opens
-    successfully via :func:`check_rio`, that file is reused unless
-    ``force_overwrite=True``.
+    Mosaics/exports a DEM over ``bounds`` via :func:`stitch_dem` and writes the
+    result as a CF-compliant NetCDF (``netcdf4`` engine) with the CRS encoded
+    via rioxarray's ``grid_mapping``. If a file with the expected name already
+    exists under ``path`` and opens successfully via :func:`check_xr_lazy`,
+    that file is reused unless ``force_overwrite=True``.
 
     Parameters
     ----------
@@ -67,75 +67,49 @@ def get_surface_dem_by_bounds(
     dataset : {"glo_30", "arcticdem"}
         DEM source identifier recognized by :func:`stitch_dem`.
     path : str or pathlib.Path, default ``"input"``
-        Output directory for the GeoTIFF. Created if it does not exist.
+        Output directory for the NetCDF cache. Created if it does not exist.
     force_overwrite : bool, default ``False``
-        If ``True``, skip cache reuse and regenerate the DEM even if a readable
-        file already exists at the target location.
+        If ``True``, regenerate the DEM even if a readable cache already exists.
 
     Returns
     -------
     pathlib.Path
-        Path to the GeoTIFF file containing the DEM.
-
-    Raises
-    ------
-    FileNotFoundError
-        If required DEM tiles cannot be fetched/assembled.
-    ValueError
-        If the stitched DEM/profile is invalid or incompatible with GeoTIFF.
-    rasterio.errors.RasterioIOError
-        On errors writing the GeoTIFF.
-    Exception
-        Any other error propagated by :func:`stitch_dem` or I/O routines.
-
-    See Also
-    --------
-    stitch_dem
-        Assemble a DEM mosaic and return the array and raster profile.
-    check_rio
-        Lightweight validity check for raster files readable by rioxarray.
-
-    Notes
-    -----
-    - Output is a **single-band** GeoTIFF tagged with ``AREA_OR_POINT="Point"``.
-    - Heights follow the profile from :func:`stitch_dem`
-      (here ``dst_ellipsoidal_height=False`` typically implies orthometric heights).
-    - The file is **not** deleted automatically; callers manage lifecycle.
-
-    Examples
-    --------
-    >>> tif = get_surface_dem_by_bounds((214.1, 59.0, 219.7, 63.9),
-    ...                                 dataset="glo_30", path="input")
-    >>> tif.exists()
-    True
+        Path to the NetCDF cache containing the DEM (``<dataset>.nc`` under
+        ``path``).
     """
     out_dir = Path(path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    geo_file = out_dir / f"{dataset}.tif"
-    # Reuse if present and readable
-    if (not check_rio(geo_file)) or force_overwrite:
-        X, p = stitch_dem(
-            bounds,
-            dem_name=dataset,
-            dst_ellipsoidal_height=False,
-            dst_area_or_point="Point",
-        )
+    geo_file = out_dir / f"{dataset}.nc"
 
-        # Ensure the profile matches what we're writing
-        p = p.copy()
-        p.update(
-            {
-                "driver": "GTiff",
-                "count": 1,
-                "dtype": X.dtype,  # e.g., 'float32'
-                "BIGTIFF": "YES",  # allow files >4 GB
-            }
-        )
+    if check_xr_lazy(geo_file, verbose=False) and not force_overwrite:
+        return geo_file
 
-        with rasterio.open(geo_file, "w", **p) as src:
-            src.write(X, 1)  # write band 1
-            src.update_tags(AREA_OR_POINT="Point")
+    X, p = stitch_dem(
+        bounds,
+        dem_name=dataset,
+        dst_ellipsoidal_height=False,
+        dst_area_or_point="Point",
+    )
 
+    transform = p["transform"]
+    height, width = X.shape
+    # Pixel-center coordinates derived from the affine transform.
+    xs = transform.c + transform.a * (np.arange(width) + 0.5)
+    ys = transform.f + transform.e * (np.arange(height) + 0.5)
+
+    da = xr.DataArray(
+        np.asarray(X, dtype="float32"),
+        dims=("y", "x"),
+        coords={"x": xs, "y": ys},
+        name="surface",
+        attrs={"AREA_OR_POINT": "Point"},
+    )
+    da = da.rio.write_crs(p["crs"]).rio.write_coordinate_system()
+    ds = da.to_dataset()
+    ds.attrs["Conventions"] = "CF-1.8"
+
+    geo_file.unlink(missing_ok=True)
+    ds.to_netcdf(geo_file, engine="netcdf4")
     return geo_file
 
 
@@ -204,6 +178,8 @@ def prepare_surface(
     geo_bounds = t.transform_bounds(*bounds)
 
     geo_file = get_surface_dem_by_bounds(geo_bounds, dataset=dataset, path=path, **kwargs)
+    # rxr.open_rasterio reliably propagates CRS on a netCDF read; xr.open_dataset
+    # + manual write_crs misses grid_mapping unless the variable has the attribute.
     surface = rxr.open_rasterio(geo_file).squeeze().drop_vars("band", errors="ignore")
     surface.name = "surface"
     surface.attrs.update({"standard_name": "land_ice_elevation", "units": "m"})

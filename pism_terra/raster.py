@@ -23,7 +23,6 @@ Provide raster functions.
 """
 
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 import geopandas as gpd
 import numpy as np
@@ -32,7 +31,6 @@ import rasterio
 import rioxarray as rxr
 import xarray as xr
 from geocube.api.core import make_geocube
-from rasterio.warp import Resampling, calculate_default_transform, reproject
 from shapely.geometry import box
 
 from pism_terra.workflow import check_xr_lazy
@@ -300,52 +298,3 @@ def raster_overlaps_glacier(
     raster_box = box(*raster_bounds)
 
     return glacier_box.intersects(raster_box)
-
-
-def reproject_file(src_file: str | Path, dst_crs: str | dict, resolution: float) -> str:
-    """
-    Reproject a raster file to a new coordinate reference system and resolution.
-
-    This function opens a source raster file, reprojects its contents to a specified
-    destination CRS and resolution using average resampling, and writes the result
-    to a temporary GeoTIFF file. The path to this reprojected file is returned.
-
-    Parameters
-    ----------
-    src_file : str or Path
-        Path to the source raster file.
-    dst_crs : str or dict
-        Destination coordinate reference system (e.g., "EPSG:32633" or a CRS dict).
-    resolution : float
-        Target resolution for the output raster in units of the destination CRS.
-
-    Returns
-    -------
-    str
-        Path to the temporary reprojected raster file (GeoTIFF).
-
-    Notes
-    -----
-    - The output file is written to a temporary location and is not automatically deleted.
-      It is the caller's responsibility to clean it up.
-    - The reprojected data is resampled using `Resampling.average`.
-    """
-    with rasterio.open(src_file) as src:
-        transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
-        kwargs = src.meta.copy()
-        kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
-
-        with NamedTemporaryFile(suffix=".tif", delete=False) as projected_file:
-            with rasterio.open(projected_file.name, "w", **kwargs) as dst:
-                for i in range(1, src.count + 1):
-                    reproject(
-                        source=rasterio.band(src, i),
-                        destination=rasterio.band(dst, i),
-                        src_transform=src.transform,
-                        src_crs=src.crs,
-                        dst_transform=transform,
-                        dst_crs=dst_crs,
-                        resampling=Resampling.bilinear,
-                        resolution=resolution,
-                    )
-            return projected_file.name
