@@ -402,7 +402,14 @@ def prepare_carra2(
         )
         ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
         ds = ds.rio.write_crs(CARRA2_PROJ).rio.write_grid_mapping("spatial_ref").rio.write_coordinate_system()
-        ds.to_zarr(carra2_filename, mode="w")
+        ds.to_zarr(
+            carra2_filename,
+            mode="w",
+            consolidated=True,
+            encoding={
+                "time_bnds": {"dtype": "int64"},  # or whatever the real dtype is
+            },
+        )
 
     return carra2_filename
 
@@ -746,9 +753,26 @@ def carra2(
         ds = ds.rio.write_crs(crs_wkt)
 
     # Transform the target bbox into CARRA2 coordinates and clip there.
+    # Use .sel(x=slice, y=slice) instead of rio.clip_box because the latter
+    # tries to apply spatial dims to every Dataset variable and trips over
+    # non-spatial helpers like ``time_bnds``.
     t = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
     minx, miny, maxx, maxy = t.transform_bounds(*bounds)
-    sub = ds.rio.clip_box(minx=minx, miny=miny, maxx=maxx, maxy=maxy, crs=ds.rio.crs)
+    x_ascending = bool(ds.x[-1] > ds.x[0])
+    y_ascending = bool(ds.y[-1] > ds.y[0])
+    sub = ds.sel(
+        x=slice(minx, maxx) if x_ascending else slice(maxx, minx),
+        y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
+    )
+
+    # Drop time_bnds before reprojection: the rioxarray reproject_match path
+    # eagerly loads every non-spatial coord, and the published Zarr's
+    # time_bnds chunk is mis-typed (codec/dtype mismatch). It's reattached
+    # below from `ds` so the output stays CF-compliant.
+    sub_for_reproj = sub.drop_vars("time_bnds", errors="ignore")
+    if "bounds" in sub_for_reproj.get("time", xr.Variable((), 0)).attrs:
+        sub_for_reproj["time"].attrs.pop("bounds", None)
+    sub = sub_for_reproj
 
     # Reproject the subset onto the target grid.
     out = sub.rio.reproject_match(target_grid, resampling="bilinear")
