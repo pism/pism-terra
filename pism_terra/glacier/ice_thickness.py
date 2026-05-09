@@ -39,7 +39,7 @@ from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3, s3_to_local
 from pism_terra.download import download_archive, extract_archive
-from pism_terra.raster import check_overlap, reproject_file
+from pism_terra.raster import check_overlap
 from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
 
@@ -342,20 +342,30 @@ def get_ice_thickness_maffezzoli(
         logger.info("Downloading Maffezzoli thickness for %s from S3", rgi_id)
         download_from_s3(s3_uri, local_tif)
 
-        logger.info("Reprojecting thickness to %s", kwargs["target_crs"])
-        projected_file = reproject_file(local_tif, dst_crs=kwargs["target_crs"], resolution=100)
-        da = rxr.open_rasterio(projected_file).sel(band=1).drop_vars("band")
-        logger.info("Interpolating thickness to target grid")
-        thickness = da.interp_like(target_grid)
+        logger.info("Reprojecting and aligning thickness to target grid")
+        da = rxr.open_rasterio(local_tif).sel(band=1).drop_vars("band")
+        thickness = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
         thickness.rio.write_nodata(None, inplace=True)
         thickness.name = "thickness"
+        thickness = thickness.rio.write_crs(target_grid.rio.crs).rio.write_grid_mapping()
         thickness.to_netcdf(thickness_file)
         logger.info("Thickness saved to %s", thickness_file)
-    else:
-        logger.info("Using cached thickness file %s", thickness_file)
+        # Return the in-memory result; CRS doesn't always survive the netCDF
+        # round-trip, and we just computed a CRS-correct value.
+        return thickness
 
-    thickness = xr.open_dataarray(thickness_file)
-
+    logger.info("Using cached thickness file %s", thickness_file)
+    with xr.open_dataset(thickness_file) as ds:
+        src_crs = ds.rio.crs
+        if src_crs is None and "spatial_ref" in ds.coords:
+            sr = ds["spatial_ref"]
+            src_crs = sr.attrs.get("crs_wkt") or sr.attrs.get("spatial_ref")
+        thickness = ds["thickness"].load()
+    if src_crs is None:
+        # Last resort: trust target_grid's CRS (the cache was generated against
+        # an aligned grid, so this is correct by construction).
+        src_crs = target_grid.rio.crs
+    thickness = thickness.rio.write_crs(src_crs)
     return thickness
 
 
@@ -418,21 +428,29 @@ def get_ice_thickness_millan(
         thicknesses = []
         for k, p in enumerate(overlapping_rasters):
             if p is not None:
-                projected_file = reproject_file(p, dst_crs=kwargs["target_crs"], resolution=50)
-                da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
-                thickness = da.interp_like(target_grid)
+                da = rxr.open_rasterio(p).squeeze().drop_vars("band", errors="ignore")
+                thickness = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
                 thickness.rio.write_nodata(None, inplace=True)
                 thickness.name = "thickness"
                 thickness["raster"] = k
                 thicknesses.append(thickness)
 
         thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
+        thickness = thickness.rio.write_crs(target_grid.rio.crs).rio.write_grid_mapping()
         thickness.to_netcdf(thickness_file)
         logger.info("Millan thickness saved to %s", thickness_file)
-    else:
-        logger.info("Using cached thickness file %s", thickness_file)
+        return thickness
 
-    thickness = xr.open_dataarray(thickness_file)
+    logger.info("Using cached thickness file %s", thickness_file)
+    with xr.open_dataset(thickness_file) as ds:
+        src_crs = ds.rio.crs
+        if src_crs is None and "spatial_ref" in ds.coords:
+            sr = ds["spatial_ref"]
+            src_crs = sr.attrs.get("crs_wkt") or sr.attrs.get("spatial_ref")
+        thickness = ds["thickness"].load()
+    if src_crs is None:
+        src_crs = target_grid.rio.crs
+    thickness = thickness.rio.write_crs(src_crs)
 
     return thickness
 

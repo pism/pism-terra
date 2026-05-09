@@ -31,6 +31,7 @@ import rasterio
 import rioxarray as rxr
 import xarray as xr
 from pyproj import Transformer
+from rasterio.enums import Resampling
 
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_rio, check_xr_lazy
@@ -206,7 +207,9 @@ def glacier_velocities_from_grid(
         geo_bounds = t.transform_bounds(*bounds)
         ds = get_velocities_by_bounds(geo_bounds, product_name=product_name)
         # Reproject to the glacier's target CRS to match the PISM grid
-        ds_clipped = ds.rio.reproject_match(target_grid, resampling="average").rio.clip(geometries, drop=False)
+        ds_clipped = ds.rio.reproject_match(target_grid, resampling=Resampling.bilinear).rio.clip(
+            geometries, drop=False
+        )
         # Ensure y is strictly increasing (PISM requires this for regridding)
         if ds_clipped.y[0] > ds_clipped.y[-1]:
             ds_clipped = ds_clipped.sortby("y")
@@ -274,7 +277,7 @@ def bathymetry_from_grid(
 
         da = rxr.open_rasterio(uri, masked=True, chunks={"x": 1024, "y": 1024}).squeeze()
         sub = da.rio.clip_box(*geo_bounds, crs=da.rio.crs)
-        out = sub.rio.reproject_match(target_grid, resampling="average").astype("float32")
+        out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
         out.encoding = {}  # drop stale int16 dtype/fill from the source COG
         out = out.rio.write_crs(dst_crs).rio.write_grid_mapping()
         out.name = "bathymetry"

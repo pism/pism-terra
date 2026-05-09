@@ -19,7 +19,7 @@ nodes = 1
 
 bucket = "pism-cloud-data"
 climate = "era5"
-dem = "glo_30"
+dem = "glo_90"
 ice_thickness = "maffezzoli"
 bathymetry = "gebco"
 name = "Calibration"

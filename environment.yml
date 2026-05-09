@@ -21,6 +21,7 @@ dependencies:
   - h5netcdf
   - jinja2
   - joblib
+  - libgdal-core
   - libgdal-hdf5
   - libgdal-netcdf
   - matplotlib
