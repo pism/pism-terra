@@ -403,15 +403,16 @@ def prepare_carra2(
         )
         ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
         ds = ds.rio.write_crs(CARRA2_PROJ).rio.write_grid_mapping("spatial_ref").rio.write_coordinate_system()
+
         ds.to_zarr(
             carra2_filename,
             mode="w",
             consolidated=True,
             encoding={
-                "time_bnds": {"dtype": "int64"},  # or whatever the real dtype is
+                "time": {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00"},
+                "time_bnds": {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00"},
             },
         )
-
     return carra2_filename
 
 
@@ -766,14 +767,24 @@ def carra2(
         y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
     )
 
-    # Drop time_bnds before reprojection: the rioxarray reproject_match path
-    # eagerly loads every non-spatial coord, and the published Zarr's
-    # time_bnds chunk is mis-typed (codec/dtype mismatch). It's reattached
-    # below from `ds` so the output stays CF-compliant.
-    sub_for_reproj = sub.drop_vars("time_bnds", errors="ignore")
-    if "bounds" in sub_for_reproj.get("time", xr.Variable((), 0)).attrs:
-        sub_for_reproj["time"].attrs.pop("bounds", None)
-    sub = sub_for_reproj
+    # # rioxarray.reproject_match eagerly reads every non-spatial coord (via
+    # # ``coord.values``). The published CARRA2 Zarr has at least one coord
+    # # (e.g. time_bnds, time, or crs) whose stored chunk bytes don't match
+    # # its declared dtype, so the lazy read aborts with a numpy-view error.
+    # # Pre-load each non-spatial coord; drop the ones that don't survive.
+    # for c in list(sub.coords):
+    #     if c in ("x", "y"):
+    #         continue
+    #     try:
+    #         sub = sub.assign_coords({c: sub[c].compute()})
+    #     except Exception as exc:  # pylint: disable=broad-exception-caught
+    #         print(f"Coord {c!r} unreadable from Zarr ({exc}); dropping")
+    #         sub = sub.drop_vars(c, errors="ignore")
+    # # If `time.bounds` pointed at a coord we just dropped, clear the attr too.
+    # if "time" in sub.coords:
+    #     bounds_name = sub["time"].attrs.get("bounds")
+    #     if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
+    #         sub["time"].attrs.pop("bounds", None)
 
     # Reproject the subset onto the target grid.
     out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
