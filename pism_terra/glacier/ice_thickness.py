@@ -141,59 +141,29 @@ def prepare_ice_thickness_maffezzoli(
 
     logger.info("Starting ice thickness merging for %d regions", len(regions))
 
-    def _merge_complex(rgi_c_id, all_glaciers, o1region, dst_crs):
+    def _reproject_and_merge(input_files, dst_crs, output_file, tmp_label):
         """
-        Merge glacier thickness rasters for a single complex.
-
-        Each member glacier's source raster is located using its own
-        ``o1region`` (so aggregate complexes that span multiple RGI regions
-        work transparently), reprojected to *dst_crs*, and the union is
-        written to disk.
+        Reproject inputs to ``dst_crs`` and write their mosaic to ``output_file``.
 
         Parameters
         ----------
-        rgi_c_id : str
-            The complex outline identifier (regular ``RGI2000-v7.0-C-XX-YYYYY``
-            or an aggregate name like ``S4F_AK``).
-        all_glaciers : geopandas.GeoDataFrame
-            Full glacier outline table (with ``rgi_id``, ``rgi_id_c``,
-            ``rgi_id_c_aggregate``, and ``o1region`` columns). Not pre-filtered
-            by region.
-        o1region : str or None
-            The complex's RGI region code (e.g. ``"01"``) when known, or
-            ``None``/``NaN`` for aggregate complexes that span multiple
-            regions. Controls only the output directory layout.
+        input_files : list[Path]
+            Source GeoTIFFs to merge.
         dst_crs : str
-            Target CRS for the output (e.g. ``"EPSG:32606"``).
+            Target CRS string (e.g. ``"EPSG:32606"``).
+        output_file : Path
+            Target path for the merged GeoTIFF.
+        tmp_label : str
+            Label embedded in temporary reproject filenames so concurrent
+            tasks operating on the same source raster don't collide.
 
         Returns
         -------
-        str or None
-            Path to the merged file, or ``None`` if no source rasters were
-            found on disk.
+        Path
+            ``output_file`` on success.
         """
-        glaciers_list = glaciers_in_complex(rgi_c_id, all_glaciers)
-        if not glaciers_list:
-            logger.debug("No glaciers resolved for complex %s", rgi_c_id)
-            return None
-
-        g_subset = all_glaciers[all_glaciers["rgi_id"].isin(glaciers_list)]
-        glaciers_files = []
-        for _, gr in g_subset.iterrows():
-            g_region = gr.get("o1region")
-            if pd.isna(g_region):
-                continue
-            f = extract_path / Path(f"rgi{int(g_region)}") / Path(f"{gr['rgi_id']}.tif")
-            if f.exists():
-                glaciers_files.append(f)
-        if not glaciers_files:
-            logger.debug("No thickness files found for complex %s", rgi_c_id)
-            return None
-        logger.debug("Merging %d glacier rasters for complex %s", len(glaciers_files), rgi_c_id)
-
-        # Reproject each glacier raster to the complex's CRS
-        reprojected = []
-        for fpath in glaciers_files:
+        reprojected: list[Path] = []
+        for fpath in input_files:
             with rasterio.open(fpath) as src:
                 if src.crs == rasterio.crs.CRS.from_user_input(dst_crs):
                     reprojected.append(fpath)
@@ -203,7 +173,7 @@ def prepare_ice_thickness_maffezzoli(
                 )
                 meta = src.meta.copy()
                 meta.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
-                tmp_path = fpath.parent / f"{fpath.stem}_reproj.tif"
+                tmp_path = fpath.parent / f"{fpath.stem}__{tmp_label}_reproj.tif"
                 with rasterio.open(tmp_path, "w", **meta) as dst:
                     reproject(
                         source=rasterio.band(src, 1),
@@ -222,53 +192,159 @@ def prepare_ice_thickness_maffezzoli(
         out_meta.update(
             {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
         )
-        if pd.notna(o1region):
-            merged_path = output_path / Path(f"RGI2000-v7.0-C-{str(o1region).zfill(2)}")
-        else:
-            # Aggregate complexes (no o1region) don't fit into per-region
-            # subdirs. Park them in an "aggregate" sibling.
-            merged_path = output_path / Path("aggregate")
-        merged_path.mkdir(parents=True, exist_ok=True)
-
-        merged_file_path = merged_path / Path(f"{rgi_c_id}_thickness.tif")
-        with rasterio.open(merged_file_path, "w", **out_meta) as dest:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(output_file, "w", **out_meta) as dest:
             dest.write(mosaic)
 
-        # Clean up temporary reprojected files
         for fpath in reprojected:
             if fpath.stem.endswith("_reproj"):
                 fpath.unlink(missing_ok=True)
+        return output_file
 
-        return str(merged_path)
+    def _merge_complex(rgi_c_id, all_glaciers, o1region, dst_crs):
+        """
+        Build a per-complex thickness raster from member-glacier rasters.
 
-    # Build list of (rgi_c_id, all_glaciers, o1region, dst_crs) tasks. Iterate
-    # over every complex (regular AND aggregate) instead of per-region; each
-    # complex carries its own CRS, and the merger looks up each glacier's
-    # source file by that glacier's own o1region.
-    merge_tasks = []
+        Phase-1 merge: each member glacier's source raster is fetched from
+        ``extract_path/rgi<o1region>/<rgi_id>.tif`` (using the glacier's own
+        ``o1region``) and merged into one per-complex GeoTIFF.
+
+        Parameters
+        ----------
+        rgi_c_id : str
+            Complex outline identifier, e.g. ``"RGI2000-v7.0-C-01-09429"``.
+        all_glaciers : geopandas.GeoDataFrame
+            Full glacier outline table with ``rgi_id``, ``rgi_id_c``, and
+            ``o1region`` columns (not pre-filtered by region).
+        o1region : str or int
+            The complex's RGI-region code; used to build the output
+            subdirectory path.
+        dst_crs : str
+            Target CRS string for the merged output.
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged GeoTIFF, or ``None`` if no member rasters
+            were found on disk.
+        """
+        glaciers_list = glaciers_in_complex(rgi_c_id, all_glaciers)
+        if not glaciers_list:
+            return None
+
+        g_subset = all_glaciers[all_glaciers["rgi_id"].isin(glaciers_list)]
+        glaciers_files = []
+        for _, gr in g_subset.iterrows():
+            g_region = gr.get("o1region")
+            if pd.isna(g_region):
+                continue
+            f = extract_path / Path(f"rgi{int(g_region)}") / Path(f"{gr['rgi_id']}.tif")
+            if f.exists():
+                glaciers_files.append(f)
+        if not glaciers_files:
+            logger.debug("No thickness files found for complex %s", rgi_c_id)
+            return None
+
+        merged_path = output_path / Path(f"RGI2000-v7.0-C-{str(o1region).zfill(2)}")
+        merged_file = merged_path / Path(f"{rgi_c_id}_thickness.tif")
+        return _reproject_and_merge(glaciers_files, dst_crs, merged_file, rgi_c_id)
+
+    def _merge_aggregate(agg_id, all_glaciers, dst_crs):
+        """
+        Build an aggregate thickness raster from per-complex outputs.
+
+        Phase-2 merge: looks up the parent complexes that own glaciers tagged
+        with ``agg_id`` (via the ``rgi_id_c_aggregate`` column), reads each
+        parent's already-produced ``<parent>_thickness.tif`` from phase 1,
+        and reprojects/mosaics them into one aggregate GeoTIFF. Orders of
+        magnitude fewer inputs than re-merging every individual glacier.
+
+        Parameters
+        ----------
+        agg_id : str
+            Aggregate identifier (e.g. ``"S4F_AK"``).
+        all_glaciers : geopandas.GeoDataFrame
+            Full glacier outline table with ``rgi_id_c`` and
+            ``rgi_id_c_aggregate`` columns.
+        dst_crs : str
+            Target CRS string for the merged output.
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged GeoTIFF, or ``None`` if no parent thickness
+            files (from phase 1) were found on disk.
+        """
+        # Find the parent complexes that own glaciers tagged with this aggregate.
+        agg_col = all_glaciers.get("rgi_id_c_aggregate")
+        if agg_col is None:
+            return None
+        sel = agg_col.fillna("").str.split(";").apply(lambda parts: agg_id in parts)
+        parent_ids = all_glaciers.loc[sel, "rgi_id_c"].dropna().unique()
+        if len(parent_ids) == 0:
+            logger.debug("No parent complexes resolved for aggregate %s", agg_id)
+            return None
+
+        parent_files: list[Path] = []
+        for parent_id in parent_ids:
+            # Per-region subdirs are output_path/RGI2000-v7.0-C-XX/<parent>_thickness.tif
+            for o1_dir in output_path.glob("RGI2000-v7.0-C-*"):
+                p = o1_dir / f"{parent_id}_thickness.tif"
+                if p.exists():
+                    parent_files.append(p)
+                    break
+        if not parent_files:
+            logger.debug("No parent thickness files found for aggregate %s", agg_id)
+            return None
+
+        merged_file = output_path / Path(agg_id) / Path(f"{agg_id}_thickness.tif")
+        return _reproject_and_merge(parent_files, dst_crs, merged_file, agg_id)
+
+    # Split tasks: regular complexes (have an o1region) run first; aggregates
+    # depend on their parents' merged outputs and run after.
+    regular_tasks = []
+    aggregate_tasks = []
     for _, row in complexes.iterrows():
         crs_value = row.get("crs")
         if not isinstance(crs_value, str) or not crs_value:
             logger.warning("Complex %s has no CRS; skipping", row["rgi_id"])
             continue
-        merge_tasks.append((row["rgi_id"], glaciers, row.get("o1region"), crs_value))
+        if pd.notna(row.get("o1region")):
+            regular_tasks.append((row["rgi_id"], glaciers, row.get("o1region"), crs_value))
+        else:
+            aggregate_tasks.append((row["rgi_id"], glaciers, crs_value))
 
-    with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(merge_tasks)))) as executor:
-        futures = {
-            executor.submit(
-                _merge_complex, rgi_c_id=rgi_c_id, all_glaciers=g, o1region=o1region, dst_crs=dst_crs
-            ): rgi_c_id
-            for rgi_c_id, g, o1region, dst_crs in merge_tasks
-        }
-        failed = []
-        for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging ice thickness"):
-            rgi_c_id = futures[future]
-            try:
-                future.result()
-            except Exception as exc:
-                failed.append((rgi_c_id, exc))
-        for rgi_c_id, err in failed:
-            logger.error("Failed merging %s: %s", rgi_c_id, err)
+    failed = []
+    if regular_tasks:
+        with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(regular_tasks)))) as executor:
+            futures = {
+                executor.submit(
+                    _merge_complex, rgi_c_id=rgi_c_id, all_glaciers=g, o1region=o1region, dst_crs=dst_crs
+                ): rgi_c_id
+                for rgi_c_id, g, o1region, dst_crs in regular_tasks
+            }
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging ice thickness"):
+                rgi_c_id = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed.append((rgi_c_id, exc))
+
+    if aggregate_tasks:
+        with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(aggregate_tasks)))) as executor:
+            futures = {
+                executor.submit(_merge_aggregate, agg_id=agg_id, all_glaciers=g, dst_crs=dst_crs): agg_id
+                for agg_id, g, dst_crs in aggregate_tasks
+            }
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging aggregates"):
+                agg_id = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed.append((agg_id, exc))
+
+    for rgi_c_id, err in failed:
+        logger.error("Failed merging %s: %s", rgi_c_id, err)
     logger.info("Ice thickness merging complete")
 
 
