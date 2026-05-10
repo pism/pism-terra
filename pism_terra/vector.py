@@ -36,17 +36,25 @@ def glaciers_in_complex(rgi_c_id: str, rgi_g: gpd.GeoDataFrame) -> list:
     Parameters
     ----------
     rgi_c_id : str
-        The complex outline identifier (e.g. ``"RGI2000-v7.0-C-01-09429"``).
+        The complex outline identifier (e.g. ``"RGI2000-v7.0-C-01-09429"`` or
+        an aggregate name like ``"S4F_AK"``).
     rgi_g : geopandas.GeoDataFrame
         Glacier outline dataframe with an ``rgi_id_c`` column mapping each
-        glacier to its parent complex.
+        glacier to its parent complex. May also have an
+        ``rgi_id_c_aggregate`` column with one or more aggregate-complex
+        names per glacier (semicolon-separated).
 
     Returns
     -------
     list
-        List of ``rgi_id`` strings whose ``rgi_id_c`` matches *rgi_c_id*.
+        List of ``rgi_id`` strings whose ``rgi_id_c`` matches ``rgi_c_id``,
+        plus any whose ``rgi_id_c_aggregate`` lists ``rgi_c_id``.
     """
-    return rgi_g.loc[rgi_g["rgi_id_c"] == rgi_c_id, "rgi_id"].tolist()
+    mask = rgi_g["rgi_id_c"] == rgi_c_id
+    if "rgi_id_c_aggregate" in rgi_g.columns:
+        agg = rgi_g["rgi_id_c_aggregate"].fillna("")
+        mask = mask | agg.str.split(";").apply(lambda parts: rgi_c_id in parts)
+    return rgi_g.loc[mask, "rgi_id"].tolist()
 
 
 def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:
@@ -118,7 +126,7 @@ def aggregate(n, df):
     if n == 0:
         return df.iloc[[n]]
     else:
-        geom = df.iloc[range(n)].unary_union
+        geom = df.iloc[range(n)].union_all()
         merged_df = df.iloc[[n]]
         merged_df.iloc[0].geometry = geom
         return merged_df

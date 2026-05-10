@@ -135,12 +135,16 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     regions = pd.DataFrame.from_dict(config["regions"], orient="index")
     regions["region"] = regions.index.astype(str).str.zfill(2) + "_" + regions["name"]
 
+    glacier_groups: dict[str, pd.DataFrame] = {}  # aggregated-name -> CSV rows
     if len(glacier_files) > 0:
-        glaciers = []
         for glacier_file in glacier_files:
-            _glaciers = pd.read_csv(Path(glacier_file))
-            glaciers.append(_glaciers)
-        glaciers = pd.concat(glaciers)
+            p = Path(glacier_file)
+            # "S4F_target_AK_RGI_id.csv" -> "S4F_AK"; fall back to the file stem.
+            m = re.match(r"^(?P<prefix>.+?)_target_(?P<region>.+?)_RGI_id$", p.stem)
+            name = f"{m['prefix']}_{m['region']}" if m else p.stem
+            glacier_groups[name] = pd.read_csv(p)
+
+        glaciers = pd.concat(glacier_groups.values(), ignore_index=True)
         glaciers["o1regions"] = glaciers["rgi_id"].str.extract(r"-G-(\d{2})-")
         o1regions = glaciers["o1regions"].unique().astype(int).astype(str)
         regions = regions[regions.index.isin(o1regions)]
@@ -163,6 +167,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     rgi_files = prepare_rgi(
         regions,
         glaciers=glaciers,
+        glacier_groups=glacier_groups or None,
         output_path=rgi_path,
         extract_path=rgi_staging,
         force_overwrite=force_overwrite,

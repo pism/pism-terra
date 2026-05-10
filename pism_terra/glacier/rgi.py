@@ -28,6 +28,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+from shapely.geometry import MultiPolygon, Polygon
 from tqdm.auto import tqdm
 
 from pism_terra.download import download_archive, extract_archive
@@ -132,6 +133,7 @@ def prepare_rgi(
     regions: pd.DataFrame,
     output_path: Path,
     glaciers: pd.DataFrame | list[str] | None = None,
+    glacier_groups: dict[str, pd.DataFrame] | None = None,
     extract_path: Path | str = "rgi_archive",
     force_overwrite: bool = False,
     ntasks: int = 8,
@@ -163,6 +165,14 @@ def prepare_rgi(
           always come paired with their containing complex).
 
         If None (default), no filtering is applied.
+    glacier_groups : dict[str, pandas.DataFrame] or None, optional
+        Optional mapping ``{aggregate_name: dataframe_of_glacier_ids}``. For
+        each entry, an aggregated "complex" row is added to the output
+        complexes GeoPackage whose geometry is the multipolygon union of all
+        parent complexes containing the listed glaciers, and a
+        ``rgi_id_c_aggregate`` column on the output glaciers GeoPackage links
+        each listed glacier back to that aggregate. Useful for study-area
+        rollups (e.g. ``S4F_AK``, ``S4F_CA``).
     extract_path : str or Path, optional
         Path to the directory where the archive will be extracted. Default is "rgi_archive".
     force_overwrite : bool, default False
@@ -282,6 +292,67 @@ def prepare_rgi(
         rgi_c = rgi_c[rgi_c["rgi_id"].isin(wanted_c)].copy()
         rgi_g = rgi_g[rgi_g["rgi_id_c"].isin(wanted_c) | rgi_g["rgi_id"].isin(wanted_g)].copy()
         logger.info("Filtered to %d complexes and %d glaciers", len(rgi_c), len(rgi_g))
+
+    # For each input glacier-list group, synthesize an aggregated "complex"
+    # whose geometry is the multipolygon union of all parent complexes
+    # containing the listed glaciers. Useful for study-area rollups
+    # (e.g., S4F_AK, S4F_CA, S4F_SV). Each listed glacier gets a back-link
+    # in a new ``rgi_id_c_aggregate`` column so ``glaciers_in_complex`` and
+    # ice-thickness merging pick them up under the aggregate name.
+    if glacier_groups:
+        if "rgi_id_c_aggregate" not in rgi_g.columns:
+            rgi_g["rgi_id_c_aggregate"] = ""
+
+        extra_rows = []
+        for name, df in glacier_groups.items():
+            g_ids = df["rgi_id"].astype(str).tolist()
+            parent_c = rgi_g.loc[rgi_g["rgi_id"].isin(g_ids), "rgi_id_c"].dropna().unique()
+            parents = rgi_c.loc[rgi_c["rgi_id"].isin(parent_c)]
+            if parents.empty:
+                logger.warning("No parent complexes resolved for group %s", name)
+                continue
+
+            # Geometry: union of parent complexes (in the parents' CRS).
+            merged = parents.geometry.union_all()
+            if isinstance(merged, Polygon):
+                merged = MultiPolygon([merged])
+
+            # Carry over the (most common) crs / epsg_code from parents.
+            crs_value = parents["crs"].mode().iloc[0] if "crs" in parents.columns else None
+            epsg_value = parents["epsg_code"].mode().iloc[0] if "epsg_code" in parents.columns else None
+
+            # Recompute area in the inherited projected CRS for the aggregate.
+            area_km2: float | None
+            if crs_value:
+                area_km2 = float(gpd.GeoSeries([merged], crs=rgi_c.crs).to_crs(crs_value).geometry.area.sum()) / 1e6
+            else:
+                area_km2 = float(parents.get("area_km2", pd.Series(dtype=float)).sum()) or None
+
+            extra_rows.append(
+                {
+                    "rgi_id": name,
+                    "geometry": merged,
+                    "crs": crs_value,
+                    "epsg_code": epsg_value,
+                    "area_km2": area_km2,
+                }
+            )
+
+            # Link each listed glacier to this aggregate. Semicolon-separated
+            # so a glacier can belong to multiple aggregates without row dup.
+            sel = rgi_g["rgi_id"].isin(g_ids)
+            existing = rgi_g.loc[sel, "rgi_id_c_aggregate"].fillna("")
+            updated = existing.where(existing == "", existing + ";") + name
+            rgi_g.loc[sel, "rgi_id_c_aggregate"] = updated
+
+        if extra_rows:
+            extras = gpd.GeoDataFrame(extra_rows, geometry="geometry", crs=rgi_c.crs)
+            rgi_c = gpd.GeoDataFrame(pd.concat([rgi_c, extras], ignore_index=True), geometry="geometry", crs=rgi_c.crs)
+            logger.info(
+                "Added %d aggregated complexes: %s",
+                len(extra_rows),
+                ", ".join(r["rgi_id"] for r in extra_rows),
+            )
 
     complex_path = output_path / "rgi_c.gpkg"
     logger.info("Saving complexes to %s", complex_path)
