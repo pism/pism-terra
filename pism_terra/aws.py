@@ -63,7 +63,11 @@ def download_from_s3(s3_uri: str, dest: str | Path) -> Path:
     bucket = parsed_url.netloc
     prefix = parsed_url.path.lstrip("/")
 
-    s3 = boto3.client("s3")
+    # Look up the bucket's region once; boto3's default region resolution is
+    # often wrong on shared dev machines and S3 returns 404 (not 307) when the
+    # request hits the wrong endpoint.
+    bucket_region = boto3.client("s3").get_bucket_location(Bucket=bucket).get("LocationConstraint") or "us-west-2"
+    s3 = boto3.client("s3", region_name=bucket_region)
     head = s3.head_object(Bucket=bucket, Key=prefix)
     total_size = head["ContentLength"]
 

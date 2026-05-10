@@ -189,8 +189,24 @@ def prepare_ice_thickness_maffezzoli(
         mosaic, out_transform = merge(reprojected)
         with rasterio.open(reprojected[0]) as src:
             out_meta = src.meta.copy()
+        # Cloud-Optimized GeoTIFF: tiled + DEFLATE + overviews, range-readable
+        # from S3 (so QGIS via /vsis3/ streams without a full download).
+        # predictor=3 for floats, 2 for ints. BIGTIFF=YES for >4 GB outputs.
+        predictor = 3 if np.issubdtype(mosaic.dtype, np.floating) else 2
         out_meta.update(
-            {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
+            {
+                "driver": "COG",
+                "height": mosaic.shape[1],
+                "width": mosaic.shape[2],
+                "transform": out_transform,
+                "compress": "DEFLATE",
+                "predictor": predictor,
+                "level": 6,
+                "blocksize": 512,
+                "overview_resampling": "AVERAGE",
+                "BIGTIFF": "YES",
+                "num_threads": "ALL_CPUS",
+            }
         )
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(output_file, "w", **out_meta) as dest:
@@ -441,10 +457,13 @@ def get_ice_thickness_maffezzoli(
     if (not check_xr_lazy(thickness_file)) or force_overwrite:
         thickness_file.unlink(missing_ok=True)
 
-        region = "-".join(rgi_id.split("-")[:-1])
+        # Regular complex IDs strip the trailing glacier-number segment to get
+        # the per-region subdir; aggregate IDs (no hyphens) live under their
+        # own name.
+        region = "-".join(rgi_id.split("-")[:-1]) or rgi_id
         s3_uri = f"s3://{bucket}/{prefix}/ice_thickness/maffezzoli/{region}/{rgi_id}_thickness.tif"
         local_tif = out_dir / f"{rgi_id}_thickness.tif"
-        logger.info("Downloading Maffezzoli thickness for %s from S3", rgi_id)
+        print(f"Downloading Maffezzoli thickness from {s3_uri}", flush=True)
         download_from_s3(s3_uri, local_tif)
 
         logger.info("Reprojecting and aligning thickness to target grid")
