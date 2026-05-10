@@ -411,6 +411,7 @@ def prepare_carra2(
             encoding={
                 "time": {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00"},
                 "time_bnds": {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00"},
+                "crs": {"dtype": "int32"},
             },
         )
     return carra2_filename
@@ -767,24 +768,37 @@ def carra2(
         y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
     )
 
-    # # rioxarray.reproject_match eagerly reads every non-spatial coord (via
-    # # ``coord.values``). The published CARRA2 Zarr has at least one coord
-    # # (e.g. time_bnds, time, or crs) whose stored chunk bytes don't match
-    # # its declared dtype, so the lazy read aborts with a numpy-view error.
-    # # Pre-load each non-spatial coord; drop the ones that don't survive.
-    # for c in list(sub.coords):
-    #     if c in ("x", "y"):
-    #         continue
-    #     try:
-    #         sub = sub.assign_coords({c: sub[c].compute()})
-    #     except Exception as exc:  # pylint: disable=broad-exception-caught
-    #         print(f"Coord {c!r} unreadable from Zarr ({exc}); dropping")
-    #         sub = sub.drop_vars(c, errors="ignore")
-    # # If `time.bounds` pointed at a coord we just dropped, clear the attr too.
-    # if "time" in sub.coords:
-    #     bounds_name = sub["time"].attrs.get("bounds")
-    #     if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
-    #         sub["time"].attrs.pop("bounds", None)
+    # rioxarray.reproject_match eagerly reads every non-spatial coord (via
+    # ``coord.values``). The published CARRA2 Zarr has at least one coord
+    # (e.g. time_bnds) whose stored chunk bytes don't match its declared
+    # dtype, so the lazy read aborts with a numpy-view error. Pre-load each
+    # non-spatial coord; drop the ones that don't survive.
+    #
+    # The grid-mapping placeholder (typically named ``crs`` or
+    # ``spatial_ref``) is dropped unconditionally — we already recovered the
+    # CRS into a clean rioxarray ``spatial_ref`` above and don't need the
+    # original 0-d variable's data.
+    grid_mapping_names = set()
+    for var in sub.data_vars:
+        gm = sub[var].attrs.get("grid_mapping") or sub[var].encoding.get("grid_mapping")
+        if gm:
+            grid_mapping_names.add(gm)
+    for c in list(sub.coords):
+        if c in ("x", "y", "spatial_ref"):
+            continue
+        if c in grid_mapping_names:
+            sub = sub.drop_vars(c, errors="ignore")
+            continue
+        try:
+            sub = sub.assign_coords({c: sub[c].compute()})
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(f"Coord {c!r} unreadable from Zarr ({exc}); dropping")
+            sub = sub.drop_vars(c, errors="ignore")
+    # If `time.bounds` pointed at a coord we just dropped, clear the attr too.
+    if "time" in sub.coords:
+        bounds_name = sub["time"].attrs.get("bounds")
+        if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
+            sub["time"].attrs.pop("bounds", None)
 
     # Reproject the subset onto the target grid.
     out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear)

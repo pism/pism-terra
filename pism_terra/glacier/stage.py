@@ -186,7 +186,7 @@ def stage_glacier(
     glacier_projected = glacier.to_crs(dst_crs)
     pyogrio.write_dataframe(glacier, glacier_file)
 
-    x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=2_000.0, dx=1_000.0)
+    x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=5_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
 
     # Output filenames
@@ -241,8 +241,6 @@ def stage_glacier(
     pyogrio.write_dataframe(domain_bounds, domain_bounds_file)
 
     clim_mod = config["climate"]
-
-    print(config)
     # Climate forcing — built into staging, then final outputs moved to `path`
     climate_from_rgi = CLIMATE[config["climate"]]
     responses = climate_from_rgi(
