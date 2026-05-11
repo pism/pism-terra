@@ -1,12 +1,12 @@
 [run]
 
 executable = "pism"
-mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 40
+mpi = "mpirun -np  {{ ntasks }} apptainer run --bind /import/c1/ICESHEET/ICESHEET ${container}"
+ntasks = 160
 
 [job]
 
-queue = "t2small"
+queue = "t2standard"
 walltime = "48:00:00"
 nodes = 1
 
@@ -67,7 +67,7 @@ velocity = "its_live"
 
 [grid]
 
-resolution = "250m"
+resolution = "500m"
 'grid.Lbz' = 0
 'grid.Lz' = 2000
 'grid.Mbz' = 1
