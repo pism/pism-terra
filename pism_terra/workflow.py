@@ -613,8 +613,10 @@ def check_dataset_lazy(
 
     # Optional: quick global metadata sanity
     if ds.attrs.get("Conventions", "").lower().startswith("cf"):
-        # try writing minimal in-memory netcdf header/coords only (super light)
-        _ = xr.Dataset(coords={k: ds[k].isel({k: slice(0, 1)}) for k in ds.coords})
+        # Try slicing each *dim* coord. Non-dim coords (e.g. ``crs`` /
+        # ``spatial_ref`` grid-mapping placeholders) are 0-D scalars and can't
+        # be isel'd by their own name — skip them.
+        _ = xr.Dataset(coords={k: ds[k].isel({k: slice(0, 1)}) for k in ds.coords if k in ds[k].dims})
 
     # If we reached here, the dataset is healthy enough for downstream steps.
 
