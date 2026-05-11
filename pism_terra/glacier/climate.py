@@ -466,7 +466,7 @@ def prepare_carra2_for_group(
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Build a target grid at `resolution` over the group's bounds.
-    geom_projected = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs(dst_crs).iloc[0]
+    geom_projected = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs(dst_crs)
     x_bnds, y_bnds = get_bounds_from_geometry(geom_projected, buffer_dist=5_000.0, dx=1_000.0)
     target_grid = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
 
