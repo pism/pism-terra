@@ -1237,6 +1237,8 @@ def carra2(
         if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
             sub["time"].attrs.pop("bounds", None)
 
+    sub = sub.drop_vars("time_bnds", errors="ignore")
+
     # Reproject the subset onto the target grid. Each reprojected batch is
     # written to disk immediately so we don't hoard them all in RAM — for
     # large aggregates the target grid can be enormous (100 m × 100s of km)
@@ -1249,7 +1251,7 @@ def carra2(
 
     from dask.callbacks import Callback  # pylint: disable=import-outside-toplevel
 
-    time_batch = 12  # months per batch — tune down if memory is tight
+    time_batch = 24  # months per batch — tune down if memory is tight
     out_vars: dict[str, xr.DataArray] = {}
     saved_callbacks = Callback.active.copy()
     Callback.active.clear()
