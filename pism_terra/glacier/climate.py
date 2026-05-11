@@ -49,7 +49,7 @@ from rasterio.enums import Resampling
 from tqdm.auto import tqdm
 
 from pism_terra.aws import s3_to_local
-from pism_terra.domain import create_domain
+from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.download import (
     FileInfo,
     carra_download_request,
@@ -425,7 +425,6 @@ def prepare_carra2_for_group(
     geometry_crs: str,
     output_file: Path | str,
     resolution: float = 2500.0,
-    buffer_dist: float = 10_000.0,
     force_overwrite: bool = False,
 ) -> Path:
     """
@@ -453,9 +452,6 @@ def prepare_carra2_for_group(
         Path to write the NetCDF.
     resolution : float, default ``2500.0``
         Target grid spacing in ``dst_crs`` units (meters).
-    buffer_dist : float, default ``10000.0``
-        Buffer applied to ``geometry`` (in ``dst_crs`` units) before
-        snapping bounds to a ``resolution`` multiple.
     force_overwrite : bool, default ``False``
         If True, regenerate even if the output already exists.
 
@@ -470,19 +466,14 @@ def prepare_carra2_for_group(
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Build a target grid at `resolution` over the group's bounds.
-    geom_proj = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs(dst_crs).iloc[0]
-    minx, miny, maxx, maxy = geom_proj.buffer(buffer_dist).bounds
-    minx = np.floor(minx / resolution) * resolution
-    maxx = np.ceil(maxx / resolution) * resolution
-    miny = np.floor(miny / resolution) * resolution
-    maxy = np.ceil(maxy / resolution) * resolution
-
-    target_grid = create_domain([minx, maxx], [miny, maxy], resolution=resolution, crs=dst_crs)
+    geom_projected = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs(dst_crs).iloc[0]
+    x_bnds, y_bnds = get_bounds_from_geometry(geom_projected, buffer_dist=5_000.0, dx=1_000.0)
+    target_grid = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
 
     # Open the source Zarr (local or s3); anon read works for our public store.
     storage_options = {"anon": True} if str(carra2_zarr).startswith("s3://") else None
     ds = xr.open_zarr(str(carra2_zarr), consolidated=True, storage_options=storage_options, chunks={})
-
+    print(ds.dims)
     # Make sure spatial dims and CRS are attached.
     if "x" in ds.dims and "y" in ds.dims:
         ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
@@ -508,7 +499,7 @@ def prepare_carra2_for_group(
 
     # Clip to group bounds in CARRA2 coords (cheap; just a .sel slice).
     t = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
-    src_minx, src_miny, src_maxx, src_maxy = t.transform_bounds(minx, miny, maxx, maxy)
+    src_minx, src_miny, src_maxx, src_maxy = t.transform_bounds(x_bnds[0], y_bnds[0], x_bnds[1], y_bnds[1])
     x_asc = bool(ds.x[-1] > ds.x[0])
     y_asc = bool(ds.y[-1] > ds.y[0])
     sub = ds.sel(
