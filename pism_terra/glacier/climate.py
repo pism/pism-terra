@@ -49,6 +49,7 @@ from rasterio.enums import Resampling
 from tqdm.auto import tqdm
 
 from pism_terra.aws import s3_to_local
+from pism_terra.domain import create_domain
 from pism_terra.download import (
     FileInfo,
     carra_download_request,
@@ -415,6 +416,144 @@ def prepare_carra2(
             },
         )
     return carra2_filename
+
+
+def prepare_carra2_for_group(
+    carra2_zarr: Path | str,
+    dst_crs: str,
+    geometry,
+    geometry_crs: str,
+    output_file: Path | str,
+    resolution: float = 2500.0,
+    buffer_dist: float = 10_000.0,
+    force_overwrite: bool = False,
+) -> Path:
+    """
+    Pre-reproject the CARRA2 Zarr to a group's CRS and bbox; write NetCDF.
+
+    Produces a per-group cache that ``carra2()`` (in :mod:`pism_terra.glacier.stage`)
+    can download in a single GET instead of fetching the full pan-Arctic Zarr
+    and reprojecting on the fly for every glacier. Output stays at CARRA2's
+    native ~2.5 km resolution by default (much smaller than the typical
+    100 m boot grid) so the per-glacier ``carra2()`` step is then a cheap
+    bbox crop + light resample.
+
+    Parameters
+    ----------
+    carra2_zarr : Path or str
+        Local path or ``s3://`` URI of the full CARRA2 Zarr store.
+    dst_crs : str
+        Target CRS for the group (e.g. ``"EPSG:3338"`` for Alaska).
+    geometry : shapely.geometry.base.BaseGeometry
+        The group's polygon/multipolygon (typically the aggregated complex's
+        ``geometry`` from ``rgi_c.gpkg``).
+    geometry_crs : str
+        CRS of ``geometry`` (e.g. ``"EPSG:4326"`` for an RGI-v7 entry).
+    output_file : Path or str
+        Path to write the NetCDF.
+    resolution : float, default ``2500.0``
+        Target grid spacing in ``dst_crs`` units (meters).
+    buffer_dist : float, default ``10000.0``
+        Buffer applied to ``geometry`` (in ``dst_crs`` units) before
+        snapping bounds to a ``resolution`` multiple.
+    force_overwrite : bool, default ``False``
+        If True, regenerate even if the output already exists.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path to the written NetCDF.
+    """
+    output_file = Path(output_file)
+    if output_file.exists() and not force_overwrite and check_xr_lazy(output_file):
+        return output_file
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build a target grid at `resolution` over the group's bounds.
+    geom_proj = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs(dst_crs).iloc[0]
+    minx, miny, maxx, maxy = geom_proj.buffer(buffer_dist).bounds
+    minx = np.floor(minx / resolution) * resolution
+    maxx = np.ceil(maxx / resolution) * resolution
+    miny = np.floor(miny / resolution) * resolution
+    maxy = np.ceil(maxy / resolution) * resolution
+
+    target_grid = create_domain([minx, maxx], [miny, maxy], resolution=resolution, crs=dst_crs)
+
+    # Open the source Zarr (local or s3); anon read works for our public store.
+    storage_options = {"anon": True} if str(carra2_zarr).startswith("s3://") else None
+    ds = xr.open_zarr(str(carra2_zarr), consolidated=True, storage_options=storage_options, chunks={})
+
+    # Make sure spatial dims and CRS are attached.
+    if "x" in ds.dims and "y" in ds.dims:
+        ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
+    elif "lon" in ds.dims and "lat" in ds.dims:
+        ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+    if ds.rio.crs is None:
+        crs_wkt = None
+        for var in ds.data_vars:
+            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get("grid_mapping")
+            if gm and gm in ds.variables:
+                crs_wkt = ds[gm].attrs.get("crs_wkt") or ds[gm].attrs.get("spatial_ref")
+                if crs_wkt:
+                    break
+        if not crs_wkt:
+            for name in ds.variables:
+                attrs = ds[name].attrs
+                crs_wkt = attrs.get("crs_wkt") or attrs.get("spatial_ref")
+                if crs_wkt:
+                    break
+        if not crs_wkt:
+            raise ValueError(f"Could not recover a CRS from CARRA2 Zarr at {carra2_zarr}")
+        ds = ds.rio.write_crs(crs_wkt)
+
+    # Clip to group bounds in CARRA2 coords (cheap; just a .sel slice).
+    t = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
+    src_minx, src_miny, src_maxx, src_maxy = t.transform_bounds(minx, miny, maxx, maxy)
+    x_asc = bool(ds.x[-1] > ds.x[0])
+    y_asc = bool(ds.y[-1] > ds.y[0])
+    sub = ds.sel(
+        x=slice(src_minx, src_maxx) if x_asc else slice(src_maxx, src_minx),
+        y=slice(src_miny, src_maxy) if y_asc else slice(src_maxy, src_miny),
+    )
+
+    # Drop the grid-mapping placeholder and any broken non-spatial coords.
+    grid_mapping_names: set[str] = set()
+    for var in sub.data_vars:
+        gm = sub[var].attrs.get("grid_mapping") or sub[var].encoding.get("grid_mapping")
+        if gm:
+            grid_mapping_names.add(gm)
+    for c in list(sub.coords):
+        if c in ("x", "y", "spatial_ref"):
+            continue
+        if c in grid_mapping_names:
+            sub = sub.drop_vars(c, errors="ignore")
+            continue
+        try:
+            sub = sub.assign_coords({c: sub[c].compute()})
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(f"Coord {c!r} unreadable from Zarr ({exc}); dropping")
+            sub = sub.drop_vars(c, errors="ignore")
+    if "time" in sub.coords:
+        bounds_name = sub["time"].attrs.get("bounds")
+        if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
+            sub["time"].attrs.pop("bounds", None)
+
+    # Reproject onto the group's target grid. At 2.5 km × a regional bbox the
+    # full dataset fits comfortably in memory, so a single shot is fine.
+    out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
+    out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
+    out.attrs["Conventions"] = "CF-1.8"
+
+    # Clear stale encoding inherited from the Zarr source so netCDF4 doesn't
+    # see half-prescribed datetime encoding.
+    for name in list(out.coords) + list(out.data_vars):
+        for k in ("dtype", "_FillValue", "units", "calendar", "chunks", "preferred_chunks"):
+            out[name].encoding.pop(k, None)
+
+    encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
+    output_file.unlink(missing_ok=True)
+    out.to_netcdf(output_file, encoding=encoding, engine="netcdf4")
+    return output_file
 
 
 def convert_many_tifs_concurrent(
@@ -800,8 +939,61 @@ def carra2(
         if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
             sub["time"].attrs.pop("bounds", None)
 
-    # Reproject the subset onto the target grid.
-    out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
+    # Reproject the subset onto the target grid. Each reprojected batch is
+    # written to disk immediately so we don't hoard them all in RAM — for
+    # large aggregates the target grid can be enormous (100 m × 100s of km)
+    # and a single batch already costs many GB. We then assemble the per-
+    # variable results lazily from disk and merge into `out`.
+    #
+    # Suppress any registered dask Callback (e.g. ProgressBar from an outer
+    # scope) so the [#####] 100% lines don't interleave with the tqdm bar.
+    import tempfile  # pylint: disable=import-outside-toplevel
+
+    from dask.callbacks import Callback  # pylint: disable=import-outside-toplevel
+
+    time_batch = 12  # months per batch — tune down if memory is tight
+    out_vars: dict[str, xr.DataArray] = {}
+    saved_callbacks = Callback.active.copy()
+    Callback.active.clear()
+    try:
+        with tempfile.TemporaryDirectory(prefix="carra2_reproj_", dir=str(path)) as tmp_dir_name:
+            tmp_dir = Path(tmp_dir_name)
+            for var_name in sub.data_vars:
+                da = sub[var_name]
+                if "time" not in da.dims or da.sizes["time"] <= time_batch:
+                    out_vars[var_name] = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype(
+                        "float32"
+                    )
+                    continue
+                n = da.sizes["time"]
+                var_dir = tmp_dir / var_name
+                var_dir.mkdir(parents=True, exist_ok=True)
+                batch_files: list[Path] = []
+                pbar = tqdm(
+                    range(0, n, time_batch),
+                    desc=f"Reprojecting {var_name}",
+                    unit="batch",
+                    leave=False,
+                )
+                for batch_idx, i in enumerate(pbar):
+                    chunk = da.isel(time=slice(i, i + time_batch)).compute()
+                    reproj = chunk.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
+                    batch_path = var_dir / f"batch_{batch_idx:04d}.nc"
+                    # Clear inherited encoding before writing each shard.
+                    reproj.encoding = {}
+                    reproj.to_netcdf(batch_path, engine="netcdf4")
+                    batch_files.append(batch_path)
+                    # Drop the in-memory copy so the next batch starts clean.
+                    del chunk, reproj
+                pbar.close()
+                # Lazy assemble: open each shard chunked, concat along time.
+                shards = [xr.open_dataarray(p, chunks={}) for p in batch_files]
+                out_vars[var_name] = xr.concat(shards, dim="time")
+            out = xr.Dataset(out_vars, attrs=sub.attrs)
+            # Force the full read so the temp dir can be cleaned up afterwards.
+            out.load()
+    finally:
+        Callback.active.update(saved_callbacks)
 
     # Re-attach CF grid_mapping after the reproject.
     out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()

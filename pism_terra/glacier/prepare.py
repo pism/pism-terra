@@ -60,6 +60,7 @@ from pism_terra.download import (
 from pism_terra.glacier.climate import (
     convert_many_tifs_concurrent,
     prepare_carra2,
+    prepare_carra2_for_group,
     prepare_snap,
 )
 from pism_terra.glacier.ice_thickness import prepare_ice_thickness_maffezzoli
@@ -241,6 +242,34 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     else:
         # NetCDF or other single-file output
         shutil.copy2(carra2_staging_file, carra2_final)
+
+    if glacier_groups:
+        # For each S4F group, pre-reproject CARRA2 to that group's CRS at
+        # CARRA2's native ~2.5 km resolution. Uploaded as
+        # ``carra2_<group>.nc`` so ``stage.carra2()`` can fetch a single
+        # small file per glacier instead of streaming the full Zarr and
+        # reprojecting every time.
+        for group_name in glacier_groups:
+            row = complexes.loc[complexes["rgi_id"] == group_name]
+            if row.empty:
+                logger.warning("Aggregate complex %s not found in rgi_c.gpkg; skipping CARRA2 prep", group_name)
+                continue
+            group_crs = row["crs"].iloc[0]
+            if not isinstance(group_crs, str) or not group_crs:
+                logger.warning("Aggregate complex %s has no CRS; skipping CARRA2 prep", group_name)
+                continue
+            group_geom = row.geometry.iloc[0]
+            group_out = climate_path / f"carra2_{group_name}.nc"
+            logger.info("Preparing CARRA2 for group %s (%s) -> %s", group_name, group_crs, group_out)
+            print(group_crs)
+            prepare_carra2_for_group(
+                carra2_zarr=carra2_final,
+                dst_crs=group_crs,
+                geometry=group_geom,
+                geometry_crs=str(complexes.crs),
+                output_file=group_out,
+                force_overwrite=force_overwrite,
+            )
 
     return rgi_files
 
