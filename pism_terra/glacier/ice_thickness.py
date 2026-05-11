@@ -633,7 +633,7 @@ def add_malaspina_bed(
 
     ds["thickness"] = ds["thickness"].where(ds["thickness"] > 0.0, 0.0)
     ds["surface"] = ds["surface"].where(ds["thickness"] > 0.0, 0.0)
-    ds["surface"].attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
+    ds["surface"].attrs.update({"standard_name": "surface_altitude", "units": "m"})
 
     ds["thickness"].attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
 

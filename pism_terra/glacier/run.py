@@ -450,11 +450,13 @@ def run_single():
         uq = {
             "input.file": row["boot_file"],
             "grid.file": row["grid_file"],
-            "surface.force_to_thickness.file": row["boot_file"],
             "atmosphere.delta_T.file": scalar_offset_file,
-            "atmosphere.elevation_change.file": row["climate_file"],
+            "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.precip_scaling.file": scalar_offset_file,
             "atmosphere.given.file": row["climate_file"],
+            "surface.debm_simple.std_dev.file": row["climate_file"],
+            "surface.force_to_thickness.file": row["boot_file"],
+            "surface.pdd.std_dev.file": row["climate_file"],
         }
         outline_file = row["outline_file"] if "outline_file" in row else None
         run_glacier(
@@ -651,12 +653,13 @@ def run_ensemble():
             {
                 "input.file": row["boot_file"],
                 "grid.file": row["grid_file"],
-                "surface.force_to_thickness.file": row["boot_file"],
                 "atmosphere.delta_T.file": scalar_offset_file,
-                "atmosphere.elevation_change.file": row["climate_file"],
-                "atmosphere.frac_P.file": scalar_offset_file,
-                "atmosphere.given.file": row["climate_file"],
+                "atmosphere.elevation_change.file": row["boot_file"],
                 "atmosphere.precip_scaling.file": scalar_offset_file,
+                "atmosphere.given.file": row["climate_file"],
+                "surface.debm_simple.std_dev.file": row["climate_file"],
+                "surface.force_to_thickness.file": row["boot_file"],
+                "surface.pdd.std_dev.file": row["climate_file"],
             }
         )
         outline_file = row["outline_file"] if "outline_file" in row else None

@@ -147,7 +147,7 @@ def prepare_surface(
     -------
     xarray.DataArray
         Surface elevation (meters) on ``target_grid``, with
-        ``standard_name="land_ice_elevation"``. Also written to
+        ``standard_name="surface_altitude"``. Also written to
         ``Path(path) / "surface.nc"``.
 
     Raises
@@ -162,7 +162,7 @@ def prepare_surface(
     Notes
     -----
     - The surface variable is named ``"surface"`` with
-      ``standard_name="land_ice_elevation"`` and ``units="m"``.
+      ``standard_name="surface_altitude"`` and ``units="m"``.
     - After reprojection to the target grid, missing values are filled with 0.
       Adjust if downstream tooling expects masked NaNs instead.
     """
@@ -182,7 +182,7 @@ def prepare_surface(
     # + manual write_crs misses grid_mapping unless the variable has the attribute.
     surface = rxr.open_rasterio(geo_file).squeeze().drop_vars("band", errors="ignore")
     surface.name = "surface"
-    surface.attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
+    surface.attrs.update({"standard_name": "surface_altitude", "units": "m"})
 
     surface_reprojected = surface.rio.reproject_match(target_grid, resampling=Resampling.bilinear).fillna(0)
 

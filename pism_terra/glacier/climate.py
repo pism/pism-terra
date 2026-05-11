@@ -231,6 +231,85 @@ def prepare_carra2(
     carra2_grid_path = path / "carra2_grid.txt"
     carra2_grid_path.write_text(carra2_grid)
 
+    orography_dataset = "reanalysis-pan-carra-means"
+    orography_request = {
+        "level_type": "single_levels",
+        "variable": ["orography"],
+        "product_type": "analysis",
+        "time": ["00:00"],
+        "year": [
+            "1986",
+            "1987",
+            "1988",
+            "1991",
+            "1992",
+            "1993",
+            "1996",
+            "1997",
+            "1998",
+            "2001",
+            "2002",
+            "2003",
+            "2006",
+            "2007",
+            "2008",
+            "2011",
+            "2012",
+            "2013",
+            "2016",
+            "2017",
+            "2018",
+            "2021",
+            "2022",
+            "2023",
+        ],
+        "month": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+        "day": [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30",
+            "31",
+        ],
+        "data_format": "grib",
+    }
+
+    orography_files = carra_download_request(
+        orography_dataset,
+        orography_request,
+        file_path=path / Path("orography.grib"),
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    _ = orography_files
+
     precipitation_dataset = "reanalysis-pan-carra-means"
     precipitation_request = {
         "time_aggregation": "monthly",
@@ -473,7 +552,6 @@ def prepare_carra2_for_group(
     # Open the source Zarr (local or s3); anon read works for our public store.
     storage_options = {"anon": True} if str(carra2_zarr).startswith("s3://") else None
     ds = xr.open_zarr(str(carra2_zarr), consolidated=True, storage_options=storage_options, chunks={})
-    print(ds.dims)
     # Make sure spatial dims and CRS are attached.
     if "x" in ds.dims and "y" in ds.dims:
         ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
@@ -773,9 +851,120 @@ def snap(
     return snap_files
 
 
+def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Dataset:
+    """
+    Expand CARRA2 monthly data over ``years`` and attach monthly ``time_bnds``.
+
+    CARRA2 is only downloaded for a sparse set of source years (see
+    :func:`prepare_carra2`). For any target year not in the source, the 12
+    months of the *nearest* available source year are copied and re-stamped
+    with the target year. Ties are broken toward the earlier year (e.g.
+    2004 → 2003). Bounds for each monthly timestamp are written as
+    ``[t, next-month-start)`` so PISM can interpret the data as monthly means.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        CARRA2 dataset with a monthly ``time`` coordinate (12 entries per
+        available year).
+    years : sequence of int
+        Target years to materialize in the output.
+
+    Returns
+    -------
+    xarray.Dataset
+        Same variables as ``ds``, with ``time`` expanded over ``years`` and a
+        new ``time_bnds`` variable. Any incoming ``time_bnds`` is rebuilt.
+    """
+
+    def _year(t):
+        """
+        Return the calendar year of ``t``.
+
+        Parameters
+        ----------
+        t : object
+            A scalar time value (cftime datetime, pandas Timestamp, or
+            ``numpy.datetime64``).
+
+        Returns
+        -------
+        int
+            Calendar year extracted from ``t``.
+        """
+        return t.year if hasattr(t, "year") else pd.Timestamp(t).year
+
+    def _replace_year(t, new_year):
+        """
+        Return ``t`` with its year set to ``new_year``.
+
+        Parameters
+        ----------
+        t : object
+            Scalar time value (cftime datetime, pandas Timestamp, or
+            ``numpy.datetime64``).
+        new_year : int
+            Year to assign on the returned value.
+
+        Returns
+        -------
+        object
+            Same dtype family as ``t`` (cftime in, cftime out;
+            ``numpy.datetime64`` in, ``numpy.datetime64`` out).
+        """
+        if hasattr(t, "replace") and not isinstance(t, np.datetime64):
+            return t.replace(year=new_year)
+        return np.datetime64(pd.Timestamp(t).replace(year=new_year))
+
+    def _next_month(t):
+        """
+        Return the first instant of the calendar month following ``t``.
+
+        Parameters
+        ----------
+        t : object
+            Scalar time value (cftime datetime, pandas Timestamp, or
+            ``numpy.datetime64``).
+
+        Returns
+        -------
+        object
+            ``t`` advanced to the first day of the next month, preserving the
+            input dtype family.
+        """
+        if isinstance(t, np.datetime64) or not hasattr(t, "month"):
+            ts = pd.Timestamp(t)
+            if ts.month == 12:
+                return np.datetime64(ts.replace(year=ts.year + 1, month=1))
+            return np.datetime64(ts.replace(month=ts.month + 1))
+        if t.month == 12:
+            return t.replace(year=t.year + 1, month=1)
+        return t.replace(month=t.month + 1)
+
+    ds = ds.drop_vars("time_bnds", errors="ignore")
+    src_times = ds["time"].values
+    src_year_of = np.array([_year(t) for t in src_times])
+    source_years = sorted(set(src_year_of.tolist()))
+
+    pieces = []
+    for ty in sorted({int(y) for y in years}):
+        nearest = min((abs(sy - ty), sy) for sy in source_years)[1]
+        sub = ds.isel(time=np.where(src_year_of == nearest)[0])
+        new_times = np.array([_replace_year(t, ty) for t in sub["time"].values])
+        pieces.append(sub.assign_coords(time=new_times))
+
+    merged = xr.concat(pieces, dim="time")
+    times = merged["time"].values
+    bounds = np.stack([times, np.array([_next_month(t) for t in times])], axis=1)
+    merged["time_bnds"] = xr.DataArray(bounds, dims=["time", "nv"], coords={"time": merged["time"]})
+    merged["time"].attrs["bounds"] = "time_bnds"
+    return merged
+
+
 def carra2(
     target_grid: xr.Dataset,
     rgi_id: str,
+    years: list[int] | Iterable[int] = range(1978, 2025),
     path: Path | str = ".",
     bucket: str = "pism-cloud-data",
     prefix: str = "",
@@ -797,6 +986,11 @@ def carra2(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
+    years : list of int or Iterable of int, default ``range(1978, 2025)``
+        Years to materialize in the output. CARRA2 only stores a sparse set
+        of source years; any requested year not in the source is filled by
+        copying the nearest available source year (ties go to the earlier
+        year).
     path : str or pathlib.Path, default ``"."``
         Output directory. The function writes
         ``carra2_<rgi_id>.nc`` inside this directory.
@@ -847,6 +1041,31 @@ def carra2(
         float(target_grid.y_bnds.values[-1][-1]),
     )
     dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+
+    # Fast path: prepare.py pre-reprojects CARRA2 once per S4F aggregate group
+    # and uploads ``carra2_<rgi_id>.nc`` (CARRA2 ~2.5 km, already in the
+    # group's CRS). If that file exists on S3, fetch it and let PISM handle
+    # interpolation onto the model grid at runtime.
+    pre_key = f"{prefix}/climate/carra2_{rgi_id}.nc".lstrip("/")
+    pre_uri = f"s3://{bucket}/{pre_key}"
+    fs = s3fs.S3FileSystem(anon=True)
+    if fs.exists(pre_uri):
+        print(f"Found precomputed {pre_uri}; downloading")
+        tmp_pre = path / f"_carra2_pre_{rgi_id}.nc"
+        fs.get(pre_uri, str(tmp_pre))
+        with xr.open_dataset(tmp_pre) as pre:
+            out = _carra2_fill_years_and_bounds(pre.load(), list(years))
+        for v in out.data_vars:
+            if np.issubdtype(out[v].dtype, np.floating):
+                out[v] = out[v].fillna(0)
+        for name in list(out.coords) + list(out.data_vars):
+            for k in ("dtype", "_FillValue", "units", "calendar", "chunks", "preferred_chunks"):
+                out[name].encoding.pop(k, None)
+        encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
+        carra2_filename.unlink(missing_ok=True)
+        out.to_netcdf(carra2_filename, encoding=encoding, engine="netcdf4")
+        tmp_pre.unlink(missing_ok=True)
+        return carra2_filename
 
     uri = f"s3://{bucket}/{prefix}/climate/carra2.zarr".replace("//", "/").replace("s3:/", "s3://")
     print(f"Opening {uri}")
@@ -994,6 +1213,13 @@ def carra2(
     out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
     out.attrs["Conventions"] = "CF-1.8"
 
+    # Expand to all requested years (filling missing ones from the nearest
+    # source year) and attach CF time_bnds for PISM.
+    out = _carra2_fill_years_and_bounds(out, list(years))
+    for v in out.data_vars:
+        if np.issubdtype(out[v].dtype, np.floating):
+            out[v] = out[v].fillna(0)
+
     # Clear stale encoding inherited from the Zarr source so netCDF4 doesn't
     # see half-prescribed datetime encoding (e.g., dtype=int64 with no units).
     for name in list(out.coords) + list(out.data_vars):
@@ -1001,9 +1227,19 @@ def carra2(
             out[name].encoding.pop(k, None)
 
     # Compressed NetCDF (zlib level 2 + shuffle for floats).
-    encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
+    encoding_c: dict[str, dict[str, object]] = {
+        name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars
+    }
+
+    encoding_c.update(
+        {
+            "time": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
+            "time_bnds": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
+        }
+    )
+
     carra2_filename.unlink(missing_ok=True)
-    out.to_netcdf(carra2_filename, encoding=encoding, engine="netcdf4")
+    out.to_netcdf(carra2_filename, encoding=encoding_c, engine="netcdf4")
 
     return carra2_filename
 

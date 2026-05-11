@@ -261,7 +261,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
             group_geom = row.geometry.iloc[0]
             group_out = climate_path / f"carra2_{group_name}.nc"
             logger.info("Preparing CARRA2 for group %s (%s) -> %s", group_name, group_crs, group_out)
-            print(group_crs)
             prepare_carra2_for_group(
                 carra2_zarr=carra2_final,
                 dst_crs=group_crs,
