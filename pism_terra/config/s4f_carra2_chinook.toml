@@ -38,7 +38,7 @@ velocity = "its_live"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 250
+'time_stepping.adaptive_ratio' = 500
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
