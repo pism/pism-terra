@@ -529,6 +529,10 @@ def prepare_carra2_for_group(
         if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
             sub["time"].attrs.pop("bounds", None)
 
+    # rio.reproject_match walks every data variable; time_bnds has dims
+    # (time, bnds) and no x/y so it raises MissingSpatialDimensionError.
+    sub = sub.drop_vars("time_bnds", errors="ignore")
+
     # Reproject onto the group's target grid. At 2.5 km × a regional bbox the
     # full dataset fits comfortably in memory, so a single shot is fine.
     out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
