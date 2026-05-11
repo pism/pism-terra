@@ -502,18 +502,14 @@ def prepare_carra2(
         return batch_out
 
     # Only process batches that don't already exist (unless force_overwrite)
-    batches_to_run = [
-        b for b in batches if (not check_xr_lazy(b[3])) or force_overwrite
-    ]
+    batches_to_run = [b for b in batches if (not check_xr_lazy(b[3])) or force_overwrite]
     if batches_to_run:
         logger.info(
             "CDO: processing %d year batches (setgrid + monmean/monstd)...",
             len(batches_to_run),
         )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_process_carra2_batch, b): b for b in batches_to_run
-            }
+            futures = {executor.submit(_process_carra2_batch, b): b for b in batches_to_run}
             for future in tqdm(
                 cf_as_completed(futures),
                 total=len(futures),
@@ -534,11 +530,7 @@ def prepare_carra2(
             returnXDataset=True,
         )
         ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
-        ds = (
-            ds.rio.write_crs(CARRA2_PROJ)
-            .rio.write_grid_mapping("spatial_ref")
-            .rio.write_coordinate_system()
-        )
+        ds = ds.rio.write_crs(CARRA2_PROJ).rio.write_grid_mapping("spatial_ref").rio.write_coordinate_system()
 
         ds.to_zarr(
             carra2_filename,
@@ -605,16 +597,12 @@ def prepare_carra2_for_group(
 
     # Build a target grid at `resolution` over the group's bounds.
     geom_projected = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs(dst_crs)
-    x_bnds, y_bnds = get_bounds_from_geometry(
-        geom_projected, buffer_dist=5_000.0, dx=1_000.0
-    )
+    x_bnds, y_bnds = get_bounds_from_geometry(geom_projected, buffer_dist=5_000.0, dx=1_000.0)
     target_grid = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
 
     # Open the source Zarr (local or s3); anon read works for our public store.
     storage_options = {"anon": True} if str(carra2_zarr).startswith("s3://") else None
-    ds = xr.open_zarr(
-        str(carra2_zarr), consolidated=True, storage_options=storage_options, chunks={}
-    )
+    ds = xr.open_zarr(str(carra2_zarr), consolidated=True, storage_options=storage_options, chunks={})
     # Make sure spatial dims and CRS are attached.
     if "x" in ds.dims and "y" in ds.dims:
         ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
@@ -623,9 +611,7 @@ def prepare_carra2_for_group(
     if ds.rio.crs is None:
         crs_wkt = None
         for var in ds.data_vars:
-            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get(
-                "grid_mapping"
-            )
+            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get("grid_mapping")
             if gm and gm in ds.variables:
                 crs_wkt = ds[gm].attrs.get("crs_wkt") or ds[gm].attrs.get("spatial_ref")
                 if crs_wkt:
@@ -637,16 +623,12 @@ def prepare_carra2_for_group(
                 if crs_wkt:
                     break
         if not crs_wkt:
-            raise ValueError(
-                f"Could not recover a CRS from CARRA2 Zarr at {carra2_zarr}"
-            )
+            raise ValueError(f"Could not recover a CRS from CARRA2 Zarr at {carra2_zarr}")
         ds = ds.rio.write_crs(crs_wkt)
 
     # Clip to group bounds in CARRA2 coords (cheap; just a .sel slice).
     t = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
-    src_minx, src_miny, src_maxx, src_maxy = t.transform_bounds(
-        x_bnds[0], y_bnds[0], x_bnds[1], y_bnds[1]
-    )
+    src_minx, src_miny, src_maxx, src_maxy = t.transform_bounds(x_bnds[0], y_bnds[0], x_bnds[1], y_bnds[1])
     x_asc = bool(ds.x[-1] > ds.x[0])
     y_asc = bool(ds.y[-1] > ds.y[0])
     sub = ds.sel(
@@ -673,11 +655,7 @@ def prepare_carra2_for_group(
             sub = sub.drop_vars(c, errors="ignore")
     if "time" in sub.coords:
         bounds_name = sub["time"].attrs.get("bounds")
-        if (
-            bounds_name
-            and bounds_name not in sub.coords
-            and bounds_name not in sub.data_vars
-        ):
+        if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
             sub["time"].attrs.pop("bounds", None)
 
     # rio.reproject_match walks every data variable; time_bnds has dims
@@ -686,14 +664,8 @@ def prepare_carra2_for_group(
 
     # Reproject onto the group's target grid. At 2.5 km × a regional bbox the
     # full dataset fits comfortably in memory, so a single shot is fine.
-    out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype(
-        "float32"
-    )
-    out = (
-        out.rio.write_crs(dst_crs)
-        .rio.write_grid_mapping()
-        .rio.write_coordinate_system()
-    )
+    out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
+    out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
     out.attrs["Conventions"] = "CF-1.8"
 
     # Clear stale encoding inherited from the Zarr source so netCDF4 doesn't
@@ -709,9 +681,7 @@ def prepare_carra2_for_group(
         ):
             out[name].encoding.pop(k, None)
 
-    encoding = {
-        name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars
-    }
+    encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
     output_file.unlink(missing_ok=True)
     out.to_netcdf(output_file, encoding=encoding, engine="netcdf4")
     return output_file
@@ -772,9 +742,7 @@ def convert_many_tifs_concurrent(
 
     rets: list[Path] = []
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
-        futs = [
-            ex.submit(_process_one_tif, Path(p), outdir, force_overwrite) for p in tifs
-        ]
+        futs = [ex.submit(_process_one_tif, Path(p), outdir, force_overwrite) for p in tifs]
         try:
 
             for fut in tqdm(
@@ -794,9 +762,7 @@ def convert_many_tifs_concurrent(
     return [p for p in rets if p.exists()]
 
 
-def create_offset_file(
-    file_name: str | Path, delta_T: float = 0.0, frac_P: float = 1.0
-):
+def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: float = 1.0):
     """
     Generate offset file using xarray.
 
@@ -1056,9 +1022,7 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
     merged = xr.concat(pieces, dim="time")
     times = merged["time"].values
     bounds = np.stack([times, np.array([_next_month(t) for t in times])], axis=1)
-    merged["time_bnds"] = xr.DataArray(
-        bounds, dims=["time", "nv"], coords={"time": merged["time"]}
-    )
+    merged["time_bnds"] = xr.DataArray(bounds, dims=["time", "nv"], coords={"time": merged["time"]})
     merged["time"].attrs["bounds"] = "time_bnds"
     return merged
 
@@ -1131,11 +1095,7 @@ def carra2(
     print("-" * 120)
 
     carra2_filename = path / Path(f"carra2_{rgi_id}.nc")
-    if (
-        carra2_filename.exists()
-        and not force_overwrite
-        and check_xr_lazy(carra2_filename)
-    ):
+    if carra2_filename.exists() and not force_overwrite and check_xr_lazy(carra2_filename):
         print(f"Using cached {carra2_filename}")
         return carra2_filename
 
@@ -1174,9 +1134,8 @@ def carra2(
                 "preferred_chunks",
             ):
                 out[name].encoding.pop(k, None)
-        encoding = {
-            name: {"zlib": True, "complevel": 2, "shuffle": True}
-            for name in out.data_vars
+        encoding: dict[str, dict[str, object]] = {
+            name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars
         }
         encoding.update(
             {
@@ -1192,9 +1151,7 @@ def carra2(
         tmp_pre.unlink(missing_ok=True)
         return carra2_filename
 
-    uri = f"s3://{bucket}/{prefix}/climate/carra2.zarr".replace("//", "/").replace(
-        "s3:/", "s3://"
-    )
+    uri = f"s3://{bucket}/{prefix}/climate/carra2.zarr".replace("//", "/").replace("s3:/", "s3://")
     print(f"Opening {uri}")
     ds = xr.open_zarr(
         uri,
@@ -1216,9 +1173,7 @@ def carra2(
         crs_wkt = None
         # First, follow any data variable's CF grid_mapping pointer.
         for var in ds.data_vars:
-            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get(
-                "grid_mapping"
-            )
+            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get("grid_mapping")
             if gm and gm in ds.variables:  # checks both data_vars and coords
                 crs_wkt = ds[gm].attrs.get("crs_wkt") or ds[gm].attrs.get("spatial_ref")
                 if crs_wkt:
@@ -1279,11 +1234,7 @@ def carra2(
     # If `time.bounds` pointed at a coord we just dropped, clear the attr too.
     if "time" in sub.coords:
         bounds_name = sub["time"].attrs.get("bounds")
-        if (
-            bounds_name
-            and bounds_name not in sub.coords
-            and bounds_name not in sub.data_vars
-        ):
+        if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
             sub["time"].attrs.pop("bounds", None)
 
     # Reproject the subset onto the target grid. Each reprojected batch is
@@ -1303,16 +1254,14 @@ def carra2(
     saved_callbacks = Callback.active.copy()
     Callback.active.clear()
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="carra2_reproj_", dir=str(path)
-        ) as tmp_dir_name:
+        with tempfile.TemporaryDirectory(prefix="carra2_reproj_", dir=str(path)) as tmp_dir_name:
             tmp_dir = Path(tmp_dir_name)
             for var_name in sub.data_vars:
                 da = sub[var_name]
                 if "time" not in da.dims or da.sizes["time"] <= time_batch:
-                    out_vars[var_name] = da.rio.reproject_match(
-                        target_grid, resampling=Resampling.bilinear
-                    ).astype("float32")
+                    out_vars[var_name] = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype(
+                        "float32"
+                    )
                     continue
                 n = da.sizes["time"]
                 var_dir = tmp_dir / var_name
@@ -1326,9 +1275,7 @@ def carra2(
                 )
                 for batch_idx, i in enumerate(pbar):
                     chunk = da.isel(time=slice(i, i + time_batch)).compute()
-                    reproj = chunk.rio.reproject_match(
-                        target_grid, resampling=Resampling.bilinear
-                    ).astype("float32")
+                    reproj = chunk.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
                     batch_path = var_dir / f"batch_{batch_idx:04d}.nc"
                     # Clear inherited encoding before writing each shard.
                     reproj.encoding = {}
@@ -1347,11 +1294,7 @@ def carra2(
         Callback.active.update(saved_callbacks)
 
     # Re-attach CF grid_mapping after the reproject.
-    out = (
-        out.rio.write_crs(dst_crs)
-        .rio.write_grid_mapping()
-        .rio.write_coordinate_system()
-    )
+    out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
     out.attrs["Conventions"] = "CF-1.8"
 
     # Expand to all requested years (filling missing ones from the nearest
@@ -1722,9 +1665,7 @@ def pmip4(
                 .groupby("time.month")
                 .mean()
                 .rename_dims({"month": "time"})
-                .rename_vars(
-                    {"pr": "precipitation", "tas": "air_temp", "month": "time"}
-                )
+                .rename_vars({"pr": "precipitation", "tas": "air_temp", "month": "time"})
             )
             ds.rio.write_crs("EPSG:4326", inplace=True)
 
@@ -1828,19 +1769,13 @@ def prepare_snap(
         _ = download_file(url, f_path, force_overwrite=force_overwrite)
         response = extract_archive(f_path, force_overwrite=force_overwrite)
         response_clean = [Path(r) for r in sorted(response) if str(r).endswith("tif")]
-        results = convert_many_tifs_concurrent(
-            response_clean, path, force_overwrite=force_overwrite
-        )
+        results = convert_many_tifs_concurrent(response_clean, path, force_overwrite=force_overwrite)
 
         if not results:
-            raise RuntimeError(
-                "No NetCDF outputs were produced or found; cannot build SNAP dataset."
-            )
+            raise RuntimeError("No NetCDF outputs were produced or found; cannot build SNAP dataset.")
 
         # Concatenate along time and sort (in case paths are unordered)
-        out = xr.open_mfdataset(
-            results, parallel=True, chunks="auto", engine="h5netcdf"
-        )
+        out = xr.open_mfdataset(results, parallel=True, chunks="auto", engine="h5netcdf")
         dss.append(out)
 
     url = "http://data.snap.uaf.edu/data/IEM/Inputs/ancillary/elevation/iem_prism_dem_1km.tif"
@@ -1934,9 +1869,7 @@ def prepare_snap(
 
         # schedule a lazy NetCDF write for this period
         p.unlink(missing_ok=True)
-        delayed_writes.append(
-            ds_weighted.to_netcdf(p, encoding=encoding, compute=False)
-        )
+        delayed_writes.append(ds_weighted.to_netcdf(p, encoding=encoding, compute=False))
 
     # Kick off all writes in parallel (plus internal dask parallelism)
     if delayed_writes:

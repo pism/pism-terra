@@ -2,13 +2,15 @@
 
 executable = "pism"
 mpi = "mpirun -np  {{ ntasks }} apptainer run --bind /import/c1/ICESHEET/ICESHEET ${container}"
-ntasks = 160
+ntasks = 156
+writer = ": -n 1 ${container} pism_async_writer -d"
+
 
 [job]
 
 queue = "t2standard"
-walltime = "48:00:00"
-nodes = 1
+walltime = "8:00:00"
+nodes = 4
 
 [run_info]
 
