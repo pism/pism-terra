@@ -310,7 +310,7 @@ def s4f_glacier(
         if var == "bed":
             encoding = {var: {"zlib": True, "complevel": 2, "shuffle": True}}
             nc_path = path / f"{m_id}.nc"
-            out.to_netcdf(nc_path, encoding=encoding)
+            out.to_netcdf(nc_path, encoding=encoding, engine="h5netcdf")
             print(nc_path)
             boot_files[m_id] = nc_path
     return boot_files

@@ -107,7 +107,7 @@ def create_ds(
     encoding.update(encoding_time)
     encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
 
-    ds.to_netcdf(output_file, encoding=encoding)
+    ds.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
 
     return output_file
 

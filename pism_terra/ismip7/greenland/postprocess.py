@@ -104,7 +104,7 @@ def process_file(
     logger.info("Writing %s", clipped_file)
     comp = {"zlib": True, "complevel": 2}
     encoding = {var: comp for var in gis_clipped.data_vars}
-    write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False)
+    write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False, engine="h5netcdf")
     future_clipped = client.compute(write_clipped)
     progress(future_clipped)
 
@@ -122,7 +122,7 @@ def process_file(
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
     encoding_scalar = {var: comp for var in scalar.data_vars}
-    scalar.to_netcdf(scalar_file, encoding=encoding_scalar)
+    scalar.to_netcdf(scalar_file, encoding=encoding_scalar, engine="h5netcdf")
 
     end = time.time()
     time_elapsed = end - start

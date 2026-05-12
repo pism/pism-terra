@@ -618,7 +618,7 @@ def prepare_carra2_for_group(
 
     encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
     output_file.unlink(missing_ok=True)
-    out.to_netcdf(output_file, encoding=encoding, engine="netcdf4")
+    out.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
     return output_file
 
 
@@ -737,7 +737,7 @@ def create_offset_file(file_name: str | Path, delta_T: float = 0.0, frac_P: floa
         },
     )
     encoding = {v: {"_FillValue": None} for v in ["delta_T", "frac_P"]}
-    ds.to_netcdf(file_name, encoding=encoding)
+    ds.to_netcdf(file_name, encoding=encoding, engine="h5netcdf")
 
 
 def create_step_file(
@@ -807,7 +807,7 @@ def create_step_file(
         },
     )
     encoding = {v: {"_FillValue": None} for v in ["delta_T", "frac_P"]}
-    ds.to_netcdf(file_name, encoding=encoding)
+    ds.to_netcdf(file_name, encoding=encoding, engine="h5netcdf")
 
 
 def snap(
@@ -1082,7 +1082,7 @@ def carra2(
             }
         )
         carra2_filename.unlink(missing_ok=True)
-        out.to_netcdf(carra2_filename, encoding=encoding, engine="netcdf4")
+        out.to_netcdf(carra2_filename, encoding=encoding, engine="h5netcdf")
         tmp_pre.unlink(missing_ok=True)
         return carra2_filename
 
@@ -1216,7 +1216,7 @@ def carra2(
                     batch_path = var_dir / f"batch_{batch_idx:04d}.nc"
                     # Clear inherited encoding before writing each shard.
                     reproj.encoding = {}
-                    reproj.to_netcdf(batch_path, engine="netcdf4")
+                    reproj.to_netcdf(batch_path, engine="h5netcdf")
                     batch_files.append(batch_path)
                     # Drop the in-memory copy so the next batch starts clean.
                     del chunk, reproj
@@ -1267,7 +1267,7 @@ def carra2(
     )
 
     carra2_filename.unlink(missing_ok=True)
-    out.to_netcdf(carra2_filename, encoding=encoding_c, engine="netcdf4")
+    out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf")
 
     return carra2_filename
 
@@ -1806,7 +1806,7 @@ def prepare_snap(
 
         # schedule a lazy NetCDF write for this period
         p.unlink(missing_ok=True)
-        delayed_writes.append(ds_weighted.to_netcdf(p, encoding=encoding, compute=False))
+        delayed_writes.append(ds_weighted.to_netcdf(p, encoding=encoding, compute=False, engine="h5netcdf"))
 
     # Kick off all writes in parallel (plus internal dask parallelism)
     if delayed_writes:

@@ -692,7 +692,7 @@ def save_netcdf(
             enc.update(comp)
             encoding[var] = enc
 
-    ds.to_netcdf(output_filename, encoding=encoding, **kwargs)
+    ds.to_netcdf(output_filename, encoding=encoding, engine="h5netcdf", **kwargs)
 
 
 def download_archive(

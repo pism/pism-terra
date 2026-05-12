@@ -109,7 +109,7 @@ def get_surface_dem_by_bounds(
     ds.attrs["Conventions"] = "CF-1.8"
 
     geo_file.unlink(missing_ok=True)
-    ds.to_netcdf(geo_file, engine="netcdf4")
+    ds.to_netcdf(geo_file, engine="h5netcdf")
     return geo_file
 
 

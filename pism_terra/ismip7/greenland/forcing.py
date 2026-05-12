@@ -552,7 +552,7 @@ def prepare_observations(
     comp = {"zlib": True, "complevel": 2}
     encoding = {var: comp for var in ds.data_vars}
     encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
-    ds.to_netcdf(obs_file, encoding=encoding)
+    ds.to_netcdf(obs_file, encoding=encoding, engine="h5netcdf")
 
     geo["bheatflx"].attrs.pop("coordinates", None)
     geo["bheatflx"].encoding.pop("coordinates", None)
@@ -563,7 +563,7 @@ def prepare_observations(
         geo[v].encoding.pop("coordinates", None)
     geo_file = output_path / Path(f"heatflux_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
     geo_encoding = {var: {"_FillValue": None} for var in list(geo.data_vars) + list(geo.coords)}
-    geo.to_netcdf(geo_file, encoding=geo_encoding)
+    geo.to_netcdf(geo_file, encoding=geo_encoding, engine="h5netcdf")
 
     return {"boot_file": obs_file, "heatflux_file": geo_file}
 

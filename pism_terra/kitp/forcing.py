@@ -969,4 +969,4 @@ def prepare_ocean_forcing(
     encoding: dict[str, dict[str, Any]] = {var: {"_FillValue": None} for var in list(out.data_vars) + list(out.coords)}
     encoding["shelfbmassflux"].update({"zlib": True, "complevel": 2})
     encoding["shelfbtemp"].update({"zlib": True, "complevel": 2})
-    out.to_netcdf(output_path, encoding=encoding)
+    out.to_netcdf(output_path, encoding=encoding, engine="h5netcdf")
