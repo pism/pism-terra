@@ -40,6 +40,7 @@ from pism_terra.sampling import create_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
     dict2str,
+    filter_overrides_by_config,
     merge_model,
     normalize_row,
     sort_dict_by_key,
@@ -233,8 +234,12 @@ def run_kitp(
         except Exception:
             pass
 
-    # Remove 'sample' from flag overrides
+    # Remove 'sample' from flag overrides; drop any key not in the config-derived
+    # run dict (e.g., surface.debm_simple.std_dev.file when surface.model == "pdd").
     overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
+    overrides, skipped = filter_overrides_by_config(overrides, run.keys())
+    if skipped:
+        print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 

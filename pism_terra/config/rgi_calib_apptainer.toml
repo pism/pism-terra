@@ -151,6 +151,7 @@ model = "pdd"
 [surface.options.pdd]
 
 'surface.models' = "pdd,forcing"
+'surface.force_to_thickness.file' = "none"
 
 [calving]
 

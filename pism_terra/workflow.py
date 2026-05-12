@@ -299,6 +299,51 @@ def dict2str(d: dict) -> str:
     return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
 
 
+def filter_overrides_by_config(
+    overrides: dict[str, Any], allowed_keys: Iterable[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """
+    Restrict UQ overrides to keys the selected config exposes.
+
+    Drops any entry in ``overrides`` whose key is not in ``allowed_keys``.
+    Returned alongside the kept dict is a sorted list of dropped keys so the
+    caller can surface what was filtered.
+
+    Parameters
+    ----------
+    overrides : dict[str, Any]
+        Candidate dotted PISM-flag overrides (typically the merged uq.toml
+        sample row plus any hardcoded file-path defaults).
+    allowed_keys : Iterable[str]
+        Keys present in the config-derived run dict. Only the selected model's
+        options block contributes here, so an override for a non-selected model
+        (e.g. ``surface.debm_simple.std_dev.file`` when ``surface.model == "pdd"``)
+        is correctly dropped.
+
+    Returns
+    -------
+    kept : dict[str, Any]
+        ``overrides`` filtered to keys present in ``allowed_keys``.
+    skipped : list[str]
+        Keys from ``overrides`` that were not in ``allowed_keys``, sorted.
+
+    Examples
+    --------
+    >>> overrides = {"surface.force_to_thickness.file": "/tmp/boot.nc",
+    ...              "surface.debm_simple.std_dev.file": "/tmp/clim.nc"}
+    >>> allowed = {"surface.force_to_thickness.file", "input.file"}
+    >>> kept, skipped = filter_overrides_by_config(overrides, allowed)
+    >>> kept
+    {'surface.force_to_thickness.file': '/tmp/boot.nc'}
+    >>> skipped
+    ['surface.debm_simple.std_dev.file']
+    """
+    allowed = set(allowed_keys)
+    kept = {k: v for k, v in overrides.items() if k in allowed}
+    skipped = sorted(k for k in overrides if k not in allowed)
+    return kept, skipped
+
+
 def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
     """
     Replace integer choices in `uq_df` with values from `df` using a per-flag mapping.
