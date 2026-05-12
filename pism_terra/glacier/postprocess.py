@@ -98,7 +98,7 @@ def process_file(infile: str | Path, rgi_file: str | Path, client: Client):
 
     ds_clipped = ds.rio.clip(geometry, drop=False)
     ds_clipped = xr.merge([ds_clipped, ds_non_spatial.drop_vars("spatial_ref", errors="ignore")])
-    comp = {"zlib": True, "complevel": 2}
+    comp = {"zlib": True, "complevel": 1}
     encoding = {var: comp for var in ds_clipped.data_vars}
     write_clipped = ds_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False)
     future_clipped = client.compute(write_clipped)

@@ -456,7 +456,6 @@ def run_single():
             "atmosphere.given.file": row["climate_file"],
             "surface.debm_simple.std_dev.file": row["climate_file"],
             "surface.force_to_thickness.file": row["boot_file"],
-            "surface.pdd.std_dev.file": row["climate_file"],
         }
         outline_file = row["outline_file"] if "outline_file" in row else None
         run_glacier(
