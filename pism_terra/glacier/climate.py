@@ -231,7 +231,7 @@ def prepare_carra2(
     carra2_grid_path = path / "carra2_grid.txt"
     carra2_grid_path.write_text(carra2_grid)
 
-    orography_dataset = "reanalysis-pan-carra-means"
+    orography_dataset = "reanalysis-pan-carra"
     orography_request = {
         "level_type": "single_levels",
         "variable": ["orography"],
@@ -239,80 +239,15 @@ def prepare_carra2(
         "time": ["00:00"],
         "year": [
             "1986",
-            "1987",
-            "1988",
-            "1991",
-            "1992",
-            "1993",
-            "1996",
-            "1997",
-            "1998",
-            "2001",
-            "2002",
-            "2003",
-            "2006",
-            "2007",
-            "2008",
-            "2011",
-            "2012",
-            "2013",
-            "2016",
-            "2017",
-            "2018",
-            "2021",
-            "2022",
-            "2023",
         ],
         "month": [
             "01",
-            "02",
-            "03",
-            "04",
-            "05",
-            "06",
-            "07",
-            "08",
-            "09",
-            "10",
-            "11",
-            "12",
         ],
         "day": [
             "01",
-            "02",
-            "03",
-            "04",
-            "05",
-            "06",
-            "07",
-            "08",
-            "09",
-            "10",
-            "11",
-            "12",
-            "13",
-            "14",
-            "15",
-            "16",
-            "17",
-            "18",
-            "19",
-            "20",
-            "21",
-            "22",
-            "23",
-            "24",
-            "25",
-            "26",
-            "27",
-            "28",
-            "29",
-            "30",
-            "31",
         ],
         "data_format": "grib",
     }
-
     orography_files = carra_download_request(
         orography_dataset,
         orography_request,
@@ -321,7 +256,7 @@ def prepare_carra2(
         **kwargs,  # pass the full CARRA request dict
     )
 
-    _ = orography_files
+    print(orography_files)
 
     precipitation_dataset = "reanalysis-pan-carra-means"
     precipitation_request = {

@@ -1219,6 +1219,8 @@ class CampaignConfig(BaseModel):
         Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
+    forcing_mask : str or None
+        Forcing mask ("all", "glacier", "none").
     velocity : str or None
         Velocity data source identifier (e.g., ``"its_live"``).
     gcms : str, list, dict, or None
@@ -1262,6 +1264,7 @@ class CampaignConfig(BaseModel):
     climate: str | None = Field(default=None)
     climatology: str | None = Field(default=None)
     dem: str | None = Field(default=None)
+    forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
     gcms: str | list | dict | None = Field(default=None)
     boot_file: str | None = Field(default=None)

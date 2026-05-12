@@ -27,11 +27,13 @@ import collections
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import rasterio
 import rioxarray as rxr
 import xarray as xr
 from pyproj import Transformer
 from rasterio.enums import Resampling
+from scipy.interpolate import RegularGridInterpolator
 
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_rio, check_xr_lazy
@@ -98,7 +100,7 @@ def get_velocities_by_bounds(
     return subset
 
 
-def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error", "vy_error"]) -> xr.Dataset:
+def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error", "vy_error", "landice"]) -> xr.Dataset:
     """
     Load the global ITS_LIVE surface velocity mosaic as an xarray dataset.
 
@@ -114,7 +116,7 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
         - "vy": y-component of velocity
         - "vx_error": x-component error
         - "vy_error": y-component error
-        Defaults to ["v", "vx", "vy", "vx_error", "vy_error"].
+        Defaults to ["v", "vx", "vy", "vx_error", "vy_error", "landice"].
 
     Returns
     -------
@@ -141,9 +143,7 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
         _ds.attrs.update({"units": "m year^-1"})
         dss.append(_ds)
 
-    ds = xr.merge(dss)
-    ds["u_observed"] = ds["vx"].fillna(0)
-    ds["v_observed"] = ds["vy"].fillna(0)
+    ds = xr.merge(dss, compat="no_conflicts")
 
     return ds
 
@@ -194,22 +194,95 @@ def glacier_velocities_from_grid(
     print("Generate Velocity Observations")
     print("-" * 120)
 
-    crs = "EPSG:3857"
+    EPS = 10.0
 
     if (not check_xr_lazy(path)) or force_overwrite:
 
         path = Path(path)
         path.unlink(missing_ok=True)
 
-        bounds = [target_grid.x.values[0], target_grid.y.values[0], target_grid.x.values[-1], target_grid.y.values[-1]]
+        xs = [float(target_grid.x.values[0]), float(target_grid.x.values[-1])]
+        ys = [float(target_grid.y.values[0]), float(target_grid.y.values[-1])]
+        bounds = (min(xs), min(ys), max(xs), max(ys))
         dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
-        t = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
-        geo_bounds = t.transform_bounds(*bounds)
-        ds = get_velocities_by_bounds(geo_bounds, product_name=product_name)
+        t_geo = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
+        geo_bounds = t_geo.transform_bounds(*bounds)
+        # Pad the geographic bbox so the clipped ITS_LIVE region fully covers
+        # every target-grid point after round-tripping through 4326 → 3413.
+        lon_pad = 0.25
+        lat_pad = 0.1
+        padded = (
+            geo_bounds[0] - lon_pad,
+            geo_bounds[1] - lat_pad,
+            geo_bounds[2] + lon_pad,
+            geo_bounds[3] + lat_pad,
+        )
+        ds = get_velocities_by_bounds(padded, product_name=product_name)
+
+        # The interpolator is built on ITS_LIVE's native coordinates, so the
+        # intermediate frame must match. The finite-difference round-trip
+        # below recovers vector components aligned with target_grid's axes
+        # (handling any rotation between the two CRSs).
+        src_crs = ds.rio.crs
+        t = Transformer.from_crs(dst_crs, src_crs, always_xy=True)
+        t_inv = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+        # Define DEM grid
+        X, Y = np.meshgrid(target_grid.x, target_grid.y)
+
+        # Project to ITSLive grid
+        X_, Y_ = t.transform(X, Y)
+
+        # Build ITSLive interpolants. ``bounds_error=False`` makes points that
+        # land just outside the clipped tile (or in ITS_LIVE nodata regions)
+        # fall back to NaN instead of raising; they're zeroed later.
+        interpolator_vx = RegularGridInterpolator(
+            (ds.y, ds.x), ds.vx.values.squeeze(), bounds_error=False, fill_value=np.nan
+        )
+        interpolator_vy = RegularGridInterpolator(
+            (ds.y, ds.x), ds.vy.values.squeeze(), bounds_error=False, fill_value=np.nan
+        )
+
+        # Interpolate dem grid points
+        vx_pts = interpolator_vx((Y_, X_))
+        vy_pts = interpolator_vy((Y_, X_))
+
+        # Finite difference displacement
+        X_plus = X_ + EPS * vx_pts
+        Y_plus = Y_ + EPS * vy_pts
+
+        X_minus = X_ - EPS * vx_pts
+        Y_minus = Y_ - EPS * vy_pts
+
+        # Transform displaced points back to project grid
+        X0_plus, Y0_plus = t_inv.transform(X_plus, Y_plus)
+        X0_minus, Y0_minus = t_inv.transform(X_minus, Y_minus)
+
+        # Calculate velocities
+        vx = (X0_plus - X0_minus) / (2 * EPS)
+        vy = (Y0_plus - Y0_minus) / (2 * EPS)
+
         # Reproject to the glacier's target CRS to match the PISM grid
         ds_clipped = ds.rio.reproject_match(target_grid, resampling=Resampling.bilinear).rio.clip(
             geometries, drop=False
         )
+        ds_clipped["vx"].values = vx
+        ds_clipped["vy"].values = vy
+
+        # Zero out the velocity fields (and their per-component errors) off
+        # ice. ITS_LIVE's ``landice`` is 1 over glacier ice and 0 elsewhere,
+        # but the COG declares nodata=0 so reading with ``masked=True`` turns
+        # off-ice cells into NaN. Test for on-ice (== 1) so both 0 and NaN
+        # count as off-ice; ``where(cond, 0)`` keeps the value when cond is
+        # true and writes 0 otherwise.
+        if "landice" in ds_clipped:
+            on_ice = ds_clipped["landice"] == 1
+            for name in ("vx", "vy", "vx_error", "vy_error"):
+                if name in ds_clipped:
+                    ds_clipped[name] = ds_clipped[name].where(on_ice, 0)
+
+        ds_clipped["v"].values = (ds_clipped["vx"].values ** 2 + ds_clipped["vy"].values ** 2) ** 0.5
+        ds_clipped["u_observed"] = ds_clipped["vx"].fillna(0)
+        ds_clipped["v_observed"] = ds_clipped["vy"].fillna(0)
         # Ensure y is strictly increasing (PISM requires this for regridding)
         if ds_clipped.y[0] > ds_clipped.y[-1]:
             ds_clipped = ds_clipped.sortby("y")
@@ -219,7 +292,7 @@ def glacier_velocities_from_grid(
 
     else:
         ds_clipped = xr.open_dataset(path)
-    ds_clipped.rio.write_crs(crs, inplace=True)
+    ds_clipped.rio.write_crs(target_grid.spatial_ref.attrs["crs_wkt"], inplace=True)
     return ds_clipped
 
 

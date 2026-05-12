@@ -18,7 +18,7 @@
 
 # pylint: disable=too-many-positional-arguments,unused-import,broad-exception-caught
 """
-Prepare S4F data sets.
+Prepare RGI and S4F data sets.
 """
 
 import logging
@@ -74,9 +74,9 @@ xr.set_options(keep_attrs=True)
 logger = logging.getLogger(__name__)
 
 
-def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
+def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
-    Prepare RGI glacier input data sets.
+    Prepare S4F glacier input data sets.
 
     This function is the programmatic entry point. It parses command-line style
     arguments, creates the target grid, downloads and processes observation data,
@@ -273,6 +273,142 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     return rgi_files
 
 
+def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
+    """
+    Prepare RGI glacier input data sets.
+
+    This function is the programmatic entry point. It parses command-line style
+    arguments, creates the target grid, downloads and processes observation data,
+    and prepares climate/ocean forcing files for PISM simulations.
+
+    Parameters
+    ----------
+    argv : sequence of str or None, optional
+        Command-line arguments **excluding** the program name (i.e., like
+        ``sys.argv[1:]``). If ``None`` (default), arguments are taken from the
+        current process' ``sys.argv[1:]``. Passing ``argv=[]`` is recommended
+        when calling from a Jupyter notebook to avoid ipykernel arguments.
+
+    Returns
+    -------
+    dict[str, Any]
+        Mapping returned by :func:`prepare_rgi` (e.g. ``"rgi_complexes"``
+        and ``"rgi_glaciers"`` paths).
+    """
+
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--force-overwrite",
+        help="Force downloading all files.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--ntasks",
+        help="Parallel tasks.",
+        type=int,
+        default=8,
+    )
+    parser.add_argument("CONFIG_FILE", nargs=1)
+    parser.add_argument("OUTPUT_PATH", nargs=1)
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    config_file = args.CONFIG_FILE[0]
+    force_overwrite = args.force_overwrite
+    ntasks = args.ntasks
+    output_path = Path(args.OUTPUT_PATH[0])
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    setup_logging(output_path / "prepare.log")
+
+    f = Figlet(font="standard")
+    banner = f.renderText("pism-terra")
+    logger.info("=" * 120)
+    logger.info("\n%s", banner)
+    logger.info("=" * 120)
+    logger.info("Preparing S4F data")
+    logger.info("-" * 120)
+
+    config = toml.loads(Path(config_file).read_text("utf-8"))
+    regions = pd.DataFrame.from_dict(config["regions"], orient="index")
+    regions["region"] = regions.index.astype(str).str.zfill(2) + "_" + regions["name"]
+
+    # Final outputs land under glacier_path; everything intermediate lives in
+    # staging_path so the user can `rm -rf staging` after a clean run without
+    # losing anything that downstream tools need.
+    glacier_path = output_path / Path("glacier")
+    glacier_path.mkdir(parents=True, exist_ok=True)
+    staging_path = output_path / Path("staging")
+    staging_path.mkdir(parents=True, exist_ok=True)
+
+    # --- RGI ---
+    rgi_path = glacier_path / Path("rgi")
+    rgi_path.mkdir(parents=True, exist_ok=True)
+    rgi_staging = staging_path / Path("rgi")
+    rgi_staging.mkdir(parents=True, exist_ok=True)
+
+    rgi_files = prepare_rgi(
+        regions,
+        glaciers=None,
+        glacier_groups=None,
+        output_path=rgi_path,
+        extract_path=rgi_staging,
+        force_overwrite=force_overwrite,
+        ntasks=ntasks,
+    )
+
+    complexes = gpd.read_file(rgi_files["rgi_complexes"])
+    glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
+
+    # --- GEBCO ---
+    # Source NetCDF download lands in staging; only the COG goes to glacier/.
+    gebco_path = glacier_path / Path("gebco")
+    gebco_path.mkdir(parents=True, exist_ok=True)
+    gebco_staging = staging_path / Path("gebco")
+    gebco_staging.mkdir(parents=True, exist_ok=True)
+    gebco_nc = download_gebco(target_dir=gebco_staging)
+    cog_gebco_p = gebco_path / Path("bathymetry.tif")
+
+    # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
+    # geotransform; rxr.open_rasterio treats netCDF as a generic raster and
+    # loses the georeferencing.
+    ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
+    da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+    if da.rio.crs is None:
+        da = da.rio.write_crs("EPSG:4326")
+    predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
+    da.rio.to_raster(
+        cog_gebco_p,
+        driver="COG",
+        compress="DEFLATE",
+        predictor=predictor,
+        blocksize=512,
+        bigtiff="YES",
+        overview_resampling="AVERAGE",
+        num_threads="ALL_CPUS",
+    )
+
+    # --- Ice thickness ---
+    ice_thickness_path = glacier_path / Path("ice_thickness")
+    ice_thickness_path.mkdir(parents=True, exist_ok=True)
+    maffezzoli_path = ice_thickness_path / Path("maffezzoli")
+    maffezzoli_path.mkdir(parents=True, exist_ok=True)
+    ice_thickness_staging = staging_path / Path("ice_thickness")
+    ice_thickness_staging.mkdir(parents=True, exist_ok=True)
+
+    prepare_ice_thickness_maffezzoli(
+        regions.index,
+        complexes=complexes,
+        glaciers=glaciers,
+        output_path=maffezzoli_path,
+        extract_path=ice_thickness_staging,
+        force_overwrite=force_overwrite,
+        ntasks=ntasks,
+    )
+
+    return rgi_files
+
+
 def cli(argv: Sequence[str] | None = None) -> int:
     """
     Console entry point.
@@ -287,7 +423,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
     int
         Exit code (0 for success).
     """
-    _ = main(argv=argv)
+    _ = rgi(argv=argv)
     return 0
 
 

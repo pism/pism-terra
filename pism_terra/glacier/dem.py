@@ -200,6 +200,7 @@ def boot_file_from_grid(
     ice_thickness_dataset: Literal["maffezzoli", "millan"],
     bathymetry_dataset: Literal["none", "gebco"] | None,
     velocity_dataset: Literal["none", "its_live"] | None,
+    forcing_mask: Literal["none", "all", "glacier"] | None,
     path: str | Path = "input_files",
     **kwargs,
 ) -> xr.Dataset:
@@ -230,6 +231,8 @@ def boot_file_from_grid(
         ``"none"`` or ``None`` disables bathymetry merging.
     velocity_dataset : {"none", "its_live"} or None
         Source for velocities.
+    forcing_mask : {"none", "glacier", "all"} or None
+        FTT mask.
     path : str or pathlib.Path, default ``"input_files"``
         Working directory used by helper routines to cache/write intermediate rasters/grids.
     **kwargs
@@ -322,8 +325,12 @@ def boot_file_from_grid(
     liafr.attrs.update({"units": "1"})
     liafr = liafr.astype("bool")
 
-    # ftt_mask = surface.rio.clip(glacier_projected.geometry, drop=False)
-    ftt_mask = xr.ones_like(liafr)
+    if forcing_mask == "glacier":
+        ftt_mask = surface.rio.clip(geometries, drop=False)
+    elif forcing_mask == "all":
+        ftt_mask = xr.ones_like(liafr)
+    else:
+        ftt_mask = xr.zeros_like(liafr)
     ftt_mask.name = "ftt_mask"
     ftt_mask.attrs.update({"units": "1"})
     ftt_mask = ftt_mask.astype("bool")

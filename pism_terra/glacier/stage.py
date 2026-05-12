@@ -202,6 +202,7 @@ def stage_glacier(
         ice_thickness_dataset=config["ice_thickness"],
         velocity_dataset=config["velocity"],
         bathymetry_dataset=config["bathymetry"],
+        forcing_mask=config["forcing_mask"] if config["forcing_mask"] else None,
         path=staging_path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],

@@ -9,6 +9,7 @@ dependencies:
   - botocore
   - python-cdo
   - cf_xarray
+  - cfgrib
   - cftime
   - cmap
   - cmweather

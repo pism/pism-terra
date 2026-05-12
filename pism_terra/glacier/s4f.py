@@ -69,6 +69,94 @@ MODIFIER: Mapping[str, Callable] = {
 }
 
 
+def main():
+    """
+    Run main script.
+    """
+
+    # set up the option parser
+    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
+    parser.description = "Stage RGI Glacier."
+    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
+    parser.add_argument(
+        "--bucket-prefix",
+        help="AWS prefix (location in bucket) to add to product files",
+        default="",
+    )
+    parser.add_argument(
+        "--output-path",
+        help="Path to save all files.",
+        type=Path,
+        default=Path("data"),
+    )
+    parser.add_argument(
+        "--force-overwrite",
+        help="Force downloading all files.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "CONFIG_FILE",
+        help="CONFIG TOML.",
+        nargs=1,
+    )
+
+    options, unknown = parser.parse_known_args()
+    path = options.output_path
+    config_file = options.CONFIG_FILE[0]
+    force_overwrite = options.force_overwrite
+
+    path.mkdir(parents=True, exist_ok=True)
+
+    cfg = load_config(config_file)
+    config = cfg.campaign.as_params()
+
+    print("RGI Database")
+    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_file"]}"""
+    rgi_local = path / config["rgi_file"]
+    if not rgi_local.exists():
+        print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
+        download_from_s3(rgi_s3_uri, rgi_local)
+    else:
+        print(f"Using cached {rgi_local}")
+    rgi = gpd.read_file(rgi_local)
+
+    rgi_cloud = path / config["rgi_file"].replace("gpkg", "fgb")
+    rgi.to_file(rgi_cloud)
+
+    all_nc_files: list[Path] = []
+    for rgi_id in rgi.rgi_id:
+        glacier_path = path / Path(rgi_id)
+        glacier_path.mkdir(parents=True, exist_ok=True)
+
+        input_path = glacier_path / Path("input")
+        input_path.mkdir(parents=True, exist_ok=True)
+        staging_path = glacier_path / Path("staging")
+        staging_path.mkdir(parents=True, exist_ok=True)
+        glacier_boot_files = s4f_glacier(
+            config,
+            rgi_id,
+            path=input_path,
+            staging_path=staging_path,
+            force_overwrite=force_overwrite,
+        )
+        all_nc_files.extend(Path(p) for p in glacier_boot_files.values() if Path(p).suffix == ".nc")
+
+    total_bytes = sum(p.stat().st_size for p in all_nc_files if p.exists())
+    if total_bytes >= 1 << 30:
+        size = f"{total_bytes / (1 << 30):.2f} GB"
+    elif total_bytes >= 1 << 20:
+        size = f"{total_bytes / (1 << 20):.2f} MB"
+    else:
+        size = f"{total_bytes / (1 << 10):.2f} KB"
+    print(f"Total size of {len(all_nc_files)} NetCDF files: {size}")
+
+    bucket = config["bucket"]
+    prefix = config["prefix"]
+    print("Now run")
+    print(f"""aws s3 sync {path} s3://{bucket}/{prefix}/planning --exclude "*/staging/*" """)
+
+
 def s4f_glacier(
     config: dict,
     rgi_id: str,
@@ -193,6 +281,7 @@ def s4f_glacier(
         ice_thickness_dataset=config["ice_thickness"],
         velocity_dataset=config["velocity"],
         bathymetry_dataset=config["bathymetry"],
+        forcing_mask=config["forcing_mask"] if config["forcing_mask"] else None,
         path=staging_path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],
@@ -225,94 +314,6 @@ def s4f_glacier(
             print(nc_path)
             boot_files[m_id] = nc_path
     return boot_files
-
-
-def main():
-    """
-    Run main script.
-    """
-
-    # set up the option parser
-    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Stage RGI Glacier."
-    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
-    parser.add_argument(
-        "--bucket-prefix",
-        help="AWS prefix (location in bucket) to add to product files",
-        default="",
-    )
-    parser.add_argument(
-        "--output-path",
-        help="Path to save all files.",
-        type=Path,
-        default=Path("data"),
-    )
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "CONFIG_FILE",
-        help="CONFIG TOML.",
-        nargs=1,
-    )
-
-    options, unknown = parser.parse_known_args()
-    path = options.output_path
-    config_file = options.CONFIG_FILE[0]
-    force_overwrite = options.force_overwrite
-
-    path.mkdir(parents=True, exist_ok=True)
-
-    cfg = load_config(config_file)
-    config = cfg.campaign.as_params()
-
-    print("RGI Database")
-    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_file"]}"""
-    rgi_local = path / config["rgi_file"]
-    if not rgi_local.exists():
-        print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
-        download_from_s3(rgi_s3_uri, rgi_local)
-    else:
-        print(f"Using cached {rgi_local}")
-    rgi = gpd.read_file(rgi_local)
-
-    rgi_cloud = path / config["rgi_file"].replace("gpkg", "fgb")
-    rgi.to_file(rgi_cloud)
-
-    all_nc_files: list[Path] = []
-    for rgi_id in rgi.rgi_id:
-        glacier_path = path / Path(rgi_id)
-        glacier_path.mkdir(parents=True, exist_ok=True)
-
-        input_path = glacier_path / Path("input")
-        input_path.mkdir(parents=True, exist_ok=True)
-        staging_path = glacier_path / Path("staging")
-        staging_path.mkdir(parents=True, exist_ok=True)
-        glacier_boot_files = s4f_glacier(
-            config,
-            rgi_id,
-            path=input_path,
-            staging_path=staging_path,
-            force_overwrite=force_overwrite,
-        )
-        all_nc_files.extend(Path(p) for p in glacier_boot_files.values() if Path(p).suffix == ".nc")
-
-    total_bytes = sum(p.stat().st_size for p in all_nc_files if p.exists())
-    if total_bytes >= 1 << 30:
-        size = f"{total_bytes / (1 << 30):.2f} GB"
-    elif total_bytes >= 1 << 20:
-        size = f"{total_bytes / (1 << 20):.2f} MB"
-    else:
-        size = f"{total_bytes / (1 << 10):.2f} KB"
-    print(f"Total size of {len(all_nc_files)} NetCDF files: {size}")
-
-    bucket = config["bucket"]
-    prefix = config["prefix"]
-    print("Now run")
-    print(f"""aws s3 sync {path} s3://{bucket}/{prefix}/planning --exclude "*/staging/*" """)
 
 
 if __name__ == "__main__":
