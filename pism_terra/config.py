@@ -923,6 +923,7 @@ class GridConfig(BaseModelWithDot):
     Mz: int | None = Field(default=None, alias="grid.Mz")
     extrapolation: str | None = Field(default=None, alias="grid.allow_extrapolation")
     registration: str | None = Field(default=None, alias="grid.registration")
+    file: str | None = Field(default=None, alias="grid.file")
 
     # derived / optionally provided:
     dx: str | None = Field(default=None, alias="grid.dx")
