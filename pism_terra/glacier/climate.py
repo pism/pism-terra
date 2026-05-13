@@ -475,8 +475,15 @@ def prepare_carra2(
             options="--reduce_dim -f nc4 -z zip_2",
         )
         orog_ds = xr.open_dataset(orog_nc)
-        orog_name = next(iter(orog_ds.data_vars))
-        orog = orog_ds[orog_name].squeeze(drop=True)
+        # Pick the actual 2-D field, not CDO's scalar grid-mapping variable.
+        orog_candidates = [n for n, da in orog_ds.data_vars.items() if {"y", "x"}.issubset(da.dims)]
+        if not orog_candidates:
+            raise ValueError(f"No (y, x) data variable found in orography file {orog_nc}: {list(orog_ds.data_vars)}")
+        orog = orog_ds[orog_candidates[0]]
+        # Drop only the singleton non-spatial dims (time/step/level), keep y, x.
+        for d in list(orog.dims):
+            if d not in ("y", "x") and orog.sizes[d] == 1:
+                orog = orog.squeeze(d, drop=True)
         orog.attrs.update(
             {
                 "standard_name": "surface_altitude",
