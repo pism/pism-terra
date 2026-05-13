@@ -1263,54 +1263,60 @@ def carra2(
                 shards = [xr.open_dataarray(p, chunks={}) for p in batch_files]
                 out_vars[var_name] = xr.concat(shards, dim="time")
             out = xr.Dataset(out_vars, attrs=sub.attrs)
-            # Force the full read so the temp dir can be cleaned up afterwards.
-            out.load()
+
+            # Stamp CRS metadata while everything is still lazy. inplace=True
+            # avoids deep-copying a multi-GiB dataset just to attach attrs.
+            out = (
+                out.rio.write_crs(dst_crs, inplace=True)
+                .rio.write_grid_mapping(inplace=True)
+                .rio.write_coordinate_system(inplace=True)
+            )
+            out.attrs["Conventions"] = "CF-1.8"
+
+            # Expand to all requested years (filling missing ones from the
+            # nearest source year) and attach CF time_bnds for PISM.
+            out = _carra2_fill_years_and_bounds(out, list(years))
+            for v in out.data_vars:
+                if np.issubdtype(out[v].dtype, np.floating):
+                    out[v] = out[v].fillna(0)
+
+            # Clear stale encoding inherited from the Zarr source so netCDF4
+            # doesn't see half-prescribed datetime encoding (e.g. dtype=int64
+            # with no units).
+            for name in list(out.coords) + list(out.data_vars):
+                for k in (
+                    "dtype",
+                    "_FillValue",
+                    "units",
+                    "calendar",
+                    "chunks",
+                    "preferred_chunks",
+                ):
+                    out[name].encoding.pop(k, None)
+
+            # Compressed NetCDF (zlib level 2 + shuffle for floats).
+            encoding_c: dict[str, dict[str, object]] = {
+                name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars
+            }
+            encoding_c.update(
+                {
+                    "time": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
+                    "time_bnds": {
+                        "dtype": "int64",
+                        "units": "hours since 1978-01-01 00:00:00",
+                    },
+                }
+            )
+
+            # Stream from the per-batch shards straight into the final NetCDF
+            # — never materializing the full reprojected dataset in RAM, which
+            # for high-res grids over 50 years is easily 10+ GiB per variable.
+            # Writing here (inside the temp-dir context) keeps the shards alive
+            # for dask to read from.
+            carra2_filename.unlink(missing_ok=True)
+            out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf")
     finally:
         Callback.active.update(saved_callbacks)
-
-    # Re-attach CF grid_mapping after the reproject.
-    # inplace=True avoids deep-copying a multi-GiB dataset just to stamp metadata.
-    out = (
-        out.rio.write_crs(dst_crs, inplace=True)
-        .rio.write_grid_mapping(inplace=True)
-        .rio.write_coordinate_system(inplace=True)
-    )
-    out.attrs["Conventions"] = "CF-1.8"
-
-    # Expand to all requested years (filling missing ones from the nearest
-    # source year) and attach CF time_bnds for PISM.
-    out = _carra2_fill_years_and_bounds(out, list(years))
-    for v in out.data_vars:
-        if np.issubdtype(out[v].dtype, np.floating):
-            out[v] = out[v].fillna(0)
-
-    # Clear stale encoding inherited from the Zarr source so netCDF4 doesn't
-    # see half-prescribed datetime encoding (e.g., dtype=int64 with no units).
-    for name in list(out.coords) + list(out.data_vars):
-        for k in (
-            "dtype",
-            "_FillValue",
-            "units",
-            "calendar",
-            "chunks",
-            "preferred_chunks",
-        ):
-            out[name].encoding.pop(k, None)
-
-    # Compressed NetCDF (zlib level 2 + shuffle for floats).
-    encoding_c: dict[str, dict[str, object]] = {
-        name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars
-    }
-
-    encoding_c.update(
-        {
-            "time": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
-            "time_bnds": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
-        }
-    )
-
-    carra2_filename.unlink(missing_ok=True)
-    out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf")
 
     return carra2_filename
 
