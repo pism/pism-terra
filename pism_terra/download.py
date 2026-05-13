@@ -266,7 +266,7 @@ def extract_archive(
     return extracted_files
 
 
-def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path) -> Path:
+def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suffix: str = ".nc") -> Path:
     """
     Build a collision-resistant cache filename for a per-year CDS download.
 
@@ -282,14 +282,18 @@ def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path) -> 
         Four-digit year string.
     dest : Path
         Directory the cache file lives in.
+    suffix : str, default ``".nc"``
+        File extension for the cached download (including the leading dot).
+        Use ``".grib"`` when ``request["format"]`` (or ``"data_format"``) is
+        ``"grib"`` so the on-disk extension matches the actual content.
 
     Returns
     -------
     Path
-        Path of the form ``<dest>/_cds_<dataset>_<variables>_<year>.nc``.
+        Path of the form ``<dest>/_cds_<dataset>_<variables>_<year><suffix>``.
     """
     var_key = "_".join(sorted(request.get("variable", [])))
-    return dest / f"_cds_{dataset}_{var_key}_{year}.nc"
+    return dest / f"_cds_{dataset}_{var_key}_{year}{suffix}"
 
 
 def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: Path) -> Path:
@@ -305,12 +309,14 @@ def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: 
     dest : Path
         Directory in which to write the downloaded file.
     nc_path : Path
-        Final NetCDF cache path used when the server returns a NetCDF directly.
+        Final cache path used when the server returns the file directly. The
+        suffix of this path (``.nc`` or ``.grib``) is also used to filter
+        zip-archive contents.
 
     Returns
     -------
     Path
-        Path to the resulting NetCDF file (extracted from a ZIP if needed).
+        Path to the resulting file (extracted from a ZIP if needed).
     """
     results = remote.get_results()  # blocks until the job is finished
 
@@ -323,10 +329,11 @@ def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: 
 
     if str(dl_path).endswith(".zip"):
         extracted = extract_archive(dl_path, extract_to=dest / f"_cds_{year}", force_overwrite=True, verbose=False)
-        nc_files = [p for p in extracted if str(p).endswith(".nc")]
-        if nc_files:
-            return Path(nc_files[0])
-        raise FileNotFoundError(f"No NetCDF files found in archive for year {year}")
+        want_suffix = nc_path.suffix.lower()
+        matching = [p for p in extracted if str(p).lower().endswith(want_suffix)]
+        if matching:
+            return Path(matching[0])
+        raise FileNotFoundError(f"No '{want_suffix}' files found in archive for year {year}")
 
     return nc_path
 
@@ -341,6 +348,7 @@ def _cds_download_years(
     max_workers: int = 5,
     desc: str = "Downloading years",
     verbose: bool = True,
+    suffix: str = ".nc",
 ) -> list[Path]:
     """
     Download many CDS years using a submit-all-then-download pattern.
@@ -370,11 +378,14 @@ def _cds_download_years(
     verbose : bool, default True
         If True, show submission/heartbeat progress and CDS request IDs.
         Set False for quieter logs.
+    suffix : str, default ``".nc"``
+        File extension applied to per-year cache files. Pass ``".grib"`` when
+        the CDS request asks for GRIB so the on-disk extension is honest.
 
     Returns
     -------
     list of Path
-        Per-year NetCDF paths (in submission order). Failed years are logged
+        Per-year cache paths (in submission order). Failed years are logged
         and omitted.
     """
     # Phase 1: submit (or reuse cached) — sequential, no waiting
@@ -382,7 +393,7 @@ def _cds_download_years(
     cached: list[Path] = []
     submit_pbar = tqdm(years, desc="Submitting", unit="yr", disable=not verbose)
     for yr in submit_pbar:
-        nc_path = _cds_year_cache_path(dataset, request, yr, dest)
+        nc_path = _cds_year_cache_path(dataset, request, yr, dest, suffix=suffix)
         if nc_path.exists() and not force_overwrite:
             cached.append(nc_path)
             submit_pbar.set_postfix_str(f"{yr} cached")
@@ -490,6 +501,7 @@ def carra_download_request(
     """
 
     file_path = Path(file_path)
+    suffix = file_path.suffix or ".nc"
 
     client = _DatastoresClient()
 
@@ -510,6 +522,7 @@ def carra_download_request(
         carra2_path,
         force_overwrite=force_overwrite,
         max_workers=max_workers,
+        suffix=suffix,
     )
 
 

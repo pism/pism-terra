@@ -256,8 +256,6 @@ def prepare_carra2(
         **kwargs,  # pass the full CARRA request dict
     )
 
-    print(orography_files)
-
     precipitation_dataset = "reanalysis-pan-carra-means"
     precipitation_request = {
         "time_aggregation": "monthly",
@@ -464,6 +462,30 @@ def prepare_carra2(
             options=f"-f nc4 -z zip_2 -P {max_workers}",
             returnXDataset=True,
         )
+
+        # Attach CARRA's static orography (single-step single-level field).
+        # ``setgrid`` re-labels the native CARRA grid using the same descriptor
+        # the per-year batches use, so the orography lines up on (y, x).
+        orog_src = str(Path(orography_files[0]).resolve())
+        orog_nc = str((path / "orography.nc").resolve())
+        cdo.setgrid(
+            grid,
+            input=orog_src,
+            output=orog_nc,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+        orog_ds = xr.open_dataset(orog_nc)
+        orog_name = next(iter(orog_ds.data_vars))
+        orog = orog_ds[orog_name].squeeze(drop=True)
+        orog.attrs.update(
+            {
+                "standard_name": "surface_altitude",
+                "long_name": "surface altitude",
+                "units": "m",
+            }
+        )
+        ds["orography"] = orog
+
         ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
         ds = ds.rio.write_crs(CARRA2_PROJ).rio.write_grid_mapping("spatial_ref").rio.write_coordinate_system()
 
