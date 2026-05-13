@@ -632,7 +632,7 @@ def run_ensemble():
         uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
     uq_file = output_path / Path("uq.csv")
-    uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)
+    uq_df.rename(columns={"sample": "uq"}).to_csv(uq_file, index=False)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")

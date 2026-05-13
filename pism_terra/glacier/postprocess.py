@@ -100,7 +100,10 @@ def process_file(infile: str | Path, rgi_file: str | Path, client: Client):
     ds_clipped = xr.merge([ds_clipped, ds_non_spatial.drop_vars("spatial_ref", errors="ignore")])
     comp = {"zlib": True, "complevel": 1}
     encoding = {var: comp for var in ds_clipped.data_vars}
-    write_clipped = ds_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False, engine="h5netcdf")
+    # Note: h5netcdf write garbles dim names on PISM state files (mixed
+    # 3D z_sigma vars + 0-D string pism_config). Stay on the default netcdf4
+    # engine here even though that's slower.
+    write_clipped = ds_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False)
     future_clipped = client.compute(write_clipped)
     progress(future_clipped)
 
@@ -114,7 +117,7 @@ def process_file(infile: str | Path, rgi_file: str | Path, client: Client):
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].drop_vars("spatial_ref", errors="ignore").compute()])
     encoding_scalar = {var: comp for var in scalar.data_vars}
-    scalar.to_netcdf(scalar_file, encoding=encoding_scalar, engine="h5netcdf")
+    scalar.to_netcdf(scalar_file, encoding=encoding_scalar)
 
 
 def postprocess_glacier(config_file: str | Path, n_workers: int = 4):

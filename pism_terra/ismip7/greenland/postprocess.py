@@ -104,7 +104,10 @@ def process_file(
     logger.info("Writing %s", clipped_file)
     comp = {"zlib": True, "complevel": 2}
     encoding = {var: comp for var in gis_clipped.data_vars}
-    write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False, engine="h5netcdf")
+    # Note: h5netcdf write garbles dim names on PISM state files (mixed
+    # 3D z_sigma vars + 0-D string pism_config). Stay on the default netcdf4
+    # engine here even though that's slower.
+    write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False)
     future_clipped = client.compute(write_clipped)
     progress(future_clipped)
 
@@ -122,7 +125,7 @@ def process_file(
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
     encoding_scalar = {var: comp for var in scalar.data_vars}
-    scalar.to_netcdf(scalar_file, encoding=encoding_scalar, engine="h5netcdf")
+    scalar.to_netcdf(scalar_file, encoding=encoding_scalar)
 
     end = time.time()
     time_elapsed = end - start
