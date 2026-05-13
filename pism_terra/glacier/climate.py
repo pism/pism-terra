@@ -494,7 +494,11 @@ def prepare_carra2(
         ds["orography"] = orog
 
         ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
-        ds = ds.rio.write_crs(CARRA2_PROJ).rio.write_grid_mapping("spatial_ref").rio.write_coordinate_system()
+        ds = (
+            ds.rio.write_crs(CARRA2_PROJ, inplace=True)
+            .rio.write_grid_mapping("spatial_ref", inplace=True)
+            .rio.write_coordinate_system(inplace=True)
+        )
 
         ds.to_zarr(
             carra2_filename,
@@ -629,7 +633,12 @@ def prepare_carra2_for_group(
     # Reproject onto the group's target grid. At 2.5 km × a regional bbox the
     # full dataset fits comfortably in memory, so a single shot is fine.
     out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
-    out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
+    # inplace=True avoids deep-copying a multi-GiB dataset just to stamp metadata.
+    out = (
+        out.rio.write_crs(dst_crs, inplace=True)
+        .rio.write_grid_mapping(inplace=True)
+        .rio.write_coordinate_system(inplace=True)
+    )
     out.attrs["Conventions"] = "CF-1.8"
 
     # Clear stale encoding inherited from the Zarr source so netCDF4 doesn't
@@ -1260,7 +1269,12 @@ def carra2(
         Callback.active.update(saved_callbacks)
 
     # Re-attach CF grid_mapping after the reproject.
-    out = out.rio.write_crs(dst_crs).rio.write_grid_mapping().rio.write_coordinate_system()
+    # inplace=True avoids deep-copying a multi-GiB dataset just to stamp metadata.
+    out = (
+        out.rio.write_crs(dst_crs, inplace=True)
+        .rio.write_grid_mapping(inplace=True)
+        .rio.write_coordinate_system(inplace=True)
+    )
     out.attrs["Conventions"] = "CF-1.8"
 
     # Expand to all requested years (filling missing ones from the nearest
