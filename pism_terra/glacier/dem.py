@@ -333,6 +333,9 @@ def boot_file_from_grid(
         ftt_mask = xr.zeros_like(liafr)
     ftt_mask.name = "ftt_mask"
     ftt_mask.attrs.update({"units": "1"})
+    if "standard_name" in ftt_mask.attrs:
+        del ftt_mask.attrs["standard_name"]
+
     ftt_mask = ftt_mask.astype("bool")
 
     tillwat = xr.zeros_like(bed)
