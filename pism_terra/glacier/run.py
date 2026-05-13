@@ -631,7 +631,6 @@ def run_ensemble():
             uq_df = uq_df.drop(columns=duplicate_cols)
         uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
-    uq_file = output_path / Path("uq.csv")
     uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)
 
     f = Figlet(font="standard")
@@ -648,6 +647,9 @@ def run_ensemble():
     merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
     merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
     merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+
+    uq_file = output_path / Path("uq.csv")
+    merged_df.to_csv(uq_file)
     for idx, row in merged_df.iterrows():
         delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
