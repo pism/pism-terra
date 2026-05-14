@@ -1229,7 +1229,12 @@ def carra2(
 
     from dask.callbacks import Callback  # pylint: disable=import-outside-toplevel
 
-    time_batch = 24  # months per batch — tune down if memory is tight
+    # Size the per-batch reprojected buffer to ~200 MB. Each batch holds
+    # time_batch × target_y × target_x float32s in RAM after rasterio.warp,
+    # so the cap matters most for high-res, wide-bbox runs like S4F aggregates.
+    target_cells = int(target_grid.sizes["x"]) * int(target_grid.sizes["y"])
+    time_batch = max(1, min(24, 200_000_000 // (target_cells * 4)))
+    print(f"  target_grid: {dict(target_grid.sizes)}, time_batch={time_batch}", flush=True)
     out_vars: dict[str, xr.DataArray] = {}
     saved_callbacks = Callback.active.copy()
     Callback.active.clear()
@@ -1238,6 +1243,7 @@ def carra2(
             tmp_dir = Path(tmp_dir_name)
             for var_name in sub.data_vars:
                 da = sub[var_name]
+                print(f"  processing {var_name} dims={dict(da.sizes)}", flush=True)
                 if "time" not in da.dims or da.sizes["time"] <= time_batch:
                     out_vars[var_name] = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype(
                         "float32"
