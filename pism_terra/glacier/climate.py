@@ -1132,12 +1132,14 @@ def carra2(
         storage_options={"anon": True},
         chunks={},
     )
+    print(f"  opened zarr: vars={list(ds.data_vars)}, dims={dict(ds.sizes)}", flush=True)
 
     # Make sure rioxarray knows which dims are spatial and what the CRS is.
+    # inplace=True avoids deep-copying the full lazy zarr just to stamp metadata.
     if "x" in ds.dims and "y" in ds.dims:
-        ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
+        ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
     elif "lon" in ds.dims and "lat" in ds.dims:
-        ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+        ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
 
     # Recover CRS from whichever grid-mapping variable the Zarr writer used.
     # CARRA2 stores it as a *data variable* (not a coord) named "crs"; other
@@ -1163,7 +1165,9 @@ def carra2(
                 f"Could not recover a CRS from the CARRA2 Zarr store at {uri}. "
                 f"Variables present: {list(ds.variables)}"
             )
-        ds = ds.rio.write_crs(crs_wkt)
+        # inplace=True avoids a deep copy of the full lazy zarr.
+        ds.rio.write_crs(crs_wkt, inplace=True)
+    print(f"  CRS resolved: {ds.rio.crs}", flush=True)
 
     # Transform the target bbox into CARRA2 coordinates and clip there.
     # Use .sel(x=slice, y=slice) instead of rio.clip_box because the latter
@@ -1177,6 +1181,7 @@ def carra2(
         x=slice(minx, maxx) if x_ascending else slice(maxx, minx),
         y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
     )
+    print(f"  subset dims: {dict(sub.sizes)}", flush=True)
 
     # rioxarray.reproject_match eagerly reads every non-spatial coord (via
     # ``coord.values``). The published CARRA2 Zarr has at least one coord
