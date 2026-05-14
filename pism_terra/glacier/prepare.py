@@ -63,7 +63,10 @@ from pism_terra.glacier.climate import (
     prepare_carra2_for_group,
     prepare_snap,
 )
-from pism_terra.glacier.ice_thickness import prepare_ice_thickness_maffezzoli
+from pism_terra.glacier.ice_thickness import (
+    prepare_ice_thickness_frank,
+    prepare_ice_thickness_maffezzoli,
+)
 from pism_terra.glacier.rgi import prepare_rgi
 from pism_terra.log import setup_logging
 from pism_terra.vector import glaciers_in_complex
@@ -206,13 +209,31 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
         num_threads="ALL_CPUS",
     )
 
+    # https://springernature.figshare.com/ndownloader/articles/29940932/versions/1
+    # https://springernature.figshare.com/ndownloader/files/57288257
+
     # --- Ice thickness ---
     ice_thickness_path = glacier_path / Path("ice_thickness")
     ice_thickness_path.mkdir(parents=True, exist_ok=True)
-    maffezzoli_path = ice_thickness_path / Path("maffezzoli")
-    maffezzoli_path.mkdir(parents=True, exist_ok=True)
     ice_thickness_staging = staging_path / Path("ice_thickness")
     ice_thickness_staging.mkdir(parents=True, exist_ok=True)
+
+    frank_path = ice_thickness_path / Path("frank")
+    frank_path.mkdir(parents=True, exist_ok=True)
+
+    prepare_ice_thickness_frank(
+        regions.index,
+        complexes=complexes,
+        glaciers=glaciers,
+        output_path=frank_path,
+        extract_path=ice_thickness_staging,
+        rgi_extract_path=rgi_staging,
+        force_overwrite=force_overwrite,
+        ntasks=ntasks,
+    )
+
+    maffezzoli_path = ice_thickness_path / Path("maffezzoli")
+    maffezzoli_path.mkdir(parents=True, exist_ok=True)
 
     prepare_ice_thickness_maffezzoli(
         regions.index,

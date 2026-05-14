@@ -66,6 +66,336 @@ def get_maffezzoli_url(url_template: str, region: str) -> str:
     return url_template.format(region=region)
 
 
+def _load_rgi6_links(rgi_extract_path: Path) -> pd.DataFrame:
+    """
+    Build a global RGI6 → RGI7-G ID lookup from RGI7 G-archive link CSVs.
+
+    Each RGI7 G regional zip ships a ``*-rgi6_links.csv`` that maps RGI7
+    glacier IDs (``RGI2000-v7.0-G-XX-YYYYY``) to their RGI6 counterparts
+    (``RGI60-XX.YYYYY``). This helper finds every such CSV under
+    *rgi_extract_path*, normalizes the column names, and returns a single
+    concatenated DataFrame with columns ``rgi_id`` (RGI7) and ``rgi6_id``.
+
+    Parameters
+    ----------
+    rgi_extract_path : pathlib.Path
+        Directory containing extracted RGI7 G archives. Searched recursively
+        for files matching ``*rgi6_links*.csv``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Two-column frame ``["rgi_id", "rgi6_id"]``. Rows with missing IDs are
+        dropped. Empty if no link files are found.
+    """
+    csvs = sorted(rgi_extract_path.rglob("*rgi6_links*.csv"))
+    if not csvs:
+        return pd.DataFrame(columns=["rgi_id", "rgi6_id"])
+
+    # Column names vary across RGI7 releases; accept the common spellings.
+    rgi7_aliases = ["rgi_id", "rgi7_id", "rgi70_id", "RGIId", "rgi_id_v7"]
+    rgi6_aliases = ["rgi6_id", "rgi60_id", "RGIId_v6", "rgi_id_v6", "v6_id"]
+
+    frames = []
+    for csv in csvs:
+        df = pd.read_csv(csv)
+        rgi7_col = next((c for c in rgi7_aliases if c in df.columns), None)
+        rgi6_col = next((c for c in rgi6_aliases if c in df.columns), None)
+        if rgi7_col is None or rgi6_col is None:
+            logger.warning(
+                "rgi6_links file %s has unexpected columns %s; skipping",
+                csv,
+                list(df.columns),
+            )
+            continue
+        frames.append(df[[rgi7_col, rgi6_col]].rename(columns={rgi7_col: "rgi_id", rgi6_col: "rgi6_id"}))
+
+    if not frames:
+        return pd.DataFrame(columns=["rgi_id", "rgi6_id"])
+
+    links = pd.concat(frames, ignore_index=True)
+    links = links.dropna(subset=["rgi_id", "rgi6_id"])
+    links["rgi_id"] = links["rgi_id"].astype(str)
+    links["rgi6_id"] = links["rgi6_id"].astype(str)
+    return links
+
+
+def prepare_ice_thickness_frank(
+    regions: list,
+    complexes: gpd.GeoDataFrame,
+    glaciers: gpd.GeoDataFrame,
+    output_path: Path | str,
+    extract_path: Path | str,
+    rgi_extract_path: Path | str | None = None,
+    ntasks: int = 8,
+    force_overwrite: bool = False,
+):
+    """
+    Download Frank et al. ice thickness and merge into RGI7 complex rasters.
+
+    The Frank dataset is keyed on RGI6 glacier IDs; this routine pulls the
+    single Figshare archive, then uses the per-region ``rgi6_links.csv``
+    files from RGI7 to remap each RGI6 ``.tif`` to its parent RGI7 complex
+    (and, where applicable, to study-area aggregates) before mosaicking.
+
+    Parameters
+    ----------
+    regions : list
+        Region codes (e.g. ``["01", "06"]``).
+    complexes : geopandas.GeoDataFrame
+        Complex outlines with ``rgi_id``, ``crs``, and (for regular complexes)
+        ``o1region``. Aggregates (no ``o1region``) are merged in a second pass.
+    glaciers : geopandas.GeoDataFrame
+        Glacier outlines with ``rgi_id``, ``rgi_id_c``, ``o1region``, and
+        (optionally) ``rgi_id_c_aggregate``.
+    output_path : Path or str
+        Root directory for the per-complex / per-aggregate output rasters.
+    extract_path : Path or str
+        Working directory for the Frank archive (``Thk.zip``) and its
+        extracted per-RGI6 ``.tif`` files.
+    rgi_extract_path : Path or str or None, optional
+        Directory containing extracted RGI7 G archives (with their
+        ``*-rgi6_links.csv`` files). If ``None``, defaults to *extract_path*'s
+        sibling ``rgi`` directory (matching the layout produced by
+        :func:`prepare_rgi`).
+    ntasks : int, default 8
+        Maximum number of parallel workers for the merge phases.
+    force_overwrite : bool, default False
+        If True, re-download / re-extract / re-merge.
+    """
+
+    # Frank et al. (2025) global glacier ice thickness — single archive at
+    # Springer Nature Figshare (file id 57288257), RGI6-keyed per-glacier tifs.
+    url: str = "https://springernature.figshare.com/ndownloader/files/57288257"
+    extract_path = Path(extract_path)
+    output_path = Path(output_path)
+    extract_path.mkdir(parents=True, exist_ok=True)
+
+    # Resolve where RGI7 G archives (with rgi6_links CSVs) were extracted.
+    if rgi_extract_path is None:
+        rgi_extract_path = extract_path.parent / "rgi"
+    rgi_extract_path = Path(rgi_extract_path)
+
+    archive_dest = extract_path / "Thk.zip"
+    logger.info("Downloading Frank ice thickness from %s", url)
+    archive = download_archive(url, dest=archive_dest, force_overwrite=force_overwrite, verbose=True)
+
+    frank_dir = extract_path / "frank"
+    frank_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Extracting %s into %s", archive, frank_dir)
+    extract_archive(archive, frank_dir, force_overwrite=force_overwrite, verbose=True)
+
+    # Build RGI6 -> RGI7-G mapping from the link CSVs the RGI7 release ships.
+    links = _load_rgi6_links(rgi_extract_path)
+    if links.empty:
+        logger.error(
+            "No RGI6 -> RGI7 link tables found under %s. "
+            "Frank merge cannot proceed without the rgi6_links.csv files.",
+            rgi_extract_path,
+        )
+        return
+    logger.info("Loaded %d RGI6 -> RGI7-G links from %s", len(links), rgi_extract_path)
+
+    # Index the extracted Frank tifs by RGI6 ID so the lookup is O(1) per
+    # glacier rather than re-walking the directory each time.
+    frank_tifs: dict[str, Path] = {p.stem: p for p in frank_dir.rglob("RGI60-*.tif")}
+    if not frank_tifs:
+        logger.error("No RGI60-*.tif files found under %s after extraction", frank_dir)
+        return
+    logger.info("Indexed %d Frank per-glacier tifs", len(frank_tifs))
+
+    # Attach the parent complex (rgi_id_c) and o1region to each RGI6 row.
+    glacier_keys = glaciers[["rgi_id", "rgi_id_c", "o1region"]].copy()
+    rgi6_to_complex = links.merge(glacier_keys, on="rgi_id", how="inner")
+    rgi6_to_complex = rgi6_to_complex.dropna(subset=["rgi_id_c"])
+    logger.info("Resolved %d RGI6 glaciers to RGI7 complexes", len(rgi6_to_complex))
+
+    def _reproject_and_merge(input_files, dst_crs, output_file, tmp_label):
+        """
+        Reproject inputs to ``dst_crs`` and write their mosaic to ``output_file``.
+
+        Parameters
+        ----------
+        input_files : list[Path]
+            Source GeoTIFFs to merge.
+        dst_crs : str
+            Target CRS string (e.g. ``"EPSG:32606"``).
+        output_file : Path
+            Target path for the merged GeoTIFF.
+        tmp_label : str
+            Label embedded in temporary reproject filenames so concurrent
+            tasks operating on the same source raster don't collide.
+
+        Returns
+        -------
+        Path
+            ``output_file`` on success.
+        """
+        reprojected: list[Path] = []
+        for fpath in input_files:
+            with rasterio.open(fpath) as src:
+                if src.crs == rasterio.crs.CRS.from_user_input(dst_crs):
+                    reprojected.append(fpath)
+                    continue
+                transform, width, height = calculate_default_transform(
+                    src.crs, dst_crs, src.width, src.height, *src.bounds
+                )
+                meta = src.meta.copy()
+                meta.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+                tmp_path = fpath.parent / f"{fpath.stem}__{tmp_label}_reproj.tif"
+                with rasterio.open(tmp_path, "w", **meta) as dst:
+                    reproject(
+                        source=rasterio.band(src, 1),
+                        destination=rasterio.band(dst, 1),
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=dst_crs,
+                        resampling=Resampling.bilinear,
+                    )
+                reprojected.append(tmp_path)
+
+        mosaic, out_transform = merge(reprojected)
+        with rasterio.open(reprojected[0]) as src:
+            out_meta = src.meta.copy()
+        predictor = 3 if np.issubdtype(mosaic.dtype, np.floating) else 2
+        out_meta.update(
+            {
+                "driver": "COG",
+                "height": mosaic.shape[1],
+                "width": mosaic.shape[2],
+                "transform": out_transform,
+                "compress": "DEFLATE",
+                "predictor": predictor,
+                "level": 6,
+                "blocksize": 512,
+                "overview_resampling": "AVERAGE",
+                "BIGTIFF": "YES",
+                "num_threads": "ALL_CPUS",
+            }
+        )
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(output_file, "w", **out_meta) as dest:
+            dest.write(mosaic)
+
+        for fpath in reprojected:
+            if fpath.stem.endswith("_reproj"):
+                fpath.unlink(missing_ok=True)
+        return output_file
+
+    def _merge_complex(rgi_c_id, o1region, dst_crs):
+        """
+        Mosaic Frank rasters for every RGI6 glacier inside one RGI7 complex.
+
+        Parameters
+        ----------
+        rgi_c_id : str
+            RGI7 complex identifier (e.g. ``"RGI2000-v7.0-C-01-09429"``).
+        o1region : str or int
+            Region code of the complex; used to build the output subdirectory.
+        dst_crs : str
+            Target CRS string for the merged output (e.g. ``"EPSG:32606"``).
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged GeoTIFF, or ``None`` if no Frank rasters
+            resolved to this complex.
+        """
+        rgi6_ids = rgi6_to_complex.loc[rgi6_to_complex["rgi_id_c"] == rgi_c_id, "rgi6_id"].unique()
+        files = [frank_tifs[r] for r in rgi6_ids if r in frank_tifs]
+        if not files:
+            logger.debug("No Frank rasters resolved for complex %s", rgi_c_id)
+            return None
+        merged_path = output_path / Path(f"RGI2000-v7.0-C-{str(o1region).zfill(2)}")
+        merged_file = merged_path / Path(f"{rgi_c_id}_thickness.tif")
+        return _reproject_and_merge(files, dst_crs, merged_file, rgi_c_id)
+
+    def _merge_aggregate(agg_id, dst_crs):
+        """
+        Mosaic the phase-1 per-complex outputs for an aggregate (e.g. ``S4F_AK``).
+
+        Parameters
+        ----------
+        agg_id : str
+            Aggregate identifier (e.g. ``"S4F_AK"``).
+        dst_crs : str
+            Target CRS string for the merged output.
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged aggregate GeoTIFF, or ``None`` if no parent
+            phase-1 thickness files were found.
+        """
+        agg_col = glaciers.get("rgi_id_c_aggregate")
+        if agg_col is None:
+            return None
+        sel = agg_col.fillna("").str.split(";").apply(lambda parts: agg_id in parts)
+        parent_ids = glaciers.loc[sel, "rgi_id_c"].dropna().unique()
+        if len(parent_ids) == 0:
+            logger.debug("No parent complexes resolved for aggregate %s", agg_id)
+            return None
+        parent_files: list[Path] = []
+        for parent_id in parent_ids:
+            for o1_dir in output_path.glob("RGI2000-v7.0-C-*"):
+                p = o1_dir / f"{parent_id}_thickness.tif"
+                if p.exists():
+                    parent_files.append(p)
+                    break
+        if not parent_files:
+            logger.debug("No phase-1 thickness files for aggregate %s", agg_id)
+            return None
+        merged_file = output_path / Path(agg_id) / Path(f"{agg_id}_thickness.tif")
+        return _reproject_and_merge(parent_files, dst_crs, merged_file, agg_id)
+
+    # Same two-phase scheduling as Maffezzoli: regular complexes first
+    # (they only depend on the Frank tifs), then aggregates (which depend
+    # on the phase-1 per-complex outputs).
+    regular_tasks: list[tuple[str, object, str]] = []
+    aggregate_tasks: list[tuple[str, str]] = []
+    for _, row in complexes.iterrows():
+        crs_value = row.get("crs")
+        if not isinstance(crs_value, str) or not crs_value:
+            logger.warning("Complex %s has no CRS; skipping", row["rgi_id"])
+            continue
+        if pd.notna(row.get("o1region")):
+            regular_tasks.append((row["rgi_id"], row.get("o1region"), crs_value))
+        else:
+            aggregate_tasks.append((row["rgi_id"], crs_value))
+
+    failed: list[tuple[str, Exception]] = []
+    if regular_tasks:
+        with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(regular_tasks)))) as executor:
+            futures = {
+                executor.submit(_merge_complex, rgi_c_id, o1region, dst_crs): rgi_c_id
+                for rgi_c_id, o1region, dst_crs in regular_tasks
+            }
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging Frank thickness"):
+                rgi_c_id = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed.append((rgi_c_id, exc))
+
+    if aggregate_tasks:
+        with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(aggregate_tasks)))) as executor:
+            futures = {
+                executor.submit(_merge_aggregate, agg_id, dst_crs): agg_id for agg_id, dst_crs in aggregate_tasks
+            }
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging Frank aggregates"):
+                agg_id = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed.append((agg_id, exc))
+
+    for rgi_c_id, err in failed:
+        logger.error("Failed merging %s: %s", rgi_c_id, err)
+    logger.info("Frank ice thickness merging complete")
+    _ = regions  # listed for parity with the Maffezzoli signature
+
+
 def prepare_ice_thickness_maffezzoli(
     regions: list,
     complexes: gpd.GeoDataFrame,
