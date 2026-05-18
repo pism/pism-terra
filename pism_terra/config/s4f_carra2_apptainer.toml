@@ -198,6 +198,7 @@ model = "constant"
 'ocean.given.periodic' = "yes"
 
 [ocean.options.constant]
+
 'ocean.models' = 'constant'
 'ocean.constant.melt_rate' = 0.0
 
@@ -205,7 +206,9 @@ model = "constant"
 
 model = "null"
 
-[hydrology.options]
+[hydrology.options.null]
+
+'hydrology.null_diffuse_till_water' = "no"
 
 [frontal_melt]
 

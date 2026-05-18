@@ -181,34 +181,6 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     complexes = gpd.read_file(rgi_files["rgi_complexes"])
     glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
 
-    # --- GEBCO ---
-    # Source NetCDF download lands in staging; only the COG goes to glacier/.
-    gebco_path = glacier_path / Path("gebco")
-    gebco_path.mkdir(parents=True, exist_ok=True)
-    gebco_staging = staging_path / Path("gebco")
-    gebco_staging.mkdir(parents=True, exist_ok=True)
-    gebco_nc = download_gebco(target_dir=gebco_staging)
-    cog_gebco_p = gebco_path / Path("bathymetry.tif")
-
-    # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
-    # geotransform; rxr.open_rasterio treats netCDF as a generic raster and
-    # loses the georeferencing.
-    ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
-    da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
-    if da.rio.crs is None:
-        da = da.rio.write_crs("EPSG:4326")
-    predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
-    da.rio.to_raster(
-        cog_gebco_p,
-        driver="COG",
-        compress="DEFLATE",
-        predictor=predictor,
-        blocksize=512,
-        bigtiff="YES",
-        overview_resampling="AVERAGE",
-        num_threads="ALL_CPUS",
-    )
-
     # https://springernature.figshare.com/ndownloader/articles/29940932/versions/1
     # https://springernature.figshare.com/ndownloader/files/57288257
 
@@ -243,6 +215,34 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
         extract_path=ice_thickness_staging,
         force_overwrite=force_overwrite,
         ntasks=ntasks,
+    )
+
+    # --- GEBCO ---
+    # Source NetCDF download lands in staging; only the COG goes to glacier/.
+    gebco_path = glacier_path / Path("gebco")
+    gebco_path.mkdir(parents=True, exist_ok=True)
+    gebco_staging = staging_path / Path("gebco")
+    gebco_staging.mkdir(parents=True, exist_ok=True)
+    gebco_nc = download_gebco(target_dir=gebco_staging)
+    cog_gebco_p = gebco_path / Path("bathymetry.tif")
+
+    # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
+    # geotransform; rxr.open_rasterio treats netCDF as a generic raster and
+    # loses the georeferencing.
+    ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
+    da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+    if da.rio.crs is None:
+        da = da.rio.write_crs("EPSG:4326")
+    predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
+    da.rio.to_raster(
+        cog_gebco_p,
+        driver="COG",
+        compress="DEFLATE",
+        predictor=predictor,
+        blocksize=512,
+        bigtiff="YES",
+        overview_resampling="AVERAGE",
+        num_threads="ALL_CPUS",
     )
 
     # --- Climate (CARRA2) ---
@@ -381,6 +381,39 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
     complexes = gpd.read_file(rgi_files["rgi_complexes"])
     glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
 
+    # --- Ice thickness ---
+    ice_thickness_path = glacier_path / Path("ice_thickness")
+    ice_thickness_path.mkdir(parents=True, exist_ok=True)
+    ice_thickness_staging = staging_path / Path("ice_thickness")
+    ice_thickness_staging.mkdir(parents=True, exist_ok=True)
+
+    frank_path = ice_thickness_path / Path("frank")
+    frank_path.mkdir(parents=True, exist_ok=True)
+
+    prepare_ice_thickness_frank(
+        regions.index,
+        complexes=complexes,
+        glaciers=glaciers,
+        output_path=frank_path,
+        extract_path=ice_thickness_staging,
+        rgi_extract_path=rgi_staging,
+        force_overwrite=force_overwrite,
+        ntasks=ntasks,
+    )
+
+    maffezzoli_path = ice_thickness_path / Path("maffezzoli")
+    maffezzoli_path.mkdir(parents=True, exist_ok=True)
+
+    prepare_ice_thickness_maffezzoli(
+        regions.index,
+        complexes=complexes,
+        glaciers=glaciers,
+        output_path=maffezzoli_path,
+        extract_path=ice_thickness_staging,
+        force_overwrite=force_overwrite,
+        ntasks=ntasks,
+    )
+
     # --- GEBCO ---
     # Source NetCDF download lands in staging; only the COG goes to glacier/.
     gebco_path = glacier_path / Path("gebco")
@@ -407,24 +440,6 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
         bigtiff="YES",
         overview_resampling="AVERAGE",
         num_threads="ALL_CPUS",
-    )
-
-    # --- Ice thickness ---
-    ice_thickness_path = glacier_path / Path("ice_thickness")
-    ice_thickness_path.mkdir(parents=True, exist_ok=True)
-    maffezzoli_path = ice_thickness_path / Path("maffezzoli")
-    maffezzoli_path.mkdir(parents=True, exist_ok=True)
-    ice_thickness_staging = staging_path / Path("ice_thickness")
-    ice_thickness_staging.mkdir(parents=True, exist_ok=True)
-
-    prepare_ice_thickness_maffezzoli(
-        regions.index,
-        complexes=complexes,
-        glaciers=glaciers,
-        output_path=maffezzoli_path,
-        extract_path=ice_thickness_staging,
-        force_overwrite=force_overwrite,
-        ntasks=ntasks,
     )
 
     return rgi_files

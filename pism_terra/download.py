@@ -749,8 +749,20 @@ def download_archive(
     response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
 
+    # ``raise_for_status`` only flags 4xx/5xx. AWS WAF anti-bot challenges
+    # return 200/202 with an empty body and no actual archive — guard against
+    # writing a zero-byte file that downstream zip/tar tools fail to open
+    # with a misleading "not a zip file" error.
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Unexpected HTTP {response.status_code} downloading {url}; "
+            f"WAF action: {response.headers.get('x-amzn-waf-action', 'none')}. "
+            "Try a manual browser download."
+        )
+
     total_size = int(response.headers.get("Content-Length", 0))
 
+    written = 0
     with (
         open(dest, "wb") as f,
         tqdm(
@@ -764,7 +776,14 @@ def download_archive(
     ):
         for chunk in response.iter_content(chunk_size=8192):
             f.write(chunk)
+            written += len(chunk)
             pbar.update(len(chunk))
+
+    if written == 0:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Downloaded zero bytes from {url}; aborting so downstream tools " "don't fail on a corrupt cache."
+        )
 
     return dest
 

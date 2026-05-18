@@ -131,6 +131,16 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
     - Missing values are represented using a mask (`masked=True`).
     - Coordinate metadata and CRS are read from the VRT headers.
     """
+    # Per-component CF metadata. Everything in this VRT family is m/yr except
+    # the integer ``landice`` mask.
+    component_attrs = {
+        "v": {"units": "m year^-1", "long_name": "ice speed"},
+        "vx": {"units": "m year^-1", "long_name": "x component of ice velocity"},
+        "vy": {"units": "m year^-1", "long_name": "y component of ice velocity"},
+        "vx_error": {"units": "m year^-1", "long_name": "x component error"},
+        "vy_error": {"units": "m year^-1", "long_name": "y component error"},
+        "landice": {"units": "1", "long_name": "land ice mask (1=ice)"},
+    }
     dss = []
     for c in components:
         url = f"""https://its-live-data.s3-us-west-2.amazonaws.com/velocity_mosaic/v2/static/cog_global/ITS_LIVE_velocity_120m_0000_v02_{c}.vrt"""
@@ -140,7 +150,10 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
             .drop_vars("band")
         )
         _ds.name = c
-        _ds.attrs.update({"units": "m year^-1"})
+        # Drop junk band-level attrs that rioxarray surfaces from the COG.
+        for k in ("scale_factor", "add_offset", "AREA_OR_POINT", "_FillValue"):
+            _ds.attrs.pop(k, None)
+        _ds.attrs.update(component_attrs.get(c, {}))
         dss.append(_ds)
 
     ds = xr.merge(dss, compat="no_conflicts")
@@ -265,6 +278,11 @@ def glacier_velocities_from_grid(
         ds_clipped = ds.rio.reproject_match(target_grid, resampling=Resampling.bilinear).rio.clip(
             geometries, drop=False
         )
+        # Snapshot ITS_LIVE's coverage from the reprojected/clipped ``v`` before
+        # we overwrite ``vx``/``vy``/``v`` with the finite-difference field
+        # (which is finite everywhere on the mesh and so erases the original
+        # NaN pattern that the masks below depend on).
+        v_missing = ds_clipped["v"].isnull().copy()
         ds_clipped["vx"].values = vx
         ds_clipped["vy"].values = vy
 
@@ -283,11 +301,52 @@ def glacier_velocities_from_grid(
         ds_clipped["v"].values = (ds_clipped["vx"].values ** 2 + ds_clipped["vy"].values ** 2) ** 0.5
         ds_clipped["u_observed"] = ds_clipped["vx"].fillna(0)
         ds_clipped["v_observed"] = ds_clipped["vy"].fillna(0)
+
         # Ensure y is strictly increasing (PISM requires this for regridding)
         if ds_clipped.y[0] > ds_clipped.y[-1]:
             ds_clipped = ds_clipped.sortby("y")
-        # Compute mask after reprojection so edge NaNs are captured
-        ds_clipped["zeta_fixed_mask"] = xr.where(ds_clipped["v"].isnull(), 1, 0).fillna(0).astype(int)
+        # Use the snapshotted null pattern from the reprojected ITS_LIVE ``v``
+        # (before the finite-difference overwrite). ``sortby`` above reorders
+        # rows in ds_clipped but ``v_missing`` was taken before that, so
+        # re-align by sorting it the same way.
+        if v_missing.y[0] > v_missing.y[-1]:
+            v_missing = v_missing.sortby("y")
+        ds_clipped["zeta_fixed_mask"] = xr.where(v_missing, 1, 0).fillna(0).astype(int)
+        ds_clipped["vel_misfit_weight"] = xr.where(v_missing, 0, 1).fillna(0).astype(int)
+        ds_clipped["vel_misfit_weight"].attrs.update(
+            {"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"}
+        )
+        ds_clipped["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "fixed zeta mask (1=no obs, fix prior)"})
+
+        # Stamp CF metadata on the projected x/y coords (lost across some
+        # rioxarray ops) and suppress the default ``_FillValue=NaN`` netCDF4
+        # writes onto coordinate variables.
+        ds_clipped["x"].attrs.update(
+            {
+                "standard_name": "projection_x_coordinate",
+                "long_name": "x coordinate of projection",
+                "units": "m",
+                "axis": "X",
+            }
+        )
+        ds_clipped["y"].attrs.update(
+            {
+                "standard_name": "projection_y_coordinate",
+                "long_name": "y coordinate of projection",
+                "units": "m",
+                "axis": "Y",
+            }
+        )
+        ds_clipped["x"].encoding["_FillValue"] = None
+        ds_clipped["y"].encoding["_FillValue"] = None
+
+        # Strip junk band metadata that rioxarray inherited from the source
+        # COGs and propagated through reprojection.
+        for name in ds_clipped.data_vars:
+            for k in ("scale_factor", "add_offset", "AREA_OR_POINT"):
+                ds_clipped[name].attrs.pop(k, None)
+                ds_clipped[name].encoding.pop(k, None)
+
         ds_clipped.to_netcdf(path)
 
     else:
