@@ -400,17 +400,14 @@ def run_single():
     parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
-        nargs="?",
     )
     parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
-        nargs="?",
     )
     parser.add_argument(
         "TEMPLATE_FILE",
         help="TEMPLATE J2.",
-        nargs="?",
     )
 
     options = parser.parse_args()
@@ -566,22 +563,18 @@ def run_ensemble():
     parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
-        nargs="?",
     )
     parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
-        nargs="?",
     )
     parser.add_argument(
         "TEMPLATE_FILE",
         help="TEMPLATE J2.",
-        nargs="?",
     )
     parser.add_argument(
         "UQ_FILE",
         help="UQ TOML.",
-        nargs="?",
     )
 
     options = parser.parse_args()
