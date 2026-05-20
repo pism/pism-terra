@@ -1494,6 +1494,182 @@ def era5(
     return era5_filename
 
 
+def era5_mean(
+    target_grid: xr.Dataset,
+    rgi_id: str,
+    years: list[int] | Iterable[int] = range(1978, 2025),
+    dataset: str = "reanalysis-era5-land-monthly-means",
+    path: Path | str = ".",
+    **kwargs,
+) -> Path:
+    """
+    Download monthly ERA5 reanalysis over a glacier bounding box and write a NetCDF.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        Target grid dataset providing the destination CRS (via ``spatial_ref``)
+        and extent. Used to derive the geographic bounding box for the ERA5
+        request.
+    rgi_id : str
+        Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
+        output filename.
+    years : list of int or Iterable of int, default ``range(1978, 2025)``
+        Years to request from ERA5.
+    dataset : str, default ``"reanalysis-era5-land-monthly-means"``
+        CDS dataset name for monthly single-level means (ERA5). Adjust if you
+        intend to query ERA5-Land or other products.
+    path : str or pathlib.Path, default ``"."``
+        Output directory or filename base. The function writes a file named
+        ``era5_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
+        otherwise the provided filename is used.
+    **kwargs
+        Additional keyword arguments forwarded to :func:`download_request`
+        (e.g., alternate ``variable`` sequences, custom authentication/session
+        options, or client settings). These are passed unchanged to the CDS
+        retrieval helper.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path to the written NetCDF file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the provided RGI path is missing.
+    ValueError
+        If the glacier ID cannot be found or the geometry is invalid.
+    Exception
+        Any errors propagated from the CDS request, reprojection, or I/O.
+
+    See Also
+    --------
+    download_request
+        Helper that performs the CDS API query and returns an xarray object.
+    geopandas.read_file
+        Load the RGI vector layer from disk.
+    xarray.Dataset.rio.write_crs
+        Record CRS on xarray objects via rioxarray.
+
+    Notes
+    -----
+    - Output variables:
+      - ``air_temp`` (K) from ERA5 ``t2m``.
+      - ``precipitation`` (kg m^-2 day^-1) from ERA5 ``tp`` (converted).
+      - ``surface`` (m) derived from ERA5 ``z`` / 9.80665 (geopotential → meters).
+    - ``time_bounds`` are added for CF-style climatological metadata.
+    - If missing values are detected in the regional subset, the function
+      patches them from the global reanalysis (same period).
+    """
+    path = Path(path)
+
+    print("")
+    print("Generate historical climate")
+    print("-" * 120)
+
+    era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
+
+    _ = years
+    years = [1978]
+
+    bounds = [
+        target_grid.x_bnds.values[0][0],
+        target_grid.y_bnds.values[0][0],
+        target_grid.x_bnds.values[-1][-1],
+        target_grid.y_bnds.values[-1][-1],
+    ]
+    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    t = Transformer.from_crs(dst_crs, "EPSG:4326")
+    area = t.transform_bounds(*bounds)
+
+    print(f"Bounding box {area}")
+
+    era5_files = []
+    era5_filename_1 = path / Path(f"era5_wgs84_{rgi_id}_tmp_1.nc")
+    era5_files.append(era5_filename_1)
+    ds = download_request(dataset, area, years, file_path=era5_filename_1, **kwargs)
+
+    era5_filename_2 = path / Path(f"era5_wgs84_{rgi_id}_tmp_2.nc")
+    era5_files.append(era5_filename_2)
+    ds_geo = (
+        download_request(
+            dataset,
+            area,
+            [2013],
+            variable=["geopotential"],
+            file_path=era5_filename_2,
+            **kwargs,
+        )
+        .squeeze()
+        .drop_vars("time", errors="ignore")
+    )
+    ds_geo_ = (
+        ds_geo.rio.write_crs("EPSG:4326")
+        .rio.reproject_match(ds, resampling=Resampling.bilinear)
+        .rename({"x": "longitude", "y": "latitude"})
+    )
+
+    lon_attrs = ds["longitude"].attrs
+    lat_attrs = ds["latitude"].attrs
+
+    if bool(ds.to_array().isnull().any().item()):
+        print("Missing values detected, filling with global reanalysis")
+        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
+        era5_files.append(era5_filename_3)
+        ds_global = download_request(
+            "reanalysis-era5-single-levels-monthly-means",
+            area,
+            years,
+            file_path=era5_filename_3,
+            **kwargs,
+        )
+        ds_global_ = (
+            ds_global.rio.write_crs("EPSG:4326")
+            .rio.reproject_match(ds, resampling=Resampling.bilinear)
+            .rename({"x": "longitude", "y": "latitude"})
+        )
+        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
+        for v in common_vars:
+            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+
+    ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
+    # Time-mean snapshot, but preserve a length-1 ``time`` dim anchored at the
+    # midpoint of the source range. ERA5 monthly stamps are first-of-month, so
+    # the climatology covers ``[min(src), max(src) + 1 month)``.
+    renamed = ds.rename({"valid_time": "time"})
+    src_times = renamed["time"].values
+    midpoint = renamed["time"].mean().values
+    src_lo = src_times.min()
+    src_hi = (pd.Timestamp(src_times.max()) + pd.offsets.MonthBegin(1)).to_datetime64()
+    ds = renamed.mean(dim="time", keep_attrs=True).expand_dims(time=[midpoint])
+
+    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
+    ds["surface"] /= 9.80665
+    ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
+    ds["precipitation"] *= 1000
+    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
+    ds["air_temp"].attrs.update({"units": "kelvin"})
+    ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
+    ds["time"].encoding["calendar"] = "standard"
+    ds["longitude"].attrs = lon_attrs
+    ds["latitude"].attrs = lat_attrs
+    ds.rio.write_crs("EPSG:4326", inplace=True)
+    for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
+        if name in ds:
+            ds[name].encoding.update({"_FillValue": None})
+
+    # Length-1 climatology: write bounds spanning the source range directly
+    # (add_time_bounds builds N-1 pairs and would empty a single-step series).
+    ds["time_bounds"] = xr.DataArray(
+        np.array([[src_lo, src_hi]]), dims=("time", "nv")
+    )
+    ds["time"].attrs["bounds"] = "time_bounds"
+    ds.to_netcdf(era5_filename)
+
+    return era5_filename
+
+
 def jif_cosipy(url: str, download_path: Path | str, path: Path | str) -> None:
     """
     Download and prepare COSIPY.
