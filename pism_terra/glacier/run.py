@@ -435,6 +435,14 @@ def run_single():
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
+
+    start = pd.Timestamp(cfg.time.time_start)
+    end = pd.Timestamp(cfg.time.time_end)
+    last_year = end.year - 1 if (end.month == 1 and end.day == 1) else end.year
+    years = list(range(start.year, last_year + 1))
+    campaign_config = cfg.campaign.as_params()
+    campaign_config["years"] = years
+
     df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
 
     f = Figlet(font="standard")

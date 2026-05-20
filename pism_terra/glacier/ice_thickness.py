@@ -767,7 +767,7 @@ def prepare_ice_thickness_maffezzoli(
 def get_ice_thickness(
     rgi_id: str,
     target_grid: xr.Dataset | xr.DataArray,
-    dataset: Literal["millan", "maffezzoli"] = "maffezzoli",
+    dataset: Literal["frank", "maffezzoli", "millan"] = "maffezzoli",
     path: str | Path = "input_files",
     **kwargs,
 ) -> xr.DataArray:
@@ -806,8 +806,8 @@ def get_ice_thickness(
     logger.info("Getting ice thickness from dataset '%s'", dataset)
     if dataset == "frank":
         thickness = get_ice_thickness_frank(rgi_id, target_grid, path=path, **kwargs)
-    elif dataset == "millan":
-        thickness = get_ice_thickness_millan(rgi_id, target_grid, path=path, **kwargs)
+    elif dataset == "maffezzoli":
+        thickness = get_ice_thickness_maffezzoli(rgi_id, target_grid, path=path, **kwargs)
     elif dataset == "millan":
         thickness = get_ice_thickness_millan(rgi_id, target_grid, path=path, **kwargs)
     else:

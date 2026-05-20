@@ -242,11 +242,13 @@ def stage_glacier(
     pyogrio.write_dataframe(domain_bounds, domain_bounds_file)
 
     clim_mod = config["climate"]
+    print(config)
     # Climate forcing — built into staging, then final outputs moved to `path`
     climate_from_rgi = CLIMATE[config["climate"]]
     responses = climate_from_rgi(
         grid_ds,
         rgi_id=rgi_id,
+        years=config["years"],
         path=staging_path,
         bucket=config["bucket"],
         prefix=config["prefix"],
@@ -326,7 +328,15 @@ def main():
     rgi_id = options.RGI_ID[0]
 
     cfg = load_config(config_file)
+    # Cover every calendar year touched by the simulation. PISM's time.end is
+    # exclusive (e.g. "2025-01-01" means stop at midnight Jan 1, so 2025
+    # itself is not simulated), hence the - 1 when end is exactly Jan 1.
+    start = pd.Timestamp(cfg.time.time_start)
+    end = pd.Timestamp(cfg.time.time_end)
+    last_year = end.year - 1 if (end.month == 1 and end.day == 1) else end.year
+    years = list(range(start.year, last_year + 1))
     config = cfg.campaign.as_params()
+    config["years"] = years
 
     path.mkdir(parents=True, exist_ok=True)
     glacier_path = path / Path(rgi_id)

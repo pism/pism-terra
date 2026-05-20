@@ -1,16 +1,10 @@
 [run]
 
 executable = "pism"
-mpi = "mpirun -np  {{ ntasks }} apptainer run --bind /import/c1/ICESHEET/ICESHEET ${container}"
-ntasks = 156
-writer = ": -n 1 ${container} pism_async_writer -d"
-
+mpi = "mpirun -np  {{ ntasks }}"
+ntasks = 32
 
 [job]
-
-queue = "t2standard"
-walltime = "8:00:00"
-nodes = 4
 
 [run_info]
 
@@ -20,26 +14,26 @@ nodes = 4
 [campaign]
 
 bucket = "pism-cloud-data"
-climate = "carra2"
+climate = "era5"
 dem = "glo_90"
-ice_thickness = "frank"
+ice_thickness = "maffezzoli"
 bathymetry = "gebco"
 name = "Calibration"
-prefix = "s4f/glacier"
+prefix = "rgi/glacier"
 rgi_file = "rgi_c.gpkg"
 velocity = "its_live"
 forcing_mask = "glacier"
 
 [time]
 
-'time.start' = "1980-01-01"
-'time.end' =  "2020-01-01"
+'time.start' = "1978-01-01"
+'time.end' =  "1979-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 500
+'time_stepping.adaptive_ratio' = 250
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -52,6 +46,7 @@ forcing_mask = "glacier"
 ['input']
 
 'input.bootstrap' = "yes"
+'input.file' = "none"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 390
 
@@ -64,13 +59,13 @@ forcing_mask = "glacier"
 'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
+'output.spatial.vars' = "ice_mass,mass_fluxes,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 
 [grid]
 
-resolution = "500m"
+resolution = "400m"
 'grid.Lbz' = 0
 'grid.Lz' = 2000
 'grid.Mbz' = 1
@@ -144,17 +139,20 @@ bp_ksp_rtol = 1e-3
 
 [surface]
 
-model = "debm"
+model = "pdd"
+
+[surface.options.cosipy]
+
+'surface.models' = "given,forcing"
 
 [surface.options.pdd]
 
-'surface.models' = "pdd"
-'surface.pdd.std_dev.file' = "none"
-'surface.pdd.std_dev.periodic' = "yes"
+'surface.models' = "pdd,forcing"
+'surface.force_to_thickness.file' = "none"
 
 [surface.options.debm]
 
-'surface.models' = "debm_simple"
+'surface.models' = "debm_simple,forcing"
 'surface.debm_simple.std_dev.file' = "none"
 'surface.debm_simple.std_dev.periodic' = "yes"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
@@ -164,6 +162,7 @@ model = "debm"
 'surface.debm_simple.refreeze_ice_melt' = "no"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 272.15
 'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
+'surface.force_to_thickness.file' = "none"
 
 [calving]
 
@@ -187,7 +186,7 @@ model = "constant"
 
 [ocean.options.given]
 
-'ocean.model' = "given"
+'ocean.models' = "given"
 'ocean.given.file' = "none"
 'ocean.given.periodic' = "yes"
 
@@ -200,9 +199,7 @@ model = "constant"
 
 model = "null"
 
-[hydrology.options.null]
-
-'hydrology.null_diffuse_till_water' = "no"
+[hydrology.options]
 
 [frontal_melt]
 
