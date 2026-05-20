@@ -20,4 +20,4 @@ ulimit -l unlimited
 ulimit -s unlimited
 ulimit
 
-mpirun -np  {{ ntasks }} apptainer run ${container}
+mpirun -np  {{ ntasks }} apptainer run ${container} pism
