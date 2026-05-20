@@ -300,7 +300,7 @@ def run_greenland(
 
     postfix = f"pism-glacier-postprocess {post_file}"
     rendered_script = "" if debug else template.render(params)
-    rendered_script += f" \\ \n{run_str}\n\n{postfix}"
+    rendered_script += f" {run_str}\n\n{postfix}"
 
     run_script_path = path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
