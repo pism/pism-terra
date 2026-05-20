@@ -34,14 +34,13 @@ import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
-from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
+from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.ismip7.greenland.stage import stage
 from pism_terra.sampling import create_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
     dict2str,
     filter_overrides_by_config,
-    merge_model,
     normalize_row,
     sort_dict_by_key,
     validate_pism_options,
@@ -59,6 +58,7 @@ def run_greenland(
     resolution: None | str = None,
     nodes: None | int = None,
     ntasks: None | int = None,
+    tasks: None | int = None,
     queue: None | str = None,
     walltime: None | str = None,
     debug: bool = False,
@@ -97,6 +97,9 @@ def run_greenland(
     ntasks : int or None, optional
         MPI task count override for the submission template/run options.
         If ``None``, use config.
+    tasks : int or None, optional
+        MPI tasks per node override for the submission template. If ``None``,
+        use config.
     queue : str or None, optional
         Batch queue/partition override for the submission template. If ``None``,
         use config.
@@ -256,27 +259,24 @@ def run_greenland(
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
 
-    run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
+    run_str = dict2str(sort_dict_by_key(run))
 
-    run_opts = RunConfig(**cfg.run.model_dump())
     job_opts = JobConfig(**cfg.job.model_dump())
 
     params = {
-        **run_opts.model_dump(exclude_none=True, by_alias=True),
         **job_opts.model_dump(exclude_none=True, by_alias=True),
     }
 
-    # run_opts comes from your config; ntasks comes from CLI (or None)
-    active_run_opts = merge_model(run_opts, ntasks=ntasks)
-
-    # Use this ONE source to update params and to compute mpi_str
-    run_params = active_run_opts.as_params()
-    params.update(run_params)
-    mpi_str = run_params["mpi"]  # guaranteed consistent with ntasks override
-
     job_kwargs = {
         k: v
-        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes, "output_path": log_path.resolve()}.items()
+        for k, v in {
+            "nodes": nodes,
+            "ntasks": ntasks,
+            "queue": queue,
+            "output_path": log_path.resolve(),
+            "tasks": tasks,
+            "walltime": walltime,
+        }.items()
         if v is not None
     }
     if job_kwargs:
@@ -298,10 +298,9 @@ def run_greenland(
     with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
-    prefix = f"{mpi_str} {cfg.run.executable} "
-    postfix = "# End of script"
+    postfix = f"pism-glacier-postprocess {post_file}"
     rendered_script = "" if debug else template.render(params)
-    rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
+    rendered_script += f"\\ \n{run_str}\n\n{postfix}"
 
     run_script_path = path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
@@ -342,21 +341,27 @@ def run_single():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntatsks in config file.",
+        help="Numbers of cores.",
         type=int,
-        default=None,
+        default=8,
+    )
+    parser.add_argument(
+        "--tasks",
+        help="Cores per node.",
+        type=int,
+        default=40,
     )
     parser.add_argument(
         "--nodes",
         help="Overrides nodes in config file.",
         type=int,
-        default=None,
+        default=1,
     )
     parser.add_argument(
         "--walltime",
         help="Overrides walltime in config file.",
         type=str,
-        default=None,
+        default="24:00:00",
     )
     parser.add_argument(
         "--resolution",
@@ -397,6 +402,7 @@ def run_single():
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
+    tasks = options.tasks
     walltime = options.walltime
     pism_config_cdl = options.pism_config_cdl
 
@@ -445,6 +451,7 @@ def run_single():
             resolution=resolution,
             nodes=nodes,
             ntasks=ntasks,
+            tasks=tasks,
             queue=queue,
             walltime=walltime,
             debug=debug,
@@ -476,21 +483,27 @@ def run_ensemble():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntatsks in config file.",
+        help="Numbers of cores.",
         type=int,
-        default=None,
+        default=8,
+    )
+    parser.add_argument(
+        "--tasks",
+        help="Cores per node.",
+        type=int,
+        default=40,
     )
     parser.add_argument(
         "--nodes",
         help="Overrides nodes in config file.",
         type=int,
-        default=None,
+        default=1,
     )
     parser.add_argument(
         "--walltime",
         help="Overrides walltime in config file.",
         type=str,
-        default=None,
+        default="24:00:00",
     )
     parser.add_argument(
         "--resolution",
@@ -550,6 +563,7 @@ def run_ensemble():
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
+    tasks = options.tasks
     walltime = options.walltime
     pism_config_cdl = options.pism_config_cdl
 
@@ -627,6 +641,7 @@ def run_ensemble():
             resolution=resolution,
             nodes=nodes,
             ntasks=ntasks,
+            tasks=tasks,
             queue=queue,
             walltime=walltime,
             debug=debug,

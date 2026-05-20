@@ -35,7 +35,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.aws import local_to_s3
-from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
+from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.download import file_localizer
 from pism_terra.glacier.climate import create_offset_file
 from pism_terra.glacier.execute import find_first_and_execute
@@ -45,7 +45,6 @@ from pism_terra.workflow import (
     apply_choice_mapping,
     dict2str,
     filter_overrides_by_config,
-    merge_model,
     normalize_row,
     sort_dict_by_key,
     validate_pism_options,
@@ -65,6 +64,7 @@ def run_glacier(
     nodes: None | int = None,
     ntasks: None | int = None,
     queue: None | str = None,
+    tasks: None | int = None,
     walltime: None | str = None,
     debug: bool = False,
     *,
@@ -101,13 +101,14 @@ def run_glacier(
         Grid resolution (e.g., ``"200m"``). If ``None``, the value from
         ``[grid].resolution`` in the config is used.
     nodes : int or None, optional
-        Node count override for the submission template. If ``None``, use config.
+        Node count override for the submission template.
     ntasks : int or None, optional
         MPI task count override for the submission template/run options.
-        If ``None``, use config.
     queue : str or None, optional
         Batch queue/partition override for the submission template. If ``None``,
         use config.
+    tasks : int or None, optional
+        MPI tasks per node.
     walltime : str or None, optional
         Wall time override in ``HH:MM:SS``. If ``None``, use config.
     debug : bool, optional
@@ -221,7 +222,6 @@ def run_glacier(
 
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
-    writer = cfg.model_dump()["run"]["writer"] if (cfg.model_dump()["run"]["writer"] is not None) else ""
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
@@ -265,27 +265,24 @@ def run_glacier(
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
 
-    run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
+    run_str = dict2str(sort_dict_by_key(run))
 
-    run_opts = RunConfig(**cfg.run.model_dump())
     job_opts = JobConfig(**cfg.job.model_dump())
 
     params = {
-        **run_opts.model_dump(exclude_none=True, by_alias=True),
         **job_opts.model_dump(exclude_none=True, by_alias=True),
     }
 
-    # run_opts comes from your config; ntasks comes from CLI (or None)
-    active_run_opts = merge_model(run_opts, ntasks=ntasks)
-
-    # Use this ONE source to update params and to compute mpi_str
-    run_params = active_run_opts.as_params()
-    params.update(run_params)
-    mpi_str = run_params["mpi"]  # guaranteed consistent with ntasks override
-
     job_kwargs = {
         k: v
-        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes, "output_path": log_path.resolve()}.items()
+        for k, v in {
+            "nodes": nodes,
+            "ntasks": ntasks,
+            "queue": queue,
+            "output_path": log_path.resolve(),
+            "tasks": tasks,
+            "walltime": walltime,
+        }.items()
         if v is not None
     }
     if job_kwargs:
@@ -307,10 +304,9 @@ def run_glacier(
     with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
-    prefix = f"{mpi_str} {cfg.run.executable} "
     postfix = f"pism-glacier-postprocess {post_file}"
     rendered_script = "" if debug else template.render(params)
-    rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
+    rendered_script += f"\\ \n{run_str}\n\n{postfix}"
 
     run_script_path = glacier_path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
@@ -358,21 +354,27 @@ def run_single():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntasks in config file.",
+        help="Numbers of cores.",
         type=int,
-        default=None,
+        default=8,
+    )
+    parser.add_argument(
+        "--tasks",
+        help="Cores per node.",
+        type=int,
+        default=40,
     )
     parser.add_argument(
         "--nodes",
         help="Overrides nodes in config file.",
         type=int,
-        default=None,
+        default=1,
     )
     parser.add_argument(
         "--walltime",
         help="Overrides walltime in config file.",
         type=str,
-        default=None,
+        default="24:00:00",
     )
     parser.add_argument(
         "--resolution",
@@ -431,6 +433,7 @@ def run_single():
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
+    tasks = options.tasks
     walltime = options.walltime
 
     cfg = load_config(config_file)
@@ -478,6 +481,7 @@ def run_single():
             resolution=resolution,
             nodes=nodes,
             ntasks=ntasks,
+            tasks=tasks,
             queue=queue,
             walltime=walltime,
             debug=debug,
@@ -528,21 +532,27 @@ def run_ensemble():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntasks in config file.",
+        help="Numbers of cores.",
         type=int,
-        default=None,
+        default=8,
+    )
+    parser.add_argument(
+        "--tasks",
+        help="Cores per node.",
+        type=int,
+        default=40,
     )
     parser.add_argument(
         "--nodes",
         help="Overrides nodes in config file.",
         type=int,
-        default=None,
+        default=1,
     )
     parser.add_argument(
         "--walltime",
         help="Overrides walltime in config file.",
         type=str,
-        default=None,
+        default="24:00:00",
     )
     parser.add_argument(
         "--resolution",
@@ -608,10 +618,16 @@ def run_ensemble():
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
+    tasks = options.tasks
     walltime = options.walltime
 
     cfg = load_config(config_file)
+    start = pd.Timestamp(cfg.time.time_start)
+    end = pd.Timestamp(cfg.time.time_end)
+    last_year = end.year - 1 if (end.month == 1 and end.day == 1) else end.year
+    years = list(range(start.year, last_year + 1))
     campaign_config = cfg.campaign.as_params()
+    campaign_config["years"] = years
     df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
 
     seed = 42
@@ -680,6 +696,7 @@ def run_ensemble():
             resolution=resolution,
             nodes=nodes,
             ntasks=ntasks,
+            tasks=tasks,
             queue=queue,
             walltime=walltime,
             debug=debug,

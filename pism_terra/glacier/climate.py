@@ -1661,9 +1661,7 @@ def era5_mean(
 
     # Length-1 climatology: write bounds spanning the source range directly
     # (add_time_bounds builds N-1 pairs and would empty a single-step series).
-    ds["time_bounds"] = xr.DataArray(
-        np.array([[src_lo, src_hi]]), dims=("time", "nv")
-    )
+    ds["time_bounds"] = xr.DataArray(np.array([[src_lo, src_hi]]), dims=("time", "nv"))
     ds["time"].attrs["bounds"] = "time_bounds"
     ds.to_netcdf(era5_filename)
 

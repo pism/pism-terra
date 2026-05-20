@@ -1,20 +1,3 @@
-[run]
-
-executable = "pism"
-mpi = "mpirun -np  {{ ntasks }} apptainer run ${container}"
-ntasks = 40
-
-[job]
-
-queue = "t2small"
-walltime = "72:00:00"
-nodes = 1
-
-[run_info]
-
-'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA Calibration Run"
-
 [campaign]
 
 bucket = "pism-cloud-data"
