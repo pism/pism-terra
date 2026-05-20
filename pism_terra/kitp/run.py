@@ -300,7 +300,7 @@ def run_kitp(
         toml.dump(run_toml, toml_file)
 
     params.update({"run_str": run_str})
-    rendered_script = template.render(params)
+    rendered_script = "" if debug else template.render(params)
 
     run_script_path = path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
