@@ -1,15 +1,3 @@
-[run]
-
-executable = "pism"
-mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 40
-
-[job]
-
-queue = "t2small"
-walltime = "72:00:00"
-nodes = 1
-
 [run_info]
 
 'run_info.institution' = "University of Alaska Fairbanks"

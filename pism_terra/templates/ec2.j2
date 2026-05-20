@@ -2,4 +2,4 @@
 
 ulimit -a
 
-mpirun -np  {{ ntasks }} pism
+mpirun -np  {{ ntasks | default(32) }} pism

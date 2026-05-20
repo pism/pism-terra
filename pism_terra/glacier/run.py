@@ -356,25 +356,25 @@ def run_single():
         "--ntasks",
         help="Numbers of cores.",
         type=int,
-        default=8,
+        default=None,
     )
     parser.add_argument(
         "--tasks",
         help="Cores per node.",
         type=int,
-        default=40,
+        default=None,
     )
     parser.add_argument(
         "--nodes",
         help="Overrides nodes in config file.",
         type=int,
-        default=1,
+        default=None,
     )
     parser.add_argument(
         "--walltime",
         help="Overrides walltime in config file.",
         type=str,
-        default="24:00:00",
+        default=None,
     )
     parser.add_argument(
         "--resolution",
@@ -534,25 +534,25 @@ def run_ensemble():
         "--ntasks",
         help="Numbers of cores.",
         type=int,
-        default=8,
+        default=None,
     )
     parser.add_argument(
         "--tasks",
         help="Cores per node.",
         type=int,
-        default=40,
+        default=None,
     )
     parser.add_argument(
         "--nodes",
         help="Overrides nodes in config file.",
         type=int,
-        default=1,
+        default=None,
     )
     parser.add_argument(
         "--walltime",
         help="Overrides walltime in config file.",
         type=str,
-        default="24:00:00",
+        default=None,
     )
     parser.add_argument(
         "--resolution",

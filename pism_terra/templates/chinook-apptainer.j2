@@ -1,8 +1,8 @@
 #!/bin/sh
-#SBATCH --partition={{ queue }}
-#SBATCH --ntasks={{ ntasks }}
-#SBATCH --tasks-per-node={{ tasks }}
-#SBATCH --time={{ walltime }}
+#SBATCH --partition={{ queue | default("t2small") }}
+#SBATCH --ntasks={{ ntasks | default(40) }}
+#SBATCH --tasks-per-node={{ tasks | default(40) }}
+#SBATCH --time={{ walltime | default("24:00:00") }}
 #SBATCH --mail-type=BEGIN
 #SBATCH --mail-type=END
 #SBATCH --mail-type=FAIL
@@ -20,4 +20,4 @@ ulimit -l unlimited
 ulimit -s unlimited
 ulimit
 
-mpirun -np  {{ ntasks }} apptainer run ${container} pism
+mpirun -np  {{ ntasks | default(40) }} apptainer run ${container} pism

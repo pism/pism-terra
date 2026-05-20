@@ -29,7 +29,7 @@ from typing import Any, ClassVar, Iterator
 
 import scipy.stats as st
 import toml
-from jinja2 import Environment, StrictUndefined
+from jinja2 import Environment
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -39,7 +39,7 @@ from pydantic import (
 )
 
 # one Jinja environment for all renders
-_JINJA = Environment(undefined=StrictUndefined, autoescape=False)
+_JINJA = Environment(autoescape=False)
 
 
 def load_config(path: str | Path) -> PismConfig:
@@ -728,7 +728,7 @@ class PismConfig(BaseModelWithDot):
 
     campaign: CampaignConfig
     run_info: InfoConfig
-    job: JobConfig
+    job: JobConfig = Field(default_factory=JobConfig)
     time: TimeConfig
     energy: EnergyConfig
     stress_balance: StressBalanceConfig
@@ -1233,12 +1233,6 @@ class CampaignConfig(BaseModel):
             Any
                 The rendered string when `v` is a templated string; otherwise the
                 original value.
-
-            Raises
-            ------
-            jinja2.UndefinedError
-                If the template references an undefined variable and the Jinja
-                environment uses ``StrictUndefined``.
             """
             if isinstance(v, str) and "{{" in v:
                 return _JINJA.from_string(v).render(ctx)
