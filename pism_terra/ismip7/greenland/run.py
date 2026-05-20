@@ -298,9 +298,8 @@ def run_greenland(
     with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
-    postfix = f"pism-glacier-postprocess {post_file}"
-    rendered_script = "" if debug else template.render(params)
-    rendered_script += f" {run_str}\n\n{postfix}"
+    params.update({"run_str": run_str})
+    rendered_script = template.render(params)
 
     run_script_path = path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)

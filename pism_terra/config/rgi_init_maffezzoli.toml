@@ -143,6 +143,8 @@ model = "pdd"
 [surface.options.pdd]
 
 'surface.models' = "pdd,forcing"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10.0
 'surface.force_to_thickness.file' = "none"
 
 [calving]
