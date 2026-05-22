@@ -95,15 +95,16 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--data-path", help="Path to ISMIP7 data folder. If not None, use local folder instead of remote.", default=None
+    )
     parser.add_argument("CONFIG_FILE", nargs=1)
-    parser.add_argument("DATA_PATH", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config_file = args.CONFIG_FILE[0]
-    _ = Path(args.DATA_PATH[0])
     force_overwrite = args.force_overwrite
-    obs_path = Path(args.obs_path)
+    data_path = Path(args.data_path) if args.data_path else None
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -137,7 +138,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
 
-    forcing_files = prepare_ismip7_forcing(base_url, output_path, config)
+    forcing_files = prepare_ismip7_forcing(base_url, output_path, config, data_path=data_path)
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
@@ -153,14 +154,22 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
     )
 
-    url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
+    url: str | Path = (
+        "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
+    )
+    if data_path is not None:
+        url = data_path / Path(config["ice_sheet"]) / Path("obs") / Path("mipkit") / Path("GreenlandObsISMIP7-v1.3")
+
     logger.info("-" * 120)
     logger.info("Boot File")
     logger.info("-" * 120)
     surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
+    # When data_path is None, fall back to an obs-cache subdir under output_path
+    # so prepare_observations always has a real directory to download into.
+    obs_input_path = data_path if data_path is not None else output_path / Path("obs")
     obs_files = prepare_observations(
         url,
-        obs_path,
+        obs_input_path,
         output_path,
         config,
         surface_dem=surface_dem,

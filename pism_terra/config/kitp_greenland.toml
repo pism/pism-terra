@@ -1,16 +1,3 @@
-[run]
-
-executable = "pism"
-mpi = "mpirun -np  {{ ntasks }}"
-ntasks = 160
-writer = ""
-
-[job]
-
-queue = "t2standard"
-walltime = "96:00:00"
-nodes = 1
-
 [run_info]
 
 'run_info.institution' = "University of Alaska Fairbanks"
@@ -63,6 +50,7 @@ version = "v4"
 ['input']
 
 'input.bootstrap' = "yes"
+'input.file' = "none"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 37
 'input.regrid.file' =  "none"
@@ -87,6 +75,7 @@ version = "v4"
 [grid]
 
 resolution = "900m"
+'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 51

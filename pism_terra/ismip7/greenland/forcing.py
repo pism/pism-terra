@@ -29,7 +29,7 @@ from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 import cf_xarray
 import geopandas as gpd
@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 ISMIP7_GLOBUS_BASE = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS"
 
 
-def _make_url(year, gcm, pathway, short_hand, m_var, version):
+def _make_url(year, ice_sheet, gcm, pathway, short_hand, m_var, version):
     """
     Build the Globus HTTPS URL for one ISMIP7 GrIS forcing file.
 
@@ -74,13 +74,16 @@ def _make_url(year, gcm, pathway, short_hand, m_var, version):
 
         {base}/{gcm}/{pathway}/{short_hand}/{m_var}/{version}/<file>.nc
 
-    where ``<file>`` is ``{m_var}_GrIS_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc``
+    where ``<file>`` is ``{m_var}_{ice_sheet}_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc``
     (without the ``short_hand`` segments when it equals ``"none"``).
 
     Parameters
     ----------
     year : int
         Year of the forcing file.
+    ice_sheet : str
+        Ice-sheet identifier embedded in the filename (e.g. ``"GrIS"`` or
+        ``"AIS"``).
     gcm : str
         GCM name (e.g. ``"CESM2-WACCM"``).
     pathway : str
@@ -100,9 +103,9 @@ def _make_url(year, gcm, pathway, short_hand, m_var, version):
         Globus HTTPS URL for the file.
     """
     fname = (
-        f"{m_var}_GrIS_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc"
+        f"{m_var}_{ice_sheet}_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc"
         if short_hand != "none"
-        else f"{m_var}_GrIS_{gcm}_{pathway}_{version}_{year}.nc"
+        else f"{m_var}_{ice_sheet}_{gcm}_{pathway}_{version}_{year}.nc"
     )
     parts = [ISMIP7_GLOBUS_BASE, gcm, pathway]
     if short_hand != "none":
@@ -241,6 +244,57 @@ def _download_many(
     return results
 
 
+def _local_path(year, data_path, ice_sheet, gcm, pathway, short_hand, m_var, version):
+    """
+    Build the local file path for an ISMIP7 forcing variable and year.
+
+    Used when reading from a local mirror of the Globus tree. The on-disk
+    layout matches the Globus URL exactly — same subdir hierarchy and same
+    filename — so the only flexibility is whether *data_path* already includes
+    the trailing ``GrIS`` segment or sits above it.
+
+    Parameters
+    ----------
+    year : int
+        Year of the forcing file.
+    data_path : pathlib.Path
+        Root of the local mirror; expected to contain a ``<ice_sheet>/``
+        subdirectory that mirrors the Globus tree (e.g.
+        ``~/storstrommen/ISMIP7/`` for ``ice_sheet="GrIS"``).
+    ice_sheet : str
+        Ice-sheet subdirectory under *data_path* and segment of the local
+        filename (``"GrIS"`` or ``"AIS"``).
+    gcm : str
+        GCM name (e.g. ``"CESM2-WACCM"``).
+    pathway : str
+        Emissions pathway (e.g. ``"historical"``, ``"ssp585"``).
+    short_hand : str
+        Short-hand identifier for the forcing type, or ``"none"``.
+    m_var : str
+        Variable name (e.g. ``"acabf"``, ``"tas"``).
+    version : str
+        Version string (e.g. ``"v1"``).
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the file under *data_path* (or under *data_path/GrIS* if that
+        is where the file actually lives). When neither candidate exists, the
+        first candidate is returned so callers can surface a sensible error.
+    """
+    fname = (
+        f"{m_var}_{ice_sheet}_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc"
+        if short_hand != "none"
+        else f"{m_var}_{ice_sheet}_{gcm}_{pathway}_{version}_{year}.nc"
+    )
+    rel_parts = [gcm, pathway]
+    if short_hand != "none":
+        rel_parts.append(short_hand)
+    rel_parts.extend([m_var, version, fname])
+    rel = Path(*rel_parts)
+    return data_path / ice_sheet / rel
+
+
 def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version):
     """
     Build the resolved file path for an ISMIP7 forcing variable and year.
@@ -282,6 +336,7 @@ def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version):
 
 
 def _process_single_forcing(
+    ice_sheet: Literal["AIS", "GrIS"],
     gcm: str,
     forcing: str,
     base_path: Path,
@@ -297,12 +352,16 @@ def _process_single_forcing(
     ismip7_to_pism: dict[str, str],
     freq: str = "1mon",
     calendar: str = "365_day",
+    data_path: Path | None = None,
 ) -> list[Path]:
     """
     Process a single GCM/forcing combination.
 
     Parameters
     ----------
+    ice_sheet : {"AIS", "GrIS"}
+        Ice-sheet identifier; selects the subtree under the Globus base or
+        local mirror and is embedded in source filenames.
     gcm : str
         GCM name.
     forcing : str
@@ -333,6 +392,12 @@ def _process_single_forcing(
         Frequency string for CDO time axis. Default is "1mon".
     calendar : str, optional
         Calendar type for CDO time axis. Default is "365_day".
+    data_path : pathlib.Path or None, optional
+        If given, read forcing files from this local mirror of the Globus
+        tree instead of downloading from ``base_path``. Files are looked up
+        with their Globus filename under ``data_path`` (or under
+        ``data_path/GrIS``). When ``None`` (default), the function downloads
+        from Globus and stores files under ``base_path``.
 
     Returns
     -------
@@ -348,76 +413,140 @@ def _process_single_forcing(
 
     output_files = []
 
-    # Build (url, local_path) pairs for every (variable, year) we need, across
-    # both historical and projection epochs. Then download everything in
-    # parallel before any cdo step touches the files.
-    download_pairs: list[tuple[str, Path]] = []
-    for pathway_name, start_year, end_year in (
-        ("historical", hist_start_year, hist_end_year),
-        (pathway, proj_start_year, proj_end_year),
-    ):
-        for m_var in fields:
-            for year in range(start_year, end_year):
-                url = _make_url(year, gcm, pathway_name, short_hand, m_var, version)
-                local = Path(_make_path(year, base_path, gcm, pathway_name, short_hand, m_var, version))
-                download_pairs.append((url, local))
+    def _resolve(year: int, pathway_name: str, m_var: str) -> Path:
+        """
+        Return the local file path for one (year, pathway, var).
 
-    _download_many(download_pairs, desc=f"Download {gcm}/{forcing}")
+        Parameters
+        ----------
+        year : int
+            Calendar year of the requested forcing slice.
+        pathway_name : str
+            Emissions pathway segment of the path (e.g. ``"historical"``).
+        m_var : str
+            ISMIP7 variable name (e.g. ``"acabf"``).
 
-    # cdo merges run on the downloaded local paths.
-    hist_merge_cmds = []
-    for m_var in fields:
-        paths = [
-            _make_path(year, base_path, gcm, "historical", short_hand, m_var, version)
-            for year in range(hist_start_year, hist_end_year)
-        ]
+        Returns
+        -------
+        pathlib.Path
+            Path under ``data_path`` (Globus-mirror filename) when
+            ``data_path`` was supplied, else the legacy ``_make_path``
+            location under ``base_path``.
+        """
+        if data_path is not None:
+            return _local_path(year, data_path, ice_sheet, gcm, pathway_name, short_hand, m_var, version)
+        # _make_path doesn't take ice_sheet (the segment isn't part of the legacy
+        # base_path layout).
+        return Path(_make_path(year, base_path, gcm, pathway_name, short_hand, m_var, version))
+
+    if data_path is None:
+        # Build (url, local_path) pairs for every (variable, year) we need,
+        # across both historical and projection epochs. Then download
+        # everything in parallel before any cdo step touches the files.
+        download_pairs: list[tuple[str, Path]] = []
+        for pathway_name, start_year, end_year in (
+            ("historical", hist_start_year, hist_end_year),
+            (pathway, proj_start_year, proj_end_year),
+        ):
+            for m_var in fields:
+                for year in range(start_year, end_year):
+                    url = _make_url(year, ice_sheet, gcm, pathway_name, short_hand, m_var, version)
+                    download_pairs.append((url, _resolve(year, pathway_name, m_var)))
+
+        _download_many(download_pairs, desc=f"Download {gcm}/{forcing}")
+    else:
+        logger.info("Using local ISMIP7 forcing under %s for %s/%s", data_path, gcm, forcing)
+
+    # cdo merges run on the resolved local paths (downloaded or pre-existing).
+    # Doing the per-variable mergetime in-process (alongside the final
+    # cross-variable merge) produced one shell invocation listing every
+    # (variable, year) source file. With ~6 variables × ~300 years that
+    # easily exceeds ARG_MAX. Split the work: per-variable mergetime/chname
+    # writes a tmp file; the final per-epoch cdo only sees one tmp per var.
+    import tempfile  # pylint: disable=import-outside-toplevel
+
+    def _merge_one_var(
+        tmp_root: Path, epoch_label: str, pathway_name: str, start_year: int, end_year: int, m_var: str
+    ) -> Path:
+        """
+        Mergetime + chname for one (epoch, variable) into a tmp NetCDF.
+
+        Splitting the per-variable merge off the final cross-variable merge
+        keeps any one ``cdo`` invocation well under the ARG_MAX limit, even
+        for projection epochs that span hundreds of years.
+
+        Parameters
+        ----------
+        tmp_root : pathlib.Path
+            Directory for the per-variable tmp output.
+        epoch_label : str
+            Short label embedded in the tmp filename (e.g. ``"hist"`` or
+            ``"proj"``) to keep epochs distinct in the same tmp dir.
+        pathway_name : str
+            Emissions pathway segment of the source path (e.g.
+            ``"historical"`` or ``"ssp585"``).
+        start_year, end_year : int
+            Inclusive/exclusive year range for the source files.
+        m_var : str
+            ISMIP7 variable name (e.g. ``"acabf"``).
+
+        Returns
+        -------
+        pathlib.Path
+            Path to the per-variable tmp NetCDF.
+        """
+        paths = [_resolve(year, pathway_name, m_var) for year in range(start_year, end_year)]
         k, v = m_var, ismip7_to_pism[m_var]
-        merge_cmd = (
-            f"-chname,{k},{v} {tas_replace} -setgrid,{str(grid_file)} -mergetime [ "
-            + " ".join(str(f) for f in paths)
-            + " ]"
+        out = tmp_root / f"{epoch_label}_{m_var}.nc"
+        cdo.chname(
+            f"{k},{v}",
+            input=(f"{tas_replace} -setgrid,{str(grid_file)} -mergetime [ " + " ".join(str(p) for p in paths) + " ]"),
+            output=str(out.resolve()),
+            options="-f nc4 -z zip_2",
         )
-        hist_merge_cmds.append(merge_cmd)
-
-    proj_merge_cmds = []
-    for m_var in fields:
-        paths = [
-            _make_path(year, base_path, gcm, pathway, short_hand, m_var, version)
-            for year in range(proj_start_year, proj_end_year)
-        ]
-        k, v = m_var, ismip7_to_pism[m_var]
-        merge_cmd = (
-            f"-chname,{k},{v} {tas_replace} -setgrid,{str(grid_file)} -mergetime [ "
-            + " ".join(str(f) for f in paths)
-            + " ]"
-        )
-        proj_merge_cmds.append(merge_cmd)
+        return out
 
     hist_output_file = output_path / Path(
         f"ismip7_greenland_{forcing}_historical_{gcm}_{version}_{hist_start_year}_{hist_end_year}.nc"
     )
-
-    cdo.setmisstoc(
-        0,
-        input=f"""-setgrid,{str(grid_file)} -settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{hist_start_year}-01-16 12:00,,{freq}' -merge """
-        + " ".join(hist_merge_cmds),
-        output=str(hist_output_file.resolve()),
-        options="-f nc4 -z zip_2",
-    )
-    output_files.append(hist_output_file)
-
     proj_output_file = output_path / Path(
         f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{proj_start_year}_{proj_end_year}.nc"
     )
 
-    cdo.setmisstoc(
-        0,
-        input=f"""-setgrid,{str(grid_file)} -settbounds,{freq} -setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} -settaxis,'{proj_start_year}-01-16 12:00,,{freq}' -merge """
-        + " ".join(proj_merge_cmds),
-        output=str(proj_output_file.resolve()),
-        options="-f nc4 -z zip_2",
-    )
-    output_files.append(proj_output_file)
+    with tempfile.TemporaryDirectory(prefix=f"_ismip7_{gcm}_{forcing}_", dir=str(output_path)) as _tmp:
+        tmp_root = Path(_tmp)
+        hist_tmp = [
+            _merge_one_var(tmp_root, "hist", "historical", hist_start_year, hist_end_year, m_var) for m_var in fields
+        ]
+        proj_tmp = [
+            _merge_one_var(tmp_root, "proj", pathway, proj_start_year, proj_end_year, m_var) for m_var in fields
+        ]
+
+        cdo.setmisstoc(
+            0,
+            input=(
+                f"-setgrid,{str(grid_file)} -settbounds,{freq} "
+                f"-setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} "
+                f"-settaxis,'{hist_start_year}-01-16 12:00,,{freq}' -merge "
+                + " ".join(str(p.resolve()) for p in hist_tmp)
+            ),
+            output=str(hist_output_file.resolve()),
+            options="-f nc4 -z zip_2",
+        )
+        output_files.append(hist_output_file)
+
+        cdo.setmisstoc(
+            0,
+            input=(
+                f"-setgrid,{str(grid_file)} -settbounds,{freq} "
+                f"-setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} "
+                f"-settaxis,'{proj_start_year}-01-16 12:00,,{freq}' -merge "
+                + " ".join(str(p.resolve()) for p in proj_tmp)
+            ),
+            output=str(proj_output_file.resolve()),
+            options="-f nc4 -z zip_2",
+        )
+        output_files.append(proj_output_file)
 
     input_files = " ".join(str(f.resolve()) for f in output_files)
     merged_file = output_path / Path(
@@ -433,7 +562,7 @@ def _process_single_forcing(
 
 
 def prepare_observations(
-    url: str,
+    url: Path | str,
     input_path: Path | str,
     output_path: Path | str,
     config: dict,
@@ -476,10 +605,13 @@ def prepare_observations(
         mapping to their respective output paths.
     """
 
-    name = url.split("/")[-1]
+    # ``url`` may be a Path (when reading from a local mirror) or a string
+    # (when downloading from Globus). Normalize to str for split/download.
+    url_str = str(url)
+    name = url_str.rsplit("/", maxsplit=1)[-1]
     obs_file = Path(input_path) / Path(name)
     if (not check_xr_lazy(obs_file)) or force_overwrite:
-        ds_bm = download_netcdf(url)
+        ds_bm = download_netcdf(url_str)
     else:
         ds_bm = xr.open_dataset(obs_file)
 
@@ -712,6 +844,7 @@ def prepare_ismip7_forcing(
     base_path: Path | str,
     output_path: Path | str,
     config: dict,
+    data_path: Path | str | None = None,
     n_workers: int = 2,
 ) -> Sequence[Path | str]:
     """
@@ -720,11 +853,17 @@ def prepare_ismip7_forcing(
     Parameters
     ----------
     base_path : Path or str
-        Base path to input data.
+        Base path (or URL) to the remote ISMIP7 forcing tree. Used only when
+        ``data_path`` is ``None``; otherwise downloads are skipped entirely.
     output_path : Path or str
         Output directory.
     config : dict
         Configuration dictionary.
+    data_path : Path or str or None, optional
+        If given, read forcing files from this local mirror of the Globus
+        tree instead of downloading. Layout is expected to match the
+        Globus tree, with *data_path* either containing a ``GrIS/`` subdir
+        or being that ``GrIS/`` directory itself.
     n_workers : int, optional
         Number of dask workers, by default 2.
 
@@ -737,6 +876,8 @@ def prepare_ismip7_forcing(
 
     base_path = Path(base_path)
     output_path = Path(output_path)
+    if data_path is not None:
+        data_path = Path(data_path)
 
     ismip7_to_pism = config["ismip7_to_pism"]
     # Build list of tasks
@@ -744,6 +885,7 @@ def prepare_ismip7_forcing(
 
     for gcm, _gcm_config in config["gcms"].items():
         for pathway, _pathway_config in _gcm_config.items():
+            ice_sheet = config["ice_sheet"]
             version = "v" + str(_pathway_config["version"])
             hist_start_year, hist_end_year = _pathway_config["historical"]
             proj_start_year, proj_end_year = _pathway_config["projection"]
@@ -752,6 +894,7 @@ def prepare_ismip7_forcing(
                 fields = forcing_dict["fields"]
                 tasks.append(
                     (
+                        ice_sheet,
                         gcm,
                         forcing,
                         version,
@@ -771,6 +914,7 @@ def prepare_ismip7_forcing(
 
         futures = []
         for (
+            ice_sheet,
             gcm,
             forcing,
             version,
@@ -784,6 +928,7 @@ def prepare_ismip7_forcing(
         ) in tasks:
             future = client.submit(
                 _process_single_forcing,
+                ice_sheet,
                 gcm,
                 forcing,
                 base_path,
@@ -797,6 +942,7 @@ def prepare_ismip7_forcing(
                 short_hand,
                 fields,
                 ismip7_to_pism,
+                data_path=data_path,
             )
             futures.append(future)
 

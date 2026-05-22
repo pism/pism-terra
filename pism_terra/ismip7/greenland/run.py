@@ -437,6 +437,8 @@ def run_single():
             "energy.bedrock_thermal.file": row["heatflux_file"],
             "atmosphere.given.file": row["climate_file"],
             "surface.given.file": row["climate_file"],
+            "surface.ismip6.file": row["climate_file"],
+            "surface.ismip6.reference_file": row["climate_file"],
             "hydrology.surface_input.file": row["surface_input_file"],
             "ocean.th.file": row["ocean_file"],
         }
@@ -626,6 +628,8 @@ def run_ensemble():
             "energy.bedrock_thermal.file": row["heatflux_file"],
             "atmosphere.given.file": row["climate_file"],
             "surface.given.file": row["climate_file"],
+            "surface.ismip6.file": row["climate_file"],
+            "surface.ismip6.reference_file": row["climate_file"],
             "hydrology.surface_input.file": row["surface_input_file"],
             "ocean.th.file": row["ocean_file"],
         }

@@ -215,7 +215,6 @@ def run_kitp(
 
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
-    writer = cfg.model_dump()["run"]["writer"] if (cfg.model_dump()["run"]["writer"] is not None) else ""
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]

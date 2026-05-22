@@ -26,4 +26,4 @@ ulimit -l unlimited
 ulimit -s unlimited
 ulimit
 
-mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} pism {{ run_str }} : -n 1 apptainer run ${container} pism_async_writer -d
+mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} pism {{ run_str }}
