@@ -326,10 +326,18 @@ def boot_file_from_grid(
     liafr = liafr.astype("bool")
 
     if forcing_mask == "glacier":
+        print("Forcing mask: 1 outside 0 inside glacier")
+        # rio.clip leaves the surface elevation inside the polygon and NaN
+        # outside. Without the xr.where, the subsequent .astype("bool") would
+        # turn both real elevations AND NaN into True (1 everywhere). Map
+        # NaN -> 1 (outside) and any value -> 0 (inside) explicitly.
         ftt_mask = surface.rio.clip(geometries, drop=False)
+        ftt_mask = xr.where(ftt_mask.isnull(), 1, 0)
     elif forcing_mask == "all":
+        print("Forcing mask: 1 everywhere")
         ftt_mask = xr.ones_like(liafr)
     else:
+        print("Forcing mask: 0 everywhere")
         ftt_mask = xr.zeros_like(liafr)
     ftt_mask.name = "ftt_mask"
     ftt_mask.attrs.update({"units": "1"})

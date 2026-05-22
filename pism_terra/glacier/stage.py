@@ -48,6 +48,7 @@ from pism_terra.glacier.climate import (
     create_step_file,
     era5,
     era5_mean,
+    era5_monthly_mean,
     pmip4,
     snap,
 )
@@ -63,6 +64,7 @@ CLIMATE: Mapping[str, Callable] = {
     "carra2": carra2,
     "era5": era5,
     "era5-mean": era5_mean,
+    "era5-monthly-mean": era5_monthly_mean,
     "snap": snap,
     "abrupt": snap,
 }
