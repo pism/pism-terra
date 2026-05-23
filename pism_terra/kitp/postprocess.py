@@ -117,11 +117,11 @@ def process_file(
     gis_clipped = ds.rio.clip(basin[basin[column] == "GIS"].geometry, drop=False)
     gis_clipped = xr.merge([gis_clipped, ds_non_spatial])
 
-    logger.info("DEBUG gis_clipped.sizes = %s", dict(gis_clipped.sizes))
-    logger.info("DEBUG gis_clipped.coords keys = %s", list(gis_clipped.coords))
-    logger.info("DEBUG gis_clipped.indexes keys = %s", list(gis_clipped.indexes))
+    print(f"DEBUG gis_clipped.sizes = {dict(gis_clipped.sizes)}", flush=True)
+    print(f"DEBUG gis_clipped.coords keys = {list(gis_clipped.coords)}", flush=True)
+    print(f"DEBUG gis_clipped.indexes keys = {list(gis_clipped.indexes)}", flush=True)
     for name in gis_clipped.variables:
-        logger.info("DEBUG var %s dims=%s", name, gis_clipped[name].dims)
+        print(f"DEBUG var {name} dims={gis_clipped[name].dims}", flush=True)
 
     # Suppress the default ``_FillValue=NaN`` on coordinate variables that
     # netCDF4/h5netcdf otherwise writes.
