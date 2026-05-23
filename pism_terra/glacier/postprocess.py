@@ -86,7 +86,7 @@ def process_file(infile: str | Path, rgi_file: str | Path, client: Client):
         decode_timedelta=False,
         decode_times=False,
         chunks="auto",
-        engine="h5netcdf",
+        engine="netcdf4",
     )
 
     # Separate variables that lack spatial (x, y) dimensions, as rio.clip cannot handle them

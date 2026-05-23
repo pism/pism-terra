@@ -96,7 +96,7 @@ def process_file(
         decode_timedelta=False,
         decode_times=False,
         chunks="auto",
-        engine="h5netcdf",
+        engine="netcdf4",
     )
 
     # Spatial bounds vars (``x_bnds``/``y_bnds``) reference the pre-clip
