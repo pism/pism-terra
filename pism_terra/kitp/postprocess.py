@@ -99,8 +99,16 @@ def process_file(
         engine="h5netcdf",
     )
 
-    # Separate variables that lack spatial (x, y) dimensions, as rio.clip cannot handle them
-    non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
+    # Spatial bounds vars (``x_bnds``/``y_bnds``) reference the pre-clip
+    # x/y sizes and would inject dangling dimensions back into the output
+    # after merge — h5netcdf serializes those as duplicate "x" dims. Drop
+    # them before splitting; PISM doesn't require them on the clipped output.
+    ds = ds.drop_vars(["x_bnds", "x_bounds", "y_bnds", "y_bounds"], errors="ignore")
+
+    # Separate variables that lack BOTH spatial (x, y) dimensions, as
+    # rio.clip cannot handle them. Use ``and`` so that vars carrying only
+    # one spatial dim (rare, but possible) still go down the spatial path.
+    non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims and "y" not in ds[var].dims]
     ds_non_spatial = ds[non_spatial_vars]
     ds = ds.drop_vars(non_spatial_vars).rio.write_crs(crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
     ds = client.persist(ds)
@@ -108,6 +116,12 @@ def process_file(
 
     gis_clipped = ds.rio.clip(basin[basin[column] == "GIS"].geometry, drop=False)
     gis_clipped = xr.merge([gis_clipped, ds_non_spatial])
+
+    # Suppress the default ``_FillValue=NaN`` on coordinate variables that
+    # netCDF4/h5netcdf otherwise writes.
+    for c in ("x", "y", "time"):
+        if c in gis_clipped.coords:
+            gis_clipped[c].encoding["_FillValue"] = None
 
     logger.info("Writing %s", clipped_file)
     comp = {"zlib": True, "complevel": 2}
