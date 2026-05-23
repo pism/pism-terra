@@ -123,18 +123,16 @@ def process_file(
         if c in gis_clipped.coords:
             gis_clipped[c].encoding["_FillValue"] = None
 
-    # Materialize the result locally before writing. The dask-distributed
-    # ``compute=False`` + h5netcdf path was producing files where all three
-    # dims (time, y, x) collapsed into duplicate "x" entries — the in-memory
-    # Dataset is fine, but the streamed parallel write was mangling dim
-    # scales. Computing eagerly + a synchronous netcdf4 write avoids it.
-    logger.info("Computing clipped result before write...")
-    gis_clipped = gis_clipped.compute()
-
+    # Stream the write via dask, but use the netcdf4 engine instead of
+    # h5netcdf — the h5netcdf path was producing files where the time/y/x
+    # dim scales collapsed into duplicate "x" entries despite a clean
+    # in-memory Dataset.
     logger.info("Writing %s", clipped_file)
     comp = {"zlib": True, "complevel": 2}
     encoding = {var: comp for var in gis_clipped.data_vars}
-    gis_clipped.to_netcdf(clipped_file, encoding=encoding, engine="netcdf4")
+    write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False, engine="netcdf4")
+    future_clipped = client.compute(write_clipped)
+    progress(future_clipped)
 
     dss = []
     for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
