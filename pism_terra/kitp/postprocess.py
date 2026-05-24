@@ -114,25 +114,7 @@ def process_file(
     ds = client.persist(ds)
     progress(ds)
 
-    gis_clipped = ds.rio.clip(basin[basin[column] == "GIS"].geometry, drop=False)
-    gis_clipped = xr.merge([gis_clipped, ds_non_spatial])
-
-    # Suppress the default ``_FillValue=NaN`` on coordinate variables that
-    # netCDF4/h5netcdf otherwise writes.
-    for c in ("x", "y", "time"):
-        if c in gis_clipped.coords:
-            gis_clipped[c].encoding["_FillValue"] = None
-
-    # Stream the write via dask, but use the netcdf4 engine instead of
-    # h5netcdf — the h5netcdf path was producing files where the time/y/x
-    # dim scales collapsed into duplicate "x" entries despite a clean
-    # in-memory Dataset.
-    logger.info("Writing %s", clipped_file)
     comp = {"zlib": True, "complevel": 2}
-    encoding = {var: comp for var in gis_clipped.data_vars}
-    write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False, engine="netcdf4")
-    future_clipped = client.compute(write_clipped)
-    progress(future_clipped)
 
     dss = []
     for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
