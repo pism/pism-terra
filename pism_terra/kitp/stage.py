@@ -35,6 +35,7 @@ import rioxarray
 import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
+from tqdm.auto import tqdm
 
 from pism_terra.aws import local_to_s3, s3_to_local
 from pism_terra.config import load_config
@@ -120,21 +121,28 @@ def stage(
     s3_to_local(bucket, prefix=prefix, dest=input_path)
 
     grid_file = input_path / Path(config["grid_file"])
+    # Grid file gets a heavier check (full load) so leave it sequential.
     check_xr_fully(grid_file)
 
     boot_file = input_path / Path(config["boot_file"])
-    check_xr_lazy(boot_file)
-
     heatflux_file = input_path / Path(config["heatflux_file"])
-    check_xr_lazy(heatflux_file)
-
     regrid_file = input_path / Path(config["regrid_file"])
-    check_xr_lazy(regrid_file)
-
     ocean_file = input_path / Path(config["ocean_file"])
-    check_xr_lazy(ocean_file)
-
     outline_file = input_path / Path(config["outline_file"])
+
+    # Validate the lazy-check inputs concurrently; only invalid files print.
+    input_lazy_files = [boot_file, heatflux_file, regrid_file, ocean_file]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for p in input_lazy_files}
+        for future in tqdm(
+            as_completed(future_to_path),
+            total=len(future_to_path),
+            desc="Checking input files",
+            unit="file",
+        ):
+            p = future_to_path[future]
+            if not future.result():
+                print(f"{p.resolve()} is not valid ✗")
 
     # Build file index (one row per climate file)
     files_dict: dict[str, str | Path] = {
@@ -153,18 +161,42 @@ def stage(
     # Build tasks from per-GCM forcing pairs [[future, present], ...]
     tasks = [(gcm, pair[1], pair[0]) for gcm, pairs in gcms.items() for pair in pairs]
     dfs: list[pd.DataFrame] = []
-    climate_file = input_path / Path(f"{climatology}_{version}.nc")
-    check_xr_lazy(climate_file)
-    files_dict["climate_file"] = climate_file.resolve()
-    files_dict["sample"] = climatology
-    dfs.append(pd.DataFrame.from_dict([files_dict]))
-    for task in tasks:
-        gcm, pd_forcing, ff = task
-        climate_file = input_path / Path(f"{climatology}_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
-        check_xr_lazy(climate_file)
-        files_dict["climate_file"] = climate_file.resolve()
-        files_dict["sample"] = f"gcm_{gcm}_exp_{ff}_{pd_forcing}"
-        dfs.append(pd.DataFrame.from_dict([files_dict]))
+
+    # Enumerate every climate file we'll need (climatology baseline + one per
+    # GCM/forcing combo) so the validation can run in parallel below.
+    climate_specs: list[tuple[str, Path]] = [
+        (climatology, input_path / Path(f"{climatology}_{version}.nc")),
+    ]
+    for gcm, pd_forcing, ff in tasks:
+        climate_specs.append(
+            (
+                f"gcm_{gcm}_exp_{ff}_{pd_forcing}",
+                input_path / Path(f"{climatology}_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc"),
+            )
+        )
+
+    # Validate climate files concurrently. ``check_xr_lazy`` is mostly I/O
+    # (open netCDF, sample a window) so a thread pool overlaps the latency.
+    # Suppress its per-file ✓ chatter and only surface invalid files here.
+    invalid_climate_files: list[Path] = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for _, p in climate_specs}
+        for future in tqdm(
+            as_completed(future_to_path),
+            total=len(future_to_path),
+            desc="Checking climate files",
+            unit="file",
+        ):
+            p = future_to_path[future]
+            if not future.result():
+                invalid_climate_files.append(p)
+                print(f"{p.resolve()} is not valid ✗")
+
+    for sample, climate_file in climate_specs:
+        row = dict(files_dict)
+        row["climate_file"] = climate_file.resolve()
+        row["sample"] = sample
+        dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)
     return df

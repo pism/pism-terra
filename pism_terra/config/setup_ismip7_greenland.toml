@@ -12,7 +12,7 @@ resolution = "900m"
 
 [gcms]
 
-'CESM2-WACCM' = {ssp126 = {"historical" = [1978, 2015], "projection" = [2015, 2299], version = 2 }, ssp370 = {"historical" = [1978, 2015], "projection" = [2015, 2299], version = 2 }, ssp585 = {"historical" = [1978, 2015], "projection" = [2015, 2299], version = 2 } }
+'CESM2-WACCM' = {ssp126 = {"historical" = [1978, 2015], "projection" = [2015, 2300], version = 2 }, ssp370 = {"historical" = [1978, 2015], "projection" = [2015, 2300], version = 2 }, ssp585 = {"historical" = [1978, 2015], "projection" = [2015, 2300], version = 2 } }
 
 [forcing]
 

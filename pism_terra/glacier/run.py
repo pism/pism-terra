@@ -60,12 +60,7 @@ def run_glacier(
     template_file: Path | str,
     outline_file: Path | str | None,
     path: str | Path = "result",
-    resolution: None | str = None,
-    nodes: None | int = None,
-    ntasks: None | int = None,
-    queue: None | str = None,
-    tasks: None | int = None,
-    walltime: None | str = None,
+    config_cli: dict | None = None,
     debug: bool = False,
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
@@ -97,20 +92,13 @@ def run_glacier(
     path : str or pathlib.Path, optional
         Base output directory. A subfolder ``<path>/<rgi_id>`` is created with
         ``output/`` and ``run_scripts/`` subdirectories. Default is ``"result"``.
-    resolution : str or None, optional
-        Grid resolution (e.g., ``"200m"``). If ``None``, the value from
-        ``[grid].resolution`` in the config is used.
-    nodes : int or None, optional
-        Node count override for the submission template.
-    ntasks : int or None, optional
-        MPI task count override for the submission template/run options.
-    queue : str or None, optional
-        Batch queue/partition override for the submission template. If ``None``,
-        use config.
-    tasks : int or None, optional
-        MPI tasks per node.
-    walltime : str or None, optional
-        Wall time override in ``HH:MM:SS``. If ``None``, use config.
+    config_cli : dict or None, optional
+        CLI-side overrides applied after reading the config. Recognized keys:
+        ``"resolution"`` (e.g. ``"200m"``), ``"nodes"`` (int), ``"ntasks"``
+        (int), ``"tasks"`` (int, MPI tasks per node), ``"queue"`` (str),
+        ``"walltime"`` (``HH:MM:SS``), and ``"stress_balance"`` (sub-model
+        name swap, e.g. ``"sia"``). Any value of ``None`` falls back to the
+        config file. Default is ``None`` (no overrides).
     debug : bool, optional
         If ``True``, skip rendering the template (leave it empty) but still
         append the constructed PISM command line to the output script.
@@ -174,6 +162,8 @@ def run_glacier(
     outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     cfg = load_config(config_file)
 
+    config_cli = config_cli or {}
+    resolution = config_cli.get("resolution")
     if resolution:
         resolution = re.sub(r"\s+", "", resolution)
 
@@ -225,6 +215,15 @@ def run_glacier(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
+    # CLI override for the stress-balance model. Drop the previous model's
+    # options from ``run`` first so leftover keys (e.g. blatter.*) don't
+    # leak into e.g. a sia run.
+    stress_balance = config_cli.get("stress_balance")
+    if stress_balance is not None:
+        for old_key in cfg.stress_balance.selected():
+            run.pop(old_key, None)
+        cfg.stress_balance.model = stress_balance
+        run.update(cfg.stress_balance.selected())
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
@@ -276,12 +275,12 @@ def run_glacier(
     job_kwargs = {
         k: v
         for k, v in {
-            "nodes": nodes,
-            "ntasks": ntasks,
-            "queue": queue,
+            "nodes": config_cli.get("nodes"),
+            "ntasks": config_cli.get("ntasks"),
+            "queue": config_cli.get("queue"),
             "output_path": log_path.resolve(),
-            "tasks": tasks,
-            "walltime": walltime,
+            "tasks": config_cli.get("tasks"),
+            "walltime": config_cli.get("walltime"),
         }.items()
         if v is not None
     }
@@ -382,6 +381,12 @@ def run_single():
         default=None,
     )
     parser.add_argument(
+        "--stress-balance",
+        help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--execute",
         help="Execute the pism run script immediately. Ignored if `--debug` is provided.",
         action="store_true",
@@ -434,6 +439,7 @@ def run_single():
     nodes = options.nodes
     tasks = options.tasks
     walltime = options.walltime
+    stress_balance = options.stress_balance
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
@@ -477,12 +483,15 @@ def run_single():
             template_file,
             outline_file,
             path=path,
-            resolution=resolution,
-            nodes=nodes,
-            ntasks=ntasks,
-            tasks=tasks,
-            queue=queue,
-            walltime=walltime,
+            config_cli={
+                "resolution": resolution,
+                "nodes": nodes,
+                "ntasks": ntasks,
+                "tasks": tasks,
+                "queue": queue,
+                "walltime": walltime,
+                "stress_balance": stress_balance,
+            },
             debug=debug,
             uq=uq,
             sample=int(row["sample"]) if "sample" in row else idx,
@@ -566,6 +575,12 @@ def run_ensemble():
         default=None,
     )
     parser.add_argument(
+        "--stress-balance",
+        help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
@@ -619,6 +634,7 @@ def run_ensemble():
     nodes = options.nodes
     tasks = options.tasks
     walltime = options.walltime
+    stress_balance = options.stress_balance
 
     cfg = load_config(config_file)
     start = pd.Timestamp(cfg.time.time_start)
@@ -692,12 +708,15 @@ def run_ensemble():
             template_file,
             outline_file,
             path=path,
-            resolution=resolution,
-            nodes=nodes,
-            ntasks=ntasks,
-            tasks=tasks,
-            queue=queue,
-            walltime=walltime,
+            config_cli={
+                "resolution": resolution,
+                "nodes": nodes,
+                "ntasks": ntasks,
+                "tasks": tasks,
+                "queue": queue,
+                "walltime": walltime,
+                "stress_balance": stress_balance,
+            },
             debug=debug,
             uq=row_uq,
             sample=sample,

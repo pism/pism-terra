@@ -55,12 +55,7 @@ def run_kitp(
     template_file: Path | str,
     outline_file: Path | str | None,
     path: str | Path = "result",
-    resolution: None | str = None,
-    nodes: None | int = None,
-    ntasks: None | int = None,
-    tasks: None | int = None,
-    queue: None | str = None,
-    walltime: None | str = None,
+    config_cli: dict | None = None,
     debug: bool = False,
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
@@ -89,22 +84,13 @@ def run_kitp(
     path : str or pathlib.Path, optional
         Base output directory. ``output/`` and ``run_scripts/`` subdirectories
         are created inside it. Default is ``"result"``.
-    resolution : str or None, optional
-        Grid resolution (e.g., ``"200m"``). If ``None``, the value from
-        ``[grid].resolution`` in the config is used.
-    nodes : int or None, optional
-        Node count override for the submission template. If ``None``, use config.
-    ntasks : int or None, optional
-        MPI task count override for the submission template/run options.
-        If ``None``, use config.
-    tasks : int or None, optional
-        MPI tasks per node override for the submission template. If ``None``,
-        use config.
-    queue : str or None, optional
-        Batch queue/partition override for the submission template. If ``None``,
-        use config.
-    walltime : str or None, optional
-        Wall time override in ``HH:MM:SS``. If ``None``, use config.
+    config_cli : dict or None, optional
+        CLI-side overrides applied after reading the config. Recognized keys:
+        ``"resolution"`` (e.g. ``"200m"``), ``"nodes"`` (int), ``"ntasks"``
+        (int), ``"tasks"`` (int, MPI tasks per node), ``"queue"`` (str),
+        ``"walltime"`` (``HH:MM:SS``), and ``"stress_balance"`` (sub-model
+        name swap, e.g. ``"sia"``). Any value of ``None`` falls back to the
+        config file. Default is ``None`` (no overrides).
     debug : bool, optional
         If ``True``, skip rendering the template (leave it empty) but still
         append the constructed PISM command line to the output script.
@@ -167,6 +153,8 @@ def run_kitp(
 
     cfg = load_config(config_file)
 
+    config_cli = config_cli or {}
+    resolution = config_cli.get("resolution")
     if resolution:
         resolution = re.sub(r"\s+", "", resolution)
 
@@ -218,7 +206,18 @@ def run_kitp(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
-    stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
+    stress_balance = config_cli.get("stress_balance")
+    if stress_balance is None:
+        stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
+    else:
+        # Swap the selected stress-balance model. Drop the previous model's
+        # options from ``run`` first so leftover keys from e.g. blatter don't
+        # leak into a sia run.
+        for old_key in cfg.stress_balance.selected():
+            run.pop(old_key, None)
+        cfg.stress_balance.model = stress_balance
+        run.update(cfg.stress_balance.selected())
+
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
 
@@ -270,12 +269,12 @@ def run_kitp(
     job_kwargs = {
         k: v
         for k, v in {
-            "nodes": nodes,
-            "ntasks": ntasks,
-            "queue": queue,
+            "nodes": config_cli.get("nodes"),
+            "ntasks": config_cli.get("ntasks"),
+            "queue": config_cli.get("queue"),
             "output_path": log_path.resolve(),
-            "tasks": tasks,
-            "walltime": walltime,
+            "tasks": config_cli.get("tasks"),
+            "walltime": config_cli.get("walltime"),
         }.items()
         if v is not None
     }
@@ -299,6 +298,15 @@ def run_kitp(
         toml.dump(run_toml, toml_file)
 
     params.update({"run_str": run_str})
+
+    post_path = output_path / Path("post_processing")
+    post_path.mkdir(parents=True, exist_ok=True)
+
+    post_file = post_path / Path(f"g{resolution}_{name_options}_{start}_{end}.toml")
+    with open(post_file, "w", encoding="utf-8") as toml_file:
+        toml.dump(run_toml, toml_file)
+
+    postfix = f"pism-kitp-postprocess {post_file}"
     rendered_script = "" if debug else template.render(params)
 
     run_script_path = path / Path("run_scripts")
@@ -363,6 +371,12 @@ def run_single():
         default=None,
     )
     parser.add_argument(
+        "--stress-balance",
+        help="Overrides stress balance in config file.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--resolution",
         help="Override horizontal grid resolution.",
         type=str,
@@ -401,9 +415,19 @@ def run_single():
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
+    stress_balance = options.stress_balance
     tasks = options.tasks
     walltime = options.walltime
     pism_config_cdl = options.pism_config_cdl
+    config_cli = {
+        "resolution": resolution,
+        "queue": queue,
+        "ntasks": ntasks,
+        "nodes": nodes,
+        "stress_balance": stress_balance,
+        "tasks": tasks,
+        "walltime": walltime,
+    }
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -450,12 +474,7 @@ def run_single():
             template_file,
             outline_file,
             path=path,
-            resolution=resolution,
-            nodes=nodes,
-            ntasks=ntasks,
-            tasks=tasks,
-            queue=queue,
-            walltime=walltime,
+            config_cli=config_cli,
             debug=debug,
             uq=uq,
             sample=row["sample"] if "sample" in row else idx,
@@ -487,6 +506,12 @@ def run_ensemble():
         "--ntasks",
         help="Numbers of cores.",
         type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--stress-balance",
+        help="Overrides stress balance in config file.",
+        type=str,
         default=None,
     )
     parser.add_argument(
@@ -565,9 +590,19 @@ def run_ensemble():
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
+    stress_balance = options.stress_balance
     tasks = options.tasks
     walltime = options.walltime
     pism_config_cdl = options.pism_config_cdl
+    config_cli = {
+        "resolution": resolution,
+        "queue": queue,
+        "ntasks": ntasks,
+        "nodes": nodes,
+        "stress_balance": stress_balance,
+        "tasks": tasks,
+        "walltime": walltime,
+    }
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -642,12 +677,7 @@ def run_ensemble():
             template_file,
             outline_file,
             path=path,
-            resolution=resolution,
-            nodes=nodes,
-            ntasks=ntasks,
-            tasks=tasks,
-            queue=queue,
-            walltime=walltime,
+            config_cli=config_cli,
             debug=debug,
             uq=row_uq,
             sample=sample,
