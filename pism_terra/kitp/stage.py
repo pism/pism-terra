@@ -24,7 +24,7 @@ Staging.
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -132,7 +132,10 @@ def stage(
 
     # Validate the lazy-check inputs concurrently; only invalid files print.
     input_lazy_files = [boot_file, heatflux_file, regrid_file, ocean_file]
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # Processes (not threads): HDF5 isn't reliably thread-safe across all
+    # builds (Chinook segfaults), so each worker gets its own interpreter
+    # and HDF5 state.
+    with ProcessPoolExecutor(max_workers=8) as executor:
         future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for p in input_lazy_files}
         for future in tqdm(
             as_completed(future_to_path),
@@ -176,10 +179,13 @@ def stage(
         )
 
     # Validate climate files concurrently. ``check_xr_lazy`` is mostly I/O
-    # (open netCDF, sample a window) so a thread pool overlaps the latency.
+    # (open netCDF, sample a window); a worker pool overlaps the latency.
     # Suppress its per-file ✓ chatter and only surface invalid files here.
     invalid_climate_files: list[Path] = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # Processes (not threads): HDF5 isn't reliably thread-safe across all
+    # builds (Chinook segfaults), so each worker gets its own interpreter
+    # and HDF5 state.
+    with ProcessPoolExecutor(max_workers=8) as executor:
         future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for _, p in climate_specs}
         for future in tqdm(
             as_completed(future_to_path),

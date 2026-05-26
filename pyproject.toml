@@ -106,10 +106,10 @@ pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
 pism-kitp-stage = "pism_terra.kitp.stage:main"
 pism-s4f-planning = "pism_terra.glacier.s4f:main"
 pism-s4f-prepare = "pism_terra.glacier.prepare:s4f"
+pism-validate = "pism_terra.validate:main"
 
 [tool.setuptools.packages.find]
 include = ["pism_terra*"]
-
 
 [tool.setuptools]
 py-modules = ["pism_terra"]
