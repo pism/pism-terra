@@ -24,6 +24,7 @@ Prepare observations.
 """
 
 import collections
+from functools import lru_cache
 from pathlib import Path
 
 import geopandas as gpd
@@ -34,9 +35,98 @@ import xarray as xr
 from pyproj import Transformer
 from rasterio.enums import Resampling
 from scipy.interpolate import RegularGridInterpolator
+from shapely.geometry import box as _shapely_box
 
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_rio, check_xr_lazy
+
+# RGI o1 codes for which ITS_LIVE v2.1 publishes a per-region COG. 13/15/16 are
+# absent because they're merged into the High Mountain Asia (14) mosaic.
+_ITS_LIVE_REGION_CODES: tuple[str, ...] = (
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07",
+    "08",
+    "09",
+    "10",
+    "11",
+    "12",
+    "14",
+    "17",
+    "18",
+    "19",
+)
+
+
+@lru_cache(maxsize=None)
+def _its_live_region_footprint(region_code: str):
+    """
+    Return ``(crs, bounds_polygon)`` for an ITS_LIVE per-region COG.
+
+    Opens the COG via ``/vsicurl/`` and reads only the header (no data
+    transfer beyond a few KB). Cached so each region is probed once per
+    process.
+
+    Parameters
+    ----------
+    region_code : str
+        Two-digit RGI o1 code (e.g. ``"01"`` for Alaska).
+
+    Returns
+    -------
+    tuple
+        ``(rasterio.crs.CRS, shapely.geometry.Polygon)`` — the COG's native
+        CRS and its full extent as a rectangular polygon in that CRS.
+    """
+    url = (
+        "/vsicurl/https://its-live-data.s3.amazonaws.com/velocity_mosaic/v2.1/static/cog/"
+        f"ITS_LIVE_velocity_120m_RGI{region_code}A_0000_V02.1_v.tif"
+    )
+    with rasterio.open(url) as src:
+        b = src.bounds
+        return src.crs, _shapely_box(b.left, b.bottom, b.right, b.top)
+
+
+def region_code_from_bounds(bounds: tuple[float, float, float, float], crs: str) -> str:
+    """
+    Return the RGI region code whose ITS_LIVE COG contains ``bounds``.
+
+    Probes each published v2.1 per-region COG header on S3 (cached per
+    process), reprojects ``bounds`` into the COG's CRS, and returns the
+    first region whose footprint fully contains them.
+
+    Parameters
+    ----------
+    bounds : tuple of float
+        ``(minx, miny, maxx, maxy)`` in the CRS given by ``crs``.
+    crs : str
+        CRS of ``bounds`` (anything pyproj accepts: EPSG code, WKT, …).
+
+    Returns
+    -------
+    str
+        Two-digit RGI o1 region code (e.g. ``"01"``).
+
+    Raises
+    ------
+    ValueError
+        If no published region COG fully contains ``bounds``.
+    """
+    minx, miny, maxx, maxy = bounds
+    for code in _ITS_LIVE_REGION_CODES:
+        cog_crs, cog_poly = _its_live_region_footprint(code)
+        t = Transformer.from_crs(crs, cog_crs, always_xy=True)
+        ub = t.transform_bounds(minx, miny, maxx, maxy)
+        if cog_poly.contains(_shapely_box(*ub)):
+            return code
+    raise ValueError(
+        f"No ITS_LIVE per-region COG fully contains bounds {bounds} (crs={crs}). "
+        "Region may straddle two regions, or fall outside published coverage."
+    )
 
 
 def get_velocities_by_bounds(
@@ -84,7 +174,8 @@ def get_velocities_by_bounds(
 
     # Load dataset
     if product_name == "its_live":
-        ds = get_itslive_velocities()
+        region_code = region_code_from_bounds(bounds, crs=src_crs)
+        ds = get_itslive_velocities_by_region_code(region_code)
     else:
         raise NotImplementedError(f"Velocity product '{product_name}' is not supported.")
 
@@ -100,7 +191,9 @@ def get_velocities_by_bounds(
     return subset
 
 
-def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error", "vy_error", "landice"]) -> xr.Dataset:
+def get_itslive_velocities_by_region_code(
+    region_code: str, components: list[str] = ["v", "vx", "vy", "vx_error", "vy_error", "landice"]
+) -> xr.Dataset:
     """
     Load the global ITS_LIVE surface velocity mosaic as an xarray dataset.
 
@@ -109,6 +202,8 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
 
     Parameters
     ----------
+    region_code : str
+        Two-digit RGI o1 code (e.g. ``"01"`` for Alaska).
     components : list of str, optional
         List of velocity components to load. Valid entries include:
         - "v": velocity magnitude
@@ -143,7 +238,10 @@ def get_itslive_velocities(components: list[str] = ["v", "vx", "vy", "vx_error",
     }
     dss = []
     for c in components:
-        url = f"""https://its-live-data.s3-us-west-2.amazonaws.com/velocity_mosaic/v2/static/cog_global/ITS_LIVE_velocity_120m_0000_v02_{c}.vrt"""
+        url = (
+            "https://its-live-data.s3.amazonaws.com/velocity_mosaic/v2.1/static/cog/"
+            f"ITS_LIVE_velocity_120m_RGI{region_code}A_0000_V02.1_{c}.tif"
+        )
         _ds = (
             rxr.open_rasterio(url, parse_coordinates=True, chunks={"x": 1024, "y": 1024}, masked=True)
             .isel(band=0)
@@ -302,15 +400,6 @@ def glacier_velocities_from_grid(
         ds_clipped["u_observed"] = ds_clipped["vx"].fillna(0)
         ds_clipped["v_observed"] = ds_clipped["vy"].fillna(0)
 
-        # Ensure y is strictly increasing (PISM requires this for regridding)
-        if ds_clipped.y[0] > ds_clipped.y[-1]:
-            ds_clipped = ds_clipped.sortby("y")
-        # Use the snapshotted null pattern from the reprojected ITS_LIVE ``v``
-        # (before the finite-difference overwrite). ``sortby`` above reorders
-        # rows in ds_clipped but ``v_missing`` was taken before that, so
-        # re-align by sorting it the same way.
-        if v_missing.y[0] > v_missing.y[-1]:
-            v_missing = v_missing.sortby("y")
         ds_clipped["zeta_fixed_mask"] = xr.where(v_missing, 1, 0).fillna(0).astype(int)
         ds_clipped["vel_misfit_weight"] = xr.where(v_missing, 0, 1).fillna(0).astype(int)
         ds_clipped["vel_misfit_weight"].attrs.update(
@@ -346,6 +435,14 @@ def glacier_velocities_from_grid(
             for k in ("scale_factor", "add_offset", "AREA_OR_POINT"):
                 ds_clipped[name].attrs.pop(k, None)
                 ds_clipped[name].encoding.pop(k, None)
+
+        # Re-attach the CRS + grid_mapping on every data_var. ``.where`` and
+        # the ``u_observed``/``v_observed`` reconstructions drop the
+        # ``grid_mapping`` encoding key, so only untouched vars (``v``,
+        # ``landice``) would otherwise carry it through to the written file.
+        ds_clipped = ds_clipped.rio.write_crs(target_grid.spatial_ref.attrs["crs_wkt"]).rio.write_grid_mapping(
+            "mapping"
+        )
 
         ds_clipped.to_netcdf(path)
 
