@@ -88,7 +88,6 @@ docs = [
 
 [project.scripts]
 combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
-kitp_async_writer = "pism_terra.kitp.kitp_async_writer:main"
 pism-glacier-execute = "pism_terra.glacier.execute:main"
 pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
 pism-glacier-prepare = "pism_terra.glacier.prepare:rgi"
@@ -105,6 +104,7 @@ pism-kitp-prepare = "pism_terra.kitp.prepare:cli"
 pism-kitp-run = "pism_terra.kitp.run:run_single"
 pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
 pism-kitp-stage = "pism_terra.kitp.stage:main"
+pism-kitp-writer = "pism_terra.kitp.writer:main"
 pism-s4f-planning = "pism_terra.glacier.s4f:main"
 pism-s4f-prepare = "pism_terra.glacier.prepare:s4f"
 pism-validate = "pism_terra.validate:main"
