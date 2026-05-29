@@ -1,0 +1,1 @@
+mpirun -np  {{ ntasks | default(8) }} pism {{ run_str }} : -n 1 python ~/base/pism-terra/pism_terra/kitp/kitp_async_writer.py -d -g ~/base/pism-terra/2026_05_kitp_writer/kitp/input/v4/Greenland_Basins_PS_v1.4.2_w_shelves.gpkg -r 2
