@@ -80,7 +80,6 @@ resolution = "1200m"
 'grid.Lz' = 4000
 'grid.Mbz' = 51
 'grid.Mz' = 101
-'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
 [energy]

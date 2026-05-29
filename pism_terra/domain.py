@@ -304,9 +304,7 @@ def create_domain(
                 data=0,
                 dims=[y_dim, x_dim],
                 coords={x_dim: coords[x_dim], y_dim: coords[y_dim]},
-                attrs={
-                    "dimensions": f"{x_dim} {y_dim}",
-                },
+                attrs={"dimensions": f"{x_dim} {y_dim}"},
             ),
             x_bnds_dim: xr.DataArray(
                 data=x_bounds,
@@ -321,8 +319,9 @@ def create_domain(
         },
         attrs={"Conventions": "CF-1.8"},
     ).rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim)
-    ds.rio.write_crs(crs, inplace=True).rio.write_coordinate_system(inplace=True)
+    ds = ds.rio.write_crs(crs, grid_mapping_name="mapping").rio.write_coordinate_system()
+
     for var in list(ds.data_vars) + list(ds.coords):
-        ds[var].encoding["_FillValue"] = None
+        ds[var].encoding.update({"_FillValue": None})
 
     return ds

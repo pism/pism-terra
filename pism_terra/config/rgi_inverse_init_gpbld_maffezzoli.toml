@@ -19,7 +19,7 @@ forcing_mask = "all"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0051-01-01"
+'time.end' =  "051-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -57,7 +57,7 @@ forcing_mask = "all"
 
 [grid]
 
-resolution = "500m"
+resolution = "200m"
 'grid.file' = "none"
 'grid.Lbz' = 0
 'grid.Lz' = 1200
@@ -181,7 +181,7 @@ model = "constant"
 
 model = "null"
 
-[hydrology.options]
+[hydrology.options.null]
 
 'hydrology.model' = "null"
 'hydrology.null_diffuse_till_water' = "no"
