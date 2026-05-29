@@ -74,13 +74,12 @@ version = "v4"
 
 [grid]
 
-resolution = "900m"
+resolution = "1200m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 51
 'grid.Mz' = 101
-'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
 [energy]

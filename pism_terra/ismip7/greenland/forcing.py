@@ -660,8 +660,7 @@ def prepare_observations(
     else:
         boot = xr.merge([ds_bm_regridded[["bed", "thickness", "surface"]], ftt_mask, liafr])
     boot = boot.fillna(0)
-    ds = xr.merge([boot, ds_bm["mapping"]])
-
+    ds = boot
     geo = (
         ds_bm[["geothermal_heat_flux1"]]
         .rename_dims({"x1km": "x", "y1km": "y"})
@@ -679,12 +678,18 @@ def prepare_observations(
         ds[v].attrs.pop("coordinates", None)
         ds[v].encoding.pop("coordinates", None)
 
+    ds.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
+
+    comp = {"zlib": True, "complevel": 2}
+    for var in list(ds.data_vars) + list(ds.coords):
+        ds[var].encoding.update({"_FillValue": None})
+    for var in list(ds.data_vars):
+        ds[var].encoding.update(comp)
+
     resolution = int(ds.x[1] - ds.x[0])
     obs_file = output_path / Path(f"boot_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
-    comp = {"zlib": True, "complevel": 2}
-    encoding = {var: comp for var in ds.data_vars}
-    encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
-    ds.to_netcdf(obs_file, encoding=encoding, engine="h5netcdf")
+
+    ds.to_netcdf(obs_file, engine="h5netcdf")
 
     geo["bheatflx"].attrs.pop("coordinates", None)
     geo["bheatflx"].encoding.pop("coordinates", None)

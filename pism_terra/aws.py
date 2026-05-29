@@ -227,9 +227,26 @@ def s3_to_local(
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
             if _needs_download(local_path, obj["Size"], obj["ETag"]):
-                print("DOWNLOAD", f"s3://{bucket}/{key}", "→", local_path)
+                logger.info("Downloading s3://%s/%s -> %s", bucket, key, local_path)
                 if not dry_run:
-                    s3.download_file(bucket, key, str(local_path), Config=txconf)
+                    # ``leave=False`` makes each per-file bar self-erase so the
+                    # terminal isn't littered with one bar per object.
+                    with tqdm(
+                        total=obj["Size"],
+                        unit="B",
+                        unit_scale=True,
+                        unit_divisor=1024,
+                        desc=Path(key).name,
+                        leave=False,
+                        miniters=1,
+                    ) as pbar:
+                        s3.download_file(
+                            bucket,
+                            key,
+                            str(local_path),
+                            Callback=pbar.update,
+                            Config=txconf,
+                        )
 
             s3_local_abs.add(str(local_path.resolve()))
 

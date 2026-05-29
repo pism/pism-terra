@@ -88,6 +88,7 @@ docs = [
 
 [project.scripts]
 combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
+kitp_async_writer = "pism_terra.kitp.kitp_async_writer:main"
 pism-glacier-execute = "pism_terra.glacier.execute:main"
 pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
 pism-glacier-prepare = "pism_terra.glacier.prepare:rgi"

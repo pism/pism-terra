@@ -143,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     stage_path = output_path / Path(f"stage_{config["version"]}")
     stage_path.mkdir(exist_ok=True)
 
+    crs = config["domain"]["crs"]
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
     resolution_str = config["domain"]["resolution"]
@@ -151,10 +152,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         raise ValueError(f"Cannot parse resolution string: {resolution_str!r}")
     resolution, _ = int(match.group(1)), match.group(2)
 
-    grid_ds = create_domain(x_bnds, y_bnds, resolution)
+    grid_ds = create_domain(x_bnds, y_bnds, resolution, crs=crs)
     grid_file = data_path / Path("ismip7_greenland_grid.nc")
-    encoding = {var: {"_FillValue": None} for var in list(grid_ds.data_vars) + list(grid_ds.coords)}
-    grid_ds.to_netcdf(grid_file, encoding=encoding)
+    grid_ds.to_netcdf(grid_file)
     check_xr_fully(grid_file)
 
     url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
