@@ -1,6 +1,7 @@
 name: pism-terra
 channels:
   - conda-forge
+  - pism
 dependencies:
   - python
   - pip
@@ -19,16 +20,21 @@ dependencies:
   - ecmwf-datastores-client
   - geocube
   - geopandas
-  - h5netcdf
   - jinja2
   - joblib
   - libgdal-core
   - libgdal-hdf5
   - libgdal-netcdf
   - matplotlib
+  - mpi4py
   - nc-time-axis
+  - libnetcdf=*=*openmpi*
+  - netcdf4=*=*openmpi*
+  - h5py=*=*openmpi*
+  - hdf5=*=*openmpi*
   - netCDF4
   - numpy
+  - openmpi >=5
   - pandas
   - pint-xarray
   - pyamg
@@ -49,6 +55,8 @@ dependencies:
   - tqdm
   - xarray
   - xarray-regrid
+  - yac=*=*openmpi*
+  - yaxt=*=*openmpi*
   - zarr
   # for development and testing
   - black

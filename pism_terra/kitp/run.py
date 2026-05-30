@@ -298,6 +298,7 @@ def run_kitp(
         toml.dump(run_toml, toml_file)
 
     params.update({"run_str": run_str})
+    params.update({"geometry_file": outline_file})
 
     post_path = output_path / Path("post_processing")
     post_path.mkdir(parents=True, exist_ok=True)
