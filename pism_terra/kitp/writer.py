@@ -73,6 +73,77 @@ class OutputGrid(object):
 
         return Proj(self.proj_string)(xx, yy, inverse=True, radians=True)
 
+    def to_dataset(self) -> xr.Dataset:
+        """
+        Return the grid as a rioxarray-enabled ``xarray.Dataset``.
+
+        The Dataset carries 1-D ``x`` / ``y`` cell-centre coords (with CF
+        ``axis`` / ``bounds`` attrs), the corresponding ``x_bnds`` /
+        ``y_bnds`` cell-edge arrays, and a 0-D ``mapping`` grid-mapping
+        variable that holds :attr:`mapping_attributes` plus the CRS WKT
+        written by :meth:`rioxarray.rioxarray.XRasterBase.write_crs`.
+        Useful as a target grid for ``.rio.reproject_match`` or any
+        ``xarray_regrid`` routine.
+
+        Returns
+        -------
+        xarray.Dataset
+            Empty grid with CRS attached and spatial dims registered.
+        """
+        dx = self.dx()
+        dy = self.dy()
+        x_bounds = np.stack([self.x - 0.5 * dx, self.x + 0.5 * dx], axis=-1)
+        y_bounds = np.stack([self.y - 0.5 * dy, self.y + 0.5 * dy], axis=-1)
+
+        coords = {
+            "x": (
+                "x",
+                self.x,
+                {
+                    "axis": "X",
+                    "long_name": "x-coordinate in Cartesian system",
+                    "standard_name": "projection_x_coordinate",
+                    "units": "m",
+                    "bounds": "x_bnds",
+                },
+            ),
+            "y": (
+                "y",
+                self.y,
+                {
+                    "axis": "Y",
+                    "long_name": "y-coordinate in Cartesian system",
+                    "standard_name": "projection_y_coordinate",
+                    "units": "m",
+                    "bounds": "y_bnds",
+                },
+            ),
+            # Bounds belong with the coords (not data_vars): keeping them as
+            # data variables makes ``Dataset.rio.clip`` iterate them and trip
+            # on MissingSpatialDimensionError because x_bnds/y_bnds only
+            # carry one of the spatial dims each.
+            "x_bnds": (("x", "nv2"), x_bounds),
+            "y_bnds": (("y", "nv2"), y_bounds),
+        }
+        ds = xr.Dataset(
+            coords=coords,
+            data_vars={
+                "domain": xr.DataArray(
+                    data=1.0,
+                    dims=["y", "x"],
+                    coords={"x": coords["x"], "y": coords["y"]},
+                    attrs={"dimensions": "x y"},
+                ),
+            },
+        )
+
+        # Register the spatial dims and stamp the CRS via rioxarray, using
+        # ``"mapping"`` as the grid-mapping variable so the user-supplied
+        # attributes live alongside the CRS WKT rioxarray writes.
+        ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y").rio.write_crs(self.proj_string, grid_mapping_name="mapping")
+
+        return ds
+
     """Grid defined in 'Appendix 1 – Output grid definition and interpolation' of 'ISMIP6
     Projections Greenland'
 
@@ -329,9 +400,18 @@ class YacWrapper:
             xx, yy = np.meshgrid(x, y)
             lon, lat = Proj(proj_string)(xx, yy, inverse=True, radians=True)
 
-        # Create grid and define point locations cell centers:
+        # ``yac.CloudGrid`` is the unstructured-point-cloud path — it expects
+        # 1-D arrays of point coordinates, not the 2-D ``(My, Mx)`` arrays
+        # ``fake_lon_lat`` / ``Proj(meshgrid)`` hand back. Flatten so YAC sees
+        # ``Mx * My`` points.
+        lon = np.asarray(lon).reshape(-1)
+        lat = np.asarray(lat).reshape(-1)
+
+        # Create grid and define point locations cell centers.
+        # ``CloudGrid.def_points`` takes only ``(lon, lat)`` — clouds have no
+        # CORNER/CELL distinction, unlike the structured ``Curve2dGrid`` path.
         grid = yac.CloudGrid(self._output_grid_name(grid_name), lon, lat)
-        grid.points = grid.def_points(yac.Location.CORNER, lon, lat)
+        grid.points = grid.def_points(lon, lat)
 
         interpolation_stack = yac.InterpolationStack()
         interpolation_stack.add_nnn(yac.NNNReductionType.AVG, 1, 1.0, 0.0)
@@ -369,7 +449,6 @@ class YacWrapper:
             raise RuntimeError(
                 "unknown projection in PISM: " + f"cannot write to projected grid '{output_grid.proj_string}'"
             )
-            # proj_string = "EPSG:3413"
 
         # define the grid using coordinates of cell corners:
         lon_corner, lat_corner = output_grid.lonlat_corner()
@@ -614,7 +693,7 @@ def define_variable(File, variable, dims):
     File.define_variable(variable)
 
 
-def main(compression_level, output_grid=None):
+def main(compression_level, output_grid=None, geometry_file=None, geometry_column=None):
     """Receive and process "action" messages from PISM."""
     yac_wrapper = YacWrapper()
 
@@ -635,6 +714,12 @@ def main(compression_level, output_grid=None):
 
     # these variables are not written to "one variable per file" outputs
     ignored_variables = set(["wall_clock_time", "model_years_per_processor_hour", "step_counter", "pism_config"])
+
+    def get_geometries(file_name):
+
+        gdf = gpd.read_file(file_name)
+        logger.debug(f"found {len(gdf)} geometries")
+        return gdf
 
     def get_file(file_name, variable_name):
         if one_var_per_file(file_name):
@@ -667,6 +752,16 @@ def main(compression_level, output_grid=None):
 
                 file_vars["mapping"]["attributes"] = output_grid.mapping()
 
+            # Register the "basin" dimension that per-basin variables will use,
+            # plus a string-valued coord variable carrying the geometry labels.
+            if basin_dim_meta is not None:
+                dims.setdefault("basin", basin_dim_meta)
+                F.define_dimension(dims["basin"])
+                if "basin" not in F.nc_dataset.variables:
+                    basin_coord = F.nc_dataset.createVariable("basin", str, ("basin",))
+                    for i, name in enumerate(basin_names):
+                        basin_coord[i] = name
+
             # define variables that are not "fields" and are not ignored:
             for var_name, info in file_vars.items():
                 if var_name not in fields.union(ignored):
@@ -683,6 +778,69 @@ def main(compression_level, output_grid=None):
                         define_variable(F, info, dims)
 
         return files[fname]
+
+    # Load the geometry feature set up-front so the "basin" dimension's
+    # length and label list are available before any DEFINE_VARIABLE /
+    # get_file call, regardless of whether ``output_grid`` is provided.
+    geometries_df = None
+    basin_names: list[str] = []
+    if geometry_file is not None:
+        geometries_df = get_geometries(geometry_file)
+        basin_names = [str(n) for n in geometries_df[geometry_column].tolist()]
+    basin_dim_meta: dict | None = {"name": "basin", "length": len(basin_names)} if basin_names else None
+
+    masks: dict = {}
+    if geometries_df is not None and output_grid is not None:
+        # Eager build: we already have a grid object, so masks are derivable now.
+        da = output_grid.to_dataset()["domain"]
+        gdf = geometries_df.to_crs(output_grid.proj_string)
+        for _, feat in gdf.iterrows():
+            # ``rio.clip(drop=False)`` returns ``da``'s values inside the
+            # geometry and NaN outside. Force a clean 1-inside / NaN-outside
+            # multiplicative mask regardless of what ``domain`` is filled with.
+            clipped = da.rio.clip([feat.geometry], drop=False)
+            mask = xr.where(clipped.notnull(), 1.0, np.nan)
+            name = feat[geometry_column]
+            masks[name] = mask
+            logger.debug(f"Creating mask from geometry {name}")
+
+    # State captured from PISM when ``output_grid is None`` so masks can be
+    # built lazily once x, y, and the mapping CRS arrive over YAC.
+    pism_x: np.ndarray | None = None
+    pism_y: np.ndarray | None = None
+    pism_mapping_attrs: dict | None = None
+
+    def _build_masks_from_pism_grid() -> None:
+        """
+        Build basin masks from PISM-supplied x, y, and mapping attrs.
+
+        Called whenever any of those three become available; only does
+        real work once all three are present and masks haven't been built.
+        """
+        nonlocal masks
+        if masks or geometries_df is None:
+            return
+        if pism_x is None or pism_y is None or pism_mapping_attrs is None:
+            return
+        try:
+            from pyproj import CRS  # pylint: disable=import-outside-toplevel
+
+            crs = CRS.from_cf(pism_mapping_attrs)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(f"Could not derive CRS from PISM mapping attrs: {exc}")
+            return
+        da = xr.DataArray(
+            np.ones((len(pism_y), len(pism_x)), dtype=np.float32),
+            dims=("y", "x"),
+            coords={"x": pism_x, "y": pism_y},
+        ).rio.write_crs(crs)
+        gdf = geometries_df.to_crs(crs)
+        for _, feat in gdf.iterrows():
+            clipped = da.rio.clip([feat.geometry], drop=False)
+            mask = xr.where(clipped.notnull(), 1.0, np.nan)
+            name = feat[geometry_column]
+            masks[name] = mask
+            logger.debug(f"Lazy mask from {name} (from PISM-supplied grid)")
 
     while True:
         # Wait for an action
@@ -778,6 +936,22 @@ def main(compression_level, output_grid=None):
                 variable_name = metadata["variable_name"]
                 logger.debug(f"DEFINE_VARIABLE {variable_name} in {file_name}")
 
+                # For any gridded variable ending in (..., y, x), insert a
+                # leading "basin" axis so the data lands as (..., basin, y, x).
+                # At write-time we'll broadcast field * mask along that axis.
+                if basin_names and tuple(metadata["dimensions"][-2:]) == ("y", "x"):
+                    metadata = dict(metadata)
+                    metadata["dimensions"] = list(metadata["dimensions"])
+                    metadata["dimensions"].insert(-2, "basin")
+                    metadata["per_basin"] = True
+
+                # Capture PISM's mapping attrs the first time we see them,
+                # so lazy mask construction (when ``output_grid is None``)
+                # can derive a CRS without an OutputGrid instance.
+                if variable_name == "mapping" and output_grid is None and pism_mapping_attrs is None:
+                    pism_mapping_attrs = dict(metadata.get("attributes", {}))
+                    _build_masks_from_pism_grid()
+
                 if file_name not in variables:
                     variables[file_name] = {}
 
@@ -788,7 +962,43 @@ def main(compression_level, output_grid=None):
                 logger.debug(f"SEND_GRIDDED_VARIABLE {variable_name} in {file_name}")
                 array = yac_wrapper.receive_gridded_variable(metadata)
 
-                get_file(file_name, variable_name).write_gridded_variable(array, metadata)
+                F = get_file(file_name, variable_name)
+                saved_meta = variables.get(file_name, {}).get(variable_name, {})
+                if saved_meta.get("per_basin") and metadata["ndims"] == 2:
+                    # When ``output_grid`` is None, masks may not be built yet.
+                    # Try one more time now that we should have everything.
+                    if not masks:
+                        _build_masks_from_pism_grid()
+                    if not masks:
+                        logger.error(
+                            f"per_basin write requested for {variable_name} but "
+                            "no masks are available — falling back to plain "
+                            "write_gridded_variable. Check that PISM is sending "
+                            "x, y, and mapping before any gridded variable."
+                        )
+                        F.write_gridded_variable(array, metadata)
+                        continue
+                    # field shape (1, y, x) -> base 2D (y, x); broadcast across
+                    # every basin mask and write each (y, x) slice into the
+                    # per-basin index of the netCDF variable.
+                    base = array[0]
+                    nc_var = F.nc_dataset.variables[variable_name]
+                    logger.debug(
+                        f"per_basin write {variable_name}: base shape={base.shape}, "
+                        f"finite min/max={np.nanmin(base):.4g}/{np.nanmax(base):.4g}"
+                    )
+                    for i, (basin_name, mask) in enumerate(masks.items()):
+                        masked = base * mask.values
+                        logger.debug(
+                            f"  basin[{i}]={basin_name}: masked finite min/max="
+                            f"{np.nanmin(masked):.4g}/{np.nanmax(masked):.4g}"
+                        )
+                        if metadata["time_dependent"]:
+                            nc_var[F.time_index, i, :, :] = masked
+                        else:
+                            nc_var[i, :, :] = masked
+                else:
+                    F.write_gridded_variable(array, metadata)
 
             case ServerActions.SEND_VARIABLE.value:
                 variable_name = metadata["variable_name"]
@@ -806,6 +1016,15 @@ def main(compression_level, output_grid=None):
                         array = output_grid.y
                         metadata["start"] = [0]
                         metadata["count"] = [My]
+                else:
+                    # No OutputGrid: capture x/y from PISM so masks can be
+                    # built lazily once the mapping attrs are also known.
+                    if variable_name == "x":
+                        pism_x = np.asarray(array).reshape(-1)
+                        _build_masks_from_pism_grid()
+                    elif variable_name == "y":
+                        pism_y = np.asarray(array).reshape(-1)
+                        _build_masks_from_pism_grid()
 
                 if one_var_per_file(file_name):
                     if variable_name in ignored_variables:
@@ -847,8 +1066,14 @@ def main(compression_level, output_grid=None):
         F.close()
 
 
-if __name__ == "__main__":
-    from argparse import ArgumentParser
+def cli():
+    """
+    Console entry point.
+
+    Parses CLI options, configures logging, and dispatches to :func:`main`.
+    Hooked into ``pyproject.toml`` as the ``pism-kitp-writer`` entry point.
+    """
+    from argparse import ArgumentParser  # pylint: disable=import-outside-toplevel
 
     parser = ArgumentParser(description="Asynchronous output writer for PISM")
     parser.add_argument(
@@ -858,7 +1083,6 @@ if __name__ == "__main__":
         action="store_true",
         help="set logging level to 'DEBUG'",
     )
-
     parser.add_argument(
         "-c",
         "--compression",
@@ -867,7 +1091,6 @@ if __name__ == "__main__":
         default=1,
         help="set compression level for 2D and 3D variables",
     )
-
     parser.add_argument(
         "-g",
         "--geometry-file",
@@ -876,7 +1099,13 @@ if __name__ == "__main__":
         default=None,
         help="Geopandas readable file containing geometries.",
     )
-
+    parser.add_argument(
+        "--geometry-column",
+        dest="geometry_column",
+        type=str,
+        default="SUBREGION1",
+        help="Column to be used to name basin.",
+    )
     parser.add_argument(
         "-r",
         "--resolution",
@@ -885,16 +1114,40 @@ if __name__ == "__main__":
         default=5,
         help="output grid resolution, km (for ISMIP7, choose one of 20, 10, 5, 2 or 1)",
     )
+    parser.add_argument(
+        "--grid",
+        dest="grid",
+        choices=("ismip7", "stdgreenland", "none"),
+        default="none",
+        help=(
+            "select the output grid: 'ismip7' / 'stdgreenland' reproject onto the "
+            "named grid at --resolution km; 'none' writes PISM's native grid."
+        ),
+    )
 
     options = parser.parse_args()
 
     if options.debug:
         logging.basicConfig(level=logging.DEBUG)
-        logger = logging.getLogger("pism_output")
+
+    if options.grid == "ismip7":
+        output_grid = ISMIP7GreenlandGrid(resolution=options.resolution * 1000.0)
+    elif options.grid == "stdgreenland":
+        output_grid = StdGreenlandGrid(resolution=options.resolution * 1000.0)
+    else:
+        output_grid = None
 
     try:
-        grid = ISMIP7GreenlandGrid(resolution=options.resolution * 1000.0)
-        main(options.compression, output_grid=grid)
-    except Exception as e:
+        main(
+            options.compression,
+            output_grid=output_grid,
+            geometry_file=options.geometry_file,
+            geometry_column=options.geometry_column,
+        )
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.critical(f"ERROR: {e}")
         traceback.print_exc()
+
+
+if __name__ == "__main__":
+    cli()
