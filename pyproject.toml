@@ -78,11 +78,14 @@ dev = [
 ]
 
 docs = [
-    "furo",
     "sphinx",
+    "pydata-sphinx-theme",
+    "sphinx-book-theme",
+    "sphinx-design",
+    "sphinx-gallery",
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
-    "myst-parser",
+    "myst-nb",
     "numpydoc",
 ]
 

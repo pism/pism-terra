@@ -312,10 +312,10 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
 
             l = []
 
-            for _exp_id, _gcm_slc in basin_slc.groupby("exp_id"):
-                exp = EXPS_OPTS[_exp_id]
+            for exp_name, exp in EXPS_OPTS.items():
+                _gcm_slc = basin_slc.sel({"exp_id": exp_name})
                 _ = _gcm_slc.plot(ax=ax, hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
-                _l = _gcm_slc.isel({"gcm_id": 0, "exp_id": 0}).plot(
+                _l = _gcm_slc.isel({"gcm_id": 0}).plot(
                     ax=ax, color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75, add_legend=False
                 )
                 l.append(_l)
