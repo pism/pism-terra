@@ -6,26 +6,53 @@ on ice flow. The complex flow patterns in Greenland's outlet glaciers cannot
 be reproduced *for the right reason* without accurate ice thickness. Two
 global ice thickness products are currently supported: Frank et al and Maffezzoli et al.; see {cite}`Frank2026` and {cite}`Maffezzoli2025`.
 
-## 1. Pick a glacier
 
-Use any RGI v7 complex ID. Wrangell glacier (Alaska) is a good first target:
+## 2. Frank ice thickness
 
-```text
-RGI2000-v7.0-C-01-04374
-```
-
-## 2. Stage inputs
-
-Staging downloads the DEM, ice thickness, climate forcing, and observed
-velocities, then projects everything onto the run's target grid.
+Stage `RGI2000-v7.0-C-01-04374` with the Frank ice thickness
 
 ```bash
 pism-glacier-stage \
+    --output-path frank \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5_maffezzoli_1year.toml 
+    pism_terra/config/rgi_era5_frank.toml 
 ```
 
-You'll get a `<RGI_ID>/input/` directory with one NetCDF per input.
+and then generate the run scripts for your local machine using the `debug.j2` template:
+```bash
+pism-glacier-run \
+    --output-path frank \
+    RGI2000-v7.0-C-01-04374 \
+    pism_terra/config/rgi_era5_frank.toml \
+    pism_terra/templates/debug.j2
+```
+
+Now you can execute the run script
+
+```bash
+    RGI2000-v7.0-C-01-04374/run_scripts/submit_g400m_RGI2000-v7.0-C-01-04374_id_0_1978-01-01_2025-01-01.sh
+```
+
+
+
+Stage `RGI2000-v7.0-C-01-04374` with the Maffezzoli ice thickness:
+```bash
+pism-glacier-stage \
+    --output-path maffezzoli \
+    RGI2000-v7.0-C-01-04374 \
+    pism_terra/config/rgi_era5_maffezzoli.toml \
+    pism_terra/templates/debug.j2
+```
+
+and now generate the run scripts for your local machine using the `debug.j2` template:
+```bash
+pism-glacier-run \
+    --output-path maffezzoli \
+    RGI2000-v7.0-C-01-04374 \
+    pism_terra/config/rgi_era5_maffezzoli.toml \
+    pism_terra/templates/debug.j2
+```
+
 
 ## 3. Generate the run script
 
@@ -35,9 +62,6 @@ pism-glacier-run \
     pism_terra/config/rgi_era5_maffezzoli_1year.toml \
     pism_terra/templates/debug.j2
 ```
-
-This produces a shell script under `<RGI_ID>/run/` that you can launch
-directly (debug template) or submit to a scheduler (Slurm / PBS templates).
 
 ## 4. Post-process
 

@@ -63,6 +63,7 @@ dependencies:
   - pre-commit
   - pylint
   - pytest
+  - pytest-codeblocks
   - pytest-cov
   - setuptools_scm>=6.2
   # for docs

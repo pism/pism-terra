@@ -53,6 +53,7 @@ dependencies = [
     "pyogrio",
     "pyproj",
     "pytest",
+    "pytest-codeblocks",
     "rasterio",
     "requests",
     "rioxarray",
@@ -209,8 +210,15 @@ disable = """
 max-line-length = 120
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = "integration"
+markers = [
+    "integration: opt-in slow / network-using tests (run with `pytest -m integration`)",
+]
+testpaths = ["tests", "docs/source"]
+# Markdown fenced blocks are picked up by tests/conftest.py only when the
+# block is explicitly preceded by a ``<!-- pism-terra: test -->`` comment.
+# Untagged blocks are skipped, so the bulk of the docs aren't accidentally
+# executed.
+addopts = "-ra"
 
 [tool.numpydoc_validation]
 checks = [

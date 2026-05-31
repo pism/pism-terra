@@ -26,6 +26,19 @@ Common questions answered in one line each.
   - Check `<output_root>/prepare.log` (logger output is written there).
 ```
 
+## Verify the installation
+
+The fastest way to confirm pism-terra is wired up correctly is to ask one of
+the CLIs to print its help text. The block below is preceded by the
+``<!-- pism-terra: test -->`` tag, which means ``pytest`` actually executes it
+(via a small custom collector in ``conftest.py``) — so the snippet stays in
+lockstep with the real CLI:
+
+<!-- pism-terra: test -->
+```bash
+pism-validate --help
+```
+
 ```{admonition} TODO
 - Expand to ~30 entries covering common pitfalls.
 ```
