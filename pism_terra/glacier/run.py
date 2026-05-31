@@ -426,6 +426,8 @@ def run_single():
 
     input_path = glacier_path / "input"
     input_path.mkdir(parents=True, exist_ok=True)
+    staging_path = glacier_path / "staging"
+    staging_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -451,7 +453,13 @@ def run_single():
     campaign_config = cfg.campaign.as_params()
     campaign_config["years"] = years
 
-    df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
+    df = stage_glacier(
+        campaign_config,
+        rgi_id,
+        path=input_path,
+        staging_path=staging_path,
+        force_overwrite=force_overwrite,
+    )
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -619,6 +627,8 @@ def run_ensemble():
 
     input_path = glacier_path / "input"
     input_path.mkdir(parents=True, exist_ok=True)
+    staging_path = glacier_path / "staging"
+    staging_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -643,7 +653,13 @@ def run_ensemble():
     years = list(range(start.year, last_year + 1))
     campaign_config = cfg.campaign.as_params()
     campaign_config["years"] = years
-    df = stage_glacier(campaign_config, rgi_id, path=input_path, force_overwrite=force_overwrite)
+    df = stage_glacier(
+        campaign_config,
+        rgi_id,
+        path=input_path,
+        staging_path=staging_path,
+        force_overwrite=force_overwrite,
+    )
 
     seed = 42
     rng = np.random.default_rng(seed=seed)
