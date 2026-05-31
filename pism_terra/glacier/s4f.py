@@ -46,7 +46,6 @@ from pism_terra.glacier.climate import (
     create_offset_file,
     create_step_file,
     era5,
-    pmip4,
     snap,
 )
 from pism_terra.glacier.dem import boot_file_from_grid
@@ -60,12 +59,10 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 
 xr.set_options(keep_attrs=True)
 
-CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap, "abrupt": snap}
+CLIMATE: Mapping[str, Callable] = {"era5": era5, "snap": snap}
 MODIFIER: Mapping[str, Callable] = {
-    "pmip4": create_offset_file,
     "era5": create_offset_file,
     "snap": create_offset_file,
-    "abrupt": create_step_file,
 }
 
 

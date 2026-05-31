@@ -29,11 +29,16 @@ generates one page per symbol under `generated/`.
 
 ## Configuration
 
+The TOML schema is documented in detail under {doc}`./configuration` — that
+page is the canonical detail view. The summary table below intentionally has
+no `:toctree:` so the field descriptions are registered in exactly one place
+(otherwise autodoc + Pydantic's `model_fields` produces duplicate
+``ref.python`` warnings).
+
 ```{eval-rst}
 .. currentmodule:: pism_terra.config
 
 .. autosummary::
-    :toctree: generated/
 
     PismConfig
     UQConfig
@@ -48,21 +53,18 @@ generates one page per symbol under `generated/`.
 .. autosummary::
     :toctree: generated/
 
-    lhs_sample
+    create_samples
 ```
 
 ## Glacier subpackage
 
 ### Staging entrypoints
 
-```{eval-rst}
-.. currentmodule:: pism_terra.glacier.stage
-
-.. autosummary::
-    :toctree: generated/
-
-    main
-    stage_glacier
+```{note}
+``pism_terra.glacier.stage`` is documented as a CLI in {doc}`./cli`. It's
+excluded from autosummary because it currently has an import-time error
+(references `pmip4` from `pism_terra.glacier.climate`, which doesn't exist).
+Re-add ``main`` and ``stage_glacier`` here when the upstream import is fixed.
 ```
 
 ### DEM
@@ -88,7 +90,6 @@ generates one page per symbol under `generated/`.
 
     era5
     carra2
-    pmip4
     snap
     prepare_carra2
     prepare_carra2_for_group
@@ -124,14 +125,11 @@ generates one page per symbol under `generated/`.
 
 ### Run generation & post-processing
 
-```{eval-rst}
-.. currentmodule:: pism_terra.glacier.run
-
-.. autosummary::
-    :toctree: generated/
-
-    run_single
-    run_ensemble
+```{note}
+``pism_terra.glacier.run`` is documented as a CLI in {doc}`./cli`. It's
+excluded from autosummary because of an outstanding import-time error
+(`pmip4` missing from `pism_terra.glacier.climate`); add it back here when
+that's resolved.
 ```
 
 ```{eval-rst}
@@ -170,9 +168,14 @@ generates one page per symbol under `generated/`.
     stage
     run
     postprocess
-    writer
     analyze
     forcing
+```
+
+```{note}
+``pism_terra.kitp.writer`` is documented as a CLI in
+{doc}`./cli` but excluded from autosummary because it imports the optional
+`yac` dependency, which is not installed in the docs build environment.
 ```
 
 ## Infrastructure

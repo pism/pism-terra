@@ -17,24 +17,23 @@ is equivalent to
 
 ## Top-level models
 
-The full set of fields is rendered automatically:
+The full field set is rendered directly from the Pydantic models. This is the
+*only* place these classes are documented in full — the API page lists them
+without generating duplicate stubs.
 
 ```{eval-rst}
 .. currentmodule:: pism_terra.config
 
 .. autoclass:: PismConfig
     :members:
-    :inherited-members: BaseModel
     :exclude-members: model_config, model_fields, model_computed_fields
 
 .. autoclass:: UQConfig
     :members:
-    :inherited-members: BaseModel
     :exclude-members: model_config, model_fields, model_computed_fields
 
 .. autoclass:: DistSpec
     :members:
-    :inherited-members: BaseModel
     :exclude-members: model_config, model_fields, model_computed_fields
 ```
 

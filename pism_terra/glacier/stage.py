@@ -49,7 +49,6 @@ from pism_terra.glacier.climate import (
     era5,
     era5_mean,
     era5_monthly_mean,
-    pmip4,
     snap,
 )
 from pism_terra.glacier.dem import boot_file_from_grid
@@ -60,19 +59,15 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 xr.set_options(keep_attrs=True)
 
 CLIMATE: Mapping[str, Callable] = {
-    "pmip4": pmip4,
     "carra2": carra2,
     "era5": era5,
     "era5-mean": era5_mean,
     "era5-monthly-mean": era5_monthly_mean,
     "snap": snap,
-    "abrupt": snap,
 }
 MODIFIER: Mapping[str, Callable] = {
-    "pmip4": create_offset_file,
     "era5": create_offset_file,
     "snap": create_offset_file,
-    "abrupt": create_step_file,
 }
 
 
@@ -150,13 +145,6 @@ def stage_glacier(
     CLIMATE
         Mapping from climate name (e.g., ``"pmip4"``) to a function that generates
         climate NetCDF file(s) for the glacier domain.
-
-    Notes
-    -----
-    - Writes two vector layers:
-        - Glacier outline: ``rgi_{rgi_id}.gpkg`` (same CRS as RGI entry).
-        - Domain bounds polygon: ``domain_{rgi_id}.gpkg``.
-    - The returned DataFrame is convenient for downstream orchestration/fan-out.
     """
 
     f = Figlet(font="standard")
@@ -312,7 +300,7 @@ def main():
         "--output-path",
         help="Path to save all files.",
         type=Path,
-        default=Path("data"),
+        default=Path("."),
     )
     parser.add_argument(
         "--force-overwrite",

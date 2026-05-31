@@ -35,19 +35,36 @@ extensions = [
     "sphinx_copybutton",
     "sphinx_design",
     "sphinx_gallery.gen_gallery",
+    "sphinxcontrib.bibtex",
     "myst_nb",
     "numpydoc",
 ]
 
+# -- sphinxcontrib-bibtex ---------------------------------------------------
+
+bibtex_bibfiles = ["refs.bib"]
+bibtex_default_style = "alpha"
+bibtex_reference_style = "author_year"
+
 templates_path = ["_templates"]
-exclude_patterns: list[str] = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
+exclude_patterns: list[str] = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "**.ipynb_checkpoints",
+    # Sphinx-gallery generates .rst, .py, .ipynb, .codeobj.json, .py.md5 and
+    # .zip side-by-side under ``auto_examples/``. The .ipynb collides with
+    # myst-nb's parser for the same document, so let sphinx-gallery's .rst
+    # be the canonical source.
+    "auto_examples/**/*.ipynb",
+]
 
 # myst-nb registers parsers for both .md and .ipynb on its own; .rst stays
 # the default Sphinx parser. No explicit ``source_suffix`` mapping needed.
 
 # -- Theme -------------------------------------------------------------------
 
-html_theme = "pydata_sphinx_theme"
+html_theme = "sphinx_book_theme"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 
@@ -60,16 +77,18 @@ html_theme_options = {
     "logo": {
         "alt_text": "pism-terra - Home",
     },
-    "github_url": "https://github.com/pism/pism-terra",
-    "icon_links": [],
-    "navigation_depth": 2,
-    "show_toc_level": 2,
+    "repository_url": "https://github.com/pism/pism-terra",
+    "use_repository_button": True,
+    "use_issues_button": True,
+    "use_download_button": False,
     "use_edit_page_button": False,
-    "header_links_before_dropdown": 6,
-    "footer_start": ["copyright"],
-    "footer_end": ["sphinx-version", "theme-version"],
-    "navbar_align": "left",
-    "secondary_sidebar_items": ["page-toc", "sourcelink"],
+    # Always show the full nav tree in the left sidebar, expanded.
+    "navigation_depth": 4,
+    "show_navbar_depth": 2,
+    "collapse_navbar": False,
+    "show_toc_level": 2,
+    "home_page_in_toc": True,
+    "path_to_docs": "docs/source",
 }
 
 # -- autodoc / autosummary / numpydoc ---------------------------------------
@@ -132,7 +151,34 @@ intersphinx_mapping = {
 copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: "
 copybutton_prompt_is_regexp = True
 
-# -- Warning suppression for placeholder pages ------------------------------
+# -- Warning suppression ----------------------------------------------------
 
-# autosummary :toctree: will warn until generated/ exists at first build.
-suppress_warnings = ["autosummary"]
+suppress_warnings = [
+    # autosummary :toctree: warns until generated/ exists at first build.
+    "autosummary",
+    # myst-nb tolerated warnings on unconfigured cell-metadata keys.
+    "mystnb.unknown_mime_type",
+]
+
+
+# -- Pydantic v2 dedup -------------------------------------------------------
+# Pydantic models emit each field twice from a single ``autoclass`` call —
+# once as the typed class attribute, once through ``model_fields`` — which
+# Sphinx flags as "duplicate object description". Track the exact objects
+# we've documented and skip the second registration.
+def _skip_duplicate_pydantic_members(_app, _what, _name, obj, skip, _options):
+    """Drop the second registration of an identical object from autodoc."""
+    if skip:
+        return True
+    seen = _skip_duplicate_pydantic_members.__dict__.setdefault("_seen", set())
+    key = id(obj)
+    if key in seen:
+        return True
+    seen.add(key)
+    return None
+
+
+def setup(app):
+    """Sphinx extension entry point."""
+    app.connect("autodoc-skip-member", _skip_duplicate_pydantic_members)
+    return {"parallel_read_safe": True, "parallel_write_safe": True}

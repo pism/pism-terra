@@ -315,7 +315,8 @@ def glacier_velocities_from_grid(
         xs = [float(target_grid.x.values[0]), float(target_grid.x.values[-1])]
         ys = [float(target_grid.y.values[0]), float(target_grid.y.values[-1])]
         bounds = (min(xs), min(ys), max(xs), max(ys))
-        dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+        mapping_var = target_grid.rio.grid_mapping
+        dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
         t_geo = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
         geo_bounds = t_geo.transform_bounds(*bounds)
         # Pad the geographic bbox so the clipped ITS_LIVE region fully covers
@@ -440,15 +441,17 @@ def glacier_velocities_from_grid(
         # the ``u_observed``/``v_observed`` reconstructions drop the
         # ``grid_mapping`` encoding key, so only untouched vars (``v``,
         # ``landice``) would otherwise carry it through to the written file.
-        ds_clipped = ds_clipped.rio.write_crs(target_grid.spatial_ref.attrs["crs_wkt"]).rio.write_grid_mapping(
-            "mapping"
-        )
+        mapping_var = target_grid.rio.grid_mapping
+        crs = target_grid[mapping_var].attrs["crs_wkt"]
+        ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping("mapping")
 
         ds_clipped.to_netcdf(path)
 
     else:
         ds_clipped = xr.open_dataset(path)
-    ds_clipped.rio.write_crs(target_grid.spatial_ref.attrs["crs_wkt"], inplace=True)
+        mapping_var = target_grid.rio.grid_mapping
+    crs = target_grid[mapping_var].attrs["crs_wkt"]
+    ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping("mapping")
     return ds_clipped
 
 
@@ -500,7 +503,8 @@ def bathymetry_from_grid(
         path.unlink(missing_ok=True)
 
         bounds = [target_grid.x.values[0], target_grid.y.values[0], target_grid.x.values[-1], target_grid.y.values[-1]]
-        dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+        mapping_var = target_grid.rio.grid_mapping
+        dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
         t = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
         geo_bounds = t.transform_bounds(*bounds)
 

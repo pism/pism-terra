@@ -69,6 +69,7 @@ dependencies:
   - furo
   - sphinx
   - sphinx-autodoc-typehints
+  - sphinx-autobuild
   - sphinx-copybutton
   - myst-parser
   - numpydoc

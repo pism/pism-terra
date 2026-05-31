@@ -1,6 +1,10 @@
-# Quick start
+# The importance of ice thickness
 
-A minimal end-to-end run for a single RGI v7 complex.
+For the Wrangell Mountain Glacier Complex (RGI2000-v7.0-C-01-04374), we will
+assess the role of ice thickness. Ice thickness exerts a first order control
+on ice flow. The complex flow patterns in Greenland's outlet glaciers cannot
+be reproduced *for the right reason* without accurate ice thickness. Two
+global ice thickness products are currently supported: Frank et al and Maffezzoli et al.; see {cite}`Frank2026` and {cite}`Maffezzoli2025`.
 
 ## 1. Pick a glacier
 

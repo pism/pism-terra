@@ -83,8 +83,10 @@ docs = [
     "sphinx-book-theme",
     "sphinx-design",
     "sphinx-gallery",
+    "sphinx-autobuild",
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
+    "sphinxcontrib-bibtex",
     "myst-nb",
     "numpydoc",
 ]

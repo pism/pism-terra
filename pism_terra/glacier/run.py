@@ -336,7 +336,7 @@ def run_single():
         "--output-path",
         help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
-        default="data",
+        default=".",
     )
     parser.add_argument(
         "--force-overwrite",
@@ -524,7 +524,7 @@ def run_ensemble():
         "--output-path",
         help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
-        default="data",
+        default=".",
     )
     parser.add_argument(
         "--force-overwrite",

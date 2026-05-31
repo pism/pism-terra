@@ -131,7 +131,7 @@ def prepare_surface(
     Parameters
     ----------
     target_grid : xarray.Dataset
-        Target grid dataset providing the destination CRS (via ``spatial_ref``)
+        Target grid dataset providing the destination CRS
         and the cell-edge bounds (``x_bnds``/``y_bnds``) used to derive both the
         geographic query bounds and the destination grid for reprojection.
     dataset : {"glo_30", "arcticdem"}
@@ -173,7 +173,8 @@ def prepare_surface(
         target_grid.x_bnds.values[-1][-1],
         target_grid.y_bnds.values[-1][-1],
     ]
-    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    mapping_var = target_grid.rio.grid_mapping
+    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
     geo_bounds = t.transform_bounds(*bounds)
 
@@ -213,7 +214,7 @@ def boot_file_from_grid(
     ----------
     target_grid : xarray.Dataset
         Target grid dataset (with ``x``/``y`` coords, ``x_bnds``/``y_bnds`` cell-edge
-        bounds, and ``spatial_ref`` carrying the destination CRS) onto which all
+        bounds onto which all
         derived fields are aligned.
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-06-00014"``.
@@ -274,14 +275,6 @@ def boot_file_from_grid(
         Interpolate glacier ice thickness onto a target grid.
     glacier_velocities_from_grid
         Retrieve observed surface velocities for the glacier domain.
-
-    Notes
-    -----
-    - ``land_ice_area_fraction_retreat`` and ``ftt_mask`` are derived from DEM clipping and
-      are intentionally simple; refine as needed for your application.
-    - ``tillwat`` is a coarse proxy here: set to ``2 m`` where reprojected speed ``v >= 100 m/yr``,
-      else ``0 m``. Adjust the threshold and values per your physics.
-    - The function returns an **in-memory** dataset; it does not write to disk.
     """
 
     print("")
@@ -291,7 +284,8 @@ def boot_file_from_grid(
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
     prefix: str = kwargs.pop("prefix", "rgi")
 
-    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    mapping_var = target_grid.rio.grid_mapping
+    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
 
     surface = prepare_surface(target_grid, dataset=dem_dataset, path=path)
     surface = surface.where(surface > 0.0, 0.0)
@@ -360,8 +354,6 @@ def boot_file_from_grid(
         ds["v"] = v["v"]
 
     ds = ds.fillna(0)
-    if hasattr(ds["spatial_ref"], "GeoTransform"):
-        del ds["spatial_ref"].attrs["GeoTransform"]
 
     # Drop the leftover `band` scalar coord that rxr.open_rasterio leaves on
     # some inputs (e.g. ice thickness, velocity). If it survives in the merged

@@ -1079,7 +1079,8 @@ def carra2(
         float(target_grid.x_bnds.values[-1][-1]),
         float(target_grid.y_bnds.values[-1][-1]),
     )
-    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    mapping_var = target_grid.rio.grid_mapping
+    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
 
     # Fast path: prepare.py pre-reprojects CARRA2 once per S4F aggregate group
     # and uploads ``carra2_<rgi_id>.nc`` (CARRA2 ~2.5 km, already in the
@@ -1416,7 +1417,8 @@ def era5(
         target_grid.x_bnds.values[-1][-1],
         target_grid.y_bnds.values[-1][-1],
     ]
-    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    mapping_var = target_grid.rio.grid_mapping
+    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326")
     area = t.transform_bounds(*bounds)
 
@@ -1579,7 +1581,8 @@ def era5_mean(
         target_grid.x_bnds.values[-1][-1],
         target_grid.y_bnds.values[-1][-1],
     ]
-    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    mapping_var = target_grid.rio.grid_mapping
+    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326")
     area = t.transform_bounds(*bounds)
 
@@ -1808,7 +1811,8 @@ def era5_monthly_mean(
         target_grid.x_bnds.values[-1][-1],
         target_grid.y_bnds.values[-1][-1],
     ]
-    dst_crs = target_grid.spatial_ref.attrs["crs_wkt"]
+    mapping_var = target_grid.rio.grid_mapping
+    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326")
     area = t.transform_bounds(*bounds)
 
@@ -1905,148 +1909,6 @@ def era5_monthly_mean(
     ds.to_netcdf(era5_filename)
 
     return era5_filename
-
-
-def pmip4(
-    rgi_id: str,
-    rgi: gpd.GeoDataFrame | str | Path = "rgi/rgi.gpkg",
-    buffer_distance: float = 2.0,
-    path: Path | str = ".",
-    **kwargs,
-) -> list[Path]:
-    """
-    Build PMIP4 LGM monthly climatology over a glacier bbox and write one NetCDF per model.
-
-    For the glacier identified by ``rgi_id``, this function:
-    (1) reads the glacier geometry (GeoDataFrame or GPKG) and converts to WGS84,
-    (2) constructs a buffered lon/lat bounding box (degrees),
-    (3) pulls PMIP4/CMIP6 LGM monthly fields (``tas``, ``pr``) from the
-        ``pangeo-cmip6`` S3 catalog,
-    (4) subsets to the bounding box, merges variables, and selects the final 2,400 months,
-    (5) computes a 12-month climatology (groupby month → mean),
-    (6) writes one CF-style NetCDF per ``source_id`` into ``<path>``.
-
-    Parameters
-    ----------
-    rgi_id : str
-        RGI glacier identifier (e.g., ``"RGI2000-v7.0-C-01-10853"``).
-    rgi : geopandas.GeoDataFrame or str or pathlib.Path, default ``"rgi/rgi.gpkg"``
-        Either an in-memory RGI GeoDataFrame, or a path to a GeoPackage readable by
-        :func:`geopandas.read_file`.
-    buffer_distance : float, default ``2.0``
-        Buffer (degrees) applied to the glacier footprint before subsetting.
-    path : str or pathlib.Path, default ``"."``
-        Output directory where files are written as
-        ``{source_id}_rgi_id_{rgi_id}.nc``.
-    **kwargs
-        Reserved for future options (e.g., catalog filtering). Currently unused.
-
-    Returns
-    -------
-    list of pathlib.Path
-        Absolute paths to the written NetCDF files, one per CMIP6 ``source_id``.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the RGI path is missing (when ``rgi`` is a path).
-    ValueError
-        If the glacier ID cannot be found or geometry/CRS is invalid.
-    Exception
-        Errors propagated from S3 access (``s3fs``), zarr decoding, or file writing.
-
-    Notes
-    -----
-    - Variables are renamed to:
-        - ``air_temp`` (from ``tas``)
-        - ``precipitation`` (from ``pr``)
-      and the 12-month climatology dimension is renamed to ``time``.
-    - The output CRS is set to ``EPSG:4326`` via rioxarray.
-    - A CF-compliant 12-month ``time`` coordinate is attached using
-      ``cftime.DatetimeNoLeap`` for a nominal year and encoded with
-      ``calendar="365_day"`` and ``units="days since 0001-01-01"``. Time bounds
-      (``time_bounds``) are added.
-    - Longitudinal bounds are wrapped to 0–360 using modulo arithmetic; the
-      bbox edges are rounded to tenths of a degree.
-    """
-
-    print("")
-    print("Generate PMIP4 LGM climate")
-    print("-" * 80)
-
-    force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
-
-    if isinstance(rgi, str | Path):
-        rgi = gpd.read_file(rgi)
-
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id).to_crs("EPSG:4326")
-    minx, miny, maxx, maxy = glacier.iloc[0]["geometry"].buffer(buffer_distance).bounds
-
-    minx = (np.floor(minx * 10) / 10) % 360
-    maxx = (np.ceil(maxx * 10) / 10) % 360
-    miny = np.floor(miny * 10) / 10
-    maxy = np.ceil(maxy * 10) / 10
-
-    fs = s3fs.S3FileSystem(anon=True)
-    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-    cmip6_df = pd.read_csv("https://cmip6-pds.s3.amazonaws.com/pangeo-cmip6.csv")
-    lgm_df = cmip6_df.query(
-        "activity_id=='PMIP' & table_id=='Amon' & experiment_id=='lgm' & (variable_id=='tas' | variable_id=='pr')"
-    )
-
-    responses = []
-    for source_id, df in lgm_df.groupby(by="source_id"):
-        path = Path(path)
-        p = path / f"{source_id}_rgi_id_{rgi_id}.nc"
-
-        if (not check_xr_fully(p)) or force_overwrite:
-            dss = []
-            for v in ["tas", "pr"]:
-                zstore = df[df["variable_id"] == v].zstore.values[0]
-                mapper = fs.get_mapper(zstore)
-
-                # open using xarray
-                ds = (
-                    xr.open_zarr(
-                        mapper,
-                        consolidated=True,
-                        decode_times=time_coder,
-                        decode_timedelta=True,
-                    ).drop_vars(["height"], errors="ignore")
-                ).sel({"lon": slice(minx, maxx), "lat": slice(miny, maxy)})
-
-                dss.append(ds)
-            ds = (
-                xr.merge(dss)
-                .isel({"time": slice(-2401, -1)})
-                .groupby("time.month")
-                .mean()
-                .rename_dims({"month": "time"})
-                .rename_vars({"pr": "precipitation", "tas": "air_temp", "month": "time"})
-            )
-            ds.rio.write_crs("EPSG:4326", inplace=True)
-
-            month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-            bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
-            bounds_end = np.cumsum(month_lengths).astype("float64")
-            time_mid = (bounds_start + bounds_end) / 2.0
-
-            time_bounds = np.column_stack([bounds_start, bounds_end])
-
-            ds = ds.assign_coords(time=("time", time_mid))
-            ds["time"].attrs.update(
-                {
-                    "units": "days since 0001-01-01",
-                    "calendar": "365_day",
-                    "bounds": "time_bounds",
-                }
-            )
-            ds["time_bounds"] = (("time", "nv"), time_bounds)
-
-            ds.to_netcdf(p)
-
-        responses.append(p)
-    return responses
 
 
 def prepare_snap(

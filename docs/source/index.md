@@ -64,6 +64,14 @@ features/uncertainty_quantification
 features/postprocessing
 ```
 
+
+```{toctree}
+:caption: Summer School in Glaciology 2026
+:hidden:
+
+summer_school/ice_thickness
+```
+
 ```{toctree}
 :caption: Resources
 :hidden:
@@ -96,4 +104,5 @@ reference/release_notes
 
 project/publications
 project/credits
+references
 ```
