@@ -3,7 +3,7 @@
 pism-terra installs into a conda environment that already provides PISM and a
 working GDAL stack.
 
-## Conda environment
+## Just `pism-terra` conda environment
 
 ```bash
 git clone https://github.com/pism/pism-terra.git
@@ -18,6 +18,33 @@ For the documentation build add the `docs` extras:
 ```bash
 python -m pip install -e ".[docs]"
 ```
+
+## With `pism`
+
+You can install PISM requisites using conda
+  
+```bash
+git clone https://github.com/pism/pism.git
+cd pism
+git checkout feature/inverse
+conda env create -f environment.yml
+conda activate pism
+```
+
+Then build PISM::
+  
+```bash
+CMAKE_BUILD_PARALLEL_LEVEL=8 python -m pip install --no-build-isolation -v .
+```
+
+```bash
+cd ..
+git clone https://github.com/pism/pism-terra.git
+cd pism-terra
+git checkout aaschwanden/summer-school
+python -m pip install .
+```
+
 
 ## Required `LD_PRELOAD` workaround for libz
 
