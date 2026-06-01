@@ -13,7 +13,7 @@ DEM stitching, ice-thickness retrieval, climate forcing, ITS_LIVE velocity
 mosaics, Pydantic-validated TOML configuration, Latin Hypercube uncertainty
 quantification, Jinja2 HPC job templates, and post-processing.
 
-The structure of was inspired by Romain Hugonnet [xDEM](https://xdem.readthedocs.io) 
+The structure of documentation was inspired by Romain Hugonnet [xDEM](https://xdem.readthedocs.io) 
 
 ::::{grid} 1 2 2 3
 :gutter: 3
