@@ -81,7 +81,7 @@ html_theme_options = {
     "repository_url": "https://github.com/pism/pism-terra",
     "use_repository_button": True,
     "use_issues_button": True,
-    "use_download_button": False,
+    "use_download_button": True,
     "use_edit_page_button": False,
     # Always show the full nav tree in the left sidebar, expanded.
     "navigation_depth": 4,
