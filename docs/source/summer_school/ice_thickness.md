@@ -224,6 +224,7 @@ axs[1].set_title("Maffezzoli surface speed")
 axs[2].set_title("Speed(Frank - Maffezzoli)")
 ```
 
+Unsurprisingly, the differences in simulated surface speeds are huge.
 
 ```{admonition} TODO
 - Verify the exact commands against a fresh checkout.
