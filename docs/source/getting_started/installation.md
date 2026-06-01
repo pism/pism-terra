@@ -37,6 +37,8 @@ Then build PISM::
 CMAKE_BUILD_PARALLEL_LEVEL=8 python -m pip install --no-build-isolation -v .
 ```
 
+Now install `pism-terra`
+
 ```bash
 cd ..
 git clone https://github.com/pism/pism-terra.git
