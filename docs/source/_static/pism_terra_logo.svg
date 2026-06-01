@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 90" role="img" aria-label="pism-terra">
+  <title>pism-terra</title>
+
+  <!--
+    Logo: mountain glyph on the left, PISM-TERRA wordmark on the right.
+    Colour matches the PISM logo (teal ≈ #2D6E7A).
+  -->
+  <defs>
+    <linearGradient id="pt-mountain" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#3A8696"/>
+      <stop offset="100%" stop-color="#1F5F6E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Mountain mark, sized to roughly match the wordmark x-height -->
+  <g transform="translate(8 12)">
+    <!-- Main triangle silhouette -->
+    <polygon
+      points="0,64 28,8 46,34 64,20 80,64"
+      fill="url(#pt-mountain)"
+      stroke="#1F5F6E"
+      stroke-width="2.5"
+      stroke-linejoin="round"
+      stroke-linecap="round"/>
+    <!-- Snowcap diamond on the tallest peak -->
+    <polygon
+      points="28,8 35,20 28,32 21,20"
+      fill="#FFFFFF"
+      opacity="0.92"/>
+    <!-- Secondary peak snow accent -->
+    <polygon
+      points="46,34 51,42 46,50 41,42"
+      fill="#FFFFFF"
+      opacity="0.55"/>
+  </g>
+
+  <!-- Wordmark: heavy geometric sans, hyphen between the two halves.
+       The outer ``scale(0.8)`` shrinks the entire wordmark uniformly without
+       perturbing the inner coordinates. The translate y is bumped from 0 to
+       12 so the baseline stays where it was under the un-scaled layout. -->
+  <g transform="translate(108 12) scale(0.8)"
+     font-family="'Helvetica Neue', 'Arial Black', 'Avenir Next', sans-serif"
+     font-weight="900"
+     fill="#2D6E7A"
+     letter-spacing="-1">
+    <text x="0" y="62" font-size="46">PISM</text>
+    <!-- thicker hyphen, vertically centred on the cap height -->
+    <rect x="120" y="36" width="14" height="8" rx="2" fill="#2D6E7A"/>
+    <text x="142" y="62" font-size="46">TERRA</text>
+  </g>
+</svg>

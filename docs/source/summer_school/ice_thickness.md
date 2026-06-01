@@ -64,6 +64,9 @@ the staged data on disk.
 import xarray as xr
 import matplotlib.pyplot as plt
 
+from pism_terra.colormaps import register_colormaps
+register_colormaps()
+
 frank_ds = xr.open_dataset("frank/RGI2000-v7.0-C-01-04374/input/bootfile_RGI2000-v7.0-C-01-04374.nc")
 frank_thickness = frank_ds.thickness.where(frank_ds.thickness > 0)
 maffezzoli_ds = xr.open_dataset("maffezzoli/RGI2000-v7.0-C-01-04374/input/bootfile_RGI2000-v7.0-C-01-04374.nc")
@@ -77,7 +80,7 @@ maffezzoli_thickness.plot(ax=axs[1], vmin=0, vmax=1000)
 diff_thickness.plot(ax=axs[2], cmap="RdBu", vmin=-250, vmax=250)
 axs[0].set_title("Frank ice thickness")
 axs[1].set_title("Maffezzoli ice thickness")
-axs[2].set_title("Frank - Maffezzoli")
+axs[2].set_title("Ice Thickness (EFrank - Maffezzoli)")
 ```
 
 ```{code-cell} ipython3
@@ -90,6 +93,9 @@ axs[2].set_title("Frank - Maffezzoli")
 # level up.
 import xarray as xr
 import matplotlib.pyplot as plt
+
+from pism_terra.colormaps import register_colormaps
+register_colormaps()
 
 frank_ds = xr.open_dataset("../_data/frank_thickness.nc")
 frank_thickness = frank_ds.thickness.where(frank_ds.thickness > 0)
@@ -104,7 +110,7 @@ maffezzoli_thickness.plot(ax=axs[1], vmin=0, vmax=1000)
 diff_thickness.plot(ax=axs[2], cmap="RdBu", vmin=-250, vmax=250)
 axs[0].set_title("Frank ice thickness")
 axs[1].set_title("Maffezzoli ice thickness")
-axs[2].set_title("Frank - Maffezzoli")
+axs[2].set_title("Ice Thickness (Frank - Maffezzoli)")
 ```
 
 Differences between the two ice thickenss datasets are substantial. Let's get to work.
@@ -148,15 +154,75 @@ pism-glacier-postprocess \
 
 Do the same with the Maffezzoli dataset:
 
-
-
 ```bash
-. frank/RGI2000-v7.0-C-01-04374/run_scripts/submit_g400m_RGI2000-v7.0-C-01-04374_id_0_1980-01-01_1985-01-01.sh
+. maffezzoli/RGI2000-v7.0-C-01-04374/run_scripts/submit_g400m_RGI2000-v7.0-C-01-04374_id_0_1980-01-01_1985-01-01.sh
 
 pism-glacier-postprocess \
     maffezzoli/RGI2000-v7.0-C-01-04374/output/post_processing/g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0006-01-01.toml
 ```
 
+## Compare surface speeds
+
+```{code-cell} ipython3
+:tags: [skip-execution]
+
+time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+delta_coder = xr.coders.CFTimedeltaCoder()
+
+frank_state = xr.open_dataset("frank/RGI2000-v7.0-C-01-04374/output/state/clipped_state_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0006-01-01.nc",                 
+                              decode_times=time_coder,
+                              decode_timedelta=delta_coder,
+                             ).squeeze()
+frank_speed = frank_state.velsurf_mag
+maffezzoli_state = xr.open_dataset("maffezzoli/RGI2000-v7.0-C-01-04374/output/state/clipped_state_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0006-01-01.nc",
+                              decode_times=time_coder,
+                              decode_timedelta=delta_coder,
+                                  ).squeeze()
+maffezzoli_speed = maffezzoli_state.velsurf_mag
+
+diff_speed = frank_speed - maffezzoli_speed
+
+fig, axs = plt.subplots(3, 1, sharex=True, figsize=(12, 16))
+frank_speed.plot(ax=axs[0], cmap="speed_colorblind", vmin=0, vmax=1000)
+maffezzoli_speed.plot(ax=axs[1], cmap="speed_colorblind" , vmin=0, vmax=1000)
+diff_speed.plot(ax=axs[2], cmap="RdBu", vmin=-250, vmax=250)
+axs[0].set_title("Frank surface speed")
+axs[1].set_title("Maffezzoli surface speed")
+axs[2].set_title("Speed (Frank - Maffezzoli)")
+```
+
+```{code-cell} ipython3
+:tags: [remove-input]
+
+# Hidden twin of the cell above — runs against the small bundled fixtures
+# under ``docs/source/_data/`` so the build produces a real figure without
+# requiring the user's full staged dataset on disk. myst-nb's cwd is the
+# page's directory (``docs/source/summer_school/``), so ``_data/`` is one
+# level up.
+time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+delta_coder = xr.coders.CFTimedeltaCoder()
+
+frank_state = xr.open_dataset("../_data/frank_speed.nc",           
+                              decode_times=time_coder,
+                              decode_timedelta=delta_coder,
+                             ).squeeze()
+frank_speed = frank_state.velsurf_mag
+maffezzoli_state = xr.open_dataset("../_data/maffezzoli_speed.nc",
+                              decode_times=time_coder,
+                              decode_timedelta=delta_coder,
+                                  ).squeeze()
+maffezzoli_speed = maffezzoli_state.velsurf_mag
+
+diff_speed = frank_speed - maffezzoli_speed
+
+fig, axs = plt.subplots(3, 1, sharex=True, figsize=(12, 16))
+frank_speed.plot(ax=axs[0], cmap="speed_colorblind", vmin=0, vmax=1000)
+maffezzoli_speed.plot(ax=axs[1], cmap="speed_colorblind" , vmin=0, vmax=1000)
+diff_speed.plot(ax=axs[2], cmap="RdBu", vmin=-250, vmax=250)
+axs[0].set_title("Frank surface speed")
+axs[1].set_title("Maffezzoli surface speed")
+axs[2].set_title("Speed(Frank - Maffezzoli)")
+```
 
 
 ```{admonition} TODO

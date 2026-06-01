@@ -70,7 +70,7 @@ html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 
 # Placeholder logo until we have real branding.
-html_logo = "_static/logo_placeholder.svg"
+html_logo = "_static/pism_terra_logo.svg"
 html_favicon = None
 html_title = "pism-terra"
 
