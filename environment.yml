@@ -68,10 +68,19 @@ dependencies:
   - setuptools_scm>=6.2
   # for docs
   - furo
+  - ipykernel
+  - myst-nb
+  - numpydoc
+  - pydata-sphinx-theme
   - sphinx
   - sphinx-autodoc-typehints
+  - sphinx-book-theme
+  - sphinx-design
+  - sphinx-gallery
   - sphinx-autobuild
+  - sphinx-autodoc-typehints
   - sphinx-copybutton
+  - sphinxcontrib-bibtex
   - myst-parser
   - numpydoc
   # for notebooks and convenience
