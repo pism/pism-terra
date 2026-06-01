@@ -10,7 +10,10 @@
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg">
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
   <sodipodi:namedview
      id="namedview5"
      pagecolor="#ffffff"
@@ -21,8 +24,8 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="4.6087255"
-     inkscape:cx="165.881"
-     inkscape:cy="74.532537"
+     inkscape:cx="165.77251"
+     inkscape:cy="74.532536"
      inkscape:window-width="1675"
      inkscape:window-height="944"
      inkscape:window-x="0"
@@ -83,17 +86,11 @@
        The outer ``scale(0.8)`` shrinks the entire wordmark uniformly without
        perturbing the inner coordinates. The translate y is bumped from 0 to
        12 so the baseline stays where it was under the un-scaled layout. -->
-  <text
-     xml:space="preserve"
-     style="font-size:41.2295px;font-family:sans-serif;-inkscape-font-specification:sans-serif;writing-mode:lr-tb;direction:ltr;fill:#216778;fill-opacity:1;stroke-width:0.386524"
-     x="101.17543"
-     y="66.459602"
-     id="text6"><tspan
-       sodipodi:role="line"
-       id="tspan5"
-       x="101.17543"
-       y="66.459602"
-       style="font-style:normal;font-variant:normal;font-weight:900;font-stretch:normal;font-size:41.2295px;font-family:'Apple SD Gothic Neo';-inkscape-font-specification:'Apple SD Gothic Neo, Heavy';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;fill:#216778;fill-opacity:1;stroke-width:0.386524">PISM-TERRA</tspan></text>
+  <path
+     style="font-weight:900;font-size:41.2295px;font-family:'Apple SD Gothic Neo';-inkscape-font-specification:'Apple SD Gothic Neo, Heavy';fill:#216778;stroke-width:0.386524"
+     d="m 111.56526,50.545015 v -8.20467 h 3.00976 c 2.515,0 3.66942,1.030737 3.66942,4.12295 0,2.762376 -0.9895,4.08172 -3.83434,4.08172 z m -7.75114,14.182948 h 7.75114 v -9.194178 h 3.95804 c 6.96778,0 10.7609,-3.215901 10.7609,-9.482785 0,-5.81336 -3.58697,-9.029261 -10.96705,-9.029261 h -11.50303 z m 26.42807,0 h 7.79238 V 37.021739 h -7.79238 z m 21.06827,0.453525 c 7.17394,0 10.96705,-3.215901 10.96705,-9.152949 0,-5.607212 -2.67992,-7.544999 -7.58623,-8.493277 l -2.06147,-0.371066 c -2.43254,-0.494754 -3.25713,-1.071967 -3.25713,-2.514999 0,-1.607951 1.27811,-2.391311 3.79311,-2.391311 3.13344,0 5.52475,0.659672 7.46254,1.319344 v -5.565983 c -1.64918,-0.78336 -3.79311,-1.443032 -8.20467,-1.443032 -7.00902,0 -10.26615,3.422048 -10.26615,8.658195 0,5.813359 2.67992,7.751146 7.09148,8.575736 l 2.06147,0.412295 c 2.67992,0.535983 3.38082,1.030737 3.38082,2.638688 0,1.64918 -1.19565,2.597458 -4.28787,2.597458 -3.2159,0 -5.7309,-0.659672 -8.20467,-1.566721 v 5.648442 c 1.97902,1.071967 5.23615,1.64918 9.11172,1.64918 z m 14.96632,-0.453525 h 6.39058 V 46.00977 h 0.20614 l 5.52476,18.718193 h 5.40106 L 189.3653,46.051 h 0.16492 v 18.676963 h 7.62746 V 37.021739 h -10.26615 l -5.03,16.697948 h -0.16491 l -5.03,-16.697948 h -10.38984 z m 35.04506,-9.111719 h 12.1627 v -5.524753 h -12.1627 z m 17.35762,9.111719 h 7.79237 V 42.587722 h 7.25639 v -5.565983 h -22.34639 v 5.565983 h 7.29763 z m 18.71823,0 h 19.50155 v -5.565982 h -11.83286 v -5.854589 h 8.9468 v -5.442294 h -8.9468 v -5.277376 h 11.4618 v -5.565983 h -19.13049 z m 31.623,-14.760161 v -7.668687 h 2.80361 c 2.84483,0 3.95803,1.154426 3.95803,3.751885 0,2.597458 -1.07197,3.916802 -3.83434,3.916802 z m -7.66868,14.760161 h 7.75114 V 54.626736 h 2.88607 l 5.03,10.101227 h 8.08098 L 278.91577,52.812638 V 52.64772 c 2.88607,-1.236885 4.57648,-3.174672 4.57648,-6.967786 0,-5.978277 -3.50451,-8.658195 -10.51353,-8.658195 h -11.62671 z m 34.67402,-14.760161 v -7.668687 h 2.80361 c 2.84483,0 3.95803,1.154426 3.95803,3.751885 0,2.597458 -1.07197,3.916802 -3.83434,3.916802 z m -7.66868,14.760161 h 7.75114 V 54.626736 h 2.88607 l 5.03,10.101227 h 8.08098 L 305.92111,52.812638 V 52.64772 c 2.88607,-1.236885 4.57648,-3.174672 4.57648,-6.967786 0,-5.978277 -3.50451,-8.658195 -10.51352,-8.658195 h -11.62672 z m 38.05486,-19.666471 h 0.16492 l 2.92729,9.194178 h -6.01951 z M 313.26,64.727963 h 7.00901 l 1.73164,-5.483523 h 9.07049 l 1.85533,5.483523 h 7.91606 l -9.60647,-27.706224 h -8.28713 z"
+     id="text6"
+     aria-label="PISM-TERRA" />
   <rect
      style="fill:#ffffff;fill-opacity:1;stroke-width:0.789816"
      id="rect6"
@@ -150,4 +147,13 @@
      x="269.09451"
      y="-64.650795"
      transform="scale(1,-1)" />
+  <metadata
+     id="metadata1">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>pism-terra</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
 </svg>
