@@ -1,6 +1,7 @@
 #!/bin/sh
 #SBATCH --partition={{ queue | default("t2small") }}
-#SBATCH --ntasks={{ ntasks | default(36) }}
+{# +1 for the pism-kitp-writer co-process launched via MPMD below #}
+#SBATCH --ntasks={{ ntasks | default(36) + 1 }}
 #SBATCH --tasks-per-node={{ tasks | default(40) }}
 #SBATCH --time={{ walltime | default("24:00:00") }}
 #SBATCH --mail-type=BEGIN
@@ -25,5 +26,15 @@ cd $SLURM_SUBMIT_DIR
 ulimit -l unlimited
 ulimit -s unlimited
 ulimit
+
+# Intel MPI under sbatch: tell it where SLURM's PMI library lives so the
+# ranks can register with the resource manager. Discovered once per node
+# rather than hard-coded, so the path can move between chinook upgrades.
+export I_MPI_PMI_LIBRARY="$(find /opt/slurm /usr/lib64 -name 'libpmi.so' 2>/dev/null | head -n 1)"
+if [ -z "$I_MPI_PMI_LIBRARY" ]; then
+    echo "could not locate libpmi.so for I_MPI_PMI_LIBRARY" >&2
+    exit 1
+fi
+echo "I_MPI_PMI_LIBRARY=$I_MPI_PMI_LIBRARY"
 
 mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} pism {{ run_str }} : -n 1 apptainer run ${container} pism-kitp-writer -d -g {{ geometry_file }}
