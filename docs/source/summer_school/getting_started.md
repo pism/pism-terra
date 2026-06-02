@@ -18,6 +18,9 @@ What do you want to use OpenSARLab for?
 If you were given access to OpenSARLab, what would be the impact for you?
 > It would allow me to analyze my data in the cloud, next to the archive, and easily collaborate with my project team, especially from remote base camps with low internet connectivity.
 
+What would be the impact for your community?
+> We'll be able to provide better Sea Level Rise predictions!
+
 What would be the impact for the field of research you are contributing to?
 > We'll be able to provide better Sea Level Rise predictions!
 
