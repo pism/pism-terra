@@ -69,7 +69,9 @@ features/postprocessing
 :caption: Summer School in Glaciology 2026
 :hidden:
 
-summer_school/ice_thickness
+summer_school/getting_started
+summer_school/forward_modeling
+summer_school/inverse_modeling
 ```
 
 ```{toctree}

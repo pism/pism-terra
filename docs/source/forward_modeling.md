@@ -21,7 +21,7 @@ pyplot.rcParams['figure.dpi'] = 600
 pyplot.rcParams['savefig.dpi'] = 600
 ```
 
-# The importance of ice thickness
+# Forward Modeling
 
 For the Wrangell Mountain Glacier Complex (RGI2000-v7.0-C-01-04374), we will
 assess the role of ice thickness. Ice thickness exerts a first order control

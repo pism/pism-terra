@@ -88,9 +88,10 @@ def run_kitp(
         CLI-side overrides applied after reading the config. Recognized keys:
         ``"resolution"`` (e.g. ``"200m"``), ``"nodes"`` (int), ``"ntasks"``
         (int), ``"tasks"`` (int, MPI tasks per node), ``"queue"`` (str),
-        ``"walltime"`` (``HH:MM:SS``), and ``"stress_balance"`` (sub-model
-        name swap, e.g. ``"sia"``). Any value of ``None`` falls back to the
-        config file. Default is ``None`` (no overrides).
+        ``"walltime"`` (``HH:MM:SS``), ``"stress_balance"`` (sub-model name
+        swap, e.g. ``"sia"``), and ``"start"`` / ``"end"`` (``YYYY-MM-DD``
+        time bounds). Any value of ``None`` falls back to the config file.
+        Default is ``None`` (no overrides).
     debug : bool, optional
         If ``True``, skip rendering the template (leave it empty) but still
         append the constructed PISM command line to the output script.
@@ -217,6 +218,22 @@ def run_kitp(
             run.pop(old_key, None)
         cfg.stress_balance.model = stress_balance
         run.update(cfg.stress_balance.selected())
+
+    # CLI overrides for time bounds. ``cfg.time`` is a TimeConfig pydantic
+    # model with field names ``time_start`` / ``time_end`` (aliased to the
+    # dotted ``"time.start"`` / ``"time.end"``), so attribute assignment is
+    # required. Drop the prior dotted entry from ``run`` and re-apply via
+    # ``as_params()`` so the new value lands cleanly.
+    _start = config_cli.get("start")
+    _end = config_cli.get("end")
+    if _start is not None:
+        run.pop("time.start", None)
+        cfg.time.time_start = _start
+        run.update(cfg.time.as_params())
+    if _end is not None:
+        run.pop("time.end", None)
+        cfg.time.time_end = _end
+        run.update(cfg.time.as_params())
 
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
@@ -384,6 +401,18 @@ def run_single():
         default=None,
     )
     parser.add_argument(
+        "--start",
+        help="Override the time.start selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--end",
+        help="Override the time.end selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
@@ -419,6 +448,8 @@ def run_single():
     stress_balance = options.stress_balance
     tasks = options.tasks
     walltime = options.walltime
+    start_cli = options.start
+    end_cli = options.end
     pism_config_cdl = options.pism_config_cdl
     config_cli = {
         "resolution": resolution,
@@ -428,6 +459,8 @@ def run_single():
         "stress_balance": stress_balance,
         "tasks": tasks,
         "walltime": walltime,
+        "start": start_cli,
+        "end": end_cli,
     }
 
     path = Path(path)
@@ -540,6 +573,18 @@ def run_ensemble():
         default=None,
     )
     parser.add_argument(
+        "--start",
+        help="Override the time.start selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--end",
+        help="Override the time.end selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--posterior-file",
         help="CSV file posterior parameter distributions to sample from. Default=None.",
         type=str,
@@ -594,6 +639,8 @@ def run_ensemble():
     stress_balance = options.stress_balance
     tasks = options.tasks
     walltime = options.walltime
+    start_cli = options.start
+    end_cli = options.end
     pism_config_cdl = options.pism_config_cdl
     config_cli = {
         "resolution": resolution,
@@ -603,6 +650,8 @@ def run_ensemble():
         "stress_balance": stress_balance,
         "tasks": tasks,
         "walltime": walltime,
+        "start": start_cli,
+        "end": end_cli,
     }
 
     path = Path(path)
