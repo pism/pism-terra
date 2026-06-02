@@ -26,18 +26,22 @@ dependencies = [
     "boto3",
     "botocore[crt]",
     "cdo",
-    "cdsapi",
-    # "cf-units",  # FIXME: Breaks the conda environment; doesn't appear to be needed
     "cf_xarray",
+    "cfgrib",
     "cftime",
+    "cmap",
+    "cmweather",
     "dask[distributed,dataframe]",
     "dem_stitcher",
     "earthaccess",
+    "ecmwf-datastores-client",
     "geocube",
     "geopandas",
+    "globus-cli",
     "h5netcdf",
     "jinja2",
     "matplotlib",
+    "nc-time-axis",
     "netCDf4",
     "numpy",
     "pandas",
@@ -49,6 +53,7 @@ dependencies = [
     "pyogrio",
     "pyproj",
     "pytest",
+    "pytest-codeblocks",
     "rasterio",
     "requests",
     "rioxarray",
@@ -74,41 +79,51 @@ dev = [
 ]
 
 docs = [
-    "furo",
+    "ipykernel",
     "sphinx",
+    "pydata-sphinx-theme",
+    "sphinx-book-theme",
+    "sphinx-design",
+    "sphinx-gallery",
+    "sphinx-autobuild",
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
-    "myst-parser",
+    "sphinxcontrib-bibtex",
+    "myst-nb",
     "numpydoc",
 ]
 
 [project.scripts]
-pism-glacier-stage = "pism_terra.glacier.stage:main"
+combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
+pism-glacier-execute = "pism_terra.glacier.execute:main"
+pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
+pism-glacier-prepare = "pism_terra.glacier.prepare:rgi"
 pism-glacier-run = "pism_terra.glacier.run:run_single"
 pism-glacier-run-ensemble = "pism_terra.glacier.run:run_ensemble"
-pism-glacier-execute = "pism_terra.glacier.execute:main"
-pism-glacier-prepare = "pism_terra.glacier.prepare:main"
-pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
-pism-ismip7-greenland-prepare = "pism_terra.ismip7.greenland.prepare:main"
-pism-ismip7-greenland-stage = "pism_terra.ismip7.greenland.stage:main"
+pism-glacier-stage = "pism_terra.glacier.stage:main"
+pism-ismip7-greenland-postprocess = "pism_terra.ismip7.greenland.postprocess:main"
+pism-ismip7-greenland-prepare = "pism_terra.ismip7.greenland.prepare:cli"
 pism-ismip7-greenland-run = "pism_terra.ismip7.greenland.run:run_single"
 pism-ismip7-greenland-run-ensemble = "pism_terra.ismip7.greenland.run:run_ensemble"
-pism-kitp-prepare = "pism_terra.kitp.prepare:cli"
+pism-ismip7-greenland-stage = "pism_terra.ismip7.greenland.stage:main"
 pism-kitp-postprocess = "pism_terra.kitp.postprocess:main"
-pism-kitp-stage = "pism_terra.kitp.stage:main"
+pism-kitp-prepare = "pism_terra.kitp.prepare:cli"
 pism-kitp-run = "pism_terra.kitp.run:run_single"
 pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
-combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
+pism-kitp-stage = "pism_terra.kitp.stage:main"
+pism-kitp-writer = "pism_terra.kitp.writer:cli"
+pism-s4f-planning = "pism_terra.glacier.s4f:main"
+pism-s4f-prepare = "pism_terra.glacier.prepare:s4f"
+pism-validate = "pism_terra.validate:main"
 
 [tool.setuptools.packages.find]
 include = ["pism_terra*"]
-
 
 [tool.setuptools]
 py-modules = ["pism_terra"]
 
 [tool.setuptools.package-data]
-"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml']
+"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml', 'grids/*.txt']
 
 [tool.setuptools_scm]
 
@@ -196,8 +211,15 @@ disable = """
 max-line-length = 120
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = "integration"
+markers = [
+    "integration: opt-in slow / network-using tests (run with `pytest -m integration`)",
+]
+testpaths = ["tests", "docs/source"]
+# Markdown fenced blocks are picked up by tests/conftest.py only when the
+# block is explicitly preceded by a ``<!-- pism-terra: test -->`` comment.
+# Untagged blocks are skipped, so the bulk of the docs aren't accidentally
+# executed.
+addopts = "-ra"
 
 [tool.numpydoc_validation]
 checks = [

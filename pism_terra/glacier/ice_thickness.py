@@ -22,6 +22,7 @@ Prepare ice thickness.
 """
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
@@ -30,16 +31,23 @@ from urllib.parse import urlparse
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import rasterio
 import rioxarray as rxr
 import xarray as xr
 from rasterio.merge import merge
-from rasterio.warp import Resampling, calculate_default_transform, reproject
+from rasterio.warp import (
+    Resampling,
+    calculate_default_transform,
+    reproject,
+    transform_bounds,
+)
+from shapely.geometry import box
 from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3, s3_to_local
 from pism_terra.download import download_archive, extract_archive
-from pism_terra.raster import check_overlap, reproject_file
+from pism_terra.raster import check_overlap
 from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
 
@@ -53,7 +61,7 @@ def get_maffezzoli_url(url_template: str, region: str) -> str:
     Parameters
     ----------
     url_template : str
-        A string with `{region}` and `{outline_type}` placeholders to be replaced.
+        A string with a `{region}` placeholder to be replaced.
     region : str
         The region code to insert into the template.
 
@@ -63,6 +71,399 @@ def get_maffezzoli_url(url_template: str, region: str) -> str:
         The formatted URL.
     """
     return url_template.format(region=region)
+
+
+def _load_rgi6_links(rgi_extract_path: Path) -> pd.DataFrame:
+    """
+    Build a global RGI6 → RGI7-G ID lookup from RGI7 G-archive link CSVs.
+
+    Each RGI7 G regional zip ships a ``*-rgi6_links.csv`` that maps RGI7
+    glacier IDs (``RGI2000-v7.0-G-XX-YYYYY``) to their RGI6 counterparts
+    (``RGI60-XX.YYYYY``). This helper finds every such CSV under
+    *rgi_extract_path*, normalizes the column names, and returns a single
+    concatenated DataFrame with columns ``rgi_id`` (RGI7) and ``rgi6_id``.
+
+    Parameters
+    ----------
+    rgi_extract_path : pathlib.Path
+        Directory containing extracted RGI7 G archives. Searched recursively
+        for files matching ``*rgi6_links*.csv``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Two-column frame ``["rgi_id", "rgi6_id"]``. Rows with missing IDs are
+        dropped. Empty if no link files are found.
+    """
+    csvs = sorted(rgi_extract_path.rglob("*rgi6_links*.csv"))
+    if not csvs:
+        return pd.DataFrame(columns=["rgi_id", "rgi6_id"])
+
+    # Column names vary across RGI7 releases; accept the common spellings.
+    rgi7_aliases = ["rgi_id", "rgi7_id", "rgi70_id", "RGIId", "rgi_id_v7"]
+    rgi6_aliases = ["rgi6_id", "rgi60_id", "RGIId_v6", "rgi_id_v6", "v6_id"]
+
+    frames = []
+    for csv in csvs:
+        df = pd.read_csv(csv)
+        rgi7_col = next((c for c in rgi7_aliases if c in df.columns), None)
+        rgi6_col = next((c for c in rgi6_aliases if c in df.columns), None)
+        if rgi7_col is None or rgi6_col is None:
+            logger.warning(
+                "rgi6_links file %s has unexpected columns %s; skipping",
+                csv,
+                list(df.columns),
+            )
+            continue
+        frames.append(df[[rgi7_col, rgi6_col]].rename(columns={rgi7_col: "rgi_id", rgi6_col: "rgi6_id"}))
+
+    if not frames:
+        return pd.DataFrame(columns=["rgi_id", "rgi6_id"])
+
+    links = pd.concat(frames, ignore_index=True)
+    links = links.dropna(subset=["rgi_id", "rgi6_id"])
+    links["rgi_id"] = links["rgi_id"].astype(str)
+    links["rgi6_id"] = links["rgi6_id"].astype(str)
+    return links
+
+
+def prepare_ice_thickness_frank(
+    regions: list,
+    complexes: gpd.GeoDataFrame,
+    glaciers: gpd.GeoDataFrame,
+    output_path: Path | str,
+    extract_path: Path | str,
+    rgi_extract_path: Path | str | None = None,
+    ntasks: int = 8,
+    force_overwrite: bool = False,
+):
+    """
+    Download Frank et al. ice thickness and merge into RGI7 complex rasters.
+
+    The Frank dataset is keyed on RGI6 glacier IDs; this routine pulls the
+    single Figshare archive and matches each per-glacier ``.tif`` to its
+    parent RGI7 complex by **spatial intersection** of the tif footprint
+    with the complex outline. The RGI v6 and v7 numbering schemes are
+    unrelated, and the per-region ``rgi6_links.csv`` files shipped with
+    RGI7 are a sparse subset, so an ID-based join cannot recover the full
+    mapping.
+
+    Parameters
+    ----------
+    regions : list
+        Region codes (e.g. ``["01", "06"]``).
+    complexes : geopandas.GeoDataFrame
+        Complex outlines with ``rgi_id``, ``crs``, ``geometry``, and (for
+        regular complexes) ``o1region``. Aggregates (no ``o1region``) are
+        merged in a second pass.
+    glaciers : geopandas.GeoDataFrame
+        Glacier outlines with ``rgi_id``, ``rgi_id_c``, ``o1region``, and
+        (optionally) ``rgi_id_c_aggregate``. Used only to resolve aggregate
+        parent complexes; the per-complex match is purely spatial.
+    output_path : Path or str
+        Root directory for the per-complex / per-aggregate output rasters.
+    extract_path : Path or str
+        Working directory for the Frank archive (``Thk.zip``) and its
+        extracted per-RGI6 ``.tif`` files.
+    rgi_extract_path : Path or str or None, optional
+        Unused; kept for signature parity with :func:`prepare_ice_thickness_maffezzoli`.
+    ntasks : int, default 8
+        Maximum number of parallel workers for the merge phases.
+    force_overwrite : bool, default False
+        If True, re-download / re-extract / re-merge.
+    """
+
+    # Frank et al. (2025) global glacier ice thickness — single archive at
+    # Springer Nature Figshare (file id 57288257), RGI6-keyed per-glacier tifs.
+    url: str = "https://springernature.figshare.com/ndownloader/files/57288257"
+    extract_path = Path(extract_path)
+    output_path = Path(output_path)
+    extract_path.mkdir(parents=True, exist_ok=True)
+    _ = rgi_extract_path  # unused; kept for signature parity
+
+    archive_dest = extract_path / "Thk.zip"
+    logger.info("Downloading Frank ice thickness from %s", url)
+    archive = download_archive(url, dest=archive_dest, force_overwrite=force_overwrite, verbose=True)
+
+    frank_dir = extract_path / "frank"
+    frank_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Extracting %s into %s", archive, frank_dir)
+    extract_archive(archive, frank_dir, force_overwrite=force_overwrite, verbose=True)
+
+    # Frank's Thk.zip is a zip-of-zips: a per-region ``RGI-NN_thk.zip`` for
+    # each o1 region. Extract only the regions in scope so we don't unpack
+    # the whole world when, say, only Alaska is requested.
+    region_codes = {str(r).zfill(2) for r in regions}
+    for inner_zip in sorted(frank_dir.glob("RGI-*_thk.zip")):
+        # Filename: RGI-NN_thk.zip — pull NN out of the stem.
+        m = re.match(r"^RGI-(\d{2})_thk$", inner_zip.stem)
+        if not m or m.group(1) not in region_codes:
+            continue
+        out_dir = frank_dir / inner_zip.stem
+        if out_dir.exists() and not force_overwrite and any(out_dir.rglob("RGI60-*.tif")):
+            continue
+        logger.info("Extracting per-region %s into %s", inner_zip.name, out_dir)
+        extract_archive(inner_zip, out_dir, force_overwrite=force_overwrite, verbose=True)
+
+    # Index the extracted Frank tifs by RGI6 id. The RGI7-shipped
+    # ``rgi6_links.csv`` files are a sparse subset (only the renumberings
+    # with non-trivial overlap) and the v6/v7 numbering schemes are
+    # unrelated, so an id-based join can't recover the full mapping.
+    # Instead, build a spatial index over Frank's per-glacier footprints
+    # and find the tifs that physically overlap each RGI7 complex.
+    frank_tifs: dict[str, Path] = {p.stem.removesuffix("_thk"): p for p in frank_dir.rglob("RGI60-*.tif")}
+    if not frank_tifs:
+        logger.error("No RGI60-*.tif files found under %s after extraction", frank_dir)
+        return
+    logger.info("Indexed %d Frank per-glacier tifs", len(frank_tifs))
+
+    def _frank_footprint_4326(item):
+        """
+        Read a Frank tif's bounding box and reproject it to EPSG:4326.
+
+        Parameters
+        ----------
+        item : tuple of (str, pathlib.Path)
+            ``(rgi6_id, path)`` pair from the indexed Frank tif dict.
+
+        Returns
+        -------
+        dict or None
+            Mapping with ``rgi6_id`` and ``geometry`` (a Polygon in
+            EPSG:4326), or ``None`` if the tif could not be read.
+        """
+
+        rgi6_id, tif_path = item
+        try:
+            with rasterio.open(tif_path) as src:
+                if src.crs is None:
+                    return None
+                b = src.bounds
+                if src.crs.to_epsg() == 4326:
+                    poly = box(b.left, b.bottom, b.right, b.top)
+                else:
+                    poly = box(*transform_bounds(src.crs, "EPSG:4326", *b))
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+        return {"rgi6_id": rgi6_id, "geometry": poly}
+
+    records: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max(1, ntasks)) as executor:
+        for rec in tqdm(
+            executor.map(_frank_footprint_4326, frank_tifs.items()),
+            total=len(frank_tifs),
+            desc="Indexing Frank footprints",
+        ):
+            if rec is not None:
+                records.append(rec)
+    frank_footprints = gpd.GeoDataFrame(records, crs="EPSG:4326")
+    logger.info("Built spatial index over %d Frank footprints", len(frank_footprints))
+
+    # Project complex outlines to 4326 once so the per-complex intersect
+    # call is cheap. The .sindex on frank_footprints accelerates lookups.
+    complexes_4326 = complexes.to_crs("EPSG:4326")
+    _ = frank_footprints.sindex  # warm the rtree
+
+    def _reproject_and_merge(input_files, dst_crs, output_file, tmp_label):
+        """
+        Reproject inputs to ``dst_crs`` and write their mosaic to ``output_file``.
+
+        Parameters
+        ----------
+        input_files : list[Path]
+            Source GeoTIFFs to merge.
+        dst_crs : str
+            Target CRS string (e.g. ``"EPSG:32606"``).
+        output_file : Path
+            Target path for the merged GeoTIFF.
+        tmp_label : str
+            Label embedded in temporary reproject filenames so concurrent
+            tasks operating on the same source raster don't collide.
+
+        Returns
+        -------
+        Path
+            ``output_file`` on success.
+        """
+        reprojected: list[Path] = []
+        for fpath in input_files:
+            with rasterio.open(fpath) as src:
+                if src.crs == rasterio.crs.CRS.from_user_input(dst_crs):
+                    reprojected.append(fpath)
+                    continue
+                transform, width, height = calculate_default_transform(
+                    src.crs, dst_crs, src.width, src.height, *src.bounds
+                )
+                meta = src.meta.copy()
+                meta.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+                tmp_path = fpath.parent / f"{fpath.stem}__{tmp_label}_reproj.tif"
+                with rasterio.open(tmp_path, "w", **meta) as dst:
+                    reproject(
+                        source=rasterio.band(src, 1),
+                        destination=rasterio.band(dst, 1),
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=dst_crs,
+                        resampling=Resampling.bilinear,
+                    )
+                reprojected.append(tmp_path)
+
+        # Frank tifs are per-glacier and their bounding boxes overlap at
+        # adjacent-glacier edges. Two quirks dictate the merge call:
+        #   1. The declared nodata (9999) never appears in the actual data
+        #      — Frank uses literal 0 for "outside the v6 outline" cells.
+        #      Overriding ``nodata=0`` here treats those zero borders as
+        #      transparent during merge.
+        #   2. ``method="max"`` then picks the larger value across any
+        #      remaining overlap (where two adjacent tifs both have real
+        #      thickness near a shared edge).
+        # Without (1), a neighbor's bbox 0s overwrite real thickness on the
+        # downstream side of a glacier, producing the visible "cut" pattern.
+        mosaic, out_transform = merge(reprojected, method="max", nodata=0)
+        with rasterio.open(reprojected[0]) as src:
+            out_meta = src.meta.copy()
+        predictor = 3 if np.issubdtype(mosaic.dtype, np.floating) else 2
+        out_meta.update(
+            {
+                "driver": "COG",
+                "height": mosaic.shape[1],
+                "width": mosaic.shape[2],
+                "transform": out_transform,
+                "compress": "DEFLATE",
+                "predictor": predictor,
+                "level": 6,
+                "blocksize": 512,
+                "overview_resampling": "AVERAGE",
+                "BIGTIFF": "YES",
+                "num_threads": "ALL_CPUS",
+            }
+        )
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(output_file, "w", **out_meta) as dest:
+            dest.write(mosaic)
+
+        for fpath in reprojected:
+            if fpath.stem.endswith("_reproj"):
+                fpath.unlink(missing_ok=True)
+        return output_file
+
+    def _merge_complex(rgi_c_id, o1region, dst_crs):
+        """
+        Mosaic Frank rasters for every RGI6 glacier inside one RGI7 complex.
+
+        Parameters
+        ----------
+        rgi_c_id : str
+            RGI7 complex identifier (e.g. ``"RGI2000-v7.0-C-01-09429"``).
+        o1region : str or int
+            Region code of the complex; used to build the output subdirectory.
+        dst_crs : str
+            Target CRS string for the merged output (e.g. ``"EPSG:32606"``).
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged GeoTIFF, or ``None`` if no Frank rasters
+            resolved to this complex.
+        """
+        row = complexes_4326.loc[complexes_4326["rgi_id"] == rgi_c_id]
+        if row.empty:
+            logger.warning("Complex %s not found in complexes table; skipping", rgi_c_id)
+            return None
+        geom = row.geometry.iloc[0]
+        matched = frank_footprints[frank_footprints.intersects(geom)]
+        if matched.empty:
+            logger.warning("Complex %s has no overlapping Frank tifs; skipping", rgi_c_id)
+            return None
+        files = [frank_tifs[r] for r in matched["rgi6_id"].tolist() if r in frank_tifs]
+        merged_path = output_path / Path(f"RGI2000-v7.0-C-{str(o1region).zfill(2)}")
+        merged_file = merged_path / Path(f"{rgi_c_id}_thickness.tif")
+        return _reproject_and_merge(files, dst_crs, merged_file, rgi_c_id)
+
+    def _merge_aggregate(agg_id, dst_crs):
+        """
+        Mosaic the phase-1 per-complex outputs for an aggregate (e.g. ``S4F_AK``).
+
+        Parameters
+        ----------
+        agg_id : str
+            Aggregate identifier (e.g. ``"S4F_AK"``).
+        dst_crs : str
+            Target CRS string for the merged output.
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged aggregate GeoTIFF, or ``None`` if no parent
+            phase-1 thickness files were found.
+        """
+        agg_col = glaciers.get("rgi_id_c_aggregate")
+        if agg_col is None:
+            return None
+        sel = agg_col.fillna("").str.split(";").apply(lambda parts: agg_id in parts)
+        parent_ids = glaciers.loc[sel, "rgi_id_c"].dropna().unique()
+        if len(parent_ids) == 0:
+            logger.debug("No parent complexes resolved for aggregate %s", agg_id)
+            return None
+        parent_files: list[Path] = []
+        for parent_id in parent_ids:
+            for o1_dir in output_path.glob("RGI2000-v7.0-C-*"):
+                p = o1_dir / f"{parent_id}_thickness.tif"
+                if p.exists():
+                    parent_files.append(p)
+                    break
+        if not parent_files:
+            logger.debug("No phase-1 thickness files for aggregate %s", agg_id)
+            return None
+        merged_file = output_path / Path(agg_id) / Path(f"{agg_id}_thickness.tif")
+        return _reproject_and_merge(parent_files, dst_crs, merged_file, agg_id)
+
+    # Same two-phase scheduling as Maffezzoli: regular complexes first
+    # (they only depend on the Frank tifs), then aggregates (which depend
+    # on the phase-1 per-complex outputs).
+    regular_tasks: list[tuple[str, object, str]] = []
+    aggregate_tasks: list[tuple[str, str]] = []
+    for _, row in complexes.iterrows():
+        crs_value = row.get("crs")
+        if not isinstance(crs_value, str) or not crs_value:
+            logger.warning("Complex %s has no CRS; skipping", row["rgi_id"])
+            continue
+        if pd.notna(row.get("o1region")):
+            regular_tasks.append((row["rgi_id"], row.get("o1region"), crs_value))
+        else:
+            aggregate_tasks.append((row["rgi_id"], crs_value))
+
+    failed: list[tuple[str, Exception]] = []
+    if regular_tasks:
+        with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(regular_tasks)))) as executor:
+            futures = {
+                executor.submit(_merge_complex, rgi_c_id, o1region, dst_crs): rgi_c_id
+                for rgi_c_id, o1region, dst_crs in regular_tasks
+            }
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging Frank thickness"):
+                rgi_c_id = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed.append((rgi_c_id, exc))
+
+    if aggregate_tasks:
+        with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(aggregate_tasks)))) as executor:
+            futures = {
+                executor.submit(_merge_aggregate, agg_id, dst_crs): agg_id for agg_id, dst_crs in aggregate_tasks
+            }
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging Frank aggregates"):
+                agg_id = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed.append((agg_id, exc))
+
+    for rgi_c_id, err in failed:
+        logger.error("Failed merging %s: %s", rgi_c_id, err)
+    logger.info("Frank ice thickness merging complete")
+    _ = regions  # listed for parity with the Maffezzoli signature
 
 
 def prepare_ice_thickness_maffezzoli(
@@ -85,11 +486,10 @@ def prepare_ice_thickness_maffezzoli(
         Complex outlines with an ``rgi_id`` and ``o1region`` column.
     glaciers : geopandas.GeoDataFrame
         Glacier outlines with ``rgi_id``, ``rgi_id_c``, and ``o1region`` columns.
-    output_path : Path
-        Roor directory for output files.
-    extract_path : Path or str, optional
+    output_path : Path or str
+        Root directory for output files.
+    extract_path : Path or str
         Subdirectory under *output_path* for extracted archives.
-        Defaults to ``"ice_thickness"``.
     ntasks : int, default 8
         Maximum number of parallel workers.
     force_overwrite : bool, default False
@@ -141,40 +541,29 @@ def prepare_ice_thickness_maffezzoli(
 
     logger.info("Starting ice thickness merging for %d regions", len(regions))
 
-    def _merge_complex(rgi_c_id, region_g, region_code, dst_crs):
+    def _reproject_and_merge(input_files, dst_crs, output_file, tmp_label):
         """
-        Merge glacier thickness rasters for a single complex.
-
-        Glacier rasters are reprojected to *dst_crs* before merging so that
-        glaciers spanning different UTM zones can be combined.
+        Reproject inputs to ``dst_crs`` and write their mosaic to ``output_file``.
 
         Parameters
         ----------
-        rgi_c_id : str
-            The complex outline identifier.
-        region_g : geopandas.GeoDataFrame
-            Glacier outlines for the region.
-        region_code : str
-            Region code (e.g. ``"1"``).
+        input_files : list[Path]
+            Source GeoTIFFs to merge.
         dst_crs : str
-            Target CRS for the output (e.g. ``"EPSG:32606"``).
+            Target CRS string (e.g. ``"EPSG:32606"``).
+        output_file : Path
+            Target path for the merged GeoTIFF.
+        tmp_label : str
+            Label embedded in temporary reproject filenames so concurrent
+            tasks operating on the same source raster don't collide.
 
         Returns
         -------
-        str or None
-            Path to the merged file, or ``None`` if no files found.
+        Path
+            ``output_file`` on success.
         """
-        glaciers_list = glaciers_in_complex(rgi_c_id, region_g)
-        glaciers_files = [extract_path / Path(f"rgi{region_code}") / Path(f"{g}.tif") for g in glaciers_list]
-        glaciers_files = [f for f in glaciers_files if f.exists()]
-        if not glaciers_files:
-            logger.debug("No thickness files found for complex %s", rgi_c_id)
-            return None
-        logger.debug("Merging %d glacier rasters for complex %s", len(glaciers_files), rgi_c_id)
-
-        # Reproject each glacier raster to the complex's CRS
-        reprojected = []
-        for fpath in glaciers_files:
+        reprojected: list[Path] = []
+        for fpath in input_files:
             with rasterio.open(fpath) as src:
                 if src.crs == rasterio.crs.CRS.from_user_input(dst_crs):
                     reprojected.append(fpath)
@@ -184,7 +573,7 @@ def prepare_ice_thickness_maffezzoli(
                 )
                 meta = src.meta.copy()
                 meta.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
-                tmp_path = fpath.parent / f"{fpath.stem}_reproj.tif"
+                tmp_path = fpath.parent / f"{fpath.stem}__{tmp_label}_reproj.tif"
                 with rasterio.open(tmp_path, "w", **meta) as dst:
                     reproject(
                         source=rasterio.band(src, 1),
@@ -200,73 +589,204 @@ def prepare_ice_thickness_maffezzoli(
         mosaic, out_transform = merge(reprojected)
         with rasterio.open(reprojected[0]) as src:
             out_meta = src.meta.copy()
+        # Cloud-Optimized GeoTIFF: tiled + DEFLATE + overviews, range-readable
+        # from S3 (so QGIS via /vsis3/ streams without a full download).
+        # predictor=3 for floats, 2 for ints. BIGTIFF=YES for >4 GB outputs.
+        predictor = 3 if np.issubdtype(mosaic.dtype, np.floating) else 2
         out_meta.update(
-            {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
+            {
+                "driver": "COG",
+                "height": mosaic.shape[1],
+                "width": mosaic.shape[2],
+                "transform": out_transform,
+                "compress": "DEFLATE",
+                "predictor": predictor,
+                "level": 6,
+                "blocksize": 512,
+                "overview_resampling": "AVERAGE",
+                "BIGTIFF": "YES",
+                "num_threads": "ALL_CPUS",
+            }
         )
-        merged_path = output_path / Path(f"RGI2000-v7.0-C-{region_code.zfill(2)}")
-        merged_path.mkdir(parents=True, exist_ok=True)
-
-        merged_file_path = merged_path / Path(f"{rgi_c_id}_thickness.tif")
-        with rasterio.open(merged_file_path, "w", **out_meta) as dest:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(output_file, "w", **out_meta) as dest:
             dest.write(mosaic)
 
-        # Clean up temporary reprojected files
         for fpath in reprojected:
             if fpath.stem.endswith("_reproj"):
                 fpath.unlink(missing_ok=True)
+        return output_file
 
-        return str(merged_path)
+    def _merge_complex(rgi_c_id, all_glaciers, o1region, dst_crs):
+        """
+        Build a per-complex thickness raster from member-glacier rasters.
 
-    # Build list of all (rgi_c_id, region_g, region_code) tasks across regions
-    merge_tasks = []
-    for region in regions:
-        region_c = complexes[complexes["o1region"] == region.zfill(2)]
-        region_g = glaciers[glaciers["o1region"] == region.zfill(2)]
-        for _, row in region_c.iterrows():
-            merge_tasks.append((row["rgi_id"], region_g, region, row["epsg"]))
+        Phase-1 merge: each member glacier's source raster is fetched from
+        ``extract_path/rgi<o1region>/<rgi_id>.tif`` (using the glacier's own
+        ``o1region``) and merged into one per-complex GeoTIFF.
 
-    with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(merge_tasks)))) as executor:
-        futures = {
-            executor.submit(
-                _merge_complex, rgi_c_id=rgi_c_id, region_g=region_g, region_code=region_code, dst_crs=dst_crs
-            ): rgi_c_id
-            for rgi_c_id, region_g, region_code, dst_crs in merge_tasks
-        }
-        failed = []
-        for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging ice thickness"):
-            rgi_c_id = futures[future]
-            try:
-                future.result()
-            except Exception as exc:
-                failed.append((rgi_c_id, exc))
-        for rgi_c_id, err in failed:
-            logger.error("Failed merging %s: %s", rgi_c_id, err)
+        Parameters
+        ----------
+        rgi_c_id : str
+            Complex outline identifier, e.g. ``"RGI2000-v7.0-C-01-09429"``.
+        all_glaciers : geopandas.GeoDataFrame
+            Full glacier outline table with ``rgi_id``, ``rgi_id_c``, and
+            ``o1region`` columns (not pre-filtered by region).
+        o1region : str or int
+            The complex's RGI-region code; used to build the output
+            subdirectory path.
+        dst_crs : str
+            Target CRS string for the merged output.
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged GeoTIFF, or ``None`` if no member rasters
+            were found on disk.
+        """
+        glaciers_list = glaciers_in_complex(rgi_c_id, all_glaciers)
+        if not glaciers_list:
+            return None
+
+        g_subset = all_glaciers[all_glaciers["rgi_id"].isin(glaciers_list)]
+        glaciers_files = []
+        for _, gr in g_subset.iterrows():
+            g_region = gr.get("o1region")
+            if pd.isna(g_region):
+                continue
+            f = extract_path / Path(f"rgi{int(g_region)}") / Path(f"{gr['rgi_id']}.tif")
+            if f.exists():
+                glaciers_files.append(f)
+        if not glaciers_files:
+            logger.debug("No thickness files found for complex %s", rgi_c_id)
+            return None
+
+        merged_path = output_path / Path(f"RGI2000-v7.0-C-{str(o1region).zfill(2)}")
+        merged_file = merged_path / Path(f"{rgi_c_id}_thickness.tif")
+        return _reproject_and_merge(glaciers_files, dst_crs, merged_file, rgi_c_id)
+
+    def _merge_aggregate(agg_id, all_glaciers, dst_crs):
+        """
+        Build an aggregate thickness raster from per-complex outputs.
+
+        Phase-2 merge: looks up the parent complexes that own glaciers tagged
+        with ``agg_id`` (via the ``rgi_id_c_aggregate`` column), reads each
+        parent's already-produced ``<parent>_thickness.tif`` from phase 1,
+        and reprojects/mosaics them into one aggregate GeoTIFF. Orders of
+        magnitude fewer inputs than re-merging every individual glacier.
+
+        Parameters
+        ----------
+        agg_id : str
+            Aggregate identifier (e.g. ``"S4F_AK"``).
+        all_glaciers : geopandas.GeoDataFrame
+            Full glacier outline table with ``rgi_id_c`` and
+            ``rgi_id_c_aggregate`` columns.
+        dst_crs : str
+            Target CRS string for the merged output.
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged GeoTIFF, or ``None`` if no parent thickness
+            files (from phase 1) were found on disk.
+        """
+        # Find the parent complexes that own glaciers tagged with this aggregate.
+        agg_col = all_glaciers.get("rgi_id_c_aggregate")
+        if agg_col is None:
+            return None
+        sel = agg_col.fillna("").str.split(";").apply(lambda parts: agg_id in parts)
+        parent_ids = all_glaciers.loc[sel, "rgi_id_c"].dropna().unique()
+        if len(parent_ids) == 0:
+            logger.debug("No parent complexes resolved for aggregate %s", agg_id)
+            return None
+
+        parent_files: list[Path] = []
+        for parent_id in parent_ids:
+            # Per-region subdirs are output_path/RGI2000-v7.0-C-XX/<parent>_thickness.tif
+            for o1_dir in output_path.glob("RGI2000-v7.0-C-*"):
+                p = o1_dir / f"{parent_id}_thickness.tif"
+                if p.exists():
+                    parent_files.append(p)
+                    break
+        if not parent_files:
+            logger.debug("No parent thickness files found for aggregate %s", agg_id)
+            return None
+
+        merged_file = output_path / Path(agg_id) / Path(f"{agg_id}_thickness.tif")
+        return _reproject_and_merge(parent_files, dst_crs, merged_file, agg_id)
+
+    # Split tasks: regular complexes (have an o1region) run first; aggregates
+    # depend on their parents' merged outputs and run after.
+    regular_tasks = []
+    aggregate_tasks = []
+    for _, row in complexes.iterrows():
+        crs_value = row.get("crs")
+        if not isinstance(crs_value, str) or not crs_value:
+            logger.warning("Complex %s has no CRS; skipping", row["rgi_id"])
+            continue
+        if pd.notna(row.get("o1region")):
+            regular_tasks.append((row["rgi_id"], glaciers, row.get("o1region"), crs_value))
+        else:
+            aggregate_tasks.append((row["rgi_id"], glaciers, crs_value))
+
+    failed = []
+    if regular_tasks:
+        with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(regular_tasks)))) as executor:
+            futures = {
+                executor.submit(
+                    _merge_complex, rgi_c_id=rgi_c_id, all_glaciers=g, o1region=o1region, dst_crs=dst_crs
+                ): rgi_c_id
+                for rgi_c_id, g, o1region, dst_crs in regular_tasks
+            }
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging ice thickness"):
+                rgi_c_id = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed.append((rgi_c_id, exc))
+
+    if aggregate_tasks:
+        with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(aggregate_tasks)))) as executor:
+            futures = {
+                executor.submit(_merge_aggregate, agg_id=agg_id, all_glaciers=g, dst_crs=dst_crs): agg_id
+                for agg_id, g, dst_crs in aggregate_tasks
+            }
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging aggregates"):
+                agg_id = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed.append((agg_id, exc))
+
+    for rgi_c_id, err in failed:
+        logger.error("Failed merging %s: %s", rgi_c_id, err)
     logger.info("Ice thickness merging complete")
 
 
 def get_ice_thickness(
-    glacier,
+    rgi_id: str,
     target_grid: xr.Dataset | xr.DataArray,
-    dataset: Literal["millan", "maffezzoli"] = "maffezzoli",
+    dataset: Literal["frank", "maffezzoli", "millan"] = "maffezzoli",
     path: str | Path = "input_files",
     **kwargs,
-):
+) -> xr.DataArray:
     """
     Prepare ice thickness data for a given glacier and target grid.
 
     This function dispatches to a dataset-specific loader to prepare an
     ice thickness field interpolated to the resolution and bounds of a
-    specified target grid. Currently only the "millan" dataset is supported.
+    specified target grid.
 
     Parameters
     ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Glacier geometry to match against ice thickness tiles.
+    rgi_id : str
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``) used to locate
+        the relevant ice thickness tiles.
     target_grid : xarray.Dataset or xarray.DataArray
         Grid to which the output ice thickness will be interpolated.
-    dataset : str, optional
-        The name of the ice thickness dataset to use. Currently only "millan" is implemented.
-        Default is "millan".
+    dataset : {"millan", "maffezzoli"}, default ``"maffezzoli"``
+        The name of the ice thickness dataset to use.
     path : str or pathlib.Path, default ``"input_files"``
         Working directory used by helper routines to cache/write intermediate rasters/grids.
     **kwargs
@@ -284,10 +804,12 @@ def get_ice_thickness(
         If the specified dataset is not supported.
     """
     logger.info("Getting ice thickness from dataset '%s'", dataset)
-    if dataset == "maffezzoli":
-        thickness = get_ice_thickness_maffezzoli(glacier, target_grid, path=path, **kwargs)
+    if dataset == "frank":
+        thickness = get_ice_thickness_frank(rgi_id, target_grid, path=path, **kwargs)
+    elif dataset == "maffezzoli":
+        thickness = get_ice_thickness_maffezzoli(rgi_id, target_grid, path=path, **kwargs)
     elif dataset == "millan":
-        thickness = get_ice_thickness_millan(glacier, target_grid, path=path, **kwargs)
+        thickness = get_ice_thickness_millan(rgi_id, target_grid, path=path, **kwargs)
     else:
         raise NotImplementedError(f"Ice thickness dataset '{dataset}' not implemented.")
     thickness = thickness.where(thickness > 0, 0)
@@ -296,16 +818,17 @@ def get_ice_thickness(
     return thickness
 
 
-def get_ice_thickness_maffezzoli(
-    glacier, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
+def get_ice_thickness_frank(
+    rgi_id: str, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
 ):
     """
-    Load and interpolate Maffezzoli et al. (2026) ice thickness data to a target grid.
+    Load and interpolate Frank et al. (2026) ice thickness data to a target grid.
 
     Parameters
     ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Geometry of the glacier to extract overlapping thickness rasters.
+    rgi_id : str
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``) used to locate
+        the overlapping Maffezzoli thickness rasters.
     target_grid : xarray.Dataset or xarray.DataArray
         Target grid to which ice thickness should be interpolated.
     path : str or pathlib.Path, default ``"input_files"``
@@ -318,46 +841,134 @@ def get_ice_thickness_maffezzoli(
     Returns
     -------
     xarray.DataArray
-        Interpolated and summed ice thickness field on the target grid.
+        Interpolated ice thickness field on the target grid.
 
     Notes
     -----
     - Uses `rioxarray` to load and project raster files.
-    - All overlapping rasters are summed to produce the final thickness field.
-    - Assumes a fixed reprojected resolution of 50 meters.
+    - Assumes a fixed reprojected resolution of 100 meters.
     """
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
+    prefix: str = kwargs.pop("prefix", "glacier")
 
     out_dir = Path(path)
-    thickness_file = out_dir / "thickness_maffezzoli.nc"
+    thickness_file = out_dir / f"thickness_frank_{rgi_id}.nc"
 
     if (not check_xr_lazy(thickness_file)) or force_overwrite:
         thickness_file.unlink(missing_ok=True)
 
-        rgi_id = glacier.iloc[0]["rgi_id"]
-        o1region = glacier.iloc[0]["o1region"]
-        region = f"RGI2000-v7.0-C-{o1region}"
-        s3_uri = f"s3://{bucket}/glaciers/ice_thickness/maffezzoli/{region}/{rgi_id}_thickness.tif"
+        # Regular complex IDs strip the trailing glacier-number segment to get
+        # the per-region subdir; aggregate IDs (no hyphens) live under their
+        # own name.
+        region = "-".join(rgi_id.split("-")[:-1]) or rgi_id
+        s3_uri = f"s3://{bucket}/{prefix}/ice_thickness/frank/{region}/{rgi_id}_thickness.tif"
         local_tif = out_dir / f"{rgi_id}_thickness.tif"
-        logger.info("Downloading Maffezzoli thickness for %s from S3", rgi_id)
+        print(f"Downloading Frank thickness from {s3_uri}", flush=True)
         download_from_s3(s3_uri, local_tif)
 
-        logger.info("Reprojecting thickness to %s", kwargs["target_crs"])
-        projected_file = reproject_file(local_tif, dst_crs=kwargs["target_crs"], resolution=50)
-        da = rxr.open_rasterio(projected_file).sel(band=1).drop_vars("band")
-        logger.info("Interpolating thickness to target grid")
-        thickness = da.interp_like(target_grid)
+        logger.info("Reprojecting and aligning thickness to target grid")
+        da = rxr.open_rasterio(local_tif).sel(band=1).drop_vars("band")
+        thickness = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
         thickness.rio.write_nodata(None, inplace=True)
         thickness.name = "thickness"
+        thickness = thickness.rio.write_crs(target_grid.rio.crs).rio.write_grid_mapping()
         thickness.to_netcdf(thickness_file)
         logger.info("Thickness saved to %s", thickness_file)
-    else:
-        logger.info("Using cached thickness file %s", thickness_file)
+        # Return the in-memory result; CRS doesn't always survive the netCDF
+        # round-trip, and we just computed a CRS-correct value.
+        return thickness
 
-    thickness = xr.open_dataarray(thickness_file)
+    logger.info("Using cached thickness file %s", thickness_file)
+    with xr.open_dataset(thickness_file) as ds:
+        src_crs = ds.rio.crs
+        if src_crs is None and "spatial_ref" in ds.coords:
+            sr = ds["spatial_ref"]
+            src_crs = sr.attrs.get("crs_wkt") or sr.attrs.get("spatial_ref")
+        thickness = ds["thickness"].load()
+    if src_crs is None:
+        # Last resort: trust target_grid's CRS (the cache was generated against
+        # an aligned grid, so this is correct by construction).
+        src_crs = target_grid.rio.crs
+    thickness = thickness.rio.write_crs(src_crs)
+    return thickness
 
+
+def get_ice_thickness_maffezzoli(
+    rgi_id: str, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
+):
+    """
+    Load and interpolate Maffezzoli et al. (2026) ice thickness data to a target grid.
+
+    Parameters
+    ----------
+    rgi_id : str
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``) used to locate
+        the overlapping Maffezzoli thickness rasters.
+    target_grid : xarray.Dataset or xarray.DataArray
+        Target grid to which ice thickness should be interpolated.
+    path : str or pathlib.Path, default ``"input_files"``
+        Working directory used by helper routines to cache/write intermediate rasters/grids.
+    **kwargs
+        Additional keyword arguments. Must include:
+        - target_crs : str
+            CRS to reproject rasters to (e.g., "EPSG:32641").
+
+    Returns
+    -------
+    xarray.DataArray
+        Interpolated ice thickness field on the target grid.
+
+    Notes
+    -----
+    - Uses `rioxarray` to load and project raster files.
+    - Assumes a fixed reprojected resolution of 100 meters.
+    """
+
+    force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
+    bucket: str = kwargs.pop("bucket", "pism-cloud-data")
+    prefix: str = kwargs.pop("prefix", "glacier")
+
+    out_dir = Path(path)
+    thickness_file = out_dir / f"thickness_maffezzoli_{rgi_id}.nc"
+
+    if (not check_xr_lazy(thickness_file)) or force_overwrite:
+        thickness_file.unlink(missing_ok=True)
+
+        # Regular complex IDs strip the trailing glacier-number segment to get
+        # the per-region subdir; aggregate IDs (no hyphens) live under their
+        # own name.
+        region = "-".join(rgi_id.split("-")[:-1]) or rgi_id
+        s3_uri = f"s3://{bucket}/{prefix}/ice_thickness/maffezzoli/{region}/{rgi_id}_thickness.tif"
+        local_tif = out_dir / f"{rgi_id}_thickness.tif"
+        print(f"Downloading Maffezzoli thickness from {s3_uri}", flush=True)
+        download_from_s3(s3_uri, local_tif)
+
+        logger.info("Reprojecting and aligning thickness to target grid")
+        da = rxr.open_rasterio(local_tif).sel(band=1).drop_vars("band")
+        thickness = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
+        thickness.rio.write_nodata(None, inplace=True)
+        thickness.name = "thickness"
+        thickness = thickness.rio.write_crs(target_grid.rio.crs).rio.write_grid_mapping()
+        thickness.to_netcdf(thickness_file)
+        logger.info("Thickness saved to %s", thickness_file)
+        # Return the in-memory result; CRS doesn't always survive the netCDF
+        # round-trip, and we just computed a CRS-correct value.
+        return thickness
+
+    logger.info("Using cached thickness file %s", thickness_file)
+    with xr.open_dataset(thickness_file) as ds:
+        src_crs = ds.rio.crs
+        if src_crs is None and "spatial_ref" in ds.coords:
+            sr = ds["spatial_ref"]
+            src_crs = sr.attrs.get("crs_wkt") or sr.attrs.get("spatial_ref")
+        thickness = ds["thickness"].load()
+    if src_crs is None:
+        # Last resort: trust target_grid's CRS (the cache was generated against
+        # an aligned grid, so this is correct by construction).
+        src_crs = target_grid.rio.crs
+    thickness = thickness.rio.write_crs(src_crs)
     return thickness
 
 
@@ -420,83 +1031,31 @@ def get_ice_thickness_millan(
         thicknesses = []
         for k, p in enumerate(overlapping_rasters):
             if p is not None:
-                projected_file = reproject_file(p, dst_crs=kwargs["target_crs"], resolution=50)
-                da = rxr.open_rasterio(projected_file).squeeze().drop_vars("band", errors="ignore")
-                thickness = da.interp_like(target_grid)
+                da = rxr.open_rasterio(p).squeeze().drop_vars("band", errors="ignore")
+                thickness = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
                 thickness.rio.write_nodata(None, inplace=True)
                 thickness.name = "thickness"
                 thickness["raster"] = k
                 thicknesses.append(thickness)
 
         thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
+        thickness = thickness.rio.write_crs(target_grid.rio.crs).rio.write_grid_mapping()
         thickness.to_netcdf(thickness_file)
         logger.info("Millan thickness saved to %s", thickness_file)
-    else:
-        logger.info("Using cached thickness file %s", thickness_file)
+        return thickness
 
-    thickness = xr.open_dataarray(thickness_file)
+    logger.info("Using cached thickness file %s", thickness_file)
+    with xr.open_dataset(thickness_file) as ds:
+        src_crs = ds.rio.crs
+        if src_crs is None and "spatial_ref" in ds.coords:
+            sr = ds["spatial_ref"]
+            src_crs = sr.attrs.get("crs_wkt") or sr.attrs.get("spatial_ref")
+        thickness = ds["thickness"].load()
+    if src_crs is None:
+        src_crs = target_grid.rio.crs
+    thickness = thickness.rio.write_crs(src_crs)
 
     return thickness
-
-
-def get_ice_thickness_farinotti(glacier):
-    """
-    Load and interpolate Farniotti et al (2019) ice thickness data to a target grid.
-
-    This function identifies all Millan ice thickness raster files that overlap
-    the input glacier geometry, reprojects them to the specified CRS and resolution,
-    interpolates them onto the target grid, and returns the summed result.
-
-    Parameters
-    ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Geometry of the glacier to extract overlapping thickness rasters.
-
-    Returns
-    -------
-    xarray.DataArray
-        Interpolated and summed ice thickness field on the target grid.
-
-    Notes
-    -----
-    - Uses `rioxarray` to load and project raster files.
-    - All overlapping rasters are summed to produce the final thickness field.
-    - Assumes a fixed reprojected resolution of 50 meters.
-    """
-
-    path = Path("data/ice_thickness")
-    path.mkdir(parents=True, exist_ok=True)
-
-    region = glacier["o1region"]
-    url = f"https://www.research-collection.ethz.ch/bitstream/handle/20.500.11850/315707/composite_thickness_RGI60-{region}.zip"
-    archive = download_archive(url)
-    extract_archive(archive, extract_to=path)
-
-    ice_thickness_files = list(Path(f"data/ice_thickness/RGI60-{region}").rglob("*.tif"))
-
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
-
-        overlapping_rasters = [f.result() for f in cf_as_completed(futures) if f.result() is not None]
-
-    # Step 1: List all .tif files
-    tif_files = overlapping_rasters
-
-    # Step 2: Open all files as datasets
-    src_files_to_mosaic = [rasterio.open(fp) for fp in tif_files]
-
-    # Step 3: Merge them
-    mosaic, out_transform = merge(src_files_to_mosaic)
-
-    # Step 4: Get metadata from first file, update with new shape and transform
-    out_meta = src_files_to_mosaic[0].meta.copy()
-    out_meta.update(
-        {"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform}
-    )
-
-    # Step 5: Write the result to disk
-    with rasterio.open("merged.tif", "w", **out_meta) as dest:
-        dest.write(mosaic)
 
 
 def add_malaspina_bed(
@@ -553,7 +1112,7 @@ def add_malaspina_bed(
 
     ds["thickness"] = ds["thickness"].where(ds["thickness"] > 0.0, 0.0)
     ds["surface"] = ds["surface"].where(ds["thickness"] > 0.0, 0.0)
-    ds["surface"].attrs.update({"standard_name": "land_ice_elevation", "units": "m"})
+    ds["surface"].attrs.update({"standard_name": "surface_altitude", "units": "m"})
 
     ds["thickness"].attrs.update({"standard_name": "land_ice_thickness", "units": "m"})
 

@@ -1,0 +1,20 @@
+ismip7_to_pism = {"acabf" = "climatic_mass_balance", "acabf-anomaly" = "climatic_mass_balance_anomaly", "dacabfdz" = "climatic_mass_balance_gradient", "mrro" = "water_input_rate", "ts" = "ice_surface_temp", "ts-anomaly" = "ice_surface_temp_anomaly", "tf" = "theta_ocean", "so" = "salinity_ocean", "geothermal_heat_flux1" = "bheatflx"}
+version = "v2"
+bucket = "pism-cloud-data"
+prefix = "ismip7/greenland/input"
+ice_sheet = "GrIS"
+
+[domain]
+
+x_bounds = [-653000.0, 879700.0]
+y_bounds = [-3384350.0, -632750.0]
+resolution = "900m"
+
+[gcms]
+
+'CESM2-WACCM' = {ssp126 = {"historical" = [1978, 2015], "projection" = [2015, 2300], version = 2 }, ssp370 = {"historical" = [1978, 2015], "projection" = [2015, 2300], version = 2 }, ssp585 = {"historical" = [1978, 2015], "projection" = [2015, 2300], version = 2 } }
+
+[forcing]
+
+climate = {fields = ["acabf", "acabf-anomaly", "dacabfdz", "mrro", "ts", "ts-anomaly"], short_hand = "SDBN1-1000m"}
+ocean = {fields = ["tf", "so"], short_hand = "ocean"}

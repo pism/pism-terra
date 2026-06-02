@@ -1,3 +1,5 @@
 #!/usr/bin/env bash
 
 ulimit -a
+
+mpirun -np  {{ ntasks | default(32) }} pism {{ run_str }} {{ writer | default("") }}

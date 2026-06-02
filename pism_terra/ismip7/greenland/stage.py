@@ -24,7 +24,7 @@ Staging.
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -35,6 +35,7 @@ import rioxarray
 import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
+from tqdm.auto import tqdm
 
 from pism_terra.aws import local_to_s3, s3_to_local
 from pism_terra.config import load_config
@@ -73,8 +74,8 @@ def stage(
             Path to the retreat NetCDF file relative to the input directory.
         - ``"pathway"`` : str
             ISMIP7 pathway identifier.
-        - ``"gcm"`` : str
-            GCM model name.
+        - ``"gcms"`` : str or list[str]
+            GCM model name(s).
         - ``"version"`` : str
             Dataset version.
         - ``"start_year"`` : int
@@ -94,19 +95,19 @@ def stage(
     Returns
     -------
     pandas.DataFrame
-        Single-row DataFrame with absolute-path columns including
+        DataFrame with one row per GCM and absolute-path columns including
         ``boot_file``, ``grid_file``, ``heatflux_file``, ``regrid_file``,
-        ``retreat_file``, ``climate_file``, ``ocean_file``,
-        ``surface_input_file``, and ``frontal_melt_file``.
+        ``retreat_file``, ``outline_file``, ``climate_file``, ``ocean_file``,
+        ``surface_input_file``, ``frontal_melt_file``, and ``sample``.
     """
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Stage ISMIP7 Greenland")
-    print("-" * 80)
+    print("-" * 120)
     print("")
 
     # Outputs dir
@@ -121,22 +122,35 @@ def stage(
     s3_to_local(bucket, prefix=prefix, dest=input_path)
 
     grid_file = input_path / Path(config["grid_file"])
+    # Grid file gets the heavier full-load check; leave it sequential.
     check_xr_fully(grid_file)
 
     boot_file = input_path / Path(config["boot_file"])
-    check_xr_lazy(boot_file)
-
     heatflux_file = input_path / Path(config["heatflux_file"])
-    check_xr_lazy(heatflux_file)
-
     regrid_file = input_path / Path(config["regrid_file"])
-    check_xr_lazy(regrid_file)
-
     retreat_file = input_path / Path(config["retreat_file"])
-    check_xr_lazy(retreat_file)
+    outline_file = input_path / Path(config["outline_file"])
+
+    # Validate the lazy-check inputs concurrently; only invalid files print.
+    input_lazy_files = [boot_file, heatflux_file, regrid_file, retreat_file]
+    # Processes (not threads): HDF5 isn't reliably thread-safe across all
+    # builds (Chinook segfaults), so each worker gets its own interpreter
+    # and HDF5 state.
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for p in input_lazy_files}
+        for future in tqdm(
+            as_completed(future_to_path),
+            total=len(future_to_path),
+            desc="Checking input files",
+            unit="file",
+        ):
+            p = future_to_path[future]
+            if not future.result():
+                print(f"{p.resolve()} is not valid ✗")
 
     pathway = config["pathway"]
-    gcm = config["gcm"]
+    gcms = config["gcms"]
+    gcms = [gcms] if isinstance(gcms, str) else gcms
     version = config["version"]
     start_year = config["start_year"]
     end_year = config["end_year"]
@@ -148,30 +162,61 @@ def stage(
         "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
         "retreat_file": retreat_file.resolve(),
+        "outline_file": outline_file.resolve(),
     }
-    for forcing in ["climate", "ocean"]:
-        forcing_file = input_path / Path(
-            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-        )
-        check_xr_lazy(forcing_file)
-        files_dict[f"{forcing}_file"] = forcing_file.resolve()
 
-    forcing = "climate"
-    surface_input_file = input_path / Path(
-        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-    )
-    check_xr_lazy(surface_input_file)
-    files_dict["surface_input_file"] = surface_input_file.resolve()
+    # Per-GCM climate/ocean forcing paths. ``surface_input_file`` aliases the
+    # climate forcing and ``frontal_melt_file`` aliases the ocean forcing, so
+    # we only need to validate the two distinct paths per GCM.
+    def _forcing_path(forcing: str, gcm: str) -> Path:
+        """
+        Build the local path for one (forcing, gcm) merged NetCDF.
 
-    forcing = "ocean"
-    frontal_melt_file = input_path / Path(
-        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-    )
-    check_xr_lazy(frontal_melt_file)
-    files_dict["frontal_melt_file"] = frontal_melt_file.resolve()
+        Parameters
+        ----------
+        forcing : str
+            ``"climate"`` or ``"ocean"``.
+        gcm : str
+            GCM name (e.g. ``"CESM2-WACCM"``).
+
+        Returns
+        -------
+        pathlib.Path
+            Absolute path to the merged forcing file under ``input_path``.
+        """
+        return input_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc")
+
+    forcing_paths: dict[tuple[str, str], Path] = {}
+    for gcm in gcms:
+        for forcing in ("climate", "ocean"):
+            forcing_paths[(gcm, forcing)] = _forcing_path(forcing, gcm)
+
+    # Processes (not threads): HDF5 isn't reliably thread-safe across all
+    # builds (Chinook segfaults), so each worker gets its own interpreter
+    # and HDF5 state.
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for p in forcing_paths.values()}
+        for future in tqdm(
+            as_completed(future_to_path),
+            total=len(future_to_path),
+            desc="Checking forcing files",
+            unit="file",
+        ):
+            p = future_to_path[future]
+            if not future.result():
+                print(f"{p.resolve()} is not valid ✗")
 
     dfs: list[pd.DataFrame] = []
-    dfs.append(pd.DataFrame.from_dict([files_dict]))
+    for gcm in gcms:
+        climate_file = forcing_paths[(gcm, "climate")]
+        ocean_file = forcing_paths[(gcm, "ocean")]
+        row = dict(files_dict)
+        row["climate_file"] = climate_file.resolve()
+        row["ocean_file"] = ocean_file.resolve()
+        row["surface_input_file"] = climate_file.resolve()
+        row["frontal_melt_file"] = ocean_file.resolve()
+        row["sample"] = gcm
+        dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)
     return df

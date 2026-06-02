@@ -34,15 +34,16 @@ import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
-from pism_terra.config import JobConfig, RunConfig, load_config, load_uq
+from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.ismip7.greenland.stage import stage
 from pism_terra.sampling import create_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
     dict2str,
-    merge_model,
+    filter_overrides_by_config,
     normalize_row,
     sort_dict_by_key,
+    validate_pism_options,
 )
 
 # one Jinja environment for all renders
@@ -52,16 +53,14 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 def run_greenland(
     config_file: str | Path,
     template_file: Path | str,
+    outline_file: Path | str | None,
     path: str | Path = "result",
-    resolution: None | str = None,
-    nodes: None | int = None,
-    ntasks: None | int = None,
-    queue: None | str = None,
-    walltime: None | str = None,
+    config_cli: dict | None = None,
     debug: bool = False,
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
+    pism_config_cdl: str | Path | None = None,
 ):
     """
     Configure and generate a PISM job script for a single glacier (ensemble-ready).
@@ -80,22 +79,19 @@ def run_greenland(
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template (e.g., SLURM/LSF script). The
         context is populated from validated ``RunConfig`` and ``JobConfig``.
+    outline_file : str or pathlib.Path
+        Path to a geopandas file with the glacier outline.
     path : str or pathlib.Path, optional
-        Base output directory. A subfolder ``<path>/<rgi_id>`` is created with
-        ``output/`` and ``run_scripts/`` subdirectories. Default is ``"result"``.
-    resolution : str or None, optional
-        Grid resolution (e.g., ``"200m"``). If ``None``, the value from
-        ``[grid].resolution`` in the config is used.
-    nodes : int or None, optional
-        Node count override for the submission template. If ``None``, use config.
-    ntasks : int or None, optional
-        MPI task count override for the submission template/run options.
-        If ``None``, use config.
-    queue : str or None, optional
-        Batch queue/partition override for the submission template. If ``None``,
-        use config.
-    walltime : str or None, optional
-        Wall time override in ``HH:MM:SS``. If ``None``, use config.
+        Base output directory. ``output/`` and ``run_scripts/`` subdirectories
+        are created inside it. Default is ``"result"``.
+    config_cli : dict or None, optional
+        CLI-side overrides applied after reading the config. Recognized keys:
+        ``"resolution"`` (e.g. ``"200m"``), ``"nodes"`` (int), ``"ntasks"``
+        (int), ``"tasks"`` (int, MPI tasks per node), ``"queue"`` (str),
+        ``"walltime"`` (``HH:MM:SS``), ``"stress_balance"`` (sub-model name
+        swap, e.g. ``"sia"``), and ``"start"`` / ``"end"`` (``YYYY-MM-DD``
+        time bounds). Any value of ``None`` falls back to the config file.
+        Default is ``None`` (no overrides).
     debug : bool, optional
         If ``True``, skip rendering the template (leave it empty) but still
         append the constructed PISM command line to the output script.
@@ -111,6 +107,9 @@ def run_greenland(
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._s0042``). If neither is provided,
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+    pism_config_cdl : str or Path or None, optional
+        Path to a PISM CDL master config file. If provided, all run options
+        are validated against it before generating the command line.
 
     Raises
     ------
@@ -133,20 +132,20 @@ def run_greenland(
     --------
     Basic use with config and template:
 
-    >>> run_glacier(
-    ...     rgi_id="RGI2000-v7.0-C-01-04374",
+    >>> run_greenland(
     ...     config_file="config/init_stampede3.toml",
     ...     template_file="templates/stampede3.j2",
+    ...     outline_file=None,
     ...     path="result",
     ... )
 
     Ensemble member with overrides from a pandas row (e.g., Latin Hypercube):
 
     >>> row = df_samples.loc[17]  # contains dotted keys + 'sample'
-    >>> run_glacier(
-    ...     rgi_id="RGI2000-v7.0-C-01-04374",
+    >>> run_greenland(
     ...     config_file="config/init_stampede3.toml",
     ...     template_file="templates/stampede3.j2",
+    ...     outline_file=None,
     ...     uq=row,             # dotted PISM flags to override
     ...     sample=None,        # will be inferred from row['sample'] if present
     ...     ntasks=112,         # optional template/run override
@@ -155,6 +154,8 @@ def run_greenland(
 
     cfg = load_config(config_file)
 
+    config_cli = config_cli or {}
+    resolution = config_cli.get("resolution")
     if resolution:
         resolution = re.sub(r"\s+", "", resolution)
 
@@ -179,7 +180,6 @@ def run_greenland(
     run = {}
     for section in (
         "geometry",
-        "ocean",
         "calving",
         "iceflow",
         "reporting",
@@ -189,6 +189,7 @@ def run_greenland(
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
     run.update(cfg.energy.selected())
+    run.update(cfg.ocean.selected())
     run.update(cfg.frontal_melt.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.hydrology.selected())
@@ -207,7 +208,33 @@ def run_greenland(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
+    # CLI override for the stress-balance model. Drop the previous model's
+    # options from ``run`` first so leftover keys (e.g. blatter.*) don't
+    # leak into e.g. a sia run.
+    stress_balance = config_cli.get("stress_balance")
+    if stress_balance is not None:
+        for old_key in cfg.stress_balance.selected():
+            run.pop(old_key, None)
+        cfg.stress_balance.model = stress_balance
+        run.update(cfg.stress_balance.selected())
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
+
+    # CLI overrides for time bounds. ``cfg.time`` is a TimeConfig pydantic
+    # model with field names ``time_start`` / ``time_end`` (aliased to the
+    # dotted ``"time.start"`` / ``"time.end"``), so attribute assignment is
+    # required. Drop the prior dotted entry from ``run`` and re-apply via
+    # ``as_params()`` so the new value lands cleanly.
+    _start = config_cli.get("start")
+    _end = config_cli.get("end")
+    if _start is not None:
+        run.pop("time.start", None)
+        cfg.time.time_start = _start
+        run.update(cfg.time.as_params())
+    if _end is not None:
+        run.pop("time.end", None)
+        cfg.time.time_end = _end
+        run.update(cfg.time.as_params())
+
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
 
@@ -224,8 +251,12 @@ def run_greenland(
         except Exception:
             pass
 
-    # Remove 'sample' from flag overrides
+    # Remove 'sample' from flag overrides; drop any key not in the config-derived
+    # run dict (e.g., surface.debm_simple.std_dev.file when surface.model == "pdd").
     overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
+    overrides, skipped = filter_overrides_by_config(overrides, run.keys())
+    if skipped:
+        print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
@@ -240,33 +271,35 @@ def run_greenland(
         }
     )
 
-    run_str = dict2str(sort_dict_by_key(run)) + f" {writer}"
+    if pism_config_cdl is not None:
+        validate_pism_options(run, pism_config_cdl)
 
-    run_opts = RunConfig(**cfg.run.model_dump())
+    run_str = dict2str(sort_dict_by_key(run))
+
     job_opts = JobConfig(**cfg.job.model_dump())
 
     params = {
-        **run_opts.model_dump(exclude_none=True, by_alias=True),
         **job_opts.model_dump(exclude_none=True, by_alias=True),
     }
 
-    # run_opts comes from your config; ntasks comes from CLI (or None)
-    active_run_opts = merge_model(run_opts, ntasks=ntasks)
-
-    # Use this ONE source to update params and to compute mpi_str
-    run_params = active_run_opts.as_params()
-    params.update(run_params)
-    mpi_str = run_params["mpi"]  # guaranteed consistent with ntasks override
-
     job_kwargs = {
         k: v
-        for k, v in {"queue": queue, "walltime": walltime, "nodes": nodes, "output_path": log_path.resolve()}.items()
+        for k, v in {
+            "nodes": config_cli.get("nodes"),
+            "ntasks": config_cli.get("ntasks"),
+            "queue": config_cli.get("queue"),
+            "output_path": log_path.resolve(),
+            "tasks": config_cli.get("tasks"),
+            "walltime": config_cli.get("walltime"),
+        }.items()
         if v is not None
     }
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     run_toml = {
+        "basin": {"basin": "Mouginot/Rignot", "outline": outline_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "state": str(state_file.resolve()),
@@ -280,10 +313,8 @@ def run_greenland(
     with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
-    prefix = f"{mpi_str} {cfg.run.executable} "
-    postfix = "# End of script"
+    params.update({"run_str": run_str})
     rendered_script = "" if debug else template.render(params)
-    rendered_script += f"\n\n{prefix}{run_str}\n\n{postfix}"
 
     run_script_path = path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
@@ -324,7 +355,13 @@ def run_single():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntatsks in config file.",
+        help="Numbers of cores.",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--tasks",
+        help="Cores per node.",
         type=int,
         default=None,
     )
@@ -347,10 +384,34 @@ def run_single():
         default=None,
     )
     parser.add_argument(
+        "--start",
+        help="Override the time.start selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--end",
+        help="Override the time.end selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--stress-balance",
+        help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
         default=False,
+    )
+    parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
     )
     parser.add_argument(
         "CONFIG_FILE",
@@ -373,7 +434,12 @@ def run_single():
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
+    tasks = options.tasks
     walltime = options.walltime
+    stress_balance = options.stress_balance
+    start_cli = options.start
+    end_cli = options.end
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -390,39 +456,50 @@ def run_single():
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
 
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "frontal_melt.routing.file": df["frontal_melt_file"].iloc[0],
-        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "energy.bedrock_thermal.file": df["heatflux_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "surface.given.file": df["climate_file"].iloc[0],
-        "hydrology.surface_input.file": df["surface_input_file"].iloc[0],
-        "ocean.th.file": df["ocean_file"].iloc[0],
-    }
-
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Generate Run for ISMIP7")
-    print("-" * 80)
+    print("-" * 120)
     for idx, row in df.iterrows():
+        uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "frontal_melt.routing.file": row["frontal_melt_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
+            "grid.file": row["grid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "atmosphere.given.file": row["climate_file"],
+            "surface.given.file": row["climate_file"],
+            "surface.ismip6.file": row["climate_file"],
+            "surface.ismip6.reference_file": row["climate_file"],
+            "hydrology.surface_input.file": row["surface_input_file"],
+            "ocean.th.file": row["ocean_file"],
+        }
+        sample = int(row["sample"]) if "sample" in row else idx
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_greenland(
             config_file,
             template_file,
+            outline_file,
             path=path,
-            resolution=resolution,
-            nodes=nodes,
-            ntasks=ntasks,
-            queue=queue,
-            walltime=walltime,
+            config_cli={
+                "resolution": resolution,
+                "nodes": nodes,
+                "ntasks": ntasks,
+                "tasks": tasks,
+                "queue": queue,
+                "walltime": walltime,
+                "stress_balance": stress_balance,
+                "start": start_cli,
+                "end": end_cli,
+            },
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=uq,
+            sample=sample,
+            pism_config_cdl=pism_config_cdl,
         )
 
 
@@ -448,7 +525,13 @@ def run_ensemble():
     )
     parser.add_argument(
         "--ntasks",
-        help="Overrides ntatsks in config file.",
+        help="Numbers of cores.",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--tasks",
+        help="Cores per node.",
         type=int,
         default=None,
     )
@@ -471,8 +554,26 @@ def run_ensemble():
         default=None,
     )
     parser.add_argument(
+        "--start",
+        help="Override the time.start selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--end",
+        help="Override the time.end selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--posterior-file",
         help="CSV file posterior parameter distributions to sample from. Default=None.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--stress-balance",
+        help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
         type=str,
         default=None,
     )
@@ -481,6 +582,12 @@ def run_ensemble():
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
         default=False,
+    )
+    parser.add_argument(
+        "--pism-config-cdl",
+        help="Path to PISM CDL config file for option validation.",
+        type=str,
+        default=None,
     )
     parser.add_argument(
         "--force-overwrite",
@@ -516,7 +623,12 @@ def run_ensemble():
     queue = options.queue
     ntasks = options.ntasks
     nodes = options.nodes
+    tasks = options.tasks
     walltime = options.walltime
+    stress_balance = options.stress_balance
+    start_cli = options.start
+    end_cli = options.end
+    pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -532,16 +644,6 @@ def run_ensemble():
     prefix = campaign_config["prefix"]
 
     df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-
-    default = {
-        "input.file": df["boot_file"].iloc[0],
-        "input.regrid.file": df["regrid_file"].iloc[0],
-        "geometry.front_retreat.prescribed.file": df["retreat_file"].iloc[0],
-        "grid.file": df["grid_file"].iloc[0],
-        "atmosphere.given.file": df["climate_file"].iloc[0],
-        "surface.given.file": df["climate_file"].iloc[0],
-        "ocean.th.file": df["ocean_file"].iloc[0],
-    }
 
     seed = 42
     rng = np.random.default_rng(seed=seed)
@@ -565,26 +667,57 @@ def run_ensemble():
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Generate Ensemble Runs for Greenland")
-    print("-" * 80)
+    print("-" * 120)
+
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-    for idx, row in uq_df.iterrows():
+
+    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
+    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+
+    for _, row in merged_df.iterrows():
+        row_uq = {
+            "input.file": row["boot_file"],
+            "input.regrid.file": row["regrid_file"],
+            "frontal_melt.routing.file": row["frontal_melt_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
+            "grid.file": row["grid_file"],
+            "energy.bedrock_thermal.file": row["heatflux_file"],
+            "atmosphere.given.file": row["climate_file"],
+            "surface.given.file": row["climate_file"],
+            "surface.ismip6.file": row["climate_file"],
+            "surface.ismip6.reference_file": row["climate_file"],
+            "hydrology.surface_input.file": row["surface_input_file"],
+            "ocean.th.file": row["ocean_file"],
+        }
+        row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
+        sample = row["sample"]
+        outline_file = row["outline_file"] if "outline_file" in row else None
         run_greenland(
             config_file,
             template_file,
+            outline_file,
             path=path,
-            resolution=resolution,
-            nodes=nodes,
-            ntasks=ntasks,
-            queue=queue,
-            walltime=walltime,
+            config_cli={
+                "resolution": resolution,
+                "nodes": nodes,
+                "ntasks": ntasks,
+                "tasks": tasks,
+                "queue": queue,
+                "walltime": walltime,
+                "stress_balance": stress_balance,
+                "start": start_cli,
+                "end": end_cli,
+            },
             debug=debug,
-            uq=default,
-            sample=int(row["sample"]) if "sample" in row else idx,
+            uq=row_uq,
+            sample=sample,
+            pism_config_cdl=pism_config_cdl,
         )
 
 

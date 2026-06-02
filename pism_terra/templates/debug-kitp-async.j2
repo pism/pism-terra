@@ -1,0 +1,1 @@
+mpirun -np  {{ ntasks | default(8) }} pism {{ run_str }} : -n 1 pism-kitp-writer -d -g {{ geometry_file }} -r 2
