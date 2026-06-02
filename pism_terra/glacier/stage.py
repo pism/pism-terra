@@ -21,6 +21,7 @@
 Staging.
 """
 
+import shutil
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
@@ -30,31 +31,52 @@ from typing import Callable
 
 import cf_xarray
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+import pyogrio
 import rioxarray
 import xarray as xr
 from pyfiglet import Figlet
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon, box
 
 from pism_terra.aws import download_from_s3, local_to_s3
 from pism_terra.config import load_config
-from pism_terra.domain import create_grid
-from pism_terra.glacier.climate import create_offset_file, era5, pmip4, snap
-from pism_terra.glacier.dem import boot_file_from_rgi_id
+from pism_terra.domain import create_domain, get_bounds_from_geometry
+from pism_terra.glacier.climate import (
+    carra2,
+    create_offset_file,
+    create_step_file,
+    era5,
+    era5_mean,
+    era5_monthly_mean,
+    snap,
+)
+from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
-CLIMATE: Mapping[str, Callable] = {"pmip4": pmip4, "era5": era5, "snap": snap}
+CLIMATE: Mapping[str, Callable] = {
+    "carra2": carra2,
+    "era5": era5,
+    "era5-mean": era5_mean,
+    "era5-monthly-mean": era5_monthly_mean,
+    "snap": snap,
+}
+MODIFIER: Mapping[str, Callable] = {
+    "era5": create_offset_file,
+    "snap": create_offset_file,
+}
 
 
 def stage_glacier(
     config: dict,
     rgi_id: str,
     path: str | Path = "input_files",
-    resolution: float = 50.0,
+    staging_path: str | Path | None = None,
+    resolution: float = 100.0,
     force_overwrite: bool = False,
 ) -> pd.DataFrame:
     """
@@ -73,27 +95,35 @@ def stage_glacier(
     config : dict
         Configuration mapping. Must contain at least:
         - ``"dem"`` : str
-            DEM source passed to :func:`boot_file_from_rgi_id`.
+            DEM source passed to :func:`boot_file_from_grid`.
         - ``"climate"`` : str
             Key in :data:`CLIMATE` (e.g., ``"pmip4"``) selecting the climate builder.
     rgi_id : str
         Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
     path : str or pathlib.Path, default ``"input_files"``
-        Output directory. Created if missing. All staged artifacts are written here.
-    resolution : float, default ``50.0``
+        Final output directory. Created if missing. Holds the artifacts that
+        downstream tooling consumes: glacier outline GPKG, boot NetCDF,
+        grid NetCDF, and climate forcing NetCDF.
+    staging_path : str or pathlib.Path or None, optional
+        Working directory for intermediate files (RGI table cache, DEM tifs,
+        ice-thickness/velocity intermediates, ERA5/PMIP4 raw downloads,
+        debug GPKGs, domain-bounds polygon). Created if missing. If ``None``
+        (default), falls back to ``path`` (legacy behavior — everything in
+        one directory).
+    resolution : float, default ``100.0``
         Target grid resolution (meters), used both for grid construction and in
         output filenames.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
-        even if cache files exist (e.g., passed to :func:`boot_file_from_rgi_id`
+        even if cache files exist (e.g., passed to :func:`boot_file_from_grid`
         and to the selected climate builder via :data:`CLIMATE`).
 
     Returns
     -------
     pandas.DataFrame
         One row per produced **climate** file, with absolute-path columns:
-        ``rgi_id``, ``outline`` (GPKG), ``boot_file`` (NetCDF),
-        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF).
+        ``rgi_id``, ``outline_file`` (GPKG), ``boot_file`` (NetCDF),
+        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF), and ``sample`` (int).
 
     Raises
     ------
@@ -108,109 +138,88 @@ def stage_glacier(
 
     See Also
     --------
-    boot_file_from_rgi_id
+    boot_file_from_grid
         Builds the boot (DEM, thickness, bed, masks) dataset around the glacier.
-    create_grid
+    create_domain
         Creates the target model grid and bounds.
     CLIMATE
         Mapping from climate name (e.g., ``"pmip4"``) to a function that generates
         climate NetCDF file(s) for the glacier domain.
-
-    Notes
-    -----
-    - Applies :func:`apply_perimeter_band` to clean DEM edges.
-    - Enforces simple constraints (non-negative thickness; bed below surface).
-    - Writes two vector layers:
-        - Glacier outline: ``rgi_{rgi_id}.gpkg`` (same CRS as RGI entry).
-        - Domain bounds polygon: ``domain_{rgi_id}.gpkg``.
-    - The returned DataFrame is convenient for downstream orchestration/fan-out.
     """
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print(f"Stage Glacier {rgi_id}")
-    print("-" * 80)
+    print("-" * 120)
     print("")
 
-    # Outputs dir
+    # Output dirs: `path` holds final artifacts; `staging_path` holds intermediates.
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
+    staging_path = Path(staging_path) if staging_path is not None else path
+    staging_path.mkdir(parents=True, exist_ok=True)
 
     print("RGI Database")
     rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_file"]}"""
-    rgi_local = path / config["rgi_file"]
+    rgi_local = staging_path / config["rgi_file"]
     if not rgi_local.exists():
         print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
         download_from_s3(rgi_s3_uri, rgi_local)
     else:
         print(f"Using cached {rgi_local}")
-    rgi = gpd.read_file(rgi_local)
+    # NOTE: gpd.read_file/to_file (via pyogrio's geopandas wrapper) corrupts the
+    # heap on some envs and crashes the next libgdal allocation (e.g. inside
+    # dem_stitcher). Calling pyogrio directly avoids the trigger.
+    rgi = pyogrio.read_dataframe(rgi_local, use_arrow=False)
 
     glacier = get_glacier_from_rgi_id(rgi, rgi_id)
     if glacier.empty:
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
     glacier_file = path / f"rgi_{rgi_id}.gpkg"
-    glacier_series = glacier.iloc[0]
-    crs = glacier_series["epsg"]
-    glacier.to_file(glacier_file)
+    dst_crs = glacier["crs"].values[0]
+    glacier_projected = glacier.to_crs(dst_crs)
+    pyogrio.write_dataframe(glacier, glacier_file)
+
+    x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=5_000.0, dx=1_000.0)
+    grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
 
     # Output filenames
-    boot_file = path / f"bootfile_g{int(resolution)}m_{rgi_id}.nc"
-    grid_file = path / f"grid_g{int(resolution)}m_{rgi_id}.nc"
+    boot_file = path / f"bootfile_{rgi_id}.nc"
+    grid_file = path / f"grid_{rgi_id}.nc"
 
-    # Build boot dataset (DEM/thickness/bed)
-    boot_ds = boot_file_from_rgi_id(
+    # Build boot dataset (DEM/thickness/bed) — caches go to staging
+    boot_ds = boot_file_from_grid(
+        grid_ds,
         rgi_id,
-        rgi,
+        glacier_projected.geometry,
         dem_dataset=config["dem"],
         ice_thickness_dataset=config["ice_thickness"],
         velocity_dataset=config["velocity"],
-        buffer_distance=10000.0,
-        path=path,
+        bathymetry_dataset=config["bathymetry"],
+        forcing_mask=config["forcing_mask"],
+        path=staging_path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],
+        prefix=config["prefix"],
     )
-
-    # Grid & bounds
-    grid_ds = create_grid(glacier, boot_ds, crs=crs, buffer_distance=8000.0)
-    bounds = [
-        grid_ds["x_bnds"].values[0][0],
-        grid_ds["y_bnds"].values[0][0],
-        grid_ds["x_bnds"].values[0][1],
-        grid_ds["y_bnds"].values[0][1],
-    ]
-
-    # Edge cleanup and simple physical constraints
-    for v in ["bed"]:
-        boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds)
-    for v in ["surface"]:
-        boot_ds[v] = apply_perimeter_band(boot_ds[v], bounds=bounds, value=0.0)
-    boot_ds["thickness"] = boot_ds["thickness"].where(boot_ds["thickness"] > 0.0, 0.0)
-    boot_ds.rio.write_crs(crs, inplace=True)
-    if hasattr(boot_ds["spatial_ref"], "GeoTransform"):
-        del boot_ds["spatial_ref"].attrs["GeoTransform"]
-    for name in ("x", "y", "thickness", "bed", "surface", "tillwat", "ftt_mask", "land_ice_area_fraction_retreat"):
-        if name in boot_ds:
-            boot_ds[name].encoding.update({"_FillValue": None})
-    boot_ds.rio.write_coordinate_system(inplace=True)
 
     print("")
     print("Saving bootfile")
-    print("-" * 80)
+    print("-" * 120)
     boot_file.unlink(missing_ok=True)
-    boot_ds.to_netcdf(boot_file, engine="netcdf4")
+    boot_ds.to_netcdf(boot_file, engine="h5netcdf")
     check_xr_lazy(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})
     grid_file.unlink(missing_ok=True)
-    grid_ds.to_netcdf(grid_file, engine="netcdf4")
+    grid_ds.to_netcdf(grid_file, engine="h5netcdf")
     check_xr_fully(grid_file)
 
-    # Save domain extent polygon as a GPKG
+    # Save domain extent polygon as a GPKG (intermediate, used for sanity checks)
     x_point_list = [
         grid_ds.x_bnds[0][0],
         grid_ds.x_bnds[0][0],
@@ -226,33 +235,47 @@ def stage_glacier(
         grid_ds.y_bnds[0][0],
     ]
     domain_bounds_geom = Polygon(zip(x_point_list, y_point_list))
-    domain_bounds = gpd.GeoDataFrame(index=[0], crs=crs, geometry=[domain_bounds_geom])
-    domain_bounds_file = path / f"domain_{rgi_id}.gpkg"
-    domain_bounds.to_file(domain_bounds_file)
+    domain_bounds = gpd.GeoDataFrame(index=[0], crs=dst_crs, geometry=[domain_bounds_geom])
+    domain_bounds_file = staging_path / f"domain_{rgi_id}.gpkg"
+    pyogrio.write_dataframe(domain_bounds, domain_bounds_file)
 
-    scalar_offset_file = path / Path(f"scalar_offset_{rgi_id}_id_0.nc")
-    create_offset_file(scalar_offset_file, delta_T=0.0, frac_P=0.0)
-
-    # Climate forcing
+    clim_mod = config["climate"]
+    print(config)
+    # Climate forcing — built into staging, then final outputs moved to `path`
     climate_from_rgi = CLIMATE[config["climate"]]
-    responses = climate_from_rgi(rgi_id=rgi_id, rgi=rgi, path=path, force_overwrite=force_overwrite)  # list[Path]
+    responses = climate_from_rgi(
+        grid_ds,
+        rgi_id=rgi_id,
+        years=config["years"],
+        path=staging_path,
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        force_overwrite=force_overwrite,
+    )  # list[Path]
     # Normalize to list[Path]
     if isinstance(responses, (str, Path)):
         responses = [Path(responses)]
     else:
         responses = [Path(p) for p in responses]
+    if staging_path.resolve() != path.resolve():
+        moved: list[Path] = []
+        for src in responses:
+            dst = path / src.name
+            dst.unlink(missing_ok=True)
+            shutil.move(str(src), str(dst))
+            moved.append(dst)
+        responses = moved
 
     # Build file index (one row per climate file)
     files_dict = {
         "rgi_id": rgi_id,
-        "outline": glacier_file.resolve(),
+        "outline_file": glacier_file.resolve(),
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
-        "scalar_offset_file": scalar_offset_file.resolve(),
     }
     dfs: list[pd.DataFrame] = []
-    for fpath in responses:
-        row = {**files_dict, "climate_file": Path(fpath).resolve()}
+    for idx, fpath in enumerate(responses):
+        row = {**files_dict, "climate_file": Path(fpath).resolve(), "sample": idx}
         dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)
@@ -277,7 +300,7 @@ def main():
         "--output-path",
         help="Path to save all files.",
         type=Path,
-        default=Path("data"),
+        default=Path("."),
     )
     parser.add_argument(
         "--force-overwrite",
@@ -303,7 +326,15 @@ def main():
     rgi_id = options.RGI_ID[0]
 
     cfg = load_config(config_file)
+    # Cover every calendar year touched by the simulation. PISM's time.end is
+    # exclusive (e.g. "2025-01-01" means stop at midnight Jan 1, so 2025
+    # itself is not simulated), hence the - 1 when end is exactly Jan 1.
+    start = pd.Timestamp(cfg.time.time_start)
+    end = pd.Timestamp(cfg.time.time_end)
+    last_year = end.year - 1 if (end.month == 1 and end.day == 1) else end.year
+    years = list(range(start.year, last_year + 1))
     config = cfg.campaign.as_params()
+    config["years"] = years
 
     path.mkdir(parents=True, exist_ok=True)
     glacier_path = path / Path(rgi_id)
@@ -311,10 +342,13 @@ def main():
 
     input_path = glacier_path / Path("input")
     input_path.mkdir(parents=True, exist_ok=True)
+    staging_path = glacier_path / Path("staging")
+    staging_path.mkdir(parents=True, exist_ok=True)
     glacier_df = stage_glacier(
         config,
         rgi_id,
         path=input_path,
+        staging_path=staging_path,
         force_overwrite=force_overwrite,
     )
     glacier_df.to_csv(input_path / Path(f"{rgi_id}.csv"))

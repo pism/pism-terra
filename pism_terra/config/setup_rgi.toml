@@ -1,0 +1,21 @@
+[regions]
+
+1 = {name = "alaska"}
+2 = {name = "western_canada_usa"}
+3 = {name = "arctic_canada_north"}
+4 = {name = "arctic_canada_south"}
+5 = {name = "greenland_periphery"}
+6 = {name = "iceland"}
+7 = {name = "svalbard_jan_mayen"}
+8 = {name = "scandinavia"}
+9 = {name = "russian_arctic"}
+10 = {name = "north_asia"}
+11 = {name = "central_europe"}
+12 = {name = "caucasus_middle_east"}
+13 = {name = "central_asia"}
+14 = {name = "south_asia_west"}
+15 = {name = "south_asia_east"}
+16 = {name = "low_latitudes"}
+17 = {name = "southern_andes"}
+18 = {name = "new_zealand"}
+19 = {name = "subantarctic_antarctic_islands"}

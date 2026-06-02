@@ -22,6 +22,7 @@ Create domains.
 
 import geopandas as gpd
 import numpy as np
+import shapely
 import xarray as xr
 
 
@@ -83,10 +84,10 @@ def get_bounds(
     ds : xarray.Dataset
         The input dataset containing the x and y coordinates.
     base_resolution : int, optional
-        The base resolution in meters, by default 150.
+        The base resolution in meters, by default 50.
     multipliers : list or numpy.ndarray, optional
         A list or array of multipliers to compute the set of grid resolutions,
-        by default [1, 2, 4].
+        by default [1, 2, 4, 5, 10, 20].
 
     Returns
     -------
@@ -120,6 +121,38 @@ def get_bounds(
     return x_bnds, y_bnds
 
 
+def get_bounds_from_geometry(geom: shapely.geometry, buffer_dist: float = 2000.0, dx: float = 1000.0):
+    """
+    Compute a ``dx``-aligned bounding box around a buffered geometry.
+
+    The geometry is buffered by ``buffer_dist`` (in the geometry's CRS units),
+    then its bounds are snapped inward to a multiple of ``dx``.
+
+    Parameters
+    ----------
+    geom : shapely.geometry.base.BaseGeometry or geopandas.GeoSeries
+        Geometry (or GeoSeries) to buffer and bound. Must expose ``.buffer``
+        and a ``.bounds`` accessor with ``minx``/``maxx``/``miny``/``maxy``.
+    buffer_dist : float, default ``2000.0``
+        Buffer distance applied to the geometry, in CRS units (typically meters).
+    dx : float, default ``1000.0``
+        Grid spacing used to snap the bounds. ``x_min``/``y_min`` are rounded up
+        and ``x_max``/``y_max`` are rounded down to the nearest multiple of ``dx``.
+
+    Returns
+    -------
+    tuple of list of float
+        ``([x_min, x_max], [y_min, y_max])`` aligned to ``dx``.
+    """
+    bounds = geom.buffer(buffer_dist).bounds
+    x_min = np.ceil((bounds.minx.item()) / dx) * dx
+    x_max = np.floor((bounds.maxx.item()) / dx) * dx
+    y_min = np.ceil((bounds.miny.item()) / dx) * dx
+    y_max = np.floor((bounds.maxy.item()) / dx) * dx
+
+    return [x_min, x_max], [y_min, y_max]
+
+
 def create_grid(
     series: gpd.GeoSeries,
     ds: xr.Dataset,
@@ -138,12 +171,12 @@ def create_grid(
     ds : xarray.Dataset
         The dataset containing the x and y coordinates.
     buffer_distance : float, optional
-        The buffer_distance distance around the geometry, by default 500.
+        The buffer_distance distance around the geometry, by default 1000.0.
     base_resolution : int, optional
-        The base resolution in meters, by default 150.
+        The base resolution in meters, by default 50.
     multipliers : list or numpy.ndarray, optional
         A list or array of multipliers to compute the set of grid resolutions,
-        by default [1, 2, 4].
+        by default [1, 2, 4, 5, 8, 10, 20].
     crs : str, optional
         The coordinate reference system (CRS) for the domain, by default "EPSG:3413".
 
@@ -271,9 +304,7 @@ def create_domain(
                 data=0,
                 dims=[y_dim, x_dim],
                 coords={x_dim: coords[x_dim], y_dim: coords[y_dim]},
-                attrs={
-                    "dimensions": f"{x_dim} {y_dim}",
-                },
+                attrs={"dimensions": f"{x_dim} {y_dim}"},
             ),
             x_bnds_dim: xr.DataArray(
                 data=x_bounds,
@@ -288,8 +319,9 @@ def create_domain(
         },
         attrs={"Conventions": "CF-1.8"},
     ).rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim)
-    ds.rio.write_crs(crs, inplace=True).rio.write_coordinate_system(inplace=True)
+    ds = ds.rio.write_crs(crs, grid_mapping_name="mapping").rio.write_coordinate_system()
+
     for var in list(ds.data_vars) + list(ds.coords):
-        ds[var].encoding["_FillValue"] = None
+        ds[var].encoding.update({"_FillValue": None})
 
     return ds

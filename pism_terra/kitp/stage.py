@@ -24,7 +24,7 @@ Staging.
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -35,6 +35,7 @@ import rioxarray
 import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
+from tqdm.auto import tqdm
 
 from pism_terra.aws import local_to_s3, s3_to_local
 from pism_terra.config import load_config
@@ -45,17 +46,18 @@ xr.set_options(keep_attrs=True)
 
 def stage(
     config: dict,
-    path: str | Path = "input_files",
-    bucket: str = "pism-cloud-data",
-    prefix: str = "kitp/input",
+    bucket: str,
+    prefix: str,
+    output_path: str | Path,
     force_overwrite: bool = False,
 ) -> pd.DataFrame:
     """
     Stage KITP Greenland inputs and return a file index.
 
     Syncs pre-built input data from S3, validates each file, and returns
-    a single-row DataFrame with absolute paths to all staged artifacts
-    (boot, grid, heatflux, regrid, retreat, climate, and ocean files).
+    a DataFrame with absolute paths to all staged artifacts (boot, grid,
+    heatflux, regrid, ocean, outline, and climate files), one row per
+    GCM/forcing combination plus a baseline-climatology row.
 
     Parameters
     ----------
@@ -69,16 +71,22 @@ def stage(
             Path to the heatflux NetCDF file relative to the input directory.
         - ``"regrid_file"`` : str
             Path to the regrid NetCDF file relative to the input directory.
-        - ``"gcm"`` : str
-            GCM model name.
+        - ``"ocean_file"`` : str
+            Path to the ocean-forcing NetCDF file relative to the input directory.
+        - ``"outline_file"`` : str
+            Path to the basin outline file relative to the input directory.
+        - ``"gcms"`` : dict[str, list[list[str]]]
+            Mapping of GCM names to their forcing pairs ``[[future, present], ...]``.
+        - ``"climatology"`` : str
+            Baseline climatology stem used to build climate filenames.
         - ``"version"`` : str
             Dataset version.
-    path : str or pathlib.Path, default ``"input_files"``
-        Output directory. Created if missing. All staged artifacts are written here.
-    bucket : str, default ``"pism-cloud-data"``
+    bucket : str
         AWS S3 bucket name to sync KITP input data from.
-    prefix : str, default ``"kitp_greenland_input"``
+    prefix : str
         S3 key prefix (folder path within the bucket).
+    output_path : str or pathlib.Path`
+        Output directory. Created if missing. All staged artifacts are written here.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
@@ -86,10 +94,10 @@ def stage(
     Returns
     -------
     pandas.DataFrame
-        Single-row DataFrame with absolute-path columns including
-        ``boot_file``, ``grid_file``, ``heatflux_file``, ``regrid_file``,
-        ``retreat_file``, ``climate_file``, ``ocean_file``,
-        ``surface_input_file``, and ``frontal_melt_file``.
+        DataFrame with one row per GCM/forcing pair (plus a baseline-only
+        row), with absolute-path columns ``boot_file``, ``grid_file``,
+        ``heatflux_file``, ``ocean_file``, ``outline_file``, ``regrid_file``,
+        and ``climate_file``, plus a ``sample`` identifier column.
     """
 
     f = Figlet(font="standard")
@@ -102,62 +110,99 @@ def stage(
     print("")
 
     # Outputs dir
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    input_path = path / Path("input")
+    input_path = output_path / Path(prefix)
+
     if force_overwrite:
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)
-
     s3_to_local(bucket, prefix=prefix, dest=input_path)
 
     grid_file = input_path / Path(config["grid_file"])
+    # Grid file gets a heavier check (full load) so leave it sequential.
     check_xr_fully(grid_file)
 
     boot_file = input_path / Path(config["boot_file"])
-    check_xr_lazy(boot_file)
-
     heatflux_file = input_path / Path(config["heatflux_file"])
-    check_xr_lazy(heatflux_file)
-
     regrid_file = input_path / Path(config["regrid_file"])
-    check_xr_lazy(regrid_file)
-
+    ocean_file = input_path / Path(config["ocean_file"])
     outline_file = input_path / Path(config["outline_file"])
+
+    # Validate the lazy-check inputs concurrently; only invalid files print.
+    input_lazy_files = [boot_file, heatflux_file, regrid_file, ocean_file]
+    # Processes (not threads): HDF5 isn't reliably thread-safe across all
+    # builds (Chinook segfaults), so each worker gets its own interpreter
+    # and HDF5 state.
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for p in input_lazy_files}
+        for future in tqdm(
+            as_completed(future_to_path),
+            total=len(future_to_path),
+            desc="Checking input files",
+            unit="file",
+        ):
+            p = future_to_path[future]
+            if not future.result():
+                print(f"{p.resolve()} is not valid ✗")
 
     # Build file index (one row per climate file)
     files_dict: dict[str, str | Path] = {
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
         "heatflux_file": heatflux_file.resolve(),
-        "regrid_file": regrid_file.resolve(),
+        "ocean_file": ocean_file.resolve(),
         "outline_file": outline_file.resolve(),
+        "regrid_file": regrid_file.resolve(),
     }
 
-    for key in ("gcms", "present_day_forcings", "future_forcings"):
-        if isinstance(config[key], str):
-            config[key] = [config[key]]
-
     gcms = config["gcms"]
+    climatology = config["climatology"]
     version = config["version"]
-    present_day_forcings = config["present_day_forcings"]
-    future_forcings = config["future_forcings"]
 
-    tasks = [(gcm, pd_forcing, ff) for gcm in gcms for pd_forcing in present_day_forcings for ff in future_forcings]
+    # Build tasks from per-GCM forcing pairs [[future, present], ...]
+    tasks = [(gcm, pair[1], pair[0]) for gcm, pairs in gcms.items() for pair in pairs]
     dfs: list[pd.DataFrame] = []
-    climate_file = input_path / Path(f"HIRHAM5-ERA5_YMM_1990_2019_{version}.nc")
-    check_xr_lazy(climate_file)
-    files_dict["climate_file"] = climate_file.resolve()
-    files_dict["sample"] = "HIRHAM5-ERA5_YMM_1990_2019"
-    dfs.append(pd.DataFrame.from_dict([files_dict]))
-    for task in tasks:
-        gcm, pd_forcing, ff = task
-        climate_file = input_path / Path(f"HIRHAM5-ERA5_YMM_1990_2019_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc")
-        check_xr_lazy(climate_file)
-        files_dict["climate_file"] = climate_file.resolve()
-        files_dict["sample"] = f"{gcm}_{ff}_{pd_forcing}"
-        dfs.append(pd.DataFrame.from_dict([files_dict]))
+
+    # Enumerate every climate file we'll need (climatology baseline + one per
+    # GCM/forcing combo) so the validation can run in parallel below.
+    climate_specs: list[tuple[str, Path]] = [
+        (climatology, input_path / Path(f"{climatology}_{version}.nc")),
+    ]
+    for gcm, pd_forcing, ff in tasks:
+        climate_specs.append(
+            (
+                f"gcm_{gcm}_exp_{ff}_{pd_forcing}",
+                input_path / Path(f"{climatology}_{gcm}_anomalies_{ff}_{pd_forcing}_{version}.nc"),
+            )
+        )
+
+    # Validate climate files concurrently. ``check_xr_lazy`` is mostly I/O
+    # (open netCDF, sample a window); a worker pool overlaps the latency.
+    # Suppress its per-file ✓ chatter and only surface invalid files here.
+    invalid_climate_files: list[Path] = []
+    # Processes (not threads): HDF5 isn't reliably thread-safe across all
+    # builds (Chinook segfaults), so each worker gets its own interpreter
+    # and HDF5 state.
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for _, p in climate_specs}
+        for future in tqdm(
+            as_completed(future_to_path),
+            total=len(future_to_path),
+            desc="Checking climate files",
+            unit="file",
+        ):
+            p = future_to_path[future]
+            if not future.result():
+                invalid_climate_files.append(p)
+                print(f"{p.resolve()} is not valid ✗")
+
+    for sample, climate_file in climate_specs:
+        row = dict(files_dict)
+        row["climate_file"] = climate_file.resolve()
+        row["sample"] = sample
+        dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)
     return df
@@ -196,21 +241,25 @@ def main():
     )
 
     options, unknown = parser.parse_known_args()
-    path = options.output_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
+    output_path = options.output_path
+    output_path.mkdir(parents=True, exist_ok=True)
 
     cfg = load_config(config_file)
     config = cfg.campaign.as_params()
 
-    path.mkdir(parents=True, exist_ok=True)
+    s3_bucket: str = config.pop("bucket", "pism-cloud-data")
+    s3_prefix: str = config.pop("prefix", "kitp/input")
+    version: str = config.pop("version", "v2")
+    s3_path = f"""{s3_prefix}/{version}"""
 
-    is_df = stage(config, path=path, force_overwrite=force_overwrite)
-    is_df.to_csv(path / Path("input") / Path("ismip7_greenland_files.csv"))
+    is_df = stage(config, s3_bucket, s3_path, output_path, force_overwrite=force_overwrite)
+    is_df.to_csv(output_path / Path(s3_path) / Path("ismip7_greenland_files.csv"))
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/kitp_greenland" if options.bucket_prefix else "kitp_greenland"
-        local_to_s3(path, bucket=options.bucket, prefix=prefix)
+        local_to_s3(output_path, bucket=options.bucket, prefix=prefix)
 
 
 if __name__ == "__main__":

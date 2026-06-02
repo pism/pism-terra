@@ -178,7 +178,7 @@ def log_normal_xr(
     da = da.where(da != 0, np.nan)
     da.name = "log_likelihood"
     da.attrs.update({"units": "1", "long_name": "negative log likelihood"})
-    return da.sum(dim=sum_dims)
+    return da.mean(dim=sum_dims)
 
 
 def log_pseudo_huber(
@@ -249,4 +249,4 @@ def log_pseudo_huber_xr(
     da = da.where(da != 0, np.nan)
     da.name = "log_likelihood"
     da.attrs.update({"units": "1", "long_name": "negative log likelihood"})
-    return da.sum(dim=sum_dims)
+    return da.mean(dim=sum_dims)

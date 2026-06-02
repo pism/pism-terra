@@ -29,7 +29,7 @@ from typing import Any, ClassVar, Iterator
 
 import scipy.stats as st
 import toml
-from jinja2 import Environment, StrictUndefined
+from jinja2 import Environment
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -39,7 +39,7 @@ from pydantic import (
 )
 
 # one Jinja environment for all renders
-_JINJA = Environment(undefined=StrictUndefined, autoescape=False)
+_JINJA = Environment(autoescape=False)
 
 
 def load_config(path: str | Path) -> PismConfig:
@@ -244,10 +244,9 @@ class UQConfig(BaseModel):
     ----------
     samples : int, default=1
         Number of draws to use when generating ensemble samples. Must be > 0.
-    mapping : str or None, optional
-        Optional column name indicating a mapping key (e.g., to join against a
-        lookup table of file paths). Not interpreted by validation; simply
-        preserved for downstream use.
+    mapping : dict or None, optional
+        Optional mapping (e.g., to join against a lookup table of file paths).
+        Not interpreted by validation; simply preserved for downstream use.
     tree : dict[str, DistSpec]
         Flat mapping from dotted variable names to validated :class:`DistSpec`
         objects.
@@ -579,95 +578,6 @@ class BaseModelWithDot(BaseModel):
         return out
 
 
-class RunConfig(BaseModel):
-    """
-    Execution settings for a PISM run.
-
-    Provides executable/launcher options and a helper to export parameters
-    for templating. String fields that contain Jinja expressions (e.g.,
-    ``"mpirun -np {{ ntasks }}"``) are rendered using the model values.
-
-    Attributes
-    ----------
-    mpi : str
-        MPI launcher template, e.g., ``"mpirun -np {{ ntasks }}"``.
-        Defaults to ``"mpirun"``.
-    executable : str
-        Path to the PISM executable, or command name. Defaults to ``"pism"``.
-    ntasks : int
-        Total number of MPI ranks. Must be >= 1.
-
-    Notes
-    -----
-    The :meth:`as_params` method returns only non-empty fields and renders any
-    string value containing Jinja delimiters ``{{ ... }}`` using the current
-    field values (plus any extra context provided).
-
-    Examples
-    --------
-    >>> rc = RunConfig(mpi="mpirun -np {{ ntasks }}", executable="/path/pism", ntasks=56)
-    >>> rc.as_params()["mpi"]
-    'mpirun -np 56'
-    """
-
-    mpi: str = Field(default="mpirun")
-    executable: str = Field(default="pism")
-    ntasks: int = Field(ge=1)
-    writer: str | None = None
-
-    def as_params(self, **extra: Any) -> dict[str, Any]:
-        """
-        Export non-empty parameters and render templated strings.
-
-        Any string field containing Jinja expressions is rendered using a
-        context composed of the model's own values plus ``extra``.
-
-        Parameters
-        ----------
-        **extra
-            Additional key/value pairs to inject into the Jinja render
-            context (these do not mutate the model).
-
-        Returns
-        -------
-        dict of str to Any
-            Dictionary of parameters suitable for template rendering.
-            Fields with ``None``/unset/default values are omitted; templated
-            strings (e.g., ``mpi``) are rendered to plain strings.
-        """
-        params = self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
-        ctx = {**params, **extra}
-
-        def _render(v: Any) -> Any:
-            """
-            Render templated strings using the current context.
-
-            Parameters
-            ----------
-            v : Any
-                Candidate value to render. If `v` is a string containing Jinja
-                delimiters (``{{ ... }}``), it is rendered using the closure
-                context ``ctx``; otherwise it is returned unchanged.
-
-            Returns
-            -------
-            Any
-                The rendered string when `v` is a templated string; otherwise the
-                original value.
-
-            Raises
-            ------
-            jinja2.UndefinedError
-                If the template references an undefined variable and the Jinja
-                environment uses ``StrictUndefined``.
-            """
-            if isinstance(v, str) and "{{" in v:
-                return _JINJA.from_string(v).render(ctx)
-            return v
-
-        return {k: _render(v) for k, v in params.items()}
-
-
 class JobConfig(BaseModelWithDot):
     """
     Scheduler job options parsed from configuration.
@@ -698,16 +608,18 @@ class JobConfig(BaseModelWithDot):
 
     model_config = ConfigDict()
 
-    queue: str | None = None
-    walltime: str | None = None
+    ntasks: int | None = None
     nodes: int | None = Field(default=None, ge=1)
     output_path: str | Path | None = None
+    queue: str | None = None
+    walltime: str | None = None
+    tasks: int | None = None
 
     @field_validator("walltime")
     @classmethod
     def _hhmmss(cls, v: str | None) -> str | None:
         """
-        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS``.
+        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS`` or ``HHH:MM:SS``.
 
         Parameters
         ----------
@@ -755,9 +667,10 @@ class PismConfig(BaseModelWithDot):
 
     Attributes
     ----------
-    run : RunConfig
-        Execution settings (launcher template, executable path/name,
-        number of MPI ranks) with support for rendering Jinja placeholders.
+    campaign : CampaignConfig
+        Campaign-level metadata (data sources, forcing scenario, file references).
+    run_info : InfoConfig
+        Run metadata such as institution and title.
     job : JobConfig
         Scheduler options such as queue/partition, walltime, and number of
         nodes. Unknown keys are forbidden in this section.
@@ -772,27 +685,28 @@ class PismConfig(BaseModelWithDot):
     grid : GridConfig
         Horizontal/vertical grid settings and registration. Derives
         ``grid.dx``/``grid.dy`` from ``resolution`` when not explicitly set.
-    atmosphere : dict of str to Any, optional
-        Additional atmosphere-related options to pass through (keys are
-        typically dotted, e.g., ``"atmosphere.given.file"``). Defaults to ``{}``.
+    atmosphere : AtmosphereConfig
+        Atmosphere model selection and its option set.
+    ocean : OceanConfig
+        Ocean model selection and its option set.
+    surface : SurfaceConfig
+        Surface model selection and its option set.
+    frontal_melt : FrontalMeltConfig
+        Frontal melt model selection and its option set.
+    hydrology : HydrologyConfig
+        Hydrology model selection and its option set.
     geometry : dict of str to Any, optional
         Geometry-related options to pass through. Defaults to ``{}``.
-    ocean : dict of str to Any, optional
-        Ocean-related options to pass through. Defaults to ``{}``.
     calving : dict of str to Any, optional
         Calving-related options to pass through. Defaults to ``{}``.
     iceflow : dict of str to Any, optional
         Ice-flow-related options to pass through. Defaults to ``{}``.
-    frontal_melt : dict of str to Any, optional
-        Frontal melt-related options to pass through. Defaults to ``{}``.
-    hydrology : dict of str to Any, optional
-        Hydrology-related options to pass through. Defaults to ``{}``.
-    surface : dict of str to Any, optional
-        Surface-related options to pass through. Defaults to ``{}``.
     reporting : dict of str to Any, optional
         Reporting/output options to pass through. Defaults to ``{}``.
     input : dict of str to Any, optional
         Input file options to pass through. Defaults to ``{}``.
+    time_stepping : dict of str to Any, optional
+        Time-stepping-related options to pass through. Defaults to ``{}``.
 
     Notes
     -----
@@ -813,19 +727,18 @@ class PismConfig(BaseModelWithDot):
     """
 
     campaign: CampaignConfig
-    run: RunConfig
     run_info: InfoConfig
-    job: JobConfig
+    job: JobConfig = Field(default_factory=JobConfig)
     time: TimeConfig
     energy: EnergyConfig
     stress_balance: StressBalanceConfig
     grid: GridConfig
     atmosphere: AtmosphereConfig
+    ocean: OceanConfig
     surface: SurfaceConfig
     frontal_melt: FrontalMeltConfig
     hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
-    ocean: dict[str, Any] = {}
     calving: dict[str, Any] = {}
     iceflow: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
@@ -919,6 +832,7 @@ class GridConfig(BaseModelWithDot):
     Mz: int | None = Field(default=None, alias="grid.Mz")
     extrapolation: str | None = Field(default=None, alias="grid.allow_extrapolation")
     registration: str | None = Field(default=None, alias="grid.registration")
+    file: str | None = Field(default=None, alias="grid.file")
 
     # derived / optionally provided:
     dx: str | None = Field(default=None, alias="grid.dx")
@@ -1134,6 +1048,16 @@ class AtmosphereConfig(ModelWithOptions):
     SECTION = "atmosphere"
 
 
+class OceanConfig(ModelWithOptions):
+    """
+    Ocean model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "ocean"
+
+
 class SurfaceConfig(ModelWithOptions):
     """
     Surface model configuration.
@@ -1195,63 +1119,79 @@ class CampaignConfig(BaseModel):
 
     Attributes
     ----------
-    boot_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
-    outline_file : str or None
-        Path to GPKG basin file (relative to the input directory).
+    bathymetry : str or None
+        bathymetry data source identifier (e.g., ``"gebco"``).
     bucket : str or None
         S3 bucket (e.g., ``"pism-cloud7-data"``).
     climate : str or None
         Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
+    climatology : str or None
+        Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
-    end_year : str, float, or None
-        End year of the forcing period.
+    forcing_mask : str or None
+        Forcing mask ("all", "glacier", "none").
     velocity : str or None
         Velocity data source identifier (e.g., ``"its_live"``).
-    gcm : str, list, or None
+    gcms : str, list, dict, or None
         GCM model name(s) used for climate forcing.
     boot_file : str or None
-        Path to the grid NetCDF boot (relative to the input directory).
+        Path to the boot NetCDF file (relative to the input directory).
+    outline_file : str or None
+        Path to GPKG basin file (relative to the input directory).
     grid_file : str or None
         Path to the grid NetCDF file (relative to the input directory).
     heatflux_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
+        Path to the heat flux NetCDF file (relative to the input directory).
     ice_thickness : str or None
         Ice thickness data source identifier (e.g., ``"millan2022"``).
     name : str or None
         Human-readable campaign name.
+    ocean_file : str or None
+        Ocean forcing file name.
     pathway : str or None
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     prefix : str or None
         path to data in bucket (e.g., ``"ismip7_greenland_input"``).
+    present_day_forcings : str, list, or None
+        Present-day forcing identifier(s).
+    regrid_file : str or None
+        Path to a file used for regridding (relative to the input directory).
     retreat_file : str or None
         Path to the retreat NetCDF file (relative to the input directory).
+    rgi_file : str or None
+        Path to the RGI file (relative to the input directory).
     start_year : str, float, or None
         Start year of the forcing period.
+    end_year : str, float, or None
+        End year of the forcing period.
     version : str or None
         Dataset or experiment version string.
     """
 
+    bathymetry: str | None = Field(default=None)
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
+    climatology: str | None = Field(default=None)
     dem: str | None = Field(default=None)
+    forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
-    gcms: str | list | None = Field(default=None)
-    present_day_forcings: str | list | None = Field(default=None)
-    future_forcings: str | list | None = Field(default=None)
+    gcms: str | list | dict | None = Field(default=None)
     boot_file: str | None = Field(default=None)
     outline_file: str | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     heatflux_file: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
     name: str | None = Field(default=None)
+    ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)
+    present_day_forcings: str | list | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)
     rgi_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
+    end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
@@ -1293,12 +1233,6 @@ class CampaignConfig(BaseModel):
             Any
                 The rendered string when `v` is a templated string; otherwise the
                 original value.
-
-            Raises
-            ------
-            jinja2.UndefinedError
-                If the template references an undefined variable and the Jinja
-                environment uses ``StrictUndefined``.
             """
             if isinstance(v, str) and "{{" in v:
                 return _JINJA.from_string(v).render(ctx)
