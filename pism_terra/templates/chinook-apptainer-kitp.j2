@@ -10,7 +10,7 @@
 #SBATCH --output="{{ output_path }}/pism.%j"
 
 module purge
-module load slurm 
+module load slurm
 module load intel-compilers/2023.1.0 impi/2021.9.0
 
 export container=$HOME/pism-dev.sif

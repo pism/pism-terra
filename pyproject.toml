@@ -26,11 +26,6 @@ dependencies = [
     "boto3",
     "botocore[crt]",
     "cdo",
-<<<<<<< HEAD
-    "cdsapi",
-    # "cf-units",  # FIXME: Breaks the conda environment; doesn't appear to be needed
-=======
->>>>>>> aaschwanden/summer-school
     "cf_xarray",
     "cfgrib",
     "cftime",
