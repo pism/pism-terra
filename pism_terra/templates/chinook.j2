@@ -16,4 +16,5 @@ ulimit -l unlimited
 ulimit -s unlimited
 ulimit
 
+conda deactivate
 mpirun -np  {{ ntasks | default(36) }} pism {{ run_str }}
