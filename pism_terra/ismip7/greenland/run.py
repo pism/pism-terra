@@ -88,9 +88,10 @@ def run_greenland(
         CLI-side overrides applied after reading the config. Recognized keys:
         ``"resolution"`` (e.g. ``"200m"``), ``"nodes"`` (int), ``"ntasks"``
         (int), ``"tasks"`` (int, MPI tasks per node), ``"queue"`` (str),
-        ``"walltime"`` (``HH:MM:SS``), and ``"stress_balance"`` (sub-model
-        name swap, e.g. ``"sia"``). Any value of ``None`` falls back to the
-        config file. Default is ``None`` (no overrides).
+        ``"walltime"`` (``HH:MM:SS``), ``"stress_balance"`` (sub-model name
+        swap, e.g. ``"sia"``), and ``"start"`` / ``"end"`` (``YYYY-MM-DD``
+        time bounds). Any value of ``None`` falls back to the config file.
+        Default is ``None`` (no overrides).
     debug : bool, optional
         If ``True``, skip rendering the template (leave it empty) but still
         append the constructed PISM command line to the output script.
@@ -217,6 +218,23 @@ def run_greenland(
         cfg.stress_balance.model = stress_balance
         run.update(cfg.stress_balance.selected())
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
+
+    # CLI overrides for time bounds. ``cfg.time`` is a TimeConfig pydantic
+    # model with field names ``time_start`` / ``time_end`` (aliased to the
+    # dotted ``"time.start"`` / ``"time.end"``), so attribute assignment is
+    # required. Drop the prior dotted entry from ``run`` and re-apply via
+    # ``as_params()`` so the new value lands cleanly.
+    _start = config_cli.get("start")
+    _end = config_cli.get("end")
+    if _start is not None:
+        run.pop("time.start", None)
+        cfg.time.time_start = _start
+        run.update(cfg.time.as_params())
+    if _end is not None:
+        run.pop("time.end", None)
+        cfg.time.time_end = _end
+        run.update(cfg.time.as_params())
+
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
 
@@ -366,6 +384,18 @@ def run_single():
         default=None,
     )
     parser.add_argument(
+        "--start",
+        help="Override the time.start selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--end",
+        help="Override the time.end selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--stress-balance",
         help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
         type=str,
@@ -407,6 +437,8 @@ def run_single():
     tasks = options.tasks
     walltime = options.walltime
     stress_balance = options.stress_balance
+    start_cli = options.start
+    end_cli = options.end
     pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
@@ -461,6 +493,8 @@ def run_single():
                 "queue": queue,
                 "walltime": walltime,
                 "stress_balance": stress_balance,
+                "start": start_cli,
+                "end": end_cli,
             },
             debug=debug,
             uq=uq,
@@ -516,6 +550,18 @@ def run_ensemble():
     parser.add_argument(
         "--resolution",
         help="Override horizontal grid resolution.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--start",
+        help="Override the time.start selection.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--end",
+        help="Override the time.end selection.",
         type=str,
         default=None,
     )
@@ -580,6 +626,8 @@ def run_ensemble():
     tasks = options.tasks
     walltime = options.walltime
     stress_balance = options.stress_balance
+    start_cli = options.start
+    end_cli = options.end
     pism_config_cdl = options.pism_config_cdl
 
     path = Path(path)
@@ -663,6 +711,8 @@ def run_ensemble():
                 "queue": queue,
                 "walltime": walltime,
                 "stress_balance": stress_balance,
+                "start": start_cli,
+                "end": end_cli,
             },
             debug=debug,
             uq=row_uq,
