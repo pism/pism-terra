@@ -176,6 +176,8 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
 
     baseline_file = next(f for f in infiles if "HIRHAM5" in Path(f).name)
     baseline = xr.open_dataset(baseline_file, chunks=None, decode_times=time_coder, decode_timedelta=delta_coder)
+    pism_config = baseline.pism_config
+    res = f"""{int(pism_config.attrs["grid.dx"])}m"""
     if "basin" not in baseline.dims:
         baseline = baseline.expand_dims({"basin": ["GIS"]})
     baseline = baseline.resample({"time": "YE"}).mean()
@@ -255,7 +257,6 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
         )
     )
 
-    res = "900m"
     with mpl.rc_context(rc=rc_params):
         for basin_name in baseline.basin.values:
             basin_gcm = gcm_sub_baseline.sel(basin=basin_name)
