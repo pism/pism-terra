@@ -256,7 +256,6 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             dim="time"
         )
     )
-
     with mpl.rc_context(rc=rc_params):
         for basin_name in baseline.basin.values:
             basin_gcm = gcm_sub_baseline.sel(basin=basin_name)
