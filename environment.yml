@@ -6,6 +6,7 @@ dependencies:
   - python
   - pip
   # runtime requirements
+  - awscrt  # boto3 extra needed
   - boto3
   - botocore
   - python-cdo
