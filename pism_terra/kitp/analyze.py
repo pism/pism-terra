@@ -258,10 +258,51 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     )
     with mpl.rc_context(rc=rc_params):
         for basin_name in baseline.basin.values:
+            basin_gcm = gcm_computed.sel(basin=basin_name)
+            basin_slc = ((basin_gcm["ice_mass"] - basin_gcm["ice_mass"].isel({"time": 0})) * gt2mmsle).pint.dequantify()
+            time_vals = basin_slc.time.values
+
+            fig, ax = plt.subplots(1, 1, figsize=(6.4, 3.6))
+
+            l = []
+
+            for exp_name, exp in EXPS_OPTS.items():
+                _gcm_slc = basin_slc.sel({"exp_id": exp_name})
+                _ = _gcm_slc.plot(ax=ax, hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
+                _l = _gcm_slc.isel({"gcm_id": 0}).plot(
+                    ax=ax, color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75, add_legend=False
+                )
+                l.append(_l)
+
+            ax.axhline(y=0, color="k", ls="dotted", lw=0.5)
+            ax.set_ylabel("Contribution to sea-level (mm)")
+            ax.set_xlabel("Time")
+            ax.set_title(basin_name)
+            ax.set_xlim(time_vals[0], time_vals[-1])
+            year_ticks = [t for t in time_vals if t.year % 50 == 0]
+            ax.set_xticks(year_ticks)
+            ax.set_xticklabels([f"{int(t.year)}" for t in year_ticks])
+
+            leg_line = fig.legend(
+                handles=[h for item in l for h in (item if isinstance(item, list) else [item])],
+                loc="upper left",
+                bbox_to_anchor=(0.08, 0.93),
+                ncol=1,
+            )
+            leg_line.get_frame().set_linewidth(0.0)
+            leg_line.get_frame().set_alpha(0.0)
+
+            fig.tight_layout()
+            fig.savefig(f"pism_kitp_gcm_{basin_name}_{res}.png", dpi=300)
+            fig.savefig(f"pism_kitp_gcm_{basin_name}_{res}.pdf")
+            plt.close(fig)
+
+    with mpl.rc_context(rc=rc_params):
+        for basin_name in baseline.basin.values:
             basin_gcm = gcm_sub_baseline.sel(basin=basin_name)
             basin_slc = (basin_gcm["ice_mass"] * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
-
+            print(time_vals)
             basin_slice = (
                 basin_slc.sel({"time": slice(cftime.DatetimeNoLeap(90, 1, 1), cftime.DatetimeNoLeap(110, 1, 1))})
                 .mean(dim="time")
