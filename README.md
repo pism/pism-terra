@@ -36,3 +36,21 @@ To install the dev version, replace the previous command with
 For rapid development and without internet, you can also run
 
     python -m pip install . --no-deps --no-build-isolation
+
+## Documentation
+
+Full documentation — installation, tutorials, the API reference, and the
+GlacierMIP4 / KITP / ISMIP7 workflows — is published on **Read the Docs**:
+
+> <https://pism-terra.readthedocs.io/>
+
+To build the docs locally:
+
+    python -m pip install -e ".[docs]"
+    cd docs
+    make html
+    open _build/html/index.html
+
+Live-reload while editing:
+
+    make livehtml
