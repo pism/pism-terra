@@ -27,15 +27,11 @@ dependencies:
   - libgdal-hdf5
   - libgdal-netcdf
   - matplotlib
-  - mpi4py
   - nc-time-axis
-  - libnetcdf=*=*openmpi*
-  - netcdf4=*=*openmpi*
-  - h5py=*=*openmpi*
-  - hdf5=*=*openmpi*
+  - h5py
+  - hdf5
   - netCDF4
   - numpy
-  - openmpi >=5
   - pandas
   - pint-xarray
   - pyamg
@@ -56,8 +52,6 @@ dependencies:
   - tqdm
   - xarray
   - xarray-regrid
-  - yac=*=*openmpi*
-  - yaxt=*=*openmpi*
   - zarr
   # for development and testing
   - black
