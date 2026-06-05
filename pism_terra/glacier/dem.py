@@ -50,6 +50,7 @@ def get_surface_dem_by_bounds(
     dataset: Literal["glo_30", "arcticdem"],
     path: str | Path = "input",
     force_overwrite: bool = False,
+    cache_name: str | None = None,
 ) -> Path:
     """
     Create (or reuse) a surface DEM NetCDF for a geographic bounding box.
@@ -70,20 +71,26 @@ def get_surface_dem_by_bounds(
         Output directory for the NetCDF cache. Created if it does not exist.
     force_overwrite : bool, default ``False``
         If ``True``, regenerate the DEM even if a readable cache already exists.
+    cache_name : str or None, optional
+        Stem to use for the NetCDF cache filename instead of ``dataset``.
+        Lets callers materialize multiple bbox slices of the same source
+        side by side (e.g. ``"glo_30_west"`` and ``"glo_30_east"`` for an
+        antimeridian-crossing region). Default is ``None`` (use ``dataset``).
 
     Returns
     -------
     pathlib.Path
-        Path to the NetCDF cache containing the DEM (``<dataset>.nc`` under
-        ``path``).
+        Path to the NetCDF cache containing the DEM
+        (``<cache_name or dataset>.nc`` under ``path``).
     """
     out_dir = Path(path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    geo_file = out_dir / f"{dataset}.nc"
+    geo_file = out_dir / f"{cache_name or dataset}.nc"
 
     if check_xr_lazy(geo_file, verbose=False) and not force_overwrite:
         return geo_file
 
+    print(bounds)
     X, p = stitch_dem(
         bounds,
         dem_name=dataset,
@@ -178,14 +185,39 @@ def prepare_surface(
     t = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
     geo_bounds = t.transform_bounds(*bounds)
 
-    geo_file = get_surface_dem_by_bounds(geo_bounds, dataset=dataset, path=path, **kwargs)
-    # rxr.open_rasterio reliably propagates CRS on a netCDF read; xr.open_dataset
-    # + manual write_crs misses grid_mapping unless the variable has the attribute.
-    surface = rxr.open_rasterio(geo_file).squeeze().drop_vars("band", errors="ignore")
-    surface.name = "surface"
-    surface.attrs.update({"standard_name": "surface_altitude", "units": "m"})
-
-    surface_reprojected = surface.rio.reproject_match(target_grid, resampling=Resampling.bilinear).fillna(0)
+    # pyproj signals an antimeridian-crossing 4326 bbox by returning
+    # xmin > xmax (e.g. RGI region 01 spans ~170°E..-117°W). dem_stitcher
+    # rejects that, so split into two halves at ±180°, stitch each, reproject
+    # each into the projected target grid (which is continuous across the
+    # antimeridian), then merge.
+    if geo_bounds[0] > geo_bounds[2]:
+        west_bounds = (geo_bounds[0], geo_bounds[1], 180.0, geo_bounds[3])
+        east_bounds = (-180.0, geo_bounds[1], geo_bounds[2], geo_bounds[3])
+        west_file = get_surface_dem_by_bounds(
+            west_bounds, dataset=dataset, path=path, cache_name=f"{dataset}_west", **kwargs
+        )
+        east_file = get_surface_dem_by_bounds(
+            east_bounds, dataset=dataset, path=path, cache_name=f"{dataset}_east", **kwargs
+        )
+        west = rxr.open_rasterio(west_file).squeeze().drop_vars("band", errors="ignore")
+        east = rxr.open_rasterio(east_file).squeeze().drop_vars("band", errors="ignore")
+        west_reproj = west.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
+        east_reproj = east.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
+        # Either half may cover any given target cell; coalesce, then fill the
+        # nodata gap at ±180° (one row of cells with no source pixel either
+        # side of the cut).
+        surface_reprojected = west_reproj.fillna(east_reproj).fillna(0)
+        surface_reprojected.name = "surface"
+        surface_reprojected.attrs.update({"standard_name": "surface_altitude", "units": "m"})
+    else:
+        geo_file = get_surface_dem_by_bounds(geo_bounds, dataset=dataset, path=path, **kwargs)
+        # rxr.open_rasterio reliably propagates CRS on a netCDF read;
+        # xr.open_dataset + manual write_crs misses grid_mapping unless the
+        # variable has the attribute.
+        surface = rxr.open_rasterio(geo_file).squeeze().drop_vars("band", errors="ignore")
+        surface.name = "surface"
+        surface.attrs.update({"standard_name": "surface_altitude", "units": "m"})
+        surface_reprojected = surface.rio.reproject_match(target_grid, resampling=Resampling.bilinear).fillna(0)
 
     surface_file = Path(path) / "surface.nc"
     surface_reprojected.to_netcdf(surface_file)

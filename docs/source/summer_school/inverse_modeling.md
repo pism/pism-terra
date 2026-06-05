@@ -74,6 +74,3 @@ Now you can run both models. It will first to a forward simulation to prepare an
 ```bash
 . maffezzoli_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0021-02-01.sh
 ```
-
-
-

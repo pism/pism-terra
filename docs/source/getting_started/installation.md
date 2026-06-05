@@ -22,7 +22,7 @@ python -m pip install -e ".[docs]"
 ## With `pism`
 
 You can install PISM requisites using conda
-  
+
 ```bash
 git clone https://github.com/pism/pism.git
 cd pism
@@ -32,7 +32,7 @@ conda activate pism
 ```
 
 Then build PISM::
-  
+
 ```bash
 CMAKE_BUILD_PARALLEL_LEVEL=8 python -m pip install --no-build-isolation -v .
 ```

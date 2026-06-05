@@ -25,5 +25,3 @@ What would be the impact for the field of research you are contributing to?
 > We'll be able to provide better Sea Level Rise predictions!
 
 5. Wait to get approved
-
-
