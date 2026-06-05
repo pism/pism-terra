@@ -195,7 +195,6 @@ def run_inverse(
         "iceflow",
         "reporting",
         "input",
-        "inverse",
         "time_stepping",
     ):
         run.update(getattr(cfg, section))
@@ -209,7 +208,9 @@ def run_inverse(
     run.update(cfg.time.as_params())
 
     inv = {}
+    inv.update(getattr(cfg, "iceflow"))
     inv.update(getattr(cfg, "inverse"))
+
     # cfg.stress_balance.selected() carries everything the forward run needs
     # (model options + PETSc solver knobs like bp_* / inv_adj_*). The pismi
     # call only needs the ``stress_balance.*`` dotted options; the solver
@@ -270,14 +271,20 @@ def run_inverse(
         except Exception:
             pass
 
-    # Remove 'sample' from flag overrides; drop any key not in the config-derived
-    # run dict (e.g., surface.debm_simple.std_dev.file when surface.model == "pdd").
-    overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
-    overrides, skipped = filter_overrides_by_config(overrides, run.keys())
+    # Remove 'sample' from flag overrides; drop any key not in either the
+    # ``run`` or ``inv`` dicts (e.g., surface.debm_simple.std_dev.file when
+    # surface.model == "pdd"). ``inverse.*`` keys live in ``inv`` only, so
+    # filtering against ``run.keys()`` alone would silently drop them — that
+    # was the bug that kept ``inverse.file`` stuck at "none".
+    all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
+    run_overrides, _ = filter_overrides_by_config(all_overrides, run.keys())
+    inv_overrides, _ = filter_overrides_by_config(all_overrides, inv.keys())
+    skipped = [k for k in all_overrides if k not in run and k not in inv]
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
-    # Apply to runtime dict (these should be dotted PISM flags)
-    run.update(overrides)
+    # Apply to both runtime dicts (these should be dotted PISM flags)
+    run.update(run_overrides)
+    inv.update(inv_overrides)
 
     scalar_file = scalar_path / Path(f"scalar_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
@@ -295,10 +302,7 @@ def run_inverse(
 
     run_str = dict2str(sort_dict_by_key(run))
 
-    # get the state file as input; also re-pull any keys that ``inv`` shares
-    # with ``run`` so uq overrides applied above (e.g. ``inverse.file``) win
-    # over the placeholder values copied from ``cfg.inverse`` at line 211.
-    inv.update({k: run[k] for k in inv if k in run})
+    # Feed the forward run's state file into pismi as its input.
     inv.update({"input.file": state_file})
     inv_str = dict2str(sort_dict_by_key(inv))
 
