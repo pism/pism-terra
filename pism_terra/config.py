@@ -707,6 +707,8 @@ class PismConfig(BaseModelWithDot):
         Input file options to pass through. Defaults to ``{}``.
     time_stepping : dict of str to Any, optional
         Time-stepping-related options to pass through. Defaults to ``{}``.
+    inverse : dict of str to Any, optional
+        Inverse options to pass through. Defaults to ``{}``.
 
     Notes
     -----
@@ -744,6 +746,7 @@ class PismConfig(BaseModelWithDot):
     reporting: dict[str, Any] = {}
     input: dict[str, Any] = {}
     time_stepping: dict[str, Any] = {}
+    inverse: dict[str, Any] = {}
 
 
 class RestartConfig(BaseModelWithDot):

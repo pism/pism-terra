@@ -1,4 +1,4 @@
-# Copyright (C) 2025 Andy Aschwanden
+# Copyright (C) 2025-26 Andy Aschwanden
 #
 # This file is part of pism-terra.
 #
@@ -52,6 +52,7 @@ from pism_terra.glacier.climate import (
     snap,
 )
 from pism_terra.glacier.dem import boot_file_from_grid
+from pism_terra.glacier.observations import glacier_velocities_from_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
@@ -190,6 +191,7 @@ def stage_glacier(
     # Output filenames
     boot_file = path / f"bootfile_{rgi_id}.nc"
     grid_file = path / f"grid_{rgi_id}.nc"
+    obs_file = path / f"obs_{rgi_id}.nc"
 
     # Build boot dataset (DEM/thickness/bed) — caches go to staging
     boot_ds = boot_file_from_grid(
@@ -219,6 +221,9 @@ def stage_glacier(
     grid_ds.to_netcdf(grid_file, engine="h5netcdf")
     check_xr_fully(grid_file)
 
+    _ = glacier_velocities_from_grid(grid_ds, glacier_projected.geometry, path=obs_file)
+    check_xr_fully(obs_file)
+
     # Save domain extent polygon as a GPKG (intermediate, used for sanity checks)
     x_point_list = [
         grid_ds.x_bnds[0][0],
@@ -240,7 +245,6 @@ def stage_glacier(
     pyogrio.write_dataframe(domain_bounds, domain_bounds_file)
 
     clim_mod = config["climate"]
-    print(config)
     # Climate forcing — built into staging, then final outputs moved to `path`
     climate_from_rgi = CLIMATE[config["climate"]]
     responses = climate_from_rgi(
@@ -272,6 +276,7 @@ def stage_glacier(
         "outline_file": glacier_file.resolve(),
         "boot_file": boot_file.resolve(),
         "grid_file": grid_file.resolve(),
+        "obs_file": obs_file.resolve(),
     }
     dfs: list[pd.DataFrame] = []
     for idx, fpath in enumerate(responses):
