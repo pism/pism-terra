@@ -1,4 +1,4 @@
-exclude: "docs|node_modules|migrations|.git|.tox"
+exclude: "docs/_build|docs/source/auto_examples|docs/source/reference/generated|node_modules|migrations|.git|.tox"
 default_stages: [pre-commit]
 fail_fast: true
 
