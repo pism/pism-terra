@@ -1,3 +1,4 @@
+[![Documentation Status](https://readthedocs.org/projects/pism-terra/badge/?version=latest)](https://pism-terra.readthedocs.io/en/latest/?badge=latest)
 [![License: GPL-3.0](https://img.shields.io:/github/license/pism/pypac)](https://opensource.org/licenses/GPL-3.0)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Checked with mypy](http://www.mypy-lang.org/static/mypy_badge.svg)](http://mypy-lang.org/)
@@ -39,10 +40,7 @@ For rapid development and without internet, you can also run
 
 ## Documentation
 
-Full documentation — installation, tutorials, the API reference, and the
-GlacierMIP4 / KITP / ISMIP7 workflows — is published on **Read the Docs**:
-
-> <https://pism-terra.readthedocs.io/>
+Full documentation — installation, tutorials and workflows — is published on **Read the Docs**  <https://pism-terra.readthedocs.io/>
 
 To build the docs locally:
 
