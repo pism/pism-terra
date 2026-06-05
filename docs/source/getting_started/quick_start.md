@@ -18,7 +18,7 @@ velocities, then projects everything onto the run's target grid.
 ```bash
 pism-glacier-stage \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5_maffezzoli_1year.toml 
+    pism_terra/config/rgi_era5_maffezzoli_1year.toml
 ```
 
 You'll get a `<RGI_ID>/input/` directory with one NetCDF per input.

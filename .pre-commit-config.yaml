@@ -1,4 +1,4 @@
-exclude: "docs|node_modules|migrations|.git|.tox"
+exclude: "docs/_build|docs/source/auto_examples|docs/source/reference/generated|node_modules|migrations|.git|.tox"
 default_stages: [pre-commit]
 fail_fast: true
 
@@ -33,7 +33,7 @@ repos:
     rev: v1.10.0
     hooks:
       - id: numpydoc-validation
-        exclude: ^pism_terra/kitp/writer\.py$
+        exclude: ^(pism_terra/kitp/writer\.py|docs/source/conf\.py)$
 
   # Can run individually with `pre-commit run mypy --all-files`
   - repo: https://github.com/pre-commit/mirrors-mypy

@@ -26,8 +26,8 @@ pyplot.rcParams['savefig.dpi'] = 600
 For the Wrangell Mountain Glacier Complex (RGI2000-v7.0-C-01-04374), we will
 assess the role of ice thickness. Ice thickness exerts a first order control
 on ice flow. The complex flow patterns in Greenland's outlet glaciers cannot
-be reproduced *for the right reason* without accurate ice thickness {cite}`Aschwanden2016`. 
-Two global ice thickness products are currently supported: Frank et al and 
+be reproduced *for the right reason* without accurate ice thickness {cite}`Aschwanden2016`.
+Two global ice thickness products are currently supported: Frank et al and
 Maffezzoli et al.; see {cite}`Frank2026` and {cite}`Maffezzoli2025`.
 
 
@@ -39,7 +39,7 @@ Stage `RGI2000-v7.0-C-01-04374` with the Frank ice thickness
 pism-glacier-stage \
     --output-path frank \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5-mean_frank.toml 
+    pism_terra/config/rgi_era5-mean_frank.toml
 ```
 
 and with the Maffezzoli ice thickness
@@ -169,7 +169,7 @@ pism-glacier-postprocess \
 time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
 delta_coder = xr.coders.CFTimedeltaCoder()
 
-frank_state = xr.open_dataset("frank/RGI2000-v7.0-C-01-04374/output/state/clipped_state_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0006-01-01.nc",                 
+frank_state = xr.open_dataset("frank/RGI2000-v7.0-C-01-04374/output/state/clipped_state_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0006-01-01.nc",
                               decode_times=time_coder,
                               decode_timedelta=delta_coder,
                              ).squeeze()
@@ -202,7 +202,7 @@ axs[2].set_title("Speed (Frank - Maffezzoli)")
 time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
 delta_coder = xr.coders.CFTimedeltaCoder()
 
-frank_state = xr.open_dataset("../_data/frank_speed.nc",           
+frank_state = xr.open_dataset("../_data/frank_speed.nc",
                               decode_times=time_coder,
                               decode_timedelta=delta_coder,
                              ).squeeze()
