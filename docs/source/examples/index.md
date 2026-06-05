@@ -17,6 +17,7 @@ Two flavours of example are supported in this site:
 :maxdepth: 1
 
 quick_start
+pism_cloud_intro
 geometry
 kitp_analysis
 kitp_debm_calibration
