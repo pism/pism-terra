@@ -210,7 +210,12 @@ def run_inverse(
 
     inv = {}
     inv.update(getattr(cfg, "inverse"))
-    inv.update(cfg.stress_balance.selected())
+    # cfg.stress_balance.selected() carries everything the forward run needs
+    # (model options + PETSc solver knobs like bp_* / inv_adj_*). The pismi
+    # call only needs the ``stress_balance.*`` dotted options; the solver
+    # flags are picked up by the prior pism call (and inherited from the
+    # state file). Filter so inv_str stays minimal.
+    inv.update({k: v for k, v in cfg.stress_balance.selected().items() if k.startswith("stress_balance.")})
 
     template_file = Path(template_file)
     env = Environment(loader=FileSystemLoader(template_file.parent))
