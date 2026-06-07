@@ -30,7 +30,7 @@ version = "v4"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0002-01-01"
+'time.end' =  "0003-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -167,7 +167,7 @@ model = "debm"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.c1' = 42
 'surface.debm_simple.c2' = -128
-'surface.debm_simple.refreeze' = 0.28
+'surface.debm_simple.refreeze' = 0.60
 'surface.debm_simple.refreeze_ice_melt' = "no"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 272.15
 'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
