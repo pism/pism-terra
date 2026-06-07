@@ -509,8 +509,19 @@ def bathymetry_from_grid(
         geo_bounds = t.transform_bounds(*bounds)
 
         da = rxr.open_rasterio(uri, masked=True, chunks={"x": 1024, "y": 1024}).squeeze()
-        sub = da.rio.clip_box(*geo_bounds, crs=da.rio.crs)
-        out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
+        # GEBCO is a global EPSG:4326 COG; if the target grid wraps the
+        # antimeridian (pyproj returns xmin > xmax, e.g. RGI region 01),
+        # clip the two 4326 halves separately, reproject each into the
+        # projected target grid (continuous across the seam), and coalesce.
+        if geo_bounds[0] > geo_bounds[2]:
+            west = da.rio.clip_box(geo_bounds[0], geo_bounds[1], 180.0, geo_bounds[3], crs=da.rio.crs)
+            east = da.rio.clip_box(-180.0, geo_bounds[1], geo_bounds[2], geo_bounds[3], crs=da.rio.crs)
+            west_reproj = west.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
+            east_reproj = east.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
+            out = west_reproj.fillna(east_reproj).astype("float32")
+        else:
+            sub = da.rio.clip_box(*geo_bounds, crs=da.rio.crs)
+            out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
         out.encoding = {}  # drop stale int16 dtype/fill from the source COG
         out = out.rio.write_crs(dst_crs).rio.write_grid_mapping()
         out.name = "bathymetry"
