@@ -103,7 +103,7 @@ def process_file(
     # x/y sizes and would inject dangling dimensions back into the output
     # after merge — h5netcdf serializes those as duplicate "x" dims. Drop
     # them before splitting; PISM doesn't require them on the clipped output.
-    ds = ds.drop_vars(["x_bnds", "x_bounds", "y_bnds", "y_bounds"], errors="ignore")
+    ds = ds.drop_vars(["x_bnds", "x_bounds", "y_bnds", "y_bounds", "mapping"], errors="ignore")
 
     # Separate variables that lack BOTH spatial (x, y) dimensions, as
     # rio.clip cannot handle them. Use ``and`` so that vars carrying only
@@ -132,7 +132,7 @@ def process_file(
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
     encoding_scalar = {var: comp for var in scalar.data_vars}
-    scalar.to_netcdf(scalar_file, encoding=encoding_scalar, engine="h5netcdf")
+    scalar.to_netcdf(scalar_file, encoding=encoding_scalar, engine="netcdf4")
 
     end = time.time()
     time_elapsed = end - start
