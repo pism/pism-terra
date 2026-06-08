@@ -93,7 +93,7 @@ model = 'blatter'
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.blatter.use_eta_transform' = 'yes'
-'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
 bp_ksp_monitor =  ""
@@ -114,7 +114,7 @@ bp_ksp_rtol = 1e-3
 
 'stress_balance.model' = "ssa+sia"
 'stress_balance.ssa.method' = "fd"
-'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
 
