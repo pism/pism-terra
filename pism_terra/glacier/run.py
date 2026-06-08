@@ -54,7 +54,7 @@ from pism_terra.workflow import (
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
 
-def run_inverse(
+def _render_inverse_run(
     rgi_id: str,
     config_file: str | Path,
     template_file: Path | str,
@@ -68,7 +68,7 @@ def run_inverse(
     pism_config_cdl: str | Path | None = None,
 ):
     """
-    Configure and generate a PISM job script for a single glacier (ensemble-ready).
+    Configure and generate a PISM inverse job script for a single glacier (ensemble-ready).
 
     Reads a TOML configuration, merges optional ensemble overrides (``uq``),
     renders a submission script from a Jinja2 template, and writes both the
@@ -359,7 +359,7 @@ def run_inverse(
     print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
-def run_forward(
+def _render_forward_run(
     rgi_id: str,
     config_file: str | Path,
     template_file: Path | str,
@@ -643,14 +643,29 @@ def run_forward(
     print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
-def run_forward_single():
+def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentParser:
     """
-    Run single glacier.
-    """
+    Build the argparse parser shared by ``run_forward`` and ``run_inverse``.
 
-    # set up the option parser
+    ``UQ_FILE`` is exposed as an *optional* positional: omit it to render one
+    job script (single mode), supply it to render an ensemble.
+
+    Parameters
+    ----------
+    description : str
+        Parser description shown in ``--help``.
+    supports_execute : bool
+        Whether to add the ``--execute`` flag. Forward runs accept it (the
+        first generated script is launched in-process); inverse runs may
+        also accept it.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Stage RGI Glacier."
+    parser.description = description
     parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
     parser.add_argument(
         "--bucket-prefix",
@@ -669,90 +684,141 @@ def run_forward_single():
         action="store_true",
         default=False,
     )
-    parser.add_argument(
-        "--queue",
-        help="Overrides queue in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--ntasks",
-        help="Numbers of cores.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--tasks",
-        help="Cores per node.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--nodes",
-        help="Overrides nodes in config file.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--walltime",
-        help="Overrides walltime in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--resolution",
-        help="Override horizontal grid resolution.",
-        type=str,
-        default=None,
-    )
+    parser.add_argument("--queue", type=str, default=None, help="Overrides queue in config file.")
+    parser.add_argument("--ntasks", type=int, default=None, help="Numbers of cores.")
+    parser.add_argument("--tasks", type=int, default=None, help="Cores per node.")
+    parser.add_argument("--nodes", type=int, default=None, help="Overrides nodes in config file.")
+    parser.add_argument("--walltime", type=str, default=None, help="Overrides walltime in config file.")
+    parser.add_argument("--resolution", type=str, default=None, help="Override horizontal grid resolution.")
     parser.add_argument(
         "--stress-balance",
+        type=str,
+        default=None,
         help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
+    )
+    parser.add_argument("--start", type=str, default=None, help="Override the time.start selection.")
+    parser.add_argument("--end", type=str, default=None, help="Override the time.end selection.")
+    parser.add_argument(
+        "--posterior-file",
         type=str,
         default=None,
+        help="CSV file of posterior parameter distributions to sample from (ensemble mode only).",
     )
-    parser.add_argument(
-        "--start",
-        help="Override the time.start selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--end",
-        help="Override the time.end selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--execute",
-        help="Execute the pism run script immediately. Ignored if `--debug` is provided.",
-        action="store_true",
-    )
+    if supports_execute:
+        parser.add_argument(
+            "--execute",
+            action="store_true",
+            help="Execute the first generated run script in-process. Ignored in ensemble mode or with --debug.",
+        )
     parser.add_argument(
         "--debug",
-        help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
         default=False,
+        help="Debug or testing mode, do not write template, just the run command.",
     )
     parser.add_argument(
         "--pism-config-cdl",
-        help="Path to PISM CDL config file for option validation.",
         type=str,
         default=None,
+        help="Path to PISM CDL config file for option validation.",
     )
+    parser.add_argument("RGI_ID", help="RGI ID.")
+    parser.add_argument("CONFIG_FILE", help="CONFIG TOML.")
+    parser.add_argument("TEMPLATE_FILE", help="TEMPLATE J2.")
     parser.add_argument(
-        "RGI_ID",
-        help="RGI ID.",
+        "UQ_FILE",
+        nargs="?",
+        default=None,
+        help="UQ TOML (optional). Supply to render an ensemble; omit for a single-glacier run.",
     )
-    parser.add_argument(
-        "CONFIG_FILE",
-        help="CONFIG TOML.",
-    )
-    parser.add_argument(
-        "TEMPLATE_FILE",
-        help="TEMPLATE J2.",
-    )
+    return parser
 
+
+def _build_ensemble_df(
+    df: pd.DataFrame,
+    uq_file: Path,
+    output_path: Path,
+    posterior_file: str | Path | None,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """
+    Build the per-member DataFrame for an ensemble run.
+
+    Samples the UQ specification, optionally folds in a posterior CSV, then
+    cross-joins with the staged glacier DataFrame ``df`` and assigns a
+    composite ``sample`` ID per row.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Output of :func:`pism_terra.glacier.stage.stage_glacier` (one row
+        per staged ``boot``/``grid``/``climate`` tuple).
+    uq_file : Path
+        Path to the UQ TOML.
+    output_path : Path
+        Directory under which the realised sample CSV is persisted.
+    posterior_file : str or Path or None
+        Optional CSV of posterior parameter draws to override / extend the
+        UQ samples with.
+    seed : int, default 42
+        Seed for sampling (and posterior row choice).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Per-ensemble-member DataFrame with all columns from ``df`` plus the
+        sampled UQ columns and a composite string ``sample`` column.
+    """
+    rng = np.random.default_rng(seed=seed)
+    uq = load_uq(uq_file)
+    n_samples = uq.samples
+
+    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
+
+    if posterior_file is not None:
+        posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
+        choice_indices = rng.choice(range(len(posterior_df)), n_samples)
+        posterior_sampled_df = posterior_df.iloc[choice_indices].reset_index(drop=True)
+        duplicate_cols = list(set(uq_df.columns) & set(posterior_sampled_df.columns) - {"sample"})
+        if duplicate_cols:
+            print(f"WARNING: posterior overrides UQ for columns: {sorted(duplicate_cols)}")
+            uq_df = uq_df.drop(columns=duplicate_cols)
+        uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
+
+    uq_df.rename(columns={"sample": "uq"}).to_csv(output_path / "uq.csv", index=False)
+
+    if uq.mapping:
+        uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
+
+    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
+    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+    return merged_df
+
+
+def _run(*, kind: str) -> None:
+    """
+    Shared CLI body for forward and inverse runs.
+
+    Parses arguments, stages inputs, optionally builds an ensemble, then
+    renders one run script per member by calling ``_render_<kind>_run``.
+    The two CLI entry points :func:`run_forward` and :func:`run_inverse` are
+    one-line wrappers around this function.
+
+    Parameters
+    ----------
+    kind : {"forward", "inverse"}
+        Which run script template to render. Selects the per-row worker
+        and decides whether to include ``inverse.file`` in the UQ dict.
+    """
+    if kind not in ("forward", "inverse"):
+        raise ValueError(f"kind must be 'forward' or 'inverse', got {kind!r}")
+    render = _render_forward_run if kind == "forward" else _render_inverse_run
+
+    parser = _build_cli_parser(
+        description=f"Stage RGI Glacier and render a {kind} run script (ensemble if UQ_FILE is given).",
+        supports_execute=True,
+    )
     options = parser.parse_args()
     force_overwrite = options.force_overwrite
     pism_config_cdl = options.pism_config_cdl
@@ -770,21 +836,12 @@ def run_forward_single():
 
     config_file = file_localizer(options.CONFIG_FILE, path / "config")
     template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
-    resolution = options.resolution
+    uq_file = file_localizer(options.UQ_FILE, path / "uq") if options.UQ_FILE else None
 
-    debug = options.debug
-    queue = options.queue
-    ntasks = options.ntasks
-    nodes = options.nodes
-    tasks = options.tasks
-    walltime = options.walltime
-    stress_balance = options.stress_balance
     start_cli = options.start
     end_cli = options.end
 
     cfg = load_config(config_file)
-    campaign_config = cfg.campaign.as_params()
-
     # ``years`` is derived from the *effective* run span: CLI overrides win
     # over the config's [time] section. Local Timestamps stay distinct from
     # the CLI string overrides (``start_cli`` / ``end_cli``) below.
@@ -803,268 +860,48 @@ def run_forward_single():
         force_overwrite=force_overwrite,
     )
 
-    f = Figlet(font="standard")
-    banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print(f"Generate Run for Glacier {rgi_id}")
-    print("-" * 120)
-    for idx, row in df.iterrows():
-        delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
-        frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
-        create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        uq = {
-            "input.file": row["boot_file"],
-            "grid.file": row["grid_file"],
-            "atmosphere.delta_T.file": scalar_offset_file,
-            "atmosphere.elevation_change.file": row["boot_file"],
-            "atmosphere.precip_scaling.file": scalar_offset_file,
-            "atmosphere.given.file": row["climate_file"],
-            "surface.debm_simple.std_dev.file": row["climate_file"],
-            "surface.force_to_thickness.file": row["boot_file"],
-            "surface.pdd.std_dev.file": row["climate_file"],
-        }
-        outline_file = row["outline_file"] if "outline_file" in row else None
-        run_forward(
-            rgi_id,
-            config_file,
-            template_file,
-            outline_file,
-            path=path,
-            config_cli={
-                "resolution": resolution,
-                "nodes": nodes,
-                "ntasks": ntasks,
-                "tasks": tasks,
-                "queue": queue,
-                "walltime": walltime,
-                "stress_balance": stress_balance,
-                "start": start_cli,
-                "end": end_cli,
-            },
-            debug=debug,
-            uq=uq,
-            sample=int(row["sample"]) if "sample" in row else idx,
-            pism_config_cdl=pism_config_cdl,
-        )
-
-    if options.execute and not options.debug:
-        find_first_and_execute(path / rgi_id)
-
-    if options.bucket:
-        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
-        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
-
-
-def run_forward_ensemble():
-    """
-    Run single glacier ensemble.
-    """
-
-    # set up the option parser
-    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Stage RGI Glacier Ensemble."
-    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
-    parser.add_argument(
-        "--bucket-prefix",
-        help="AWS prefix (location in bucket) to add to product files",
-        default="",
-    )
-    parser.add_argument(
-        "--output-path",
-        help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
-        type=str,
-        default=".",
-    )
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--queue",
-        help="Overrides queue in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--ntasks",
-        help="Numbers of cores.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--tasks",
-        help="Cores per node.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--nodes",
-        help="Overrides nodes in config file.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--walltime",
-        help="Overrides walltime in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--resolution",
-        help="Override horizontal grid resolution.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--start",
-        help="Override the time.start selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--end",
-        help="Override the time.end selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--posterior-file",
-        help="CSV file posterior parameter distributions to sample from. Default=None.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--stress-balance",
-        help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--debug",
-        help="Debug or testing mode, do not write template, just the run command.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--pism-config-cdl",
-        help="Path to PISM CDL config file for option validation.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "RGI_ID",
-        help="RGI ID.",
-    )
-    parser.add_argument(
-        "CONFIG_FILE",
-        help="CONFIG TOML.",
-    )
-    parser.add_argument(
-        "TEMPLATE_FILE",
-        help="TEMPLATE J2.",
-    )
-    parser.add_argument(
-        "UQ_FILE",
-        help="UQ TOML.",
-    )
-
-    options = parser.parse_args()
-    force_overwrite = options.force_overwrite
-    pism_config_cdl = options.pism_config_cdl
-
-    path = Path(options.output_path)
-    rgi_id = options.RGI_ID
-    glacier_path = path / rgi_id
-
-    input_path = glacier_path / "input"
-    input_path.mkdir(parents=True, exist_ok=True)
-    staging_path = glacier_path / "staging"
-    staging_path.mkdir(parents=True, exist_ok=True)
-    output_path = glacier_path / "output"
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    config_file = file_localizer(options.CONFIG_FILE, path / "config")
-    template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
-    uq_file = file_localizer(options.UQ_FILE, path / "uq")
-
-    resolution = options.resolution
-    posterior_file = options.posterior_file
-    debug = options.debug
-    queue = options.queue
-    ntasks = options.ntasks
-    nodes = options.nodes
-    tasks = options.tasks
-    walltime = options.walltime
-    stress_balance = options.stress_balance
-    start_cli = options.start
-    end_cli = options.end
-
-    cfg = load_config(config_file)
-    # ``years`` is derived from the *effective* run span: CLI overrides win
-    # over the config's [time] section. Local Timestamps stay distinct from
-    # the CLI string overrides so the latter survive the merge.
-    start_ts = pd.Timestamp(start_cli or cfg.time.time_start)
-    end_ts = pd.Timestamp(end_cli or cfg.time.time_end)
-    last_year = end_ts.year - 1 if (end_ts.month == 1 and end_ts.day == 1) else end_ts.year
-    years = list(range(start_ts.year, last_year + 1))
-    campaign_config = cfg.campaign.as_params()
-    campaign_config["years"] = years
-    df = stage_glacier(
-        campaign_config,
-        rgi_id,
-        path=input_path,
-        staging_path=staging_path,
-        force_overwrite=force_overwrite,
-    )
-
-    seed = 42
-    rng = np.random.default_rng(seed=seed)
-    uq = load_uq(uq_file)
-    n_samples = uq.samples
-    mapping = uq.mapping
-
-    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
-
-    if posterior_file is not None:
-        posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
-        choice_indices = rng.choice(range(len(posterior_df)), n_samples)
-        posterior_sampled_df = posterior_df.iloc[choice_indices].reset_index(drop=True)
-        duplicate_cols = list(set(uq_df.columns) & set(posterior_sampled_df.columns) - {"sample"})
-        if duplicate_cols:
-            print(f"WARNING: posterior overrides UQ for columns: {sorted(duplicate_cols)}")
-            uq_df = uq_df.drop(columns=duplicate_cols)
-        uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
-
-    uq_file = output_path / Path("uq.csv")
-    uq_df.rename(columns={"sample": "uq"}).to_csv(uq_file, index=False)
+    if uq_file is not None:
+        rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
+        header = f"Generate Ensemble Runs for Glacier {rgi_id}"
+    else:
+        rows_df = df
+        header = f"Generate Run for Glacier {rgi_id}"
+    is_ensemble = uq_file is not None
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
     print("=" * 120)
     print(banner)
     print("=" * 120)
-    print(f"Generate Ensemble Runs for Glacier {rgi_id}")
+    print(header)
     print("-" * 120)
 
-    if uq.mapping:
-        uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
+    config_cli = {
+        "resolution": options.resolution,
+        "nodes": options.nodes,
+        "ntasks": options.ntasks,
+        "tasks": options.tasks,
+        "queue": options.queue,
+        "walltime": options.walltime,
+        "stress_balance": options.stress_balance,
+        "start": start_cli,
+        "end": end_cli,
+    }
 
-    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
-    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
-    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
-
-    for idx, row in merged_df.iterrows():
+    for idx, row in rows_df.iterrows():
         delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
         scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
         create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        row_uq = row.drop(labels=list(df.columns) + ["sample"]).to_dict()
-        row_uq.update(
+
+        if is_ensemble:
+            # Drop the staged-glacier columns and the composite sample id;
+            # whatever remains is a row of UQ overrides to forward to PISM.
+            uq_overrides = row.drop(labels=list(df.columns) + ["sample"]).to_dict()
+        else:
+            uq_overrides = {}
+
+        uq_overrides.update(
             {
                 "input.file": row["boot_file"],
                 "grid.file": row["grid_file"],
@@ -1077,245 +914,27 @@ def run_forward_ensemble():
                 "surface.pdd.std_dev.file": row["climate_file"],
             }
         )
+        if kind == "inverse":
+            uq_overrides["inverse.file"] = row["obs_file"]
+
         outline_file = row["outline_file"] if "outline_file" in row else None
-        sample = row["sample"]
-        run_forward(
+        sample = row["sample"] if is_ensemble else (int(row["sample"]) if "sample" in row else idx)
+        render(
             rgi_id,
             config_file,
             template_file,
             outline_file,
             path=path,
-            config_cli={
-                "resolution": resolution,
-                "nodes": nodes,
-                "ntasks": ntasks,
-                "tasks": tasks,
-                "queue": queue,
-                "walltime": walltime,
-                "stress_balance": stress_balance,
-                "start": start_cli,
-                "end": end_cli,
-            },
-            debug=debug,
-            uq=row_uq,
+            config_cli=config_cli,
+            debug=options.debug,
+            uq=uq_overrides,
             sample=sample,
             pism_config_cdl=pism_config_cdl,
         )
 
-    if options.bucket:
-        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
-        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
-
-
-def run_inverse_single():
-    """
-    Run single glacier.
-    """
-
-    # set up the option parser
-    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Stage RGI Glacier."
-    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
-    parser.add_argument(
-        "--bucket-prefix",
-        help="AWS prefix (location in bucket) to add to product files",
-        default="",
-    )
-    parser.add_argument(
-        "--output-path",
-        help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
-        type=str,
-        default=".",
-    )
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--queue",
-        help="Overrides queue in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--ntasks",
-        help="Numbers of cores.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--tasks",
-        help="Cores per node.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--nodes",
-        help="Overrides nodes in config file.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--walltime",
-        help="Overrides walltime in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--resolution",
-        help="Override horizontal grid resolution.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--stress-balance",
-        help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--start",
-        help="Override the time.start selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--end",
-        help="Override the time.end selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--execute",
-        help="Execute the pism run script immediately. Ignored if `--debug` is provided.",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--debug",
-        help="Debug or testing mode, do not write template, just the run command.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--pism-config-cdl",
-        help="Path to PISM CDL config file for option validation.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "RGI_ID",
-        help="RGI ID.",
-    )
-    parser.add_argument(
-        "CONFIG_FILE",
-        help="CONFIG TOML.",
-    )
-    parser.add_argument(
-        "TEMPLATE_FILE",
-        help="TEMPLATE J2.",
-    )
-
-    options = parser.parse_args()
-    force_overwrite = options.force_overwrite
-    pism_config_cdl = options.pism_config_cdl
-
-    path = Path(options.output_path)
-    rgi_id = options.RGI_ID
-    glacier_path = path / rgi_id
-
-    input_path = glacier_path / "input"
-    input_path.mkdir(parents=True, exist_ok=True)
-    staging_path = glacier_path / "staging"
-    staging_path.mkdir(parents=True, exist_ok=True)
-    output_path = glacier_path / "output"
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    config_file = file_localizer(options.CONFIG_FILE, path / "config")
-    template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
-    resolution = options.resolution
-
-    debug = options.debug
-    queue = options.queue
-    ntasks = options.ntasks
-    nodes = options.nodes
-    tasks = options.tasks
-    walltime = options.walltime
-    stress_balance = options.stress_balance
-    start_cli = options.start
-    end_cli = options.end
-
-    cfg = load_config(config_file)
-    campaign_config = cfg.campaign.as_params()
-
-    # ``years`` is derived from the *effective* run span: CLI overrides win
-    # over the config's [time] section. Local Timestamps stay distinct from
-    # the CLI string overrides (``start_cli`` / ``end_cli``) below.
-    start_ts = pd.Timestamp(start_cli or cfg.time.time_start)
-    end_ts = pd.Timestamp(end_cli or cfg.time.time_end)
-    last_year = end_ts.year - 1 if (end_ts.month == 1 and end_ts.day == 1) else end_ts.year
-    years = list(range(start_ts.year, last_year + 1))
-    campaign_config = cfg.campaign.as_params()
-    campaign_config["years"] = years
-
-    df = stage_glacier(
-        campaign_config,
-        rgi_id,
-        path=input_path,
-        staging_path=staging_path,
-        force_overwrite=force_overwrite,
-    )
-
-    f = Figlet(font="standard")
-    banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print(f"Generate Run for Glacier {rgi_id}")
-    print("-" * 120)
-    for idx, row in df.iterrows():
-        delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
-        frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
-        create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        uq = {
-            "input.file": row["boot_file"],
-            "inverse.file": row["obs_file"],
-            "grid.file": row["grid_file"],
-            "atmosphere.delta_T.file": scalar_offset_file,
-            "atmosphere.elevation_change.file": row["boot_file"],
-            "atmosphere.precip_scaling.file": scalar_offset_file,
-            "atmosphere.given.file": row["climate_file"],
-            "surface.debm_simple.std_dev.file": row["climate_file"],
-            "surface.force_to_thickness.file": row["boot_file"],
-            "surface.pdd.std_dev.file": row["climate_file"],
-        }
-        outline_file = row["outline_file"] if "outline_file" in row else None
-        run_inverse(
-            rgi_id,
-            config_file,
-            template_file,
-            outline_file,
-            path=path,
-            config_cli={
-                "resolution": resolution,
-                "nodes": nodes,
-                "ntasks": ntasks,
-                "tasks": tasks,
-                "queue": queue,
-                "walltime": walltime,
-                "stress_balance": stress_balance,
-                "start": start_cli,
-                "end": end_cli,
-            },
-            debug=debug,
-            uq=uq,
-            sample=int(row["sample"]) if "sample" in row else idx,
-            pism_config_cdl=pism_config_cdl,
-        )
-
-    if options.execute and not options.debug:
+    # ``--execute`` only fires the *first* generated script. Use it for the
+    # single-glacier mode; ignore it for ensembles (would only run member 0).
+    if not is_ensemble and getattr(options, "execute", False) and not options.debug:
         find_first_and_execute(path / rgi_id)
 
     if options.bucket:
@@ -1323,256 +942,28 @@ def run_inverse_single():
         local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
 
 
-def run_inverse_ensemble():
+def run_forward() -> None:
     """
-    Run single glacier ensemble.
+    CLI entry point for forward runs (single or ensemble).
+
+    Behaves as a single-glacier run when no ``UQ_FILE`` positional is
+    supplied, and as a UQ ensemble when one is. The argument schema and
+    output layout are otherwise identical.
     """
+    _run(kind="forward")
 
-    # set up the option parser
-    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Stage RGI Glacier Ensemble."
-    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
-    parser.add_argument(
-        "--bucket-prefix",
-        help="AWS prefix (location in bucket) to add to product files",
-        default="",
-    )
-    parser.add_argument(
-        "--output-path",
-        help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
-        type=str,
-        default=".",
-    )
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--queue",
-        help="Overrides queue in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--ntasks",
-        help="Numbers of cores.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--tasks",
-        help="Cores per node.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--nodes",
-        help="Overrides nodes in config file.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--walltime",
-        help="Overrides walltime in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--resolution",
-        help="Override horizontal grid resolution.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--start",
-        help="Override the time.start selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--end",
-        help="Override the time.end selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--posterior-file",
-        help="CSV file posterior parameter distributions to sample from. Default=None.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--stress-balance",
-        help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--debug",
-        help="Debug or testing mode, do not write template, just the run command.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--pism-config-cdl",
-        help="Path to PISM CDL config file for option validation.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "RGI_ID",
-        help="RGI ID.",
-    )
-    parser.add_argument(
-        "CONFIG_FILE",
-        help="CONFIG TOML.",
-    )
-    parser.add_argument(
-        "TEMPLATE_FILE",
-        help="TEMPLATE J2.",
-    )
-    parser.add_argument(
-        "UQ_FILE",
-        help="UQ TOML.",
-    )
 
-    options = parser.parse_args()
-    force_overwrite = options.force_overwrite
-    pism_config_cdl = options.pism_config_cdl
+def run_inverse() -> None:
+    """
+    CLI entry point for inverse runs (single or ensemble).
 
-    path = Path(options.output_path)
-    rgi_id = options.RGI_ID
-    glacier_path = path / rgi_id
-
-    input_path = glacier_path / "input"
-    input_path.mkdir(parents=True, exist_ok=True)
-    staging_path = glacier_path / "staging"
-    staging_path.mkdir(parents=True, exist_ok=True)
-    output_path = glacier_path / "output"
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    config_file = file_localizer(options.CONFIG_FILE, path / "config")
-    template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
-    uq_file = file_localizer(options.UQ_FILE, path / "uq")
-
-    resolution = options.resolution
-    posterior_file = options.posterior_file
-    debug = options.debug
-    queue = options.queue
-    ntasks = options.ntasks
-    nodes = options.nodes
-    tasks = options.tasks
-    walltime = options.walltime
-    stress_balance = options.stress_balance
-    start_cli = options.start
-    end_cli = options.end
-
-    cfg = load_config(config_file)
-    # ``years`` is derived from the *effective* run span: CLI overrides win
-    # over the config's [time] section. Local Timestamps stay distinct from
-    # the CLI string overrides so the latter survive the merge.
-    start_ts = pd.Timestamp(start_cli or cfg.time.time_start)
-    end_ts = pd.Timestamp(end_cli or cfg.time.time_end)
-    last_year = end_ts.year - 1 if (end_ts.month == 1 and end_ts.day == 1) else end_ts.year
-    years = list(range(start_ts.year, last_year + 1))
-    campaign_config = cfg.campaign.as_params()
-    campaign_config["years"] = years
-    df = stage_glacier(
-        campaign_config,
-        rgi_id,
-        path=input_path,
-        staging_path=staging_path,
-        force_overwrite=force_overwrite,
-    )
-
-    seed = 42
-    rng = np.random.default_rng(seed=seed)
-    uq = load_uq(uq_file)
-    n_samples = uq.samples
-    mapping = uq.mapping
-
-    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
-
-    if posterior_file is not None:
-        posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
-        choice_indices = rng.choice(range(len(posterior_df)), n_samples)
-        posterior_sampled_df = posterior_df.iloc[choice_indices].reset_index(drop=True)
-        duplicate_cols = list(set(uq_df.columns) & set(posterior_sampled_df.columns) - {"sample"})
-        if duplicate_cols:
-            print(f"WARNING: posterior overrides UQ for columns: {sorted(duplicate_cols)}")
-            uq_df = uq_df.drop(columns=duplicate_cols)
-        uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
-
-    uq_file = output_path / Path("uq.csv")
-    uq_df.rename(columns={"sample": "uq"}).to_csv(uq_file, index=False)
-
-    f = Figlet(font="standard")
-    banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print(f"Generate Ensemble Runs for Glacier {rgi_id}")
-    print("-" * 120)
-
-    if uq.mapping:
-        uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
-
-    merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
-    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
-    merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
-
-    for idx, row in merged_df.iterrows():
-        delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
-        frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
-        create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-        row_uq = row.drop(labels=list(df.columns) + ["sample"]).to_dict()
-        row_uq.update(
-            {
-                "input.file": row["boot_file"],
-                "inverse.file": row["obs_file"],
-                "grid.file": row["grid_file"],
-                "atmosphere.delta_T.file": scalar_offset_file,
-                "atmosphere.elevation_change.file": row["boot_file"],
-                "atmosphere.precip_scaling.file": scalar_offset_file,
-                "atmosphere.given.file": row["climate_file"],
-                "surface.debm_simple.std_dev.file": row["climate_file"],
-                "surface.force_to_thickness.file": row["boot_file"],
-                "surface.pdd.std_dev.file": row["climate_file"],
-            }
-        )
-        outline_file = row["outline_file"] if "outline_file" in row else None
-        sample = row["sample"]
-        run_inverse(
-            rgi_id,
-            config_file,
-            template_file,
-            outline_file,
-            path=path,
-            config_cli={
-                "resolution": resolution,
-                "nodes": nodes,
-                "ntasks": ntasks,
-                "tasks": tasks,
-                "queue": queue,
-                "walltime": walltime,
-                "stress_balance": stress_balance,
-                "start": start_cli,
-                "end": end_cli,
-            },
-            debug=debug,
-            uq=row_uq,
-            sample=sample,
-            pism_config_cdl=pism_config_cdl,
-        )
-
-    if options.bucket:
-        prefix = f"{options.bucket_prefix}/{rgi_id}" if options.bucket_prefix else rgi_id
-        local_to_s3(glacier_path, bucket=options.bucket, prefix=prefix)
+    Behaves as a single-glacier inverse run when no ``UQ_FILE`` positional
+    is supplied, and as a UQ ensemble when one is. The per-row UQ dict
+    additionally maps ``inverse.file`` to the staged observation file.
+    """
+    _run(kind="inverse")
 
 
 if __name__ == "__main__":
     __spec__ = None  # type: ignore
-    run_forward_single()
+    run_forward()
