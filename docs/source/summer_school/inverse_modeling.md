@@ -48,7 +48,7 @@ pism-glacier-stage \
 Prepare the run script for the Frank dataset
 
 ```bash
-pism-glacier-inverse \
+pism-glacier-run-inverse \
     --output-path frank_inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_inverse_gpbld_frank.toml \
@@ -58,7 +58,7 @@ pism-glacier-inverse \
 and then for the Maffezzoli dataset:
 
 ```bash
-pism-glacier-inverse \
+pism-glacier-run-inverse \
     --output-path maffezzoli_inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_inverse_gpbld_maffezzoli.toml \

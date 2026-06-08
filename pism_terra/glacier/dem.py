@@ -330,6 +330,7 @@ def boot_file_from_grid(
         target_crs=dst_crs,
         bucket=bucket,
         prefix=prefix,
+        geometries=geometries,
         **kwargs,
     )
     ice_thickness = ice_thickness.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
