@@ -55,7 +55,12 @@ from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.glacier.observations import glacier_velocities_from_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
+from pism_terra.workflow import (
+    check_dataset_fully,
+    check_xr_fully,
+    check_xr_lazy,
+    drop_geotransform_attr,
+)
 
 xr.set_options(keep_attrs=True)
 
@@ -213,11 +218,17 @@ def stage_glacier(
     print("Saving bootfile")
     print("-" * 120)
     boot_file.unlink(missing_ok=True)
+    # rioxarray writes a GeoTransform on spatial_ref consistent with ascending y
+    # (positive dy); GDAL then prefers that over the y coordinate variable and
+    # displays the raster upside-down in QGIS. Drop it so GDAL falls back to
+    # deriving the transform from the y coordinate variable (top-down).
+    drop_geotransform_attr(boot_ds)
     boot_ds.to_netcdf(boot_file, engine="h5netcdf")
     check_xr_lazy(boot_file)
 
     grid_ds.attrs.update({"domain": rgi_id})
     grid_file.unlink(missing_ok=True)
+    drop_geotransform_attr(grid_ds)
     grid_ds.to_netcdf(grid_file, engine="h5netcdf")
     check_xr_fully(grid_file)
 
