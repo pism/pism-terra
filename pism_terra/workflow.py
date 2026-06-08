@@ -691,6 +691,32 @@ def check_dataset_fully(ds: xr.Dataset) -> None:
     _ = ds.load()
 
 
+def drop_geotransform_attr(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Drop the ``GeoTransform`` attribute from the dataset's grid-mapping variable.
+
+    rioxarray writes a ``GeoTransform`` on ``spatial_ref`` whose ``dy`` follows
+    the in-memory y-axis order. With CF-ordered (ascending) y this means
+    ``dy > 0``, which GDAL prefers over the y coordinate variable and so
+    renders the raster upside-down in QGIS. Dropping the attribute makes GDAL
+    fall back to deriving the transform from the y coordinate (top-down).
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset modified in place.
+
+    Returns
+    -------
+    xarray.Dataset
+        The same dataset, for chaining.
+    """
+    for name in ("spatial_ref", "crs"):
+        if name in ds.variables and "GeoTransform" in ds[name].attrs:
+            del ds[name].attrs["GeoTransform"]
+    return ds
+
+
 def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     Open a dataset and run a **sampled** health check with xarray.

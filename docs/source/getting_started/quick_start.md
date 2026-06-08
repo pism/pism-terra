@@ -26,7 +26,7 @@ You'll get a `<RGI_ID>/input/` directory with one NetCDF per input.
 ## 3. Generate the run script
 
 ```bash
-pism-glacier-run \
+pism-glacier-run-forwad \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_era5_maffezzoli_1year.toml \
     pism_terra/templates/debug.j2

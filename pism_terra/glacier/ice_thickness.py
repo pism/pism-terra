@@ -972,59 +972,97 @@ def get_ice_thickness_maffezzoli(
     return thickness
 
 
+def _millan_region_dir(rgi_id: str) -> str:
+    """
+    Map an RGI ID to its Millan region directory.
+
+    Millan tiles are organised by RGI primary region under ``RGI-{N}/``,
+    with the Central Asia regions (13–15) merged into ``RGI-13-15/``.
+
+    Parameters
+    ----------
+    rgi_id : str
+        Glacier identifier, e.g. ``"RGI2000-v7.0-C-01-04374"``.
+
+    Returns
+    -------
+    str
+        Millan region subdirectory name (e.g. ``"RGI-1"``, ``"RGI-13-15"``).
+    """
+    parts = rgi_id.split("-")
+    if len(parts) < 4:
+        raise ValueError(f"Cannot derive Millan region from RGI ID {rgi_id!r}")
+    region = int(parts[3])
+    if region in (13, 14, 15):
+        return "RGI-13-15"
+    return f"RGI-{region}"
+
+
 def get_ice_thickness_millan(
-    glacier, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
+    rgi_id: str, target_grid: xr.Dataset | xr.DataArray, path: str | Path = "input_files", **kwargs
 ):
     """
     Load and interpolate Millan et al. (2022) ice thickness data to a target grid.
 
-    This function identifies all Millan ice thickness raster files that overlap
-    the input glacier geometry, reprojects them to the specified CRS and resolution,
-    interpolates them onto the target grid, and returns the summed result.
+    Downloads only the Millan tiles for the RGI primary region matching
+    ``rgi_id``, filters them by overlap against the supplied glacier
+    geometry, reprojects each overlapping tile onto ``target_grid`` and
+    returns the per-pixel sum.
 
     Parameters
     ----------
-    glacier : geopandas.GeoDataFrame or geopandas.GeoSeries
-        Geometry of the glacier to extract overlapping thickness rasters.
+    rgi_id : str
+        Glacier identifier (e.g., ``"RGI2000-v7.0-C-01-04374"``) used to
+        locate the per-region tile directory.
     target_grid : xarray.Dataset or xarray.DataArray
         Target grid to which ice thickness should be interpolated.
     path : str or pathlib.Path, default ``"input_files"``
         Working directory used by helper routines to cache/write intermediate rasters/grids.
     **kwargs
-        Additional keyword arguments. Must include:
-        - target_crs : str
-            CRS to reproject rasters to (e.g., "EPSG:32641").
+        Additional keyword arguments. Recognised keys:
+
+        - geometries : geopandas.GeoSeries / GeoDataFrame / iterable
+            Glacier outline used to filter overlapping tiles. Required.
+        - bucket : str, default ``"pism-cloud-data"``
+        - prefix : str, default ``"rgi/glacier"``
+            S3 prefix; tiles are read from
+            ``{prefix}/ice_thickness/millan/RGI-{region}/``.
+        - force_overwrite : bool, default False
 
     Returns
     -------
     xarray.DataArray
         Interpolated and summed ice thickness field on the target grid.
-
-    Notes
-    -----
-    - Uses `rioxarray` to load and project raster files.
-    - All overlapping rasters are summed to produce the final thickness field.
-    - Assumes a fixed reprojected resolution of 50 meters.
     """
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
+    prefix: str = kwargs.pop("prefix", "rgi/glacier")
+    geometries = kwargs.pop("geometries", None)
+    if geometries is None:
+        raise ValueError("get_ice_thickness_millan requires `geometries` for tile overlap check")
+    # raster_overlaps_glacier's GeoSeries branch has a missing to_crs (FIXME);
+    # wrapping as a GeoDataFrame routes through the branch that handles CRS
+    # correctly, since Millan tiles and the glacier are in different CRSes.
+    if isinstance(geometries, gpd.GeoSeries):
+        geometries = gpd.GeoDataFrame(geometry=geometries, crs=geometries.crs)
 
     out_dir = Path(path)
-    thickness_file = out_dir / "thickness_millan.nc"
+    thickness_file = out_dir / f"thickness_millan_{rgi_id}.nc"
 
     if (not check_xr_lazy(thickness_file)) or force_overwrite:
 
         thickness_file.unlink(missing_ok=True)
-        logger.info("Downloading Millan thickness data from S3")
-        # Could tweak this to only pull the relevant regions instead of all of it
-        s3_to_local(bucket, prefix="millan", dest="data/ice_thickness/millan")
-        ice_thickness_files = list(Path("data/ice_thickness/millan").rglob("THICKNESS_*.tif"))
-        logger.info("Found %d Millan thickness tiles, checking overlap", len(ice_thickness_files))
+        region_dir = _millan_region_dir(rgi_id)
+        s3_prefix = f"{prefix}/ice_thickness/millan/{region_dir}"
+        local_root = Path("data/ice_thickness/millan") / region_dir
+        logger.info("Downloading Millan thickness tiles from s3://%s/%s", bucket, s3_prefix)
+        s3_to_local(bucket, prefix=s3_prefix, dest=local_root)
+        ice_thickness_files = list(local_root.rglob("THICKNESS_*.tif"))
+        logger.info("Found %d Millan thickness tiles in %s, checking overlap", len(ice_thickness_files), region_dir)
 
         with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(check_overlap, path, glacier) for path in ice_thickness_files]
-
+            futures = [executor.submit(check_overlap, tile, geometries) for tile in ice_thickness_files]
             overlapping_rasters = [f.result() for f in cf_as_completed(futures) if f.result() is not None]
 
         logger.info("Found %d overlapping rasters, reprojecting and interpolating", len(overlapping_rasters))

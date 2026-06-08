@@ -120,7 +120,7 @@ Differences between the two ice thickenss datasets are substantial. Let's get to
 Generate the run scripts for your local machine using the `debug.j2` template, first for the Frank dataset
 
 ```bash
-pism-glacier-run \
+pism-glacier-run-forward \
     --output-path frank \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_era5-mean_frank.toml \
@@ -130,7 +130,7 @@ pism-glacier-run \
 and then for the Maffezzoli dataset:
 
 ```bash
-pism-glacier-run \
+pism-glacier-run-forward \
     --output-path maffezzoli \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_era5-mean_maffezzoli.toml \
