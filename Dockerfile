@@ -1,4 +1,4 @@
-ARG PISM_TAG=summer-school
+ARG PISM_TAG=feature/inverse
 FROM ghcr.io/pism/pism:${PISM_TAG} AS runtime
 
 FROM runtime AS build
