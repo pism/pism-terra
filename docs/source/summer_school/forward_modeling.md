@@ -27,8 +27,8 @@ For the Wrangell Mountain Glacier Complex (RGI2000-v7.0-C-01-04374), we will
 assess the role of ice thickness. Ice thickness exerts a first order control
 on ice flow. The complex flow patterns in Greenland's outlet glaciers cannot
 be reproduced *for the right reason* without accurate ice thickness {cite}`Aschwanden2016`.
-Two global ice thickness products are currently supported: Frank et al and
-Maffezzoli et al.; see {cite}`Frank2026` and {cite}`Maffezzoli2025`.
+Three global ice thickness products are currently supported: Frank et al.,
+Maffezzoli et al., and Millan et al.; see {cite}`Frank2026`, {cite}`Maffezzoli2025` and {cite}`Millan2022`.
 
 
 ## Staging the data
@@ -49,6 +49,15 @@ pism-glacier-stage \
     --output-path maffezzoli \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_era5-mean_maffezzoli.toml
+```
+
+and with the Millan ice thickness
+
+```bash
+pism-glacier-stage \
+    --output-path millan \
+    RGI2000-v7.0-C-01-04374 \
+    pism_terra/config/rgi_era5-mean_millan.toml
 ```
 
 ## Compare input ice thicknesses
@@ -183,8 +192,8 @@ maffezzoli_speed = maffezzoli_state.velsurf_mag
 diff_speed = frank_speed - maffezzoli_speed
 
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(12, 16))
-frank_speed.plot(ax=axs[0], cmap="speed_colorblind", vmin=0, vmax=1000)
-maffezzoli_speed.plot(ax=axs[1], cmap="speed_colorblind" , vmin=0, vmax=1000)
+frank_speed.plot(ax=axs[0], cmap="speed", vmin=0, vmax=1000)
+maffezzoli_speed.plot(ax=axs[1], cmap="speed" , vmin=0, vmax=1000)
 diff_speed.plot(ax=axs[2], cmap="RdBu", vmin=-250, vmax=250)
 axs[0].set_title("Frank surface speed")
 axs[1].set_title("Maffezzoli surface speed")
@@ -216,8 +225,8 @@ maffezzoli_speed = maffezzoli_state.velsurf_mag
 diff_speed = frank_speed - maffezzoli_speed
 
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(12, 16))
-frank_speed.plot(ax=axs[0], cmap="speed_colorblind", vmin=0, vmax=1000)
-maffezzoli_speed.plot(ax=axs[1], cmap="speed_colorblind" , vmin=0, vmax=1000)
+frank_speed.plot(ax=axs[0], cmap="speed", vmin=0, vmax=1000)
+maffezzoli_speed.plot(ax=axs[1], cmap="speed" , vmin=0, vmax=1000)
 diff_speed.plot(ax=axs[2], cmap="RdBu", vmin=-250, vmax=250)
 axs[0].set_title("Frank surface speed")
 axs[1].set_title("Maffezzoli surface speed")

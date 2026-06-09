@@ -43,6 +43,15 @@ pism-glacier-stage \
     pism_terra/config/rgi_inverse_gpbld_maffezzoli.toml
 ```
 
+and with the Millan ice thickness
+
+```bash
+pism-glacier-stage \
+    --output-path millan_inverse \
+    RGI2000-v7.0-C-01-04374 \
+    pism_terra/config/rgi_inverse_gpbld_millan.toml
+```
+
 ## Running the inverse model
 
 Prepare the run script for the Frank dataset
@@ -65,7 +74,17 @@ pism-glacier-run-inverse \
     pism_terra/templates/debug-inverse.j2
 ```
 
-Now you can run both models. It will first to a forward simulation to prepare an initial state and then run the inverse model.
+and finally for the Millan dataset:
+
+```bash
+pism-glacier-run-inverse \
+    --output-path millan_inverse \
+    RGI2000-v7.0-C-01-04374 \
+    pism_terra/config/rgi_inverse_gpbld_millan.toml \
+    pism_terra/templates/debug-inverse.j2
+```
+
+Now you can run the models. It will first to a forward simulation to prepare an initial state and then run the inverse model.
 
 ```bash
 . frank_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0021-02-01.sh
@@ -73,4 +92,8 @@ Now you can run both models. It will first to a forward simulation to prepare an
 
 ```bash
 . maffezzoli_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0021-02-01.sh
+```
+
+```bash
+. millan_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0021-02-01.sh
 ```
