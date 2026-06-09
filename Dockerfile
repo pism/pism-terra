@@ -84,10 +84,10 @@ SHELL ["/bin/bash", "-l", "-c"]
 
 COPY --chown=worker . /pism-terra/
 
-RUN mamba env create -f /pism-terra/environment-run.yml && \
+RUN mamba env create -f /pism-terra/environment.yml && \
     conda clean -afy && \
     echo ". /opt/conda/etc/profile.d/conda.sh" >> /home/worker/.profile && \
-    echo "conda activate pism-terra-runtime" >> /home/worker/.profile
+    echo "conda activate pism-terra" >> /home/worker/.profile
 
 RUN conda activate pism-terra && \
     python -m pip install --no-cache-dir /pism-terra
