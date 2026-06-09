@@ -644,7 +644,25 @@ def _render_forward_run(
 
 
 def _nullable_string(argument_string: str) -> str | None:
-    if argument_string.strip().lower() == 'none':
+    """
+    Handle null/None CLI parameters from HyP3.
+
+    There's no way in AWS batch to selectively include parameters, so HyP3 needs
+    special handling for optional (nullable) API parameters. In the docker run command,
+    null arguments will appear as the string `None`. This argparse type ensures all `None`
+    strings are accurately represented as `None` objects in Python.
+
+    Parameters
+    ----------
+    argument_string : str
+        Argument string to parse.
+
+    Returns
+    -------
+    str | None
+        The parsed argument string.
+    """
+    if argument_string.strip().lower() == "none":
         return None
 
     return argument_string
@@ -696,7 +714,9 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     parser.add_argument("--tasks", type=int, default=None, help="Cores per node.")
     parser.add_argument("--nodes", type=int, default=None, help="Overrides nodes in config file.")
     parser.add_argument("--walltime", type=str, default=None, help="Overrides walltime in config file.")
-    parser.add_argument("--resolution", type=_nullable_string, default=None, help="Override horizontal grid resolution.")
+    parser.add_argument(
+        "--resolution", type=_nullable_string, default=None, help="Override horizontal grid resolution."
+    )
     parser.add_argument(
         "--stress-balance",
         type=_nullable_string,
@@ -869,7 +889,6 @@ def _run(*, kind: str) -> None:
     )
 
     if uq_file is not None:
-        # FIXME: Does posterior file need to be localized?
         rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
         header = f"Generate Ensemble Runs for Glacier {rgi_id}"
     else:

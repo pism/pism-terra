@@ -15,7 +15,8 @@ dependencies:
   - cftime
   - cmap
   - cmweather
-  - dask[distributed,dataframe]
+  - dask
+  - distributed  # dask[distributed,dataframe] is dask and distributed for conda
   - dem_stitcher
   - earthaccess
   - ecmwf-datastores-client
