@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - pism
 dependencies:
-  - python=3.13
+  - python=3.12
   - pip
   # runtime requirements
   - awscrt  # boto3 extra needed
@@ -15,7 +15,8 @@ dependencies:
   - cftime
   - cmap
   - cmweather
-  - dask[distributed,dataframe]
+  - dask
+  - distributed   # dask[distributed,dataframe] is dask and distributed for conda
   - dem_stitcher
   - earthaccess
   - ecmwf-datastores-client
