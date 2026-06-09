@@ -5,10 +5,12 @@ working GDAL stack.
 
 ## Just `pism-terra` conda environment
 
+For real work we need the `dev` environment:
+
 ```bash
 git clone https://github.com/pism/pism-terra.git
 cd pism-terra
-conda env create -f environment.yml
+conda env create -f environment-dev.yml
 conda activate pism-terra
 python -m pip install -e .
 ```
