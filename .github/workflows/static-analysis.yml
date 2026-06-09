@@ -33,4 +33,5 @@ jobs:
       - name: run pylint
         shell: bash -el {0}
         run: |
+          python -m pip install pylint
           pylint -v --extension-pkg-whitelist=scipy,rasterio $(git ls-files '*.py')
