@@ -643,6 +643,13 @@ def _render_forward_run(
     print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
+def _nullable_string(argument_string: str) -> str | None:
+    if argument_string.strip().lower() == 'none':
+        return None
+
+    return argument_string
+
+
 def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentParser:
     """
     Build the argparse parser shared by ``run_forward`` and ``run_inverse``.
@@ -689,18 +696,18 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     parser.add_argument("--tasks", type=int, default=None, help="Cores per node.")
     parser.add_argument("--nodes", type=int, default=None, help="Overrides nodes in config file.")
     parser.add_argument("--walltime", type=str, default=None, help="Overrides walltime in config file.")
-    parser.add_argument("--resolution", type=str, default=None, help="Override horizontal grid resolution.")
+    parser.add_argument("--resolution", type=_nullable_string, default=None, help="Override horizontal grid resolution.")
     parser.add_argument(
         "--stress-balance",
-        type=str,
+        type=_nullable_string,
         default=None,
         help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
     )
-    parser.add_argument("--start", type=str, default=None, help="Override the time.start selection.")
-    parser.add_argument("--end", type=str, default=None, help="Override the time.end selection.")
+    parser.add_argument("--start", type=_nullable_string, default=None, help="Override the time.start selection.")
+    parser.add_argument("--end", type=_nullable_string, default=None, help="Override the time.end selection.")
     parser.add_argument(
         "--posterior-file",
-        type=str,
+        type=_nullable_string,
         default=None,
         help="CSV file of posterior parameter distributions to sample from (ensemble mode only).",
     )
@@ -718,7 +725,7 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     )
     parser.add_argument(
         "--pism-config-cdl",
-        type=str,
+        type=_nullable_string,
         default=None,
         help="Path to PISM CDL config file for option validation.",
     )
@@ -729,6 +736,7 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         "UQ_FILE",
         nargs="?",
         default=None,
+        type=_nullable_string,
         help="UQ TOML (optional). Supply to render an ensemble; omit for a single-glacier run.",
     )
     return parser
@@ -821,7 +829,6 @@ def _run(*, kind: str) -> None:
     )
     options = parser.parse_args()
     force_overwrite = options.force_overwrite
-    pism_config_cdl = options.pism_config_cdl
 
     path = Path(options.output_path)
     rgi_id = options.RGI_ID
@@ -835,6 +842,7 @@ def _run(*, kind: str) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
 
     config_file = file_localizer(options.CONFIG_FILE, path / "config")
+    pism_config_cdl = file_localizer(options.pism_config_cdl, path / "config")
     template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
     uq_file = file_localizer(options.UQ_FILE, path / "uq") if options.UQ_FILE else None
 
@@ -861,6 +869,7 @@ def _run(*, kind: str) -> None:
     )
 
     if uq_file is not None:
+        # FIXME: Does posterior file need to be localized?
         rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
         header = f"Generate Ensemble Runs for Glacier {rgi_id}"
     else:
