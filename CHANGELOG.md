@@ -13,6 +13,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - missing force_to_thickness.file
 - runtime environment is now default, for dev work use environment-dev.yml.
 - merged missing commits from summer school
+- fixed a bug in entry point
 
 ## [0.1.3]
 

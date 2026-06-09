@@ -14,17 +14,18 @@ def main():
     """
     PISM-TERRA entrypoint dispatcher for PISM-Cloud.
     """
+    # Derive the allowed processes from the package's actual console_scripts
+    # entries so this dispatcher stays in sync when scripts are renamed/added
+    # in pyproject.toml.
+    eps = entry_points(group="console_scripts")
+    pism_processes = sorted(
+        {ep.name for ep in eps if ep.name.startswith("pism-") or ep.name == "combine-crameri-colormaps"}
+    )
+
     parser = argparse.ArgumentParser(prefix_chars="+", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
         "++process",
-        choices=[
-            "pism-glacier-stage",
-            "pism-glacier-run",
-            "pism-glacier-run-ensemble",
-            "pism-glacier-execute",
-            "pism-glacier-postprocess",
-            "combine-crameri-colormaps",
-        ],
+        choices=pism_processes,
         default="pism-glacier-stage",
         help="Select the console_script entrypoint to use",  # as specified in `pyproject.toml`
     )
@@ -46,7 +47,6 @@ def main():
     elif cds_url and cds_key:
         cds_rc_file.write_text(f"url: {cds_url}\nkey: {cds_key}\n")
 
-    eps = entry_points(group="console_scripts")
     (process_entry_point,) = {process for process in eps if process.name == args.process}
 
     sys.argv = [args.process, *unknowns]
