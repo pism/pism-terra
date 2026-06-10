@@ -862,7 +862,7 @@ def _run(*, kind: str) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
 
     config_file = file_localizer(options.CONFIG_FILE, path / "config")
-    pism_config_cdl = file_localizer(options.pism_config_cdl, path / "config")
+    pism_config_cdl = file_localizer(options.pism_config_cdl, path / "config") if options.pism_config_cdl else None
     template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
     uq_file = file_localizer(options.UQ_FILE, path / "uq") if options.UQ_FILE else None
 
