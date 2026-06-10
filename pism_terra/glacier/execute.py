@@ -45,17 +45,23 @@ def execute(script: Path):
     )
 
 
-def ensure_pism_terra_structure(script: Path):
+def ensure_pism_terra_structure(script_uri: str):
     """
     Ensure that the expected PISM-TERRA structure exists around a run script.
 
     Parameters
     ----------
-    script : Path
-        Path to a PISM-TERRA run script.
+    script_uri : str
+        URI or local path to a PISM-TERRA run script.
     """
-    if not script.exists():
-        raise ValueError(f"{script} does not exist")
+    script = Path(script_uri)
+
+    staging_bucket = None
+    staging_prefix = '.'  # No-prefix value that would be computed below
+    if script_uri.startswith('s3://'):
+        staging_bucket = str(script.parents[-3].relative_to(script.parents[-2]))
+        staging_prefix = str(script.parents[2].relative_to(script.parents[-3]))
+        script = script.relative_to(script.parents[2])
 
     if (script.parents[0].name != "run_scripts") or not script.parents[1].name.startswith("RGI"):
         raise ValueError(
@@ -71,44 +77,41 @@ def ensure_pism_terra_structure(script: Path):
     (rgi_dir / "output" / "spatial").mkdir(parents=True, exist_ok=True)
     (rgi_dir / "output" / "state").mkdir(parents=True, exist_ok=True)
 
+    return staging_bucket, staging_prefix, script
+
 
 def main():
     """CLI Enterypoint to execute a PISM-TERRA run script."""
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Execute a PISM-TERRA run script."
-    parser.add_argument(
+
+    output_bucket = parser.add_argument_group(title='AWS S3 Bucket and prefix to upload the local working directory to at the end of processing.')
+    output_bucket.add_argument(
         "--bucket",
-        help="AWS S3 Bucket to sync with the local working directory.",
     )
-    parser.add_argument(
+    output_bucket.add_argument(
         "--bucket-prefix",
-        help="AWS prefix to sync with the local working directory.",
         default="",
     )
-    parser.add_argument(
-        "--job-id",
-        help="PISM_TERRA_PREP_ENSEMBLE to stage glacier run files from.",
-    )
+
     parser.add_argument(
         "RUN_SCRIPT",
-        help="Path to the PISM run script to execute. If you've provided ``--bucket`` and ``--bucket-prefix``, "
-        "this path will need to be relative to ``f's3://{bucket}/{bucket_prefix}/'``.",
-        type=Path,
+        help="S3 URL or local path to the PISM run script to execute. If an S3 URI is provided, "
+             "execute assumes a structure like `s3://{some-bucket}/{some-prefix}/RGI*/runs_scripts/*.sh`"
+             "and files under `s3://{some-bucket}/{some-prefix}/` will be downloaded to the local work directory.",
+        type=str,
     )
 
     args = parser.parse_args()
 
     work_dir = Path.cwd()
 
-    if args.bucket:
-        # FIXME: pism-terra produces hard-coded absolute paths, so things _must_ end up in ${HOME}/data  # pylint: disable=W0511
-        work_dir /= "data"
-        s3_to_local(args.bucket, args.job_id, work_dir)
+    staging_bucket, staging_prefix, local_run_script = ensure_pism_terra_structure(args.RUN_SCRIPT)
+    if staging_bucket and staging_prefix:
 
-    run_script = work_dir / args.RUN_SCRIPT
-    ensure_pism_terra_structure(run_script)
+        s3_to_local(staging_bucket, staging_prefix if staging_prefix != '.' else '', work_dir)
 
-    execute(run_script)
+    execute(local_run_script)
 
     if args.bucket:
         local_to_s3(work_dir, args.bucket, args.bucket_prefix)
