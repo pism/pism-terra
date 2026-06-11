@@ -1,5 +1,5 @@
  # This is the merge of the feature/inverse branch to dev
-ARG PISM_TAG=97049a0
+ARG PISM_TAG=298531d6813d745e3b9b802e19abe4b1f5e59ef4
 FROM ghcr.io/pism/pism:${PISM_TAG} AS runtime
 
 FROM runtime AS build
