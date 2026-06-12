@@ -141,7 +141,10 @@ def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
     config = json.loads(json.dumps(config_toml))
 
     start = time.time()
-    outline_file = config["rgi"]["outline"]
+    # Clip to the glacier ("-G") outlines; fall back to the legacy single
+    # "outline" key for run TOMLs generated before the -C/-G split.
+    rgi = config["rgi"]
+    outline_file = rgi.get("outline_g", rgi.get("outline"))
 
     client = Client(n_workers=n_workers, threads_per_worker=1)
     logger.info("Dask dashboard: %s", client.dashboard_link)

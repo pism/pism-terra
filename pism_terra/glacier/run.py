@@ -161,6 +161,14 @@ def _render_inverse_run(
     """
 
     outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
+    # Derive the complex (-C) and glacier (-G) outline paths (co-located in the
+    # staging dir) so postprocessing can clip to either. See stage.py.
+    if outline_file != "none":
+        _outline_dir = Path(outline_file).parent
+        outline_c_file = str((_outline_dir / f"rgi_{rgi_id}-C.gpkg").resolve())
+        outline_g_file = str((_outline_dir / f"rgi_{rgi_id}-G.gpkg").resolve())
+    else:
+        outline_c_file = outline_g_file = "none"
     cfg = load_config(config_file)
 
     config_cli = config_cli or {}
@@ -328,7 +336,7 @@ def _render_inverse_run(
         params.update(JobConfig(**job_kwargs).as_params())
 
     run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline": outline_file},
+        "rgi": {"rgi_id": rgi_id, "outline_c": outline_c_file, "outline_g": outline_g_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "scalar.file": scalar_file.resolve(),
@@ -466,6 +474,14 @@ def _render_forward_run(
     """
 
     outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
+    # Derive the complex (-C) and glacier (-G) outline paths (co-located in the
+    # staging dir) so postprocessing can clip to either. See stage.py.
+    if outline_file != "none":
+        _outline_dir = Path(outline_file).parent
+        outline_c_file = str((_outline_dir / f"rgi_{rgi_id}-C.gpkg").resolve())
+        outline_g_file = str((_outline_dir / f"rgi_{rgi_id}-G.gpkg").resolve())
+    else:
+        outline_c_file = outline_g_file = "none"
     cfg = load_config(config_file)
 
     config_cli = config_cli or {}
@@ -613,7 +629,7 @@ def _render_forward_run(
         params.update(JobConfig(**job_kwargs).as_params())
 
     run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline": outline_file},
+        "rgi": {"rgi_id": rgi_id, "outline_c": outline_c_file, "outline_g": outline_g_file},
         "output": {
             "spatial": str(spatial_file.resolve()),
             "scalar.file": scalar_file.resolve(),

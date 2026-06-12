@@ -1162,8 +1162,10 @@ class CampaignConfig(BaseModel):
         Path to a file used for regridding (relative to the input directory).
     retreat_file : str or None
         Path to the retreat NetCDF file (relative to the input directory).
-    rgi_file : str or None
-        Path to the RGI file (relative to the input directory).
+    rgi_complex_file : str or None
+        Filename of the RGI glacier-complex ("-C") outlines in the bucket.
+    rgi_glacier_file : str or None
+        Filename of the RGI glacier ("-G") outlines in the bucket.
     start_year : str, float, or None
         Start year of the forcing period.
     end_year : str, float, or None
@@ -1192,7 +1194,8 @@ class CampaignConfig(BaseModel):
     present_day_forcings: str | list | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)
-    rgi_file: str | None = Field(default=None)
+    rgi_complex_file: str | None = Field(default=None)
+    rgi_glacier_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
     end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
