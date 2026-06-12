@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+ulimit -a
+
+mpirun -np  {{ ntasks | default(32) }} pism {{ run_str }}
+
+mpirun -np  {{ ntasks | default(32) }} python -m PISM.pismi {{ inv_str }}
