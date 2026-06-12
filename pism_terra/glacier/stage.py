@@ -54,7 +54,7 @@ from pism_terra.glacier.climate import (
 from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.glacier.observations import glacier_velocities_from_grid
 from pism_terra.raster import apply_perimeter_band
-from pism_terra.vector import get_glacier_from_rgi_id
+from pism_terra.vector import get_glacier_from_rgi_id, glaciers_in_complex
 from pism_terra.workflow import (
     check_dataset_fully,
     check_xr_fully,
@@ -169,26 +169,45 @@ def stage_glacier(
     staging_path.mkdir(parents=True, exist_ok=True)
 
     print("RGI Database")
-    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_file"]}"""
-    rgi_local = staging_path / config["rgi_file"]
-    if not rgi_local.exists():
-        print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
-        download_from_s3(rgi_s3_uri, rgi_local)
+    rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_glacier_file"]}"""
+    rgi_glacier_local = staging_path / config["rgi_glacier_file"]
+    if not rgi_glacier_local.exists():
+        print(f"Downloading {rgi_glacier_s3_uri} -> {rgi_glacier_local}")
+        download_from_s3(rgi_glacier_s3_uri, rgi_glacier_local)
     else:
-        print(f"Using cached {rgi_local}")
+        print(f"Using cached {rgi_glacier_local}")
+
+    rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_complex_file"]}"""
+    rgi_complex_local = staging_path / config["rgi_complex_file"]
+    if not rgi_complex_local.exists():
+        print(f"Downloading {rgi_complex_s3_uri} -> {rgi_complex_local}")
+        download_from_s3(rgi_complex_s3_uri, rgi_complex_local)
+    else:
+        print(f"Using cached {rgi_complex_local}")
+
     # NOTE: gpd.read_file/to_file (via pyogrio's geopandas wrapper) corrupts the
     # heap on some envs and crashes the next libgdal allocation (e.g. inside
     # dem_stitcher). Calling pyogrio directly avoids the trigger.
-    rgi = pyogrio.read_dataframe(rgi_local, use_arrow=False)
-
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
+    rgi_complex = pyogrio.read_dataframe(rgi_complex_local, use_arrow=False)
+    glacier = get_glacier_from_rgi_id(rgi_complex, rgi_id)
     if glacier.empty:
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
-    glacier_file = path / f"rgi_{rgi_id}.gpkg"
+    glacier_complex_file = path / f"rgi_{rgi_id}-C.gpkg"
     dst_crs = glacier["crs"].values[0]
     glacier_projected = glacier.to_crs(dst_crs)
-    pyogrio.write_dataframe(glacier, glacier_file)
+    pyogrio.write_dataframe(glacier, glacier_complex_file)
+
+    # Extract the individual glacier outlines that make up this complex and
+    # write them to the "-G" file. Membership is given by the glacier-level
+    # "rgi_id_c" column (handled by glaciers_in_complex, incl. aggregates).
+    glacier_file = path / f"rgi_{rgi_id}-G.gpkg"
+    rgi_glacier = pyogrio.read_dataframe(rgi_glacier_local, use_arrow=False)
+    glacier_ids = glaciers_in_complex(rgi_id, rgi_glacier)
+    glaciers = rgi_glacier[rgi_glacier["rgi_id"].isin(glacier_ids)]
+    if glaciers.empty:
+        print(f"Warning: no glacier outlines found for complex {rgi_id}")
+    pyogrio.write_dataframe(glaciers, glacier_file)
 
     x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=5_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
