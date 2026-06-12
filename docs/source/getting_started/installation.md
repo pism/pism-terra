@@ -5,7 +5,7 @@ working GDAL stack.
 
 ## Just `pism-terra` conda environment
 
-For real work we need the `dev` environment:
+There are two conda environments, `environment.yml` and `environment-dev.yml`. The runtime `environment.yml` contains the bare bones packages to run `pism-...` scripts, but for development work we need the `dev` environment:
 
 ```bash
 git clone https://github.com/pism/pism-terra.git

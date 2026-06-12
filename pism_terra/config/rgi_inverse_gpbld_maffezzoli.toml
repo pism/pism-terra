@@ -19,7 +19,7 @@ forcing_mask = "all"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0011-02-01"
+'time.end' =  "006-02-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 

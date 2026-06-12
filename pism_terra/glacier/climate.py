@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
@@ -39,6 +40,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
+import requests
 import rioxarray as rxr
 import s3fs
 import xarray as xr
@@ -151,6 +153,119 @@ def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | Non
         return output_path if output_path.exists() else None
     except Exception:
         return None
+
+
+def _list_remote_files(dir_url: str, suffix: str = ".nc", timeout: int = 30) -> list[str]:
+    """
+    List file names in an Apache-style HTML directory index.
+
+    Parameters
+    ----------
+    dir_url : str
+        URL of the directory index (should end with ``/``).
+    suffix : str, default ".nc"
+        Only return entries ending with this suffix. Pass ``""`` to keep all.
+    timeout : int, default 30
+        Request timeout in seconds.
+
+    Returns
+    -------
+    list[str]
+        File names (not full URLs) found in the listing.
+    """
+    resp = requests.get(dir_url, timeout=timeout)
+    resp.raise_for_status()
+    names = []
+    for href in re.findall(r'href="([^"]+)"', resp.text):
+        # Skip column-sort links (?C=...), parent/absolute links, and subdirectories.
+        if href.startswith(("?", "/")) or href.endswith("/") or ".." in href:
+            continue
+        if suffix and not href.endswith(suffix):
+            continue
+        names.append(href)
+    return names
+
+
+def prepare_glaciermip4(
+    path: str | Path,
+    base_url: str = "https://cluster.klima.uni-bremen.de/~oggm/cmip6/era5_biascorr",
+    gcms: list[str] = [
+        "ACCESS-ESM1-5",
+        "BCC-CSM2-MR",
+        "CESM2-WACCM",
+        "IPSL-CM6A-LR",
+        "MIROC6",
+        "MPI-ESM1-2-HR",
+        "MRI-ESM2-0",
+        "NorESM2-MM",
+    ],
+    max_workers: int = 4,
+    force_overwrite: bool = False,
+) -> list[Path]:
+    """
+    Download GlacierMIP4 ERA5-bias-corrected CMIP6 forcing.
+
+    For every GCM in ``gcms`` the OGGM directory ``base_url/<gcm>/`` is listed
+    and all NetCDF files it contains are downloaded concurrently (``max_workers``
+    parallel streams shared across all GCMs) into ``path/<gcm>/``.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Output directory. Files are written under ``path/<gcm>/``.
+    base_url : str
+        Base URL of the OGGM ERA5-bias-corrected CMIP6 archive.
+    gcms : list[str]
+        Global climate models to download (one subdirectory each).
+    max_workers : int, default 4
+        Number of parallel download streams.
+    force_overwrite : bool, default False
+        If ``True``, re-download files that already exist on disk.
+
+    Returns
+    -------
+    list[pathlib.Path]
+        Absolute paths of the downloaded files.
+    """
+    path = Path(path)
+    base_url = base_url.rstrip("/")
+
+    # Discover every file to download up front as (url, destination) pairs.
+    tasks: list[tuple[str, Path]] = []
+    for gcm in gcms:
+        dir_url = f"{base_url}/{gcm}/"
+        try:
+            names = _list_remote_files(dir_url)
+        except requests.RequestException as exc:
+            logger.warning("GlacierMIP4: cannot list %s (%s); skipping", dir_url, exc)
+            continue
+        if not names:
+            logger.warning("GlacierMIP4: no NetCDF files found in %s", dir_url)
+        for name in names:
+            tasks.append((f"{dir_url}{name}", path / gcm / name))
+
+    logger.info(
+        "GlacierMIP4: downloading %d files from %d GCMs with %d parallel streams",
+        len(tasks),
+        len(gcms),
+        max_workers,
+    )
+
+    # Download all files in parallel; max_workers streams are shared across GCMs.
+    files: list[Path] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(download_file, url, dest, force_overwrite): dest for url, dest in tasks}
+        pbar = tqdm(cf_as_completed(futures), total=len(futures), desc="GlacierMIP4", unit="file")
+        for future in pbar:
+            dest = futures[future]
+            try:
+                files.append(Path(future.result()))
+                pbar.set_postfix_str(f"{dest.name} ✓")
+            except (requests.RequestException, OSError) as exc:
+                pbar.set_postfix_str(f"{dest.name} ✗")
+                logger.error("GlacierMIP4: failed to download %s (%s)", dest.name, exc)
+
+    return files
 
 
 def prepare_carra2(
