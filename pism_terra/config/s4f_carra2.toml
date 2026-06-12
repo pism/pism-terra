@@ -1,3 +1,8 @@
+[run_info]
+
+'run_info.institution' = "University of Alaska Fairbanks"
+'run_info.title' = "PISM-TERRA Calibration Run"
+
 [campaign]
 
 bucket = "pism-cloud-data"
