@@ -26,7 +26,6 @@ forcing_mask = "all"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 250
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -62,7 +61,7 @@ resolution = "500m"
 'grid.Lbz' = 0
 'grid.Lz' = 2000
 'grid.Mbz' = 1
-'grid.Mz' = 101
+'grid.Mz' = 201
 'grid.registration' = "center"
 
 [energy]
@@ -97,9 +96,7 @@ model = 'blatter'
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
-bp_ksp_monitor =  ""
-bp_ksp_view_singularvalues = ""
-bp_snes_monitor_ratio = ""
+'time_stepping.adaptive_ratio' = 250
 bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
 bp_mg_levels_pc_type ="sor"
