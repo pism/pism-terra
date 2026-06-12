@@ -18,6 +18,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - merged missing commits from summer school
 - updated Docker image to pull to fix build bug in pism/pism
 - improved postprocessing of RGI
+- fixed missing output filename for inverse state
 
 ## [0.1.3]
 

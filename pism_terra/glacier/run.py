@@ -195,6 +195,8 @@ def _render_inverse_run(
     spatial_path.mkdir(parents=True, exist_ok=True)
     state_path = output_path / Path("state")
     state_path.mkdir(parents=True, exist_ok=True)
+    inv_path = output_path / Path("inverse")
+    inv_path.mkdir(parents=True, exist_ok=True)
 
     run = {}
     for section in (
@@ -310,8 +312,11 @@ def _render_inverse_run(
 
     run_str = dict2str(sort_dict_by_key(run))
 
+    inv_file = inv_path / Path(f"inv_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     # Feed the forward run's state file into pismi as its input.
     inv.update({"input.file": state_file})
+    # inverse output file
+    inv.update({"o": inv_file})
     inv_str = dict2str(sort_dict_by_key(inv))
 
     job_opts = JobConfig(**cfg.job.model_dump())

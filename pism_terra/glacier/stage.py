@@ -292,13 +292,19 @@ def stage_glacier(
     else:
         responses = [Path(p) for p in responses]
     if staging_path.resolve() != path.resolve():
-        moved: list[Path] = []
+        # Copy (not move) the final climate file(s) into the input dir, leaving
+        # the builder's output in staging so its own cache guard short-circuits
+        # on reruns. Moving deletes the staging copy, so the climate would be
+        # regenerated/re-downloaded every run even though it already exists in
+        # the input dir. (Staging is excluded from the S3 upload.)
+        copied: list[Path] = []
         for src in responses:
             dst = path / src.name
-            dst.unlink(missing_ok=True)
-            shutil.move(str(src), str(dst))
-            moved.append(dst)
-        responses = moved
+            if src.resolve() != dst.resolve():
+                dst.unlink(missing_ok=True)
+                shutil.copy2(str(src), str(dst))
+            copied.append(dst)
+        responses = copied
 
     # Build file index (one row per climate file)
     files_dict = {
