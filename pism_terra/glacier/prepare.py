@@ -61,6 +61,7 @@ from pism_terra.glacier.climate import (
     convert_many_tifs_concurrent,
     prepare_carra2,
     prepare_carra2_for_group,
+    prepare_glaciermip4,
     prepare_snap,
 )
 from pism_terra.glacier.ice_thickness import (
@@ -193,29 +194,29 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     frank_path = ice_thickness_path / Path("frank")
     frank_path.mkdir(parents=True, exist_ok=True)
 
-    prepare_ice_thickness_frank(
-        regions.index,
-        complexes=complexes,
-        glaciers=glaciers,
-        output_path=frank_path,
-        extract_path=ice_thickness_staging,
-        rgi_extract_path=rgi_staging,
-        force_overwrite=force_overwrite,
-        ntasks=ntasks,
-    )
+    # prepare_ice_thickness_frank(
+    #     regions.index,
+    #     complexes=complexes,
+    #     glaciers=glaciers,
+    #     output_path=frank_path,
+    #     extract_path=ice_thickness_staging,
+    #     rgi_extract_path=rgi_staging,
+    #     force_overwrite=force_overwrite,
+    #     ntasks=ntasks,
+    # )
 
     maffezzoli_path = ice_thickness_path / Path("maffezzoli")
     maffezzoli_path.mkdir(parents=True, exist_ok=True)
 
-    prepare_ice_thickness_maffezzoli(
-        regions.index,
-        complexes=complexes,
-        glaciers=glaciers,
-        output_path=maffezzoli_path,
-        extract_path=ice_thickness_staging,
-        force_overwrite=force_overwrite,
-        ntasks=ntasks,
-    )
+    # prepare_ice_thickness_maffezzoli(
+    #     regions.index,
+    #     complexes=complexes,
+    #     glaciers=glaciers,
+    #     output_path=maffezzoli_path,
+    #     extract_path=ice_thickness_staging,
+    #     force_overwrite=force_overwrite,
+    #     ntasks=ntasks,
+    # )
 
     # --- GEBCO ---
     # Source NetCDF download lands in staging; only the COG goes to glacier/.
@@ -250,6 +251,11 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     # into glacier/climate. Year-by-year CDS intermediates stay in staging.
     climate_path = glacier_path / Path("climate")
     climate_path.mkdir(parents=True, exist_ok=True)
+
+    glaciermip4_staging = staging_path / Path("glaciermip4")
+    glaciermip4_staging.mkdir(parents=True, exist_ok=True)
+    prepare_glaciermip4(glaciermip4_staging)
+
     carra2_staging = staging_path / Path("carra2")
     carra2_staging.mkdir(parents=True, exist_ok=True)
 

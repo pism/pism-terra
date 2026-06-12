@@ -17,6 +17,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - runtime environment is now default, for dev work use environment-dev.yml.
 - merged missing commits from summer school
 - updated Docker image to pull to fix build bug in pism/pism
+- improved postprocessing of RGI
 
 ## [0.1.3]
 

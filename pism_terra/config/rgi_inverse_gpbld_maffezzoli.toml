@@ -12,14 +12,15 @@ ice_thickness = "maffezzoli"
 bathymetry = "gebco"
 name = "Calibration"
 prefix = "rgi/glacier"
-rgi_file = "rgi_c.gpkg"
+rgi_complex_file = "rgi_c.gpkg"
+rgi_glacier_file = "rgi_g.gpkg"
 velocity = "its_live"
 forcing_mask = "all"
 
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0021-02-01"
+'time.end' =  "006-02-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 

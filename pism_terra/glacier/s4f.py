@@ -34,6 +34,7 @@ import cf_xarray
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyogrio
 import rioxarray
 import xarray as xr
 from pyfiglet import Figlet
@@ -52,6 +53,7 @@ from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import (
     get_glacier_from_rgi_id,
+    glaciers_in_complex,
     grid_cells_from_dataset,
     grid_points_from_dataset,
 )
@@ -109,8 +111,8 @@ def main():
     config = cfg.campaign.as_params()
 
     print("RGI Database")
-    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_file"]}"""
-    rgi_local = path / config["rgi_file"]
+    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_complex_file"]}"""
+    rgi_local = path / config["rgi_complex_file"]
     if not rgi_local.exists():
         print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
         download_from_s3(rgi_s3_uri, rgi_local)
@@ -118,7 +120,7 @@ def main():
         print(f"Using cached {rgi_local}")
     rgi = gpd.read_file(rgi_local)
 
-    rgi_cloud = path / config["rgi_file"].replace("gpkg", "fgb")
+    rgi_cloud = path / config["rgi_complex_file"].replace("gpkg", "fgb")
     rgi.to_file(rgi_cloud)
 
     all_nc_files: list[Path] = []
@@ -180,8 +182,9 @@ def s4f_glacier(
     config : dict
         Configuration mapping. Must contain at least:
 
-        - ``"bucket"`` and ``"prefix"`` : str — S3 location for the RGI file.
-        - ``"rgi_file"`` : str — RGI filename inside the prefix.
+        - ``"bucket"`` and ``"prefix"`` : str — S3 location for the RGI files.
+        - ``"rgi_complex_file"`` : str — RGI glacier-complex ("-C") filename.
+        - ``"rgi_glacier_file"`` : str — RGI glacier ("-G") filename.
         - ``"dem"`` : str — DEM source passed to :func:`boot_file_from_grid`.
         - ``"ice_thickness"`` : str — ice thickness source.
         - ``"velocity"`` : str — velocity source.
@@ -228,8 +231,8 @@ def s4f_glacier(
 
     Notes
     -----
-    - Writes the glacier outline as ``rgi_{rgi_id}.fgb`` (FlatGeobuf) in
-      ``staging_path``.
+    - Writes the complex outline as ``rgi_{rgi_id}-C.gpkg`` and the member
+      glacier outlines as ``rgi_{rgi_id}-G.gpkg`` in ``staging_path``.
     """
 
     f = Figlet(font="standard")
@@ -248,23 +251,43 @@ def s4f_glacier(
     staging_path.mkdir(parents=True, exist_ok=True)
 
     print("RGI Database")
-    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_file"]}"""
-    rgi_local = staging_path / config["rgi_file"]
-    if not rgi_local.exists():
-        print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
-        download_from_s3(rgi_s3_uri, rgi_local)
+    rgi_complex_local = staging_path / config["rgi_complex_file"]
+    if not rgi_complex_local.exists():
+        rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_complex_file"]}"""
+        print(f"Downloading {rgi_complex_s3_uri} -> {rgi_complex_local}")
+        download_from_s3(rgi_complex_s3_uri, rgi_complex_local)
     else:
-        print(f"Using cached {rgi_local}")
-    rgi = gpd.read_file(rgi_local)
+        print(f"Using cached {rgi_complex_local}")
 
-    glacier = get_glacier_from_rgi_id(rgi, rgi_id)
+    rgi_glacier_local = staging_path / config["rgi_glacier_file"]
+    if not rgi_glacier_local.exists():
+        rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_glacier_file"]}"""
+        print(f"Downloading {rgi_glacier_s3_uri} -> {rgi_glacier_local}")
+        download_from_s3(rgi_glacier_s3_uri, rgi_glacier_local)
+    else:
+        print(f"Using cached {rgi_glacier_local}")
+
+    # NOTE: gpd.read_file/to_file corrupts the heap on some envs and crashes the
+    # next libgdal allocation (e.g. inside dem_stitcher). Use pyogrio directly.
+    rgi_complex = pyogrio.read_dataframe(rgi_complex_local, use_arrow=False)
+    glacier = get_glacier_from_rgi_id(rgi_complex, rgi_id)
     if glacier.empty:
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
-    glacier_file = staging_path / f"rgi_{rgi_id}.fgb"
     dst_crs = glacier["crs"].values[0]
     glacier_projected = glacier.to_crs(dst_crs)
-    glacier.to_file(glacier_file)
+
+    # Write the complex ("-C") and member-glacier ("-G") outlines (mirrors stage.py).
+    glacier_complex_file = staging_path / f"rgi_{rgi_id}-C.gpkg"
+    pyogrio.write_dataframe(glacier, glacier_complex_file)
+
+    glacier_file = staging_path / f"rgi_{rgi_id}-G.gpkg"
+    rgi_glacier = pyogrio.read_dataframe(rgi_glacier_local, use_arrow=False)
+    glacier_ids = glaciers_in_complex(rgi_id, rgi_glacier)
+    glaciers = rgi_glacier[rgi_glacier["rgi_id"].isin(glacier_ids)]
+    if glaciers.empty:
+        print(f"Warning: no glacier outlines found for complex {rgi_id}")
+    pyogrio.write_dataframe(glaciers, glacier_file)
 
     x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=2_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
