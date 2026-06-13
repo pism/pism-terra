@@ -1,7 +1,6 @@
 name: pism-terra
 channels:
   - conda-forge
-  - pism
 dependencies:
   - python=3.12
   - pip
