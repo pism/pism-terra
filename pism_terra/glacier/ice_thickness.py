@@ -27,7 +27,6 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
 
 import geopandas as gpd
 import numpy as np
@@ -35,6 +34,7 @@ import pandas as pd
 import rasterio
 import rioxarray as rxr
 import xarray as xr
+from rasterio.mask import mask as rio_mask
 from rasterio.merge import merge
 from rasterio.warp import (
     Resampling,
@@ -48,29 +48,9 @@ from tqdm.auto import tqdm
 from pism_terra.aws import download_from_s3, s3_to_local
 from pism_terra.download import download_archive, extract_archive
 from pism_terra.raster import check_overlap
-from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
 
 logger = logging.getLogger(__name__)
-
-
-def get_maffezzoli_url(url_template: str, region: str) -> str:
-    """
-    Format the given URL template with the provided region.
-
-    Parameters
-    ----------
-    url_template : str
-        A string with a `{region}` placeholder to be replaced.
-    region : str
-        The region code to insert into the template.
-
-    Returns
-    -------
-    str
-        The formatted URL.
-    """
-    return url_template.format(region=region)
 
 
 def _load_rgi6_links(rgi_extract_path: Path) -> pd.DataFrame:
@@ -476,70 +456,85 @@ def prepare_ice_thickness_maffezzoli(
     force_overwrite: bool = False,
 ):
     """
-    Download, extract, and merge RGI region ice thickness.
+    Download Maffezzoli (IceBoost) ice thickness and clip into RGI7 complex rasters.
+
+    The IceBoost v2.0 "complexes" dataset is computed directly on the RGI7
+    glacier *complex* outlines and shipped as a single archive of per-region,
+    per-UTM-zone mosaics (``complex/rgi{N}/iceboost_..._epsg_{EPSG}.tif``).
+    Because the thickness is already keyed to RGI7 complexes, no per-glacier
+    merging or RGI6/RGI7 reconciliation is needed: each complex raster is just
+    the slice of its region's mosaic(s) that overlaps the complex outline.
 
     Parameters
     ----------
     regions : list
-        Region codes (e.g. ``["01", "06"]``).
+        Region codes (e.g. ``["01", "06"]``). Used to limit which region
+        mosaics are indexed from the archive.
     complexes : geopandas.GeoDataFrame
-        Complex outlines with an ``rgi_id`` and ``o1region`` column.
+        Complex outlines with ``rgi_id``, ``crs``, ``geometry``, and (for
+        regular complexes) ``o1region``. Aggregates (no ``o1region``) are
+        merged in a second pass from the per-complex outputs.
     glaciers : geopandas.GeoDataFrame
-        Glacier outlines with ``rgi_id``, ``rgi_id_c``, and ``o1region`` columns.
+        Glacier outlines with ``rgi_id_c`` and ``rgi_id_c_aggregate`` columns.
+        Used only to resolve aggregate parent complexes in the second pass.
     output_path : Path or str
-        Root directory for output files.
+        Root directory for the per-complex / per-aggregate output rasters.
     extract_path : Path or str
-        Subdirectory under *output_path* for extracted archives.
+        Working directory for the IceBoost archive and its extracted mosaics.
     ntasks : int, default 8
-        Maximum number of parallel workers.
+        Maximum number of parallel workers for the clip / merge phases.
     force_overwrite : bool, default False
-        If True, re-download the file even if it already exists locally.
+        If True, re-download / re-extract / re-clip.
     """
 
-    url_template: str = "https://zenodo.org/records/17724512/files/RGI70G_rgi{region}.zip?download=1"
+    # Maffezzoli et al. IceBoost v2.0 global glacier ice thickness, computed on
+    # RGI7 complex outlines — single Zenodo archive of per-region/per-UTM-zone
+    # mosaics (record 20463551).
+    url: str = "https://zenodo.org/records/20463551/files/IceBoostv20_complexes_RGI_7.zip?download=1"
     extract_path = Path(extract_path)
     output_path = Path(output_path)
+    extract_path.mkdir(parents=True, exist_ok=True)
 
-    def _download_and_extract(region):
-        """
-        Download and extract ice thickness archive for a single region.
+    archive_dest = extract_path / "IceBoostv20_complexes_RGI_7.zip"
+    logger.info("Downloading Maffezzoli (IceBoost) ice thickness from %s", url)
+    archive = download_archive(url, dest=archive_dest, force_overwrite=force_overwrite, verbose=True)
 
-        Parameters
-        ----------
-        region : str
-            Region code (e.g. ``"01"``).
+    maff_dir = extract_path / "maffezzoli"
+    maff_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Extracting %s into %s", archive, maff_dir)
+    extract_archive(archive, maff_dir, force_overwrite=force_overwrite, verbose=True)
 
-        Returns
-        -------
-        str
-            The region code that was processed.
-        """
-        url = get_maffezzoli_url(url_template, region)
-        archive_dest = extract_path / Path(urlparse(url).path).name
-        logger.info("Downloading ice thickness for region %s", region)
-        archive = download_archive(url, dest=archive_dest, force_overwrite=force_overwrite, verbose=False)
-        logger.info("Extracting ice thickness for region %s", region)
-        extract_archive(archive, extract_path, force_overwrite=force_overwrite, verbose=False)
-        logger.info("Ice thickness download complete for region %s", region)
-        return region
+    # Restrict the index to the regions in scope so we don't open mosaics for
+    # the whole world when only a few regions were requested.
+    requested_regions: set[int] = set()
+    for r in regions:
+        try:
+            requested_regions.add(int(str(r)))
+        except (TypeError, ValueError):
+            continue
 
-    MAX_WORKERS = min(ntasks, len(regions))
-    failed = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(_download_and_extract, region): region for region in regions}
-        pbar = tqdm(cf_as_completed(futures), total=len(futures), desc="Downloading ice thickness")
-        for future in pbar:
-            region = futures[future]
-            try:
-                future.result()
-                pbar.set_postfix_str(f"region {region} ✓")
-            except Exception as e:
-                failed.append((region, e))
-                pbar.set_postfix_str(f"region {region} ✗")
-    for region, err in failed:
-        logger.error("Failed ice thickness: region %s with error: %s", region, err)
+    # Index the extracted mosaics by RGI primary region. Each entry records the
+    # tif path, its CRS, and its footprint (a box in its own CRS) so the
+    # per-complex overlap test is a cheap geometry intersection.
+    mosaic_re = re.compile(r"_rgi(\d+)_v70G_epsg_(\d+)\.tif$")
+    region_mosaics: dict[int, list[tuple[Path, object, object]]] = {}
+    for tif in sorted(maff_dir.rglob("iceboost_*_rgi*_epsg_*.tif")):
+        m = mosaic_re.search(tif.name)
+        if not m:
+            continue
+        region = int(m.group(1))
+        if requested_regions and region not in requested_regions:
+            continue
+        with rasterio.open(tif) as src:
+            region_mosaics.setdefault(region, []).append((tif, src.crs, box(*src.bounds)))
+    if not region_mosaics:
+        logger.error("No IceBoost mosaics found under %s after extraction", maff_dir)
+        return
+    logger.info("Indexed IceBoost mosaics for regions %s", sorted(region_mosaics))
 
-    logger.info("Starting ice thickness merging for %d regions", len(regions))
+    # Project complex outlines to 4326 once; each per-mosaic overlap test then
+    # reprojects the single complex geometry into that mosaic's CRS.
+    complexes_4326 = complexes.to_crs("EPSG:4326")
 
     def _reproject_and_merge(input_files, dst_crs, output_file, tmp_label):
         """
@@ -617,71 +612,111 @@ def prepare_ice_thickness_maffezzoli(
                 fpath.unlink(missing_ok=True)
         return output_file
 
-    def _merge_complex(rgi_c_id, all_glaciers, o1region, dst_crs):
+    def _clip_to_geom(mosaic_path, geom, tmp_path):
         """
-        Build a per-complex thickness raster from member-glacier rasters.
+        Crop the thickness band of a mosaic to ``geom`` and write the window.
 
-        Phase-1 merge: each member glacier's source raster is fetched from
-        ``extract_path/rgi<o1region>/<rgi_id>.tif`` (using the glacier's own
-        ``o1region``) and merged into one per-complex GeoTIFF.
+        IceBoost mosaics are multi-band (``thickness``, ``thickness_err``,
+        ``jensen_gap``, ``h_wgs84``, ``n_geoid``); only band 1 (``thickness``)
+        is kept so the per-complex output stays single-band like the rest of
+        the pipeline expects.
 
         Parameters
         ----------
-        rgi_c_id : str
-            Complex outline identifier, e.g. ``"RGI2000-v7.0-C-01-09429"``.
-        all_glaciers : geopandas.GeoDataFrame
-            Full glacier outline table with ``rgi_id``, ``rgi_id_c``, and
-            ``o1region`` columns (not pre-filtered by region).
-        o1region : str or int
-            The complex's RGI-region code; used to build the output
-            subdirectory path.
-        dst_crs : str
-            Target CRS string for the merged output.
+        mosaic_path : pathlib.Path
+            Source regional mosaic GeoTIFF.
+        geom : shapely.geometry.base.BaseGeometry
+            Complex outline expressed in *mosaic_path*'s CRS.
+        tmp_path : pathlib.Path
+            Destination for the cropped GeoTIFF.
 
         Returns
         -------
         pathlib.Path or None
-            Path to the merged GeoTIFF, or ``None`` if no member rasters
-            were found on disk.
+            ``tmp_path`` on success, or ``None`` if ``geom`` does not overlap
+            the raster (``rasterio.mask`` raises in that case).
         """
-        glaciers_list = glaciers_in_complex(rgi_c_id, all_glaciers)
-        if not glaciers_list:
-            return None
+        with rasterio.open(mosaic_path) as src:
+            try:
+                out_image, out_transform = rio_mask(src, [geom], crop=True, all_touched=True, indexes=[1])
+            except ValueError:
+                return None  # geometry doesn't overlap this mosaic
+            out_meta = src.meta.copy()
+        out_meta.update(
+            {"count": 1, "height": out_image.shape[1], "width": out_image.shape[2], "transform": out_transform}
+        )
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(tmp_path, "w", **out_meta) as dst:
+            dst.write(out_image)
+        return tmp_path
 
-        g_subset = all_glaciers[all_glaciers["rgi_id"].isin(glaciers_list)]
-        glaciers_files = []
-        for _, gr in g_subset.iterrows():
-            g_region = gr.get("o1region")
-            if pd.isna(g_region):
+    def _merge_complex(rgi_c_id, o1region, dst_crs):
+        """
+        Build a per-complex thickness raster by clipping the region mosaic(s).
+
+        Phase-1: find the region's IceBoost mosaic(s) that overlap the complex
+        outline, crop each to the complex extent, and reproject/mosaic the
+        crop(s) into one per-complex GeoTIFF in ``dst_crs``.
+
+        Parameters
+        ----------
+        rgi_c_id : str
+            RGI7 complex identifier (e.g. ``"RGI2000-v7.0-C-01-09429"``).
+        o1region : str or int
+            Region code of the complex; used to build the output subdirectory.
+        dst_crs : str
+            Target CRS string for the merged output (e.g. ``"EPSG:32606"``).
+
+        Returns
+        -------
+        pathlib.Path or None
+            Path to the merged GeoTIFF, or ``None`` if no mosaic overlapped
+            this complex.
+        """
+        candidates = region_mosaics.get(int(o1region), [])
+        if not candidates:
+            logger.warning("No IceBoost mosaics for region %s (complex %s); skipping", o1region, rgi_c_id)
+            return None
+        row = complexes_4326.loc[complexes_4326["rgi_id"] == rgi_c_id]
+        if row.empty:
+            logger.warning("Complex %s not found in complexes table; skipping", rgi_c_id)
+            return None
+        geom_4326 = row.geometry.iloc[0]
+
+        clipped_files: list[Path] = []
+        for idx, (mosaic_path, mcrs, mbounds) in enumerate(candidates):
+            geom_m = gpd.GeoSeries([geom_4326], crs="EPSG:4326").to_crs(mcrs).iloc[0]
+            if not geom_m.intersects(mbounds):
                 continue
-            f = extract_path / Path(f"rgi{int(g_region)}") / Path(f"{gr['rgi_id']}.tif")
-            if f.exists():
-                glaciers_files.append(f)
-        if not glaciers_files:
-            logger.debug("No thickness files found for complex %s", rgi_c_id)
+            tmp_path = mosaic_path.parent / f"{rgi_c_id}__clip{idx}.tif"
+            clip = _clip_to_geom(mosaic_path, geom_m, tmp_path)
+            if clip is not None:
+                clipped_files.append(clip)
+        if not clipped_files:
+            logger.warning("Complex %s does not overlap any IceBoost mosaic; skipping", rgi_c_id)
             return None
 
         merged_path = output_path / Path(f"RGI2000-v7.0-C-{str(o1region).zfill(2)}")
         merged_file = merged_path / Path(f"{rgi_c_id}_thickness.tif")
-        return _reproject_and_merge(glaciers_files, dst_crs, merged_file, rgi_c_id)
+        try:
+            return _reproject_and_merge(clipped_files, dst_crs, merged_file, rgi_c_id)
+        finally:
+            for fpath in clipped_files:
+                fpath.unlink(missing_ok=True)
 
-    def _merge_aggregate(agg_id, all_glaciers, dst_crs):
+    def _merge_aggregate(agg_id, dst_crs):
         """
         Build an aggregate thickness raster from per-complex outputs.
 
-        Phase-2 merge: looks up the parent complexes that own glaciers tagged
-        with ``agg_id`` (via the ``rgi_id_c_aggregate`` column), reads each
-        parent's already-produced ``<parent>_thickness.tif`` from phase 1,
-        and reprojects/mosaics them into one aggregate GeoTIFF. Orders of
-        magnitude fewer inputs than re-merging every individual glacier.
+        Phase-2: looks up the parent complexes that own glaciers tagged with
+        ``agg_id`` (via the ``rgi_id_c_aggregate`` column), reads each parent's
+        already-produced ``<parent>_thickness.tif`` from phase 1, and
+        reprojects/mosaics them into one aggregate GeoTIFF.
 
         Parameters
         ----------
         agg_id : str
             Aggregate identifier (e.g. ``"S4F_AK"``).
-        all_glaciers : geopandas.GeoDataFrame
-            Full glacier outline table with ``rgi_id_c`` and
-            ``rgi_id_c_aggregate`` columns.
         dst_crs : str
             Target CRS string for the merged output.
 
@@ -691,12 +726,11 @@ def prepare_ice_thickness_maffezzoli(
             Path to the merged GeoTIFF, or ``None`` if no parent thickness
             files (from phase 1) were found on disk.
         """
-        # Find the parent complexes that own glaciers tagged with this aggregate.
-        agg_col = all_glaciers.get("rgi_id_c_aggregate")
+        agg_col = glaciers.get("rgi_id_c_aggregate")
         if agg_col is None:
             return None
         sel = agg_col.fillna("").str.split(";").apply(lambda parts: agg_id in parts)
-        parent_ids = all_glaciers.loc[sel, "rgi_id_c"].dropna().unique()
+        parent_ids = glaciers.loc[sel, "rgi_id_c"].dropna().unique()
         if len(parent_ids) == 0:
             logger.debug("No parent complexes resolved for aggregate %s", agg_id)
             return None
@@ -718,28 +752,26 @@ def prepare_ice_thickness_maffezzoli(
 
     # Split tasks: regular complexes (have an o1region) run first; aggregates
     # depend on their parents' merged outputs and run after.
-    regular_tasks = []
-    aggregate_tasks = []
+    regular_tasks: list[tuple[str, object, str]] = []
+    aggregate_tasks: list[tuple[str, str]] = []
     for _, row in complexes.iterrows():
         crs_value = row.get("crs")
         if not isinstance(crs_value, str) or not crs_value:
             logger.warning("Complex %s has no CRS; skipping", row["rgi_id"])
             continue
         if pd.notna(row.get("o1region")):
-            regular_tasks.append((row["rgi_id"], glaciers, row.get("o1region"), crs_value))
+            regular_tasks.append((row["rgi_id"], row.get("o1region"), crs_value))
         else:
-            aggregate_tasks.append((row["rgi_id"], glaciers, crs_value))
+            aggregate_tasks.append((row["rgi_id"], crs_value))
 
-    failed = []
+    failed: list[tuple[str, Exception]] = []
     if regular_tasks:
         with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(regular_tasks)))) as executor:
             futures = {
-                executor.submit(
-                    _merge_complex, rgi_c_id=rgi_c_id, all_glaciers=g, o1region=o1region, dst_crs=dst_crs
-                ): rgi_c_id
-                for rgi_c_id, g, o1region, dst_crs in regular_tasks
+                executor.submit(_merge_complex, rgi_c_id, o1region, dst_crs): rgi_c_id
+                for rgi_c_id, o1region, dst_crs in regular_tasks
             }
-            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging ice thickness"):
+            for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Clipping ice thickness"):
                 rgi_c_id = futures[future]
                 try:
                     future.result()
@@ -749,8 +781,7 @@ def prepare_ice_thickness_maffezzoli(
     if aggregate_tasks:
         with ThreadPoolExecutor(max_workers=min(ntasks, max(1, len(aggregate_tasks)))) as executor:
             futures = {
-                executor.submit(_merge_aggregate, agg_id=agg_id, all_glaciers=g, dst_crs=dst_crs): agg_id
-                for agg_id, g, dst_crs in aggregate_tasks
+                executor.submit(_merge_aggregate, agg_id, dst_crs): agg_id for agg_id, dst_crs in aggregate_tasks
             }
             for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Merging aggregates"):
                 agg_id = futures[future]
