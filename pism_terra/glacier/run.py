@@ -316,7 +316,7 @@ def _render_inverse_run(
     # Feed the forward run's state file into pismi as its input.
     inv.update({"input.file": state_file})
     # inverse output file
-    inv.update({"o": inv_file})
+    inv.update({"o": inv_file.resolve()})
     inv_str = dict2str(sort_dict_by_key(inv))
 
     job_opts = JobConfig(**cfg.job.model_dump())

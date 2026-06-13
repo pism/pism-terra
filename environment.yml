@@ -54,8 +54,13 @@ dependencies:
   - xarray
   - xarray-regrid
   - zarr
+  # pism-cloud Voila app (notebooks/pism_cloud_app.ipynb)
+  - hyp3_sdk
+  - ipywidgets
+  - voila
   # for development and testing
   - black
+  - jupyterlab
   - pre-commit
   - pylint
   - pytest
