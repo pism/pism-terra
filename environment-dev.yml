@@ -92,3 +92,6 @@ dependencies:
   - moviepy
   - python-dateutil
   - seaborn
+  # pism-cloud Voila app (notebooks/pism_cloud_app.ipynb)
+  - ipywidgets
+  - voila
