@@ -21,6 +21,10 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - fixed missing output filename for inverse state
 - fixed missing resolve()
 
+### Added
+
+- notebooks/pism_cloud_app.ipynb, a `voila` app.
+
 ## [0.1.3]
 
 ### Added

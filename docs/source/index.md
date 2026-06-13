@@ -72,6 +72,8 @@ features/postprocessing
 summer_school/getting_started
 summer_school/forward_modeling
 summer_school/inverse_modeling
+summer_school/cloud
+
 ```
 
 ```{toctree}
