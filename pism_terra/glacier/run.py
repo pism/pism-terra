@@ -314,7 +314,7 @@ def _render_inverse_run(
 
     inv_file = inv_path / Path(f"inv_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     # Feed the forward run's state file into pismi as its input.
-    inv.update({"input.file": state_file})
+    inv.update({"input.file": state_file.resolve()})
     # inverse output file
     inv.update({"o": inv_file.resolve()})
     inv_str = dict2str(sort_dict_by_key(inv))
