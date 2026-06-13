@@ -15,6 +15,17 @@ conda activate pism-terra
 python -m pip install -e .
 ```
 
+Or using [Mamba](https://mamba.readthedocs.io/) instead, which resolves the
+environment considerably faster:
+
+```bash
+git clone https://github.com/pism/pism-terra.git
+cd pism-terra
+mamba env create -f environment-dev.yml
+mamba activate pism-terra
+python -m pip install -e .
+```
+
 For the documentation build add the `docs` extras:
 
 ```bash
@@ -33,7 +44,7 @@ conda env create -f environment.yml
 conda activate pism
 ```
 
-Then build PISM::
+(or again, use `mamba`). Then build PISM::
 
 ```bash
 CMAKE_BUILD_PARALLEL_LEVEL=8 python -m pip install --no-build-isolation -v .
