@@ -1614,7 +1614,7 @@ def era5(
 def era5_mean(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(1978, 2025),
+    years: list[int] | Iterable[int] = range(1990, 2020),
     dataset: str = "reanalysis-era5-land-monthly-means",
     path: Path | str = ".",
     **kwargs,
@@ -1685,10 +1685,9 @@ def era5_mean(
     print("Generate historical climate")
     print("-" * 120)
 
-    era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
+    years = range(1990, 2020)
 
-    _ = years
-    years = [1978]
+    era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
 
     bounds = [
         target_grid.x_bnds.values[0][0],

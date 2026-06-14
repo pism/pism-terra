@@ -244,6 +244,12 @@ class UQConfig(BaseModel):
     ----------
     samples : int, default=1
         Number of draws to use when generating ensemble samples. Must be > 0.
+        For ``method="factorial"`` this is the number of levels **per variable**
+        (total runs are ``samples ** n_variables``).
+    method : str or None, optional
+        Sampling strategy passed to :func:`pism_terra.sampling.generate_samples`.
+        ``None`` (default) or ``"lhs"`` selects Latin Hypercube; ``"factorial"``
+        selects the full-factorial grid.
     mapping : dict or None, optional
         Optional mapping (e.g., to join against a lookup table of file paths).
         Not interpreted by validation; simply preserved for downstream use.
@@ -287,8 +293,48 @@ class UQConfig(BaseModel):
     """
 
     samples: int = Field(default=1, gt=0)
+    method: str | None = Field(default=None)
     mapping: dict | None = None
     tree: dict[str, "DistSpec"]  # values parsed as DistSpec after 'before' validator
+
+    @field_validator("method")
+    @classmethod
+    def _normalize_method(cls, v: Any) -> str | None:
+        """
+        Normalize and validate the sampling ``method`` name.
+
+        Parameters
+        ----------
+        v : Any
+            Raw method value (any case, may contain surrounding spaces) or
+            ``None``.
+
+        Returns
+        -------
+        str or None
+            Lower-cased, stripped method name, or ``None`` when unset (which
+            downstream treats as Latin Hypercube).
+
+        Raises
+        ------
+        ValueError
+            If the method is not a recognized Latin Hypercube or factorial alias.
+        """
+        if v is None:
+            return None
+        m = str(v).strip().lower()
+        allowed = {
+            "lhs",
+            "latin",
+            "latin_hypercube",
+            "latinhypercube",
+            "factorial",
+            "grid",
+            "full_factorial",
+        }
+        if m not in allowed:
+            raise ValueError(f"unknown sampling method '{v}'; use 'lhs' or 'factorial'")
+        return m
 
     @staticmethod
     def _is_leaf(node: Any) -> bool:
@@ -401,6 +447,7 @@ class UQConfig(BaseModel):
 
         # Pull top-level fields if present
         samples = v.get("samples")
+        method = v.get("method")
         mapping = v.get("mapping")
 
         # Where the specs live: either under 'tree' or at top level
@@ -409,20 +456,25 @@ class UQConfig(BaseModel):
             outv: dict[str, Any] = {"tree": {}}
             if samples is not None:
                 outv["samples"] = samples
+            if method is not None:
+                outv["method"] = method
             if mapping is not None:
                 outv["mapping"] = mapping
             return outv
 
         raw = dict(raw)  # shallow copy so we can pop safely
 
-        # Allow samples/mapping inside the raw block too
+        # Allow samples/method/mapping inside the raw block too
         if samples is None and "samples" in raw:
             samples = raw.pop("samples")
+        if method is None and "method" in raw:
+            method = raw.pop("method")
         if mapping is None and "mapping" in raw:
             mapping = raw.pop("mapping")
 
         # Ensure these don't leak into tree
         raw.pop("samples", None)
+        raw.pop("method", None)
         raw.pop("mapping", None)
 
         # If keys are already dotted (['a.b.c']), keep only dict-valued items
@@ -435,6 +487,8 @@ class UQConfig(BaseModel):
         out: dict[str, Any] = {"tree": tree}
         if samples is not None:
             out["samples"] = samples
+        if method is not None:
+            out["method"] = method
         if mapping is not None:
             out["mapping"] = mapping
         return out

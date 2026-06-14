@@ -230,7 +230,7 @@ def boot_file_from_grid(
     rgi_id: str,
     geometries: collections.abc.Iterable,
     dem_dataset: Literal["glo_30", "arcticdem"],
-    ice_thickness_dataset: Literal["maffezzoli", "millan"],
+    ice_thickness_dataset: Literal["frank", "maffezzoli", "millan"],
     bathymetry_dataset: Literal["none", "gebco"] | None,
     velocity_dataset: Literal["none", "its_live"] | None,
     forcing_mask: Literal["none", "all", "glacier"] | None,
@@ -255,7 +255,7 @@ def boot_file_from_grid(
         and constructing masks.
     dem_dataset : {"glo_30", "arcticdem"}
         DEM source for surface preparation.
-    ice_thickness_dataset : {"maffezzoli", "millan"}
+    ice_thickness_dataset : {"frank", "maffezzoli", "millan"}
         Source for ice thickness.
     bathymetry_dataset : {"none", "gebco"} or None
         Source for ocean bathymetry. When set, a cloud raster (e.g.

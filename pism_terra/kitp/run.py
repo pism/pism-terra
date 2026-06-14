@@ -36,7 +36,7 @@ from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.kitp.stage import stage
-from pism_terra.sampling import create_samples
+from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
     dict2str,
@@ -676,7 +676,7 @@ def run_ensemble():
     n_samples = uq.samples
     mapping = uq.mapping
 
-    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
+    uq_df = generate_samples(uq.to_flat(), n_samples=n_samples, method=uq.method, seed=seed)
     if posterior_file is not None:
         posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
         choice_indices = rng.choice(range(len(posterior_df)), n_samples)
