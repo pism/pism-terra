@@ -1190,10 +1190,14 @@ class CampaignConfig(BaseModel):
         Forcing mask ("all", "glacier", "none").
     velocity : str or None
         Velocity data source identifier (e.g., ``"its_live"``).
+    heatflux : str or None
+        Heat-flow data source identifier (e.g., ``"lucazeau"``).
     gcms : str, list, dict, or None
         GCM model name(s) used for climate forcing.
     boot_file : str or None
         Path to the boot NetCDF file (relative to the input directory).
+    heat_flow_file : str or None
+        Path to the heat flow NetCDF file (relative to the input directory).
     outline_file : str or None
         Path to GPKG basin file (relative to the input directory).
     grid_file : str or None
@@ -1235,6 +1239,7 @@ class CampaignConfig(BaseModel):
     dem: str | None = Field(default=None)
     forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
+    heatflux: str | None = Field(default=None)
     gcms: str | list | dict | None = Field(default=None)
     boot_file: str | None = Field(default=None)
     outline_file: str | None = Field(default=None)

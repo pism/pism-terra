@@ -69,6 +69,7 @@ from pism_terra.glacier.ice_thickness import (
     prepare_ice_thickness_maffezzoli,
 )
 from pism_terra.glacier.rgi import prepare_rgi
+from pism_terra.heat_flow import prepare_heat_flow_lucazeau
 from pism_terra.log import setup_logging
 from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
@@ -244,6 +245,17 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
         bigtiff="YES",
         overview_resampling="AVERAGE",
         num_threads="ALL_CPUS",
+    )
+
+    # --- Heat flow (Lucazeau 2019) ---
+    heat_flow_path = glacier_path / Path("heat_flow")
+    heat_flow_path.mkdir(parents=True, exist_ok=True)
+    heat_flow_staging = staging_path / Path("heat_flow")
+    heat_flow_staging.mkdir(parents=True, exist_ok=True)
+    prepare_heat_flow_lucazeau(
+        output_path=heat_flow_path,
+        extract_path=heat_flow_staging,
+        force_overwrite=force_overwrite,
     )
 
     # --- Climate (CARRA2) ---
@@ -447,6 +459,17 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
         bigtiff="YES",
         overview_resampling="AVERAGE",
         num_threads="ALL_CPUS",
+    )
+
+    # --- Heat flow (Lucazeau 2019) ---
+    heat_flow_path = glacier_path / Path("heat_flow")
+    heat_flow_path.mkdir(parents=True, exist_ok=True)
+    heat_flow_staging = staging_path / Path("heat_flow")
+    heat_flow_staging.mkdir(parents=True, exist_ok=True)
+    prepare_heat_flow_lucazeau(
+        output_path=heat_flow_path,
+        extract_path=heat_flow_staging,
+        force_overwrite=force_overwrite,
     )
 
     return rgi_files
