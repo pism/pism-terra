@@ -1196,8 +1196,6 @@ class CampaignConfig(BaseModel):
         GCM model name(s) used for climate forcing.
     boot_file : str or None
         Path to the boot NetCDF file (relative to the input directory).
-    heat_flow_file : str or None
-        Path to the heat flow NetCDF file (relative to the input directory).
     outline_file : str or None
         Path to GPKG basin file (relative to the input directory).
     grid_file : str or None

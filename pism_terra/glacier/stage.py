@@ -53,7 +53,7 @@ from pism_terra.glacier.climate import (
 )
 from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.glacier.observations import glacier_velocities_from_grid
-from pism_terra.heat_flow import heat_flow_from_grid
+from pism_terra.heatflux import heatflux_from_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id, glaciers_in_complex
 from pism_terra.workflow import (
@@ -247,7 +247,7 @@ def stage_glacier(
     boot_ds.to_netcdf(boot_file, engine="h5netcdf")
     check_xr_lazy(boot_file)
 
-    heat_flow_ds = heat_flow_from_grid(
+    heatflux_ds = heatflux_from_grid(
         grid_ds,
         dataset=config["heatflux"],
         path=bheatflux_file,
