@@ -20,7 +20,7 @@ forcing_mask = "all"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0006-02-01"
+'time.end' =  "0006-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -98,9 +98,6 @@ model = 'blatter'
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
-bp_ksp_monitor =  ""
-bp_ksp_view_singularvalues = ""
-bp_snes_monitor_ratio = ""
 bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
 bp_mg_levels_pc_type ="sor"
@@ -202,7 +199,7 @@ model = "off"
 'inverse.stress_balance.length_scale' = 1e3
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
-'inverse.max_iterations' = 250
+'inverse.max_iterations' = 50
 'inverse.design.param' = "exp"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
 'inverse.stress_balance.tauc_min' = 1e4

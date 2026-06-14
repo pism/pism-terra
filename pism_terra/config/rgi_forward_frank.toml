@@ -6,23 +6,23 @@
 [campaign]
 
 bucket = "pism-cloud-data"
-climate = "era5-monthly-mean"
+climate = "era5"
 dem = "glo_90"
-ice_thickness = "maffezzoli"
+ice_thickness = "frank"
 bathymetry = "gebco"
 name = "Calibration"
 prefix = "rgi/glacier"
 rgi_complex_file = "rgi_c.gpkg"
 rgi_glacier_file = "rgi_g.gpkg"
 velocity = "its_live"
-forcing_mask = "all"
+forcing_mask = "none"
 
 [time]
 
-'time.start' = "0001-01-01"
-'time.end' =  "006-01-01"
-'time.calendar' =  "365_day"
-'time.reference_date' = "0001-01-01"
+'time.start' = "1980-01-01"
+'time.end' =  "2025-01-01"
+'time.calendar' =  "standard"
+'time.reference_date' = "1980-01-01"
 
 [time_stepping]
 
@@ -51,7 +51,7 @@ forcing_mask = "all"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
-'output.spatial.times' = "yearly"
+'output.spatial.times' = "monthly"
 'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
@@ -134,18 +134,26 @@ bp_ksp_rtol = 1e-3
 
 [surface]
 
-model = "pdd"
-
-[surface.options.cosipy]
-
-'surface.models' = "given,forcing"
+model = "debm"
 
 [surface.options.pdd]
 
-'surface.models' = "pdd,forcing"
-'surface.force_to_thickness.alpha' = 0.75
-'surface.force_to_thickness.ice_free_alpha_factor' = 10.0
-'surface.force_to_thickness.file' = "none"
+'surface.models' = "pdd"
+'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
+
+[surface.options.debm]
+
+'surface.models' = "debm_simple"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 25
+'surface.debm_simple.c2' = -103
+'surface.debm_simple.refreeze' = 0.50
+'surface.debm_simple.refreeze_ice_melt' = "no"
+'surface.debm_simple.air_temp_all_precip_as_snow' = 271.65
+'surface.debm_simple.air_temp_all_precip_as_rain' = 275.0
 
 [calving]
 

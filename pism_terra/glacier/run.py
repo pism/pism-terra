@@ -40,7 +40,7 @@ from pism_terra.download import file_localizer
 from pism_terra.glacier.climate import create_offset_file
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.stage import stage_glacier
-from pism_terra.sampling import create_samples
+from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
     dict2str,
@@ -822,7 +822,7 @@ def _build_ensemble_df(
     uq = load_uq(uq_file)
     n_samples = uq.samples
 
-    uq_df = create_samples(uq.to_flat(), n_samples=n_samples, seed=seed)
+    uq_df = generate_samples(uq.to_flat(), n_samples=n_samples, method=uq.method, seed=seed)
 
     if posterior_file is not None:
         posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
