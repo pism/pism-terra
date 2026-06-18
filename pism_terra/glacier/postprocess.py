@@ -130,9 +130,9 @@ def process_file(
         ds_sum = ds_clipped.sum(dim=["y", "x"]).compute()
         ds_sum["area"] = row.geometry.area
         ds_sum["area"].attrs.update({"units": "m^2"})
-        dss.append(ds_sum.expand_dims({"rgi_id": [row[column]]}))
+        dss.append(ds_sum.expand_dims({"RGIid": [row[column]]}))
 
-    scalar = xr.concat(dss, dim="rgi_id")
+    scalar = xr.concat(dss, dim="RGIid")
 
     logger.info("Writing %s", scalar_file)
     # Keep non-spatial vars (e.g. pism_config)

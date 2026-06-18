@@ -16,12 +16,12 @@ rgi_complex_file = "rgi_c.gpkg"
 rgi_glacier_file = "rgi_g.gpkg"
 velocity = "its_live"
 forcing_mask = "glacier"
-heatflux = "none"
+heatflux = "lucazeau"
 
 [time]
 
-'time.start' = "2000-01-01"
-'time.end' =  "2001-01-02"
+'time.start' = "1986-01-01"
+'time.end' =  "2021-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 

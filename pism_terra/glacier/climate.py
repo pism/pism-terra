@@ -305,6 +305,8 @@ def prepare_carra2(
     - Output variables:
       - ``air_temp`` (K) from CARRA ``t2m``.
       - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
+      - ``albedo`` (1) derived as ``1 - SW_net / SW_down`` from the surface
+        shortwave radiation budget (NaN where ``SW_down == 0``).
     - ``time_bounds`` are added for CF-style climatological metadata.
     - If missing values are detected in the regional subset, the function
       patches them from the global reanalysis (same period).
@@ -445,10 +447,70 @@ def prepare_carra2(
         **kwargs,  # pass the full CARRA request dict
     )
 
+    # Surface albedo is not a CARRA2 variable, so derive it from the shortwave
+    # radiation budget: albedo = SW_up / SW_down = 1 - SW_net / SW_down. Download the
+    # two forecast radiation fields as monthly means; albedo is computed after merge.
+    radiation_dataset = "reanalysis-pan-carra-means"
+    radiation_request = {
+        "time_aggregation": "monthly",
+        "level_type": "single_levels",
+        "variable": [
+            "surface_solar_radiation_downwards",
+            "surface_net_solar_radiation",
+        ],
+        "product_type": "forecast_based",
+        "year": years,
+        "month": [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10",
+            "11",
+            "12",
+        ],
+        "data_format": "netcdf",
+        "area": [90, -180, 40, 180],
+    }
+
+    radiation_files = carra_download_request(
+        radiation_dataset,
+        radiation_request,
+        file_path=path / Path("radiation.nc"),
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    # ECMWF short names are not guaranteed stable, so identify the two shortwave
+    # fields from their attributes. The net field carries "net" in its name/metadata
+    # (its standard_name also contains "down", so it can't be matched on "down"); the
+    # remaining shortwave field is the downward flux.
+    radiation_sorted = sorted(radiation_files)
+    with xr.open_dataset(radiation_sorted[0]) as _rad_ds:
+        _spatial = {n: da for n, da in _rad_ds.data_vars.items() if {"y", "x"}.issubset(da.dims)}
+
+        def _meta(name):
+            da = _spatial[name]
+            return f"{name} {da.attrs.get('long_name', '')} {da.attrs.get('standard_name', '')}".lower()
+
+        sw_net_var = next((n for n in _spatial if "net" in _meta(n)), None)
+        sw_down_var = next((n for n in _spatial if n != sw_net_var), None)
+        if sw_net_var is None or sw_down_var is None or len(_spatial) != 2:
+            raise ValueError(
+                "Expected exactly two shortwave (net, downward) variables in CARRA2 "
+                f"radiation file {radiation_sorted[0]}: {list(_spatial)}"
+            )
+
     logger.info(
-        "Downloaded %d precipitation files, %d temperature files",
+        "Downloaded %d precipitation files, %d temperature files, %d radiation files",
         len(precipitation_files),
         len(temperature_files),
+        len(radiation_files),
     )
 
     grid = str(carra2_grid_path.resolve())
@@ -461,9 +523,9 @@ def prepare_carra2(
     tas_sorted = sorted(temperature_files)
 
     batches = []
-    for yr, pr_f, tas_f in zip(years, pr_sorted, tas_sorted):
+    for yr, pr_f, tas_f, rad_f in zip(years, pr_sorted, tas_sorted, radiation_sorted):
         batch_out = str((path / f"batch_{yr}.nc").resolve())
-        batches.append((yr, str(pr_f), str(tas_f), batch_out))
+        batches.append((yr, str(pr_f), str(tas_f), str(rad_f), batch_out))
 
     def _process_carra2_batch(args):
         """
@@ -472,15 +534,15 @@ def prepare_carra2(
         Parameters
         ----------
         args : tuple
-            A ``(yr, pr_f, tas_f, batch_out)`` tuple with the year string,
-            precipitation file, temperature file, and output path.
+            A ``(yr, pr_f, tas_f, rad_f, batch_out)`` tuple with the year string,
+            precipitation file, temperature file, radiation file, and output path.
 
         Returns
         -------
         str
             Path to the merged output file.
         """
-        yr, pr_f, tas_f, batch_out = args
+        yr, pr_f, tas_f, rad_f, batch_out = args
         tmp = path
         cdo_local = Cdo(tempdir=tmp)
 
@@ -491,6 +553,17 @@ def prepare_carra2(
             input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation """
             f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {pr_f}""",
             output=pr_fixed,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Shortwave radiation: monthly means (already monthly, just fix grid + time).
+        # Both SW-down and SW-net are kept; albedo is derived from them after merge.
+        rad_fixed = os.path.join(tmp, f"radiation_{yr}.nc")
+        cdo_local.setgrid(
+            grid,
+            input=f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days """
+            f"""-settaxis,{yr}-01-15,00:00:00,1mon {rad_f}""",
+            output=rad_fixed,
             options="--reduce_dim -f nc4 -z zip_2",
         )
 
@@ -513,19 +586,19 @@ def prepare_carra2(
             options="--reduce_dim -f nc4 -z zip_2",
         )
 
-        # Merge pr + tas_mm + tas_mstd for this year
+        # Merge pr + tas_mm + tas_mstd + radiation for this year
         cdo_local.merge(
-            input=f"{pr_fixed} {tas_mm} {tas_mstd}",
+            input=f"{pr_fixed} {tas_mm} {tas_mstd} {rad_fixed}",
             output=batch_out,
             options="-f nc4 -z zip_2",
         )
         # Clean up per-year intermediate files only (not the shared directory)
-        for f in (pr_fixed, tas_mm, tas_mstd):
+        for f in (pr_fixed, tas_mm, tas_mstd, rad_fixed):
             Path(f).unlink(missing_ok=True)
         return batch_out
 
     # Only process batches that don't already exist (unless force_overwrite)
-    batches_to_run = [b for b in batches if (not check_xr_lazy(b[3])) or force_overwrite]
+    batches_to_run = [b for b in batches if (not check_xr_lazy(b[4])) or force_overwrite]
     if batches_to_run:
         logger.info(
             "CDO: processing %d year batches (setgrid + monmean/monstd)...",
@@ -542,7 +615,7 @@ def prepare_carra2(
     else:
         logger.info("CDO: all %d year batches already exist, skipping.", len(batches))
 
-    batch_files = sorted(b[3] for b in batches)
+    batch_files = sorted(b[4] for b in batches)
 
     # --- Step 2: mergetime all year batches  ---
     if (not check_xr_lazy(carra2_filename)) or force_overwrite:
@@ -582,6 +655,22 @@ def prepare_carra2(
             }
         )
         ds["orography"] = orog
+
+        # Derive surface albedo from the shortwave budget: albedo = SW_up / SW_down
+        # = 1 - SW_net / SW_down. SW_down is zero during polar night, where albedo is
+        # undefined and is masked to NaN. The raw radiation fields are then dropped.
+        sw_down = ds[sw_down_var]
+        sw_net = ds[sw_net_var]
+        albedo = xr.where(sw_down > 0, 1.0 - sw_net / sw_down, np.nan)
+        albedo.attrs.update(
+            {
+                "standard_name": "surface_albedo",
+                "long_name": "surface shortwave albedo",
+                "units": "1",
+            }
+        )
+        ds["albedo"] = albedo
+        ds = ds.drop_vars([sw_down_var, sw_net_var])
 
         ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
         ds = (
@@ -1146,8 +1235,11 @@ def carra2(
     Notes
     -----
     - Output variables and their units are inherited from the source CARRA2
-      Zarr store (typically ``air_temp`` in K and ``precipitation`` in
-      kg m^-2 day^-1).
+      Zarr store (typically ``air_temp`` in K, ``precipitation`` in
+      kg m^-2 day^-1, and dimensionless ``albedo``).
+    - Floating-point variables have NaNs filled with 0 for PISM; for
+      ``albedo`` this only affects polar-night months (no insolation), where
+      the value is irrelevant.
     - Compression: zlib level 2 + shuffle.
     """
     path = Path(path)
@@ -1530,7 +1622,7 @@ def era5(
             file_path=era5_filename_2,
             **kwargs,
         )
-        .squeeze()
+        .squeeze("time", drop=True)
         .drop_vars("time", errors="ignore")
     )
     ds_geo_ = (
@@ -1693,7 +1785,7 @@ def era5_mean(
             file_path=era5_filename_2,
             **kwargs,
         )
-        .squeeze()
+        .squeeze("time", drop=True)
         .drop_vars("time", errors="ignore")
     )
     ds_geo_ = (
@@ -1923,7 +2015,7 @@ def era5_monthly_mean(
             file_path=era5_filename_2,
             **kwargs,
         )
-        .squeeze()
+        .squeeze("time", drop=True)
         .drop_vars("time", errors="ignore")
     )
     ds_geo_ = (

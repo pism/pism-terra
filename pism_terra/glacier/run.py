@@ -959,6 +959,7 @@ def _run(*, kind: str) -> None:
                 "atmosphere.precip_scaling.file": scalar_offset_file,
                 "atmosphere.given.file": row["climate_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
+                "surface.debm_simple.albedo_input.file": row["climate_file"],
                 "surface.debm_simple.std_dev.file": row["climate_file"],
                 "surface.force_to_thickness.file": row["boot_file"],
                 "surface.pdd.std_dev.file": row["climate_file"],

@@ -392,6 +392,17 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
         ntasks=ntasks,
     )
 
+    # --- Heat flow (Lucazeau 2019) ---
+    heatflux_path = glacier_path / Path("heatflux")
+    heatflux_path.mkdir(parents=True, exist_ok=True)
+    heatflux_staging = staging_path / Path("heatflux")
+    heatflux_staging.mkdir(parents=True, exist_ok=True)
+    prepare_heatflux_lucazeau(
+        output_path=heatflux_path,
+        extract_path=heatflux_staging,
+        force_overwrite=force_overwrite,
+    )
+
     # --- Ice thickness ---
     ice_thickness_path = glacier_path / Path("ice_thickness")
     ice_thickness_path.mkdir(parents=True, exist_ok=True)
