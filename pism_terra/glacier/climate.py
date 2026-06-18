@@ -270,32 +270,7 @@ def prepare_glaciermip4(
 
 def prepare_carra2(
     path: str | Path,
-    year: list[str | int] = [
-        "1986",
-        "1987",
-        "1988",
-        "1991",
-        "1992",
-        "1993",
-        "1996",
-        "1997",
-        "1998",
-        "2001",
-        "2002",
-        "2003",
-        "2006",
-        "2007",
-        "2008",
-        "2011",
-        "2012",
-        "2013",
-        "2016",
-        "2017",
-        "2018",
-        "2021",
-        "2022",
-        "2023",
-    ],
+    years: list[int] | Iterable[int] = range(1986, 2026),
     max_workers: int = 8,
     force_overwrite: bool = False,
     **kwargs,
@@ -308,7 +283,7 @@ def prepare_carra2(
     path : str or pathlib.Path
         Working/output directory. The final NetCDF and intermediate
         ``carra2/`` cache subfolder are written under this path.
-    year : list[str | int]
+    years : list[str | int]
         List of years to download.
     max_workers : int, default 8
         Maximum number of concurrent CDS download requests.
@@ -377,7 +352,7 @@ def prepare_carra2(
         "level_type": "single_levels",
         "variable": ["total_precipitation"],
         "product_type": "forecast_based",
-        "year": year,
+        "year": years,
         "month": [
             "01",
             "02",
@@ -410,7 +385,7 @@ def prepare_carra2(
         "level_type": "single_levels",
         "variable": ["2m_temperature"],
         "product_type": "analysis_based",
-        "year": year,
+        "year": years,
         "month": [
             "01",
             "02",
@@ -486,7 +461,7 @@ def prepare_carra2(
     tas_sorted = sorted(temperature_files)
 
     batches = []
-    for yr, pr_f, tas_f in zip(year, pr_sorted, tas_sorted):
+    for yr, pr_f, tas_f in zip(years, pr_sorted, tas_sorted):
         batch_out = str((path / f"batch_{yr}.nc").resolve())
         batches.append((yr, str(pr_f), str(tas_f), batch_out))
 
@@ -1118,7 +1093,7 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
 def carra2(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(1978, 2025),
+    years: list[int] | Iterable[int] = range(11986, 2026),
     path: Path | str = ".",
     bucket: str = "pism-cloud-data",
     prefix: str = "",
@@ -1140,7 +1115,7 @@ def carra2(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2026)``
         Years to materialize in the output. CARRA2 only stores a sparse set
         of source years; any requested year not in the source is filled by
         copying the nearest available source year (ties go to the earlier
@@ -1451,7 +1426,7 @@ def carra2(
 def era5(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(1978, 2025),
+    years: list[int] | Iterable[int] = range(1978, 2026),
     dataset: str = "reanalysis-era5-land-monthly-means",
     path: Path | str = ".",
     **kwargs,
@@ -1468,7 +1443,7 @@ def era5(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2026)``
         Years to request from ERA5.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
         CDS dataset name for monthly single-level means (ERA5). Adjust if you
@@ -1631,7 +1606,7 @@ def era5_mean(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2026)``
         Years to request from ERA5.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
         CDS dataset name for monthly single-level means (ERA5). Adjust if you
@@ -1843,7 +1818,7 @@ def jif_cosipy(url: str, download_path: Path | str, path: Path | str) -> None:
 def era5_monthly_mean(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(1978, 2025),
+    years: list[int] | Iterable[int] = range(1978, 2026),
     dataset: str = "reanalysis-era5-land-monthly-means",
     path: Path | str = ".",
     **kwargs,
@@ -1860,7 +1835,7 @@ def era5_monthly_mean(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2026)``
         Years to request from ERA5.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
         CDS dataset name for monthly single-level means (ERA5). Adjust if you

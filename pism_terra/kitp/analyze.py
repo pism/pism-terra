@@ -261,10 +261,19 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             basin_gcm = gcm_computed.sel(basin=basin_name)
             basin_slc = ((basin_gcm["ice_mass"] - basin_gcm["ice_mass"].isel({"time": 0})) * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
+            basin_baseline = baseline_computed.sel(basin=basin_name)
+            basin_baseline_slc = (
+                (basin_baseline["ice_mass"] - basin_baseline["ice_mass"].isel({"time": 0})) * gt2mmsle
+            ).pint.dequantify()
 
             fig, ax = plt.subplots(1, 1, figsize=(6.4, 3.6))
 
             l = []
+
+            _l = basin_baseline_slc.plot(
+                ax=ax, color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], label=BASELINE_OPTS["title"], lw=1
+            )
+            l.append(_l)
 
             for exp_name, exp in EXPS_OPTS.items():
                 _gcm_slc = basin_slc.sel({"exp_id": exp_name})
