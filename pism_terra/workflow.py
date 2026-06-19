@@ -717,6 +717,53 @@ def drop_geotransform_attr(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
+def stamp_grid_mapping(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Assert a CF ``grid_mapping`` attribute on spatial vars, dropping stray ``coordinates``.
+
+    The CRS is advertised by the CF ``grid_mapping`` attribute, which names the
+    grid-mapping variable (``spatial_ref``). PISM, GDAL, and QGIS all follow that
+    attribute to read the projection. rioxarray records it in each variable's
+    *encoding*, but operations such as ``concat``/``fillna`` drop encoding, so it
+    can go missing on write — and consumers then fail to find the CRS.
+
+    This re-asserts ``grid_mapping`` on every spatial data variable. It also strips
+    the grid-mapping variable from any ``coordinates`` attribute: ``coordinates`` is
+    for auxiliary coordinate variables (e.g. 2-D lat/lon), and listing the CRS
+    variable there is a CF misuse that confuses PISM (it treats ``spatial_ref`` as a
+    data coordinate rather than the projection).
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with a rioxarray-written grid mapping. Modified in place.
+
+    Returns
+    -------
+    xarray.Dataset
+        The same dataset, for chaining.
+    """
+    gm = ds.rio.grid_mapping
+    if gm not in ds.variables:
+        return ds
+    for var in ds.data_vars:
+        if var == gm:
+            continue
+        ds[var].encoding["grid_mapping"] = gm
+        # Drop the grid-mapping variable from any coordinates list (attrs/encoding),
+        # keeping legitimate auxiliary coordinates if present.
+        for store in (ds[var].attrs, ds[var].encoding):
+            coords = store.get("coordinates")
+            if not coords:
+                continue
+            kept = [c for c in coords.split() if c != gm]
+            if kept:
+                store["coordinates"] = " ".join(kept)
+            else:
+                store.pop("coordinates", None)
+    return ds
+
+
 def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     Open a dataset and run a **sampled** health check with xarray.

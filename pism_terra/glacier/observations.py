@@ -38,7 +38,7 @@ from scipy.interpolate import RegularGridInterpolator
 from shapely.geometry import box as _shapely_box
 
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_rio, check_xr_lazy
+from pism_terra.workflow import check_rio, check_xr_lazy, stamp_grid_mapping
 
 # RGI o1 codes for which ITS_LIVE v2.1 publishes a per-region COG. 13/15/16 are
 # absent because they're merged into the High Mountain Asia (14) mosaic.
@@ -443,15 +443,16 @@ def glacier_velocities_from_grid(
         # ``landice``) would otherwise carry it through to the written file.
         mapping_var = target_grid.rio.grid_mapping
         crs = target_grid[mapping_var].attrs["crs_wkt"]
-        ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping("mapping")
+        ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping().rio.write_coordinate_system()
 
+        stamp_grid_mapping(ds_clipped)
         ds_clipped.to_netcdf(path)
 
     else:
         ds_clipped = xr.open_dataset(path)
         mapping_var = target_grid.rio.grid_mapping
     crs = target_grid[mapping_var].attrs["crs_wkt"]
-    ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping("mapping")
+    ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping().rio.write_coordinate_system()
     return ds_clipped
 
 

@@ -66,7 +66,11 @@ from pism_terra.download import (
 from pism_terra.grids import load_grid
 from pism_terra.raster import add_time_bounds
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_xr_fully, check_xr_lazy
+from pism_terra.workflow import (
+    check_xr_fully,
+    check_xr_lazy,
+    stamp_grid_mapping,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,45 @@ CARRA2_PROJ = (
     "+x_0=172840.374543307 +y_0=645049.059394855 "
     "+R=6371229 +units=m +no_defs"
 )
+
+
+def _finalize_pism_crs(ds: xr.Dataset, crs_wkt: str) -> xr.Dataset:
+    """
+    Stamp a single, PISM-readable CF grid mapping on a reprojected dataset.
+
+    Two issues otherwise leave the written file un-georeferenced for PISM:
+
+    1. The source CARRA2 Zarr stores its CRS in a coordinate named ``crs``
+       (polar stereographic). After reprojection to ``crs_wkt`` that variable
+       is stale but rides along on the reprojected arrays, so the file ends up
+       with two grid-mapping variables — and a consumer might pick the wrong one.
+    2. rioxarray records the active ``grid_mapping`` in each variable's *encoding*.
+       Operations such as ``xr.concat`` (year expansion) and ``fillna`` drop
+       encoding, so the ``grid_mapping`` attribute never reaches the file. PISM
+       then can't locate the projection, falls back to a raw x/y comparison, and
+       rejects the forcing ("computational domain is not a subset") when the
+       model grid uses a different projection.
+
+    Dropping any pre-existing grid-mapping variables and re-applying
+    ``write_crs``/``write_grid_mapping`` immediately before writing fixes both.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Reprojected dataset, just before ``to_netcdf``.
+    crs_wkt : str
+        WKT/PROJ string of the dataset's (target) CRS.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with a single CF grid mapping that PISM can read and that
+        round-trips through a plain ``xarray.open_dataset``.
+    """
+    ds = ds.drop_vars(["crs", "spatial_ref"], errors="ignore")
+    ds = ds.rio.write_crs(crs_wkt).rio.write_grid_mapping().rio.write_coordinate_system()
+    stamp_grid_mapping(ds)
+    return ds
 
 
 def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | None:
@@ -833,9 +876,19 @@ def prepare_carra2_for_group(
         ):
             out[name].encoding.pop(k, None)
 
+    # Drop the stale source grid mapping and stamp a single PISM-readable one,
+    # so the per-group cache (and the per-glacier file derived from it) carries
+    # the projection PISM needs to reproject the forcing on the fly.
+    out = _finalize_pism_crs(out, dst_crs)
+    if "time" in out.coords:
+        # CF time-axis identity so ncview/PISM recognise the time coordinate;
+        # the dimension itself is written unlimited below.
+        out["time"].attrs.update({"standard_name": "time", "long_name": "time", "axis": "T"})
+
     encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
     output_file.unlink(missing_ok=True)
-    out.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
+    unlimited = ["time"] if "time" in out.dims else None
+    out.to_netcdf(output_file, encoding=encoding, engine="h5netcdf", unlimited_dims=unlimited)
     return output_file
 
 
@@ -1172,10 +1225,26 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
         pieces.append(sub.assign_coords(time=new_times))
 
     merged = xr.concat(pieces, dim="time")
+
+    # Orography is time-invariant; concat (or an upstream broadcast) gives it a
+    # redundant time dimension with identical slices. Drop it back to a single
+    # 2-D field.
+    if "orography" in merged and "time" in merged["orography"].dims:
+        merged["orography"] = merged["orography"].isel(time=0, drop=True)
+
     times = merged["time"].values
     bounds = np.stack([times, np.array([_next_month(t) for t in times])], axis=1)
     merged["time_bnds"] = xr.DataArray(bounds, dims=["time", "nv"], coords={"time": merged["time"]})
-    merged["time"].attrs["bounds"] = "time_bnds"
+    # CF time-axis identity so ncview/PISM recognise the time coordinate. (The
+    # time dimension must also be written unlimited — see the to_netcdf calls.)
+    merged["time"].attrs.update(
+        {
+            "standard_name": "time",
+            "long_name": "time",
+            "axis": "T",
+            "bounds": "time_bnds",
+        }
+    )
     return merged
 
 
@@ -1302,8 +1371,11 @@ def carra2(
                 },
             }
         )
+        # Re-stamp the grid mapping (dropped by the fill/fillna above) so PISM
+        # can find the projection and reproject the forcing on the fly.
+        out = _finalize_pism_crs(out, dst_crs)
         carra2_filename.unlink(missing_ok=True)
-        out.to_netcdf(carra2_filename, encoding=encoding, engine="h5netcdf")
+        out.to_netcdf(carra2_filename, encoding=encoding, engine="h5netcdf", unlimited_dims=["time"])
         tmp_pre.unlink(missing_ok=True)
         return carra2_filename
 
@@ -1502,13 +1574,17 @@ def carra2(
                 }
             )
 
+            # Re-stamp the grid mapping (dropped by the concat/fillna above) so
+            # PISM can find the projection and reproject the forcing on the fly.
+            out = _finalize_pism_crs(out, dst_crs)
+
             # Stream from the per-batch shards straight into the final NetCDF
             # — never materializing the full reprojected dataset in RAM, which
             # for high-res grids over 50 years is easily 10+ GiB per variable.
             # Writing here (inside the temp-dir context) keeps the shards alive
             # for dask to read from.
             carra2_filename.unlink(missing_ok=True)
-            out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf")
+            out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf", unlimited_dims=["time"])
     finally:
         Callback.active.update(saved_callbacks)
 

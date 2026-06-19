@@ -61,6 +61,7 @@ from pism_terra.workflow import (
     check_xr_fully,
     check_xr_lazy,
     drop_geotransform_attr,
+    stamp_grid_mapping,
 )
 
 xr.set_options(keep_attrs=True)
@@ -244,6 +245,7 @@ def stage_glacier(
     # displays the raster upside-down in QGIS. Drop it so GDAL falls back to
     # deriving the transform from the y coordinate variable (top-down).
     drop_geotransform_attr(boot_ds)
+    stamp_grid_mapping(boot_ds)
     boot_ds.to_netcdf(boot_file, engine="h5netcdf")
     check_xr_lazy(boot_file)
 
@@ -260,6 +262,7 @@ def stage_glacier(
     grid_ds.attrs.update({"domain": rgi_id})
     grid_file.unlink(missing_ok=True)
     drop_geotransform_attr(grid_ds)
+    stamp_grid_mapping(grid_ds)
     grid_ds.to_netcdf(grid_file, engine="h5netcdf")
     check_xr_fully(grid_file)
 
