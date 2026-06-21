@@ -52,7 +52,7 @@ dependencies = [
     "pyogrio",
     "pyproj",
     "pytest",
-    "pytest-codeblocks",
+    "pytest-codeblocks>=0.17",
     "rasterio",
     "requests",
     "rioxarray",

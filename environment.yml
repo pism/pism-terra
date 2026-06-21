@@ -63,6 +63,6 @@ dependencies:
   - pre-commit
   - pylint
   - pytest
-  - pytest-codeblocks
+  - pytest-codeblocks>=0.17  # 0.16.x uses the pytest_collect_file(path=...) hook removed in pytest 9
   - pytest-cov
   - setuptools_scm>=6.2
