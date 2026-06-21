@@ -70,7 +70,7 @@ resolution = "500m"
 
 [energy]
 
-model = "none"
+model = "enthalpy"
 
 [energy.options.none]
 
@@ -89,7 +89,7 @@ model = "none"
 
 [stress_balance]
 
-model = 'none'
+model = 'blatter'
 
 [stress_balance.options.none]
 
@@ -143,7 +143,7 @@ bp_ksp_rtol = 1e-3
 
 [surface]
 
-model = "debm_enhanced"
+model = "pdd"
 
 [surface.options.pdd]
 
