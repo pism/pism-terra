@@ -63,6 +63,10 @@ dependencies:
   - pre-commit
   - pylint
   - pytest
-  - pytest-codeblocks>=0.17  # 0.16.x uses the pytest_collect_file(path=...) hook removed in pytest 9
   - pytest-cov
   - setuptools_scm>=6.2
+  # conda-forge tops out at pytest-codeblocks 0.17.0, which still uses the
+  # pytest_collect_file(path=...) hook removed in pytest 9.1. Only 0.18.0
+  # (PyPI-only) switched to the new file_path signature, so install via pip.
+  - pip:
+      - pytest-codeblocks>=0.18

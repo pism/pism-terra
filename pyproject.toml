@@ -52,7 +52,7 @@ dependencies = [
     "pyogrio",
     "pyproj",
     "pytest",
-    "pytest-codeblocks>=0.17",
+    "pytest-codeblocks>=0.18",  # 0.17.x uses the pytest_collect_file(path=...) hook removed in pytest 9.1
     "rasterio",
     "requests",
     "rioxarray",
