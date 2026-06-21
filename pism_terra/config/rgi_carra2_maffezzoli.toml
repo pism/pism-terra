@@ -1,7 +1,7 @@
 [run_info]
 
 'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA Calibration Run"
+'run_info.title' = "PISM-TERRA Initialization Run"
 
 [campaign]
 
@@ -10,24 +10,24 @@ climate = "carra2"
 dem = "glo_90"
 ice_thickness = "maffezzoli"
 bathymetry = "gebco"
+heatflux = "lucazeau"
 name = "Calibration"
 prefix = "rgi/glacier"
 rgi_complex_file = "rgi_c.gpkg"
 rgi_glacier_file = "rgi_g.gpkg"
 velocity = "its_live"
-forcing_mask = "glacier"
-heatflux = "none"
+forcing_mask = "none"
 
 [time]
 
 'time.start' = "1994-01-01"
 'time.end' =  "1995-01-01"
 'time.calendar' =  "standard"
-'time.reference_date' = "1978-01-01"
+'time.reference_date' = "1980-01-01"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 250
+'time_stepping.adaptive_ratio' = 500
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -53,26 +53,26 @@ heatflux = "none"
 'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "ice_mass,mass_fluxes,effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,mass"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 
 [grid]
 
-resolution = "400m"
+resolution = "500m"
+'grid.file' = "none"
 'grid.Lbz' = 0
-'grid.Lz' = 2000
+'grid.Lz' = 1200
 'grid.Mbz' = 1
-'grid.Mz' = 101
+'grid.Mz' = 61
 'grid.registration' = "center"
 
 [energy]
 
-model = "enthalpy"
+model = "none"
 
 [energy.options.none]
 
-'energy.model' = "none"
 'flow_law.isothermal_Glen.ice_softness' = 1.0e-24
 'stress_balance.blatter.flow_law' = "isothermal_glen"
 'stress_balance.sia.flow_law' = "isothermal_glen"
@@ -81,13 +81,18 @@ model = "enthalpy"
 [energy.options.enthalpy]
 
 'energy.model' = "enthalpy"
+'energy.bedrock_thermal.file' = "none"
 'stress_balance.blatter.flow_law' = "gpbld"
 'stress_balance.sia.flow_law' = "gpbld"
 'stress_balance.ssa.flow_law' = "gpbld"
 
 [stress_balance]
 
-model = 'blatter'
+model = 'none'
+
+[stress_balance.options.none]
+
+'stress_balance.model' = "none"
 
 [stress_balance.options.blatter]
 
@@ -98,13 +103,14 @@ model = 'blatter'
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
-bp_ksp_monitor =  ""
-bp_snes_monitor_ratio = ""
+bp_ksp_type = "fgmres"
 bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
 bp_mg_levels_pc_type ="sor"
-bp_mg_coarse_ksp_type = "preonly"
+bp_mg_coarse_ksp_type = "gmres"
 bp_mg_coarse_pc_type = "gamg"
+bp_mg_coarse_ksp_rtol = 1e-2
+bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
@@ -118,45 +124,59 @@ bp_ksp_rtol = 1e-3
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
+'time_stepping.adaptive_ratio' = 0.12
 
 [iceflow]
 
 'basal_resistance.pseudo_plastic.q' = 0.75
 'basal_resistance.pseudo_plastic.u_threshold' = '100m/yr'
 'basal_resistance.pseudo_plastic.enabled' = 'yes'
-'basal_yield_stress.mohr_coulomb.till_phi_default' = 30
+'basal_yield_stress.mohr_coulomb.till_phi_default' = 35
 'basal_yield_stress.model' = 'mohr_coulomb'
 'basal_yield_stress.mohr_coulomb.till_effective_fraction_overburden' = 0.025
 'stress_balance.blatter.enhancement_factor' = 2.0
+'stress_balance.blatter.Glen_exponent' = 3.0
 'stress_balance.sia.enhancement_factor' = 2.0
+'stress_balance.sia.Glen_exponent' = 3.0
 'stress_balance.sia.bed_smoother.range' = 5e2
 
 [surface]
 
-model = "pdd"
-
-[surface.options.cosipy]
-
-'surface.models' = "given,forcing"
+model = "debm_enhanced"
 
 [surface.options.pdd]
 
-'surface.models' = "pdd,forcing"
-'surface.force_to_thickness.file' = "none"
+'surface.models' = "pdd"
+'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
 
-[surface.options.debm]
+[surface.options.debm_simple]
 
-'surface.models' = "debm_simple,forcing"
+'surface.models' = "debm_simple"
+'surface.debm_simple.albedo_input.file' = "none"
+'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.std_dev.file' = "none"
 'surface.debm_simple.std_dev.periodic' = "yes"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
-'surface.debm_simple.c1' = 30
-'surface.debm_simple.c2' = -75
+'surface.debm_simple.c1' = 25
+'surface.debm_simple.c2' = -103
+'surface.debm_simple.refreeze' = 0.50
+'surface.debm_simple.refreeze_ice_melt' = "no"
+'surface.debm_simple.air_temp_all_precip_as_snow' = 271.65
+'surface.debm_simple.air_temp_all_precip_as_rain' = 275.0
+
+[surface.options.debm_enhanced]
+
+'surface.models' = "debm_enhanced"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 29
+'surface.debm_simple.c2' = -93
 'surface.debm_simple.refreeze' = 0.60
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.air_temp_all_precip_as_snow' = 272.15
+'surface.debm_simple.air_temp_all_precip_as_snow' = 273.15
 'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
-'surface.force_to_thickness.file' = "none"
 
 [calving]
 
@@ -169,10 +189,9 @@ model = "given"
 
 [atmosphere.options.given]
 
-'atmosphere.models' = "given,elevation_change"
+'atmosphere.models' = "given"
 'atmosphere.given.file' = "none"
-'atmosphere.elevation_change.temperature_lapse_rate' = 6
-'atmosphere.elevation_change.file' = "none"
+'atmosphere.given.periodic' = "yes"
 
 [ocean]
 
@@ -180,7 +199,7 @@ model = "constant"
 
 [ocean.options.given]
 
-'ocean.models' = "given"
+'ocean.model' = "given"
 'ocean.given.file' = "none"
 'ocean.given.periodic' = "yes"
 
@@ -193,10 +212,42 @@ model = "constant"
 
 model = "null"
 
-[hydrology.options]
+[hydrology.options.null]
+
+'hydrology.model' = "null"
+'hydrology.null_diffuse_till_water' = "no"
 
 [frontal_melt]
 
 model = "off"
 
 [frontal_melt.options.off]
+
+[inverse]
+
+'inverse.file' = "none"
+'inverse.stress_balance.velocity_scale' = 1e2
+'inverse.stress_balance.length_scale' = 1e3
+'inverse.design.cH1' = 1
+'inverse.design.cL2' = 0
+'inverse.max_iterations' = 50
+'inverse.design.param' = "exp"
+'inverse.stress_balance.method' = "tikhonov_blmvm"
+'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_max' = 5e7
+'inverse.tikhonov.penalty_weight' = 10
+'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.adjoint.method' =  "exact"
+'inverse.state_func' = "huber"
+'inverse.huber.delta' =  1e2
+'inv_adj_ksp_type' = "gmres"
+'inv_adj_pc_type' = "jacobi"
+'bp_ksp_rtol' = 1e-4
+'bp_mg_coarse_ksp_type' = "preonly"
+'bp_mg_coarse_pc_type' = "gamg"
+'bp_mg_levels_ksp_type' = "chebyshev"
+'bp_pc_mg_levels' = 3
+'bp_pc_type' = "mg"
+'bp_snes_ksp_ew' = 0
+'bp_snes_ksp_ew_version' = 3
+'bp_snes_rtol' = 1e-4
