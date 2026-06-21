@@ -20,6 +20,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - improved postprocessing of RGI
 - fixed missing output filename for inverse state
 - fixed missing resolve()
+- fixed initialization
 
 ### Added
 
