@@ -894,8 +894,6 @@ def _run(*, kind: str) -> None:
     staging_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
-    uq_path = output_path / "uq"
-    uq_path.mkdir(parents=True, exist_ok=True)
 
     config_file = file_localizer(options.CONFIG_FILE, path / "config")
     pism_config_cdl = file_localizer(options.pism_config_cdl, path / "config") if options.pism_config_cdl else None
@@ -952,7 +950,6 @@ def _run(*, kind: str) -> None:
         "end": end_cli,
     }
 
-    uq_records = []
     for idx, row in rows_df.iterrows():
         delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
         frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
@@ -986,7 +983,6 @@ def _run(*, kind: str) -> None:
 
         outline_file = row["outline_file"] if "outline_file" in row else None
         sample = row["sample"] if is_ensemble else (int(row["sample"]) if "sample" in row else idx)
-        uq_records.append({"sample": sample, **uq_overrides})
         render(
             rgi_id,
             config_file,
@@ -999,9 +995,6 @@ def _run(*, kind: str) -> None:
             sample=sample,
             pism_config_cdl=pism_config_cdl,
         )
-
-    uq_out_file = uq_path / "uq.csv"
-    pd.DataFrame(uq_records).to_csv(uq_out_file, index=False)
 
     # ``--execute`` only fires the *first* generated script. Use it for the
     # single-glacier mode; ignore it for ensembles (would only run member 0).
