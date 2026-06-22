@@ -319,7 +319,14 @@ def create_domain(
         },
         attrs={"Conventions": "CF-1.8"},
     ).rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim)
-    ds = ds.rio.write_crs(crs, grid_mapping_name="mapping").rio.write_coordinate_system()
+    # Use rioxarray's default grid-mapping variable name ("spatial_ref"). A
+    # non-default name here leaks downstream: derived datasets (e.g. the boot
+    # file) inherit this scalar coord, then add their own "spatial_ref" via
+    # write_crs, ending up with two grid-mapping variables. On write the stale
+    # one lands in the CF `coordinates` attr while `grid_mapping` points at the
+    # other, so on reload the CRS-bearing variable is not promoted to a coord
+    # and tools (rioxarray, QGIS) fail to detect the CRS.
+    ds = ds.rio.write_crs(crs).rio.write_coordinate_system()
 
     for var in list(ds.data_vars) + list(ds.coords):
         ds[var].encoding.update({"_FillValue": None})

@@ -601,19 +601,22 @@ def prepare_observations(
     Returns
     -------
     dict[str, Path or str]
-        Dictionary with keys ``"boot_file"`` and ``"heatflux_file"``
-        mapping to their respective output paths.
+        Dictionary with keys ``"boot_file"``, ``"heatflux_file"``, and
+        ``"obs_file"`` mapping to their respective output paths. The
+        ``"obs_file"`` is an inverse-distance-weighted collapse of
+        ``vx_timeseries``/``vy_timeseries``, post-processed in the same
+        shape as :func:`pism_terra.glacier.observations.glacier_velocities_from_grid`.
     """
 
     # ``url`` may be a Path (when reading from a local mirror) or a string
     # (when downloading from Globus). Normalize to str for split/download.
     url_str = str(url)
     name = url_str.rsplit("/", maxsplit=1)[-1]
-    obs_file = Path(input_path) / Path(name)
-    if (not check_xr_lazy(obs_file)) or force_overwrite:
+    boot_file = Path(input_path) / Path(name)
+    if (not check_xr_lazy(boot_file)) or force_overwrite:
         ds_bm = download_netcdf(url_str)
     else:
-        ds_bm = xr.open_dataset(obs_file)
+        ds_bm = xr.open_dataset(boot_file)
 
     ds_bm = ds_bm.rename_vars({"surface_grimp": "surface"})
     ds_bm["surface"].attrs.update(
@@ -687,9 +690,9 @@ def prepare_observations(
         ds[var].encoding.update(comp)
 
     resolution = int(ds.x[1] - ds.x[0])
-    obs_file = output_path / Path(f"boot_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
+    boot_file = output_path / Path(f"boot_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
 
-    ds.to_netcdf(obs_file, engine="h5netcdf")
+    ds.to_netcdf(boot_file, engine="h5netcdf")
 
     geo["bheatflx"].attrs.pop("coordinates", None)
     geo["bheatflx"].encoding.pop("coordinates", None)
@@ -702,7 +705,76 @@ def prepare_observations(
     geo_encoding = {var: {"_FillValue": None} for var in list(geo.data_vars) + list(geo.coords)}
     geo.to_netcdf(geo_file, encoding=geo_encoding, engine="h5netcdf")
 
-    return {"boot_file": obs_file, "heatflux_file": geo_file}
+    # Velocity observations: collapse the ISMIP7 vx/vy time series with the
+    # inverse-distance-weighting recipe used in pism-ragis
+    # (data/05_prepare_itslive.py), then mirror the post-processing in
+    # pism_terra.glacier.observations.glacier_velocities_from_grid — fillna
+    # for u/v_observed and emit zeta_fixed_mask / vel_misfit_weight so the
+    # downstream PISM inverse run knows which cells carry trustable obs.
+    vel_ts = ds_bm[["vx_timeseries", "vy_timeseries"]].rename_vars({"vx_timeseries": "vx", "vy_timeseries": "vy"})
+    nt = vel_ts.sizes["time"]
+    dt = xr.DataArray(np.arange(nt), dims=("time",))
+    speed_ts = (vel_ts["vx"] ** 2 + vel_ts["vy"] ** 2) ** 0.5
+    # Distance metric matches 05_prepare_itslive.py: earlier years carry the
+    # heavier weight; cells with no finite observation in a given year get
+    # distance 0 — but xarray.weighted skips NaN positions, so those huge
+    # weights never reach the mean.
+    distance = np.isfinite(speed_ts) * dt.broadcast_like(speed_ts)
+    power = 1.0
+    weights = 1.0 / (distance + 1e-12) ** power
+    vel = vel_ts.weighted(weights).mean(dim="time")
+
+    if target_grid is not None:
+        vel = vel.regrid.conservative(target_grid)
+
+    v_missing = vel["vx"].isnull()
+    vel["v"] = ((vel["vx"].fillna(0) ** 2 + vel["vy"].fillna(0) ** 2) ** 0.5).astype("float32")
+    vel["u_observed"] = vel["vx"].fillna(0).astype("float32")
+    vel["v_observed"] = vel["vy"].fillna(0).astype("float32")
+    vel["zeta_fixed_mask"] = xr.where(v_missing, 1, 0).fillna(0).astype("int8")
+    vel["vel_misfit_weight"] = xr.where(v_missing, 0, 1).fillna(0).astype("int8")
+    vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
+    vel["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "fixed zeta mask (1=no obs, fix prior)"})
+    vel["v"].attrs.update({"units": "m year^-1", "long_name": "ice speed"})
+    vel["u_observed"].attrs.update({"units": "m year^-1", "long_name": "observed x velocity"})
+    vel["v_observed"].attrs.update({"units": "m year^-1", "long_name": "observed y velocity"})
+
+    vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
+    vel["x"].attrs.update(
+        {
+            "standard_name": "projection_x_coordinate",
+            "long_name": "x coordinate of projection",
+            "units": "m",
+            "axis": "X",
+        }
+    )
+    vel["y"].attrs.update(
+        {
+            "standard_name": "projection_y_coordinate",
+            "long_name": "y coordinate of projection",
+            "units": "m",
+            "axis": "Y",
+        }
+    )
+    vel["x"].encoding["_FillValue"] = None
+    vel["y"].encoding["_FillValue"] = None
+    for v in vel.data_vars:
+        vel[v].attrs.pop("coordinates", None)
+        vel[v].encoding.pop("coordinates", None)
+        for k in ("scale_factor", "add_offset", "AREA_OR_POINT"):
+            vel[v].attrs.pop(k, None)
+            vel[v].encoding.pop(k, None)
+    vel = vel.drop_vars(["crs", "spatial_ref"], errors="ignore")
+
+    obs_file = output_path / Path(f"obs_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
+    vel_encoding: dict[str, dict[str, Any]] = {
+        var: {"_FillValue": None} for var in list(vel.data_vars) + list(vel.coords)
+    }
+    for var in vel.data_vars:
+        vel_encoding[var].update(comp)
+    vel.to_netcdf(obs_file, encoding=vel_encoding, engine="h5netcdf")
+
+    return {"boot_file": boot_file, "heatflux_file": geo_file, "obs_file": obs_file}
 
 
 def prepare_calfin(

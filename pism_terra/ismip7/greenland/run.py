@@ -50,7 +50,7 @@ from pism_terra.workflow import (
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
 
-def run_greenland(
+def _render_forward_run(
     config_file: str | Path,
     template_file: Path | str,
     outline_file: Path | str | None,
@@ -63,12 +63,12 @@ def run_greenland(
     pism_config_cdl: str | Path | None = None,
 ):
     """
-    Configure and generate a PISM job script for a single glacier (ensemble-ready).
+    Configure and generate a PISM forward job script for ISMIP7 Greenland (ensemble-ready).
 
     Reads a TOML configuration, merges optional ensemble overrides (``uq``),
     renders a submission script from a Jinja2 template, and writes both the
-    script and a companion TOML describing the resolved run parameters.
-    Also emits a command-line string of PISM flags derived from the config and
+    script and a companion TOML describing the resolved run parameters. Also
+    emits a command-line string of PISM flags derived from the config and
     overrides.
 
     Parameters
@@ -79,14 +79,16 @@ def run_greenland(
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template (e.g., SLURM/LSF script). The
         context is populated from validated ``RunConfig`` and ``JobConfig``.
-    outline_file : str or pathlib.Path
-        Path to a geopandas file with the glacier outline.
+    outline_file : str or pathlib.Path or None
+        Path to a geopandas file with the basin outline used by
+        post-processing. Pass ``None`` to record it as the literal string
+        ``"none"``.
     path : str or pathlib.Path, optional
         Base output directory. ``output/`` and ``run_scripts/`` subdirectories
         are created inside it. Default is ``"result"``.
     config_cli : dict or None, optional
         CLI-side overrides applied after reading the config. Recognized keys:
-        ``"resolution"`` (e.g. ``"200m"``), ``"nodes"`` (int), ``"ntasks"``
+        ``"resolution"`` (e.g. ``"500m"``), ``"nodes"`` (int), ``"ntasks"``
         (int), ``"tasks"`` (int, MPI tasks per node), ``"queue"`` (str),
         ``"walltime"`` (``HH:MM:SS``), ``"stress_balance"`` (sub-model name
         swap, e.g. ``"sia"``), and ``"start"`` / ``"end"`` (``YYYY-MM-DD``
@@ -94,19 +96,19 @@ def run_greenland(
         Default is ``None`` (no overrides).
     debug : bool, optional
         If ``True``, skip rendering the template (leave it empty) but still
-        append the constructed PISM command line to the output script.
-        Default is ``False``.
+        write the resolved post-processing TOML. Default is ``False``.
     uq : Mapping[str, object] or pandas.Series or None, optional
         Ensemble overrides. Keys are **dotted PISM flags** (e.g.,
-        ``"surface.pdd.factor_ice"``, ``"input.file"``). Values are inserted into
-        the run dictionary and thus into the generated command line. If ``uq``
-        contains a key ``"sample"``, it is used (when ``sample`` is not provided)
-        to suffix output filenames and scripts.
+        ``"surface.pdd.factor_ice"``, ``"input.file"``). Values are inserted
+        into the run dictionary and thus into the generated command line. If
+        ``uq`` contains a key ``"sample"``, it is used (when ``sample`` is
+        not provided) to suffix output filenames and scripts.
     sample : int or None, optional
         Ensemble member identifier. If not provided, and ``uq`` has
         ``"sample"``, that value is used. The value changes the filename
-        stem used for outputs (e.g., ``..._s0042``). If neither is provided,
-        filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+        stem used for outputs (e.g., ``..._id_0042``). If neither is
+        provided, filenames use a descriptive
+        ``surface/energy/stress_balance`` suffix.
     pism_config_cdl : str or Path or None, optional
         Path to a PISM CDL master config file. If provided, all run options
         are validated against it before generating the command line.
@@ -116,42 +118,9 @@ def run_greenland(
     ValueError
         If configuration validation fails upstream (e.g., via Pydantic models),
         or if provided overrides are of incompatible types.
-
-    Notes
-    -----
-    - The Jinja2 context is populated from validated ``RunConfig`` and
-      ``JobConfig`` (config values) plus any CLI overrides provided here
-      for ``ntasks``, ``nodes``, ``queue``, ``walltime``.
-    - ``uq`` overrides are merged **after** reading the config; they can set or
-      replace any dotted PISM flag (e.g., swapping input or forcing files).
-    - The function attempts to open NetCDF inputs referenced by keys ending
-      with ``.file`` (excluding ``output.*``) using ``xarray.open_dataset`` and
-      prints a ✓/✗ check; it does not stop the run on failure.
-
-    Examples
-    --------
-    Basic use with config and template:
-
-    >>> run_greenland(
-    ...     config_file="config/init_stampede3.toml",
-    ...     template_file="templates/stampede3.j2",
-    ...     outline_file=None,
-    ...     path="result",
-    ... )
-
-    Ensemble member with overrides from a pandas row (e.g., Latin Hypercube):
-
-    >>> row = df_samples.loc[17]  # contains dotted keys + 'sample'
-    >>> run_greenland(
-    ...     config_file="config/init_stampede3.toml",
-    ...     template_file="templates/stampede3.j2",
-    ...     outline_file=None,
-    ...     uq=row,             # dotted PISM flags to override
-    ...     sample=None,        # will be inferred from row['sample'] if present
-    ...     ntasks=112,         # optional template/run override
-    ... )
     """
 
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     cfg = load_config(config_file)
 
     config_cli = config_cli or {}
@@ -202,6 +171,22 @@ def run_greenland(
     env = Environment(loader=FileSystemLoader(template_file.parent))
     template = env.get_template(template_file.name)
 
+    # CLI overrides for time bounds. ``cfg.time`` is a TimeConfig pydantic
+    # model with field names ``time_start`` / ``time_end`` (aliased to the
+    # dotted ``"time.start"`` / ``"time.end"``), so attribute assignment is
+    # required. Drop the prior dotted entry from ``run`` and re-apply via
+    # ``as_params()`` so the new value lands cleanly.
+    _start = config_cli.get("start")
+    _end = config_cli.get("end")
+    if _start is not None:
+        run.pop("time.start", None)
+        cfg.time.time_start = _start
+        run.update(cfg.time.as_params())
+    if _end is not None:
+        run.pop("time.end", None)
+        cfg.time.time_end = _end
+        run.update(cfg.time.as_params())
+
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
     writer = cfg.model_dump()["run"]["writer"] if (cfg.model_dump()["run"]["writer"] is not None) else ""
@@ -218,22 +203,6 @@ def run_greenland(
         cfg.stress_balance.model = stress_balance
         run.update(cfg.stress_balance.selected())
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
-
-    # CLI overrides for time bounds. ``cfg.time`` is a TimeConfig pydantic
-    # model with field names ``time_start`` / ``time_end`` (aliased to the
-    # dotted ``"time.start"`` / ``"time.end"``), so attribute assignment is
-    # required. Drop the prior dotted entry from ``run`` and re-apply via
-    # ``as_params()`` so the new value lands cleanly.
-    _start = config_cli.get("start")
-    _end = config_cli.get("end")
-    if _start is not None:
-        run.pop("time.start", None)
-        cfg.time.time_start = _start
-        run.update(cfg.time.as_params())
-    if _end is not None:
-        run.pop("time.end", None)
-        cfg.time.time_end = _end
-        run.update(cfg.time.as_params())
 
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
@@ -297,7 +266,6 @@ def run_greenland(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
-    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     run_toml = {
         "basin": {"basin": "Mouginot/Rignot", "outline": outline_file},
         "output": {
@@ -325,333 +293,417 @@ def run_greenland(
     run_script.write_text(rendered_script)
 
     print(f"\nJob script written to {run_script.resolve()}\n")
+    print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
-def run_single():
+def _render_inverse_run(
+    config_file: str | Path,
+    template_file: Path | str,
+    outline_file: Path | str | None,
+    path: str | Path = "result",
+    config_cli: dict | None = None,
+    debug: bool = False,
+    *,
+    uq: Mapping[str, object] | pd.Series | None = None,
+    sample: int | None = None,
+    pism_config_cdl: str | Path | None = None,
+):
     """
-    Run single glacier.
+    Configure and generate a PISM inverse job script for ISMIP7 Greenland (ensemble-ready).
+
+    Same interface as :func:`_render_forward_run` but also builds an ``inv``
+    dict of ``inverse.*`` / ``stress_balance.*`` flags that the Jinja2
+    template can render as a ``pismi`` command line via ``inv_str``. Output
+    files mirror the forward layout with an additional ``inverse/``
+    subdirectory under ``output/``.
+
+    Parameters
+    ----------
+    config_file : str or pathlib.Path
+        Path to the PISM configuration TOML (contains ``run``, ``grid``,
+        ``time``, ``surface``, ``energy``, ``stress_balance``, ``inverse``).
+    template_file : str or pathlib.Path
+        Path to a Jinja2 submission template. The context includes both
+        ``run_str`` (forward command line) and ``inv_str`` (inverse command
+        line) so a single template can launch the prior + pismi pair.
+    outline_file : str or pathlib.Path or None
+        Path to a geopandas file with the basin outline used by
+        post-processing. Pass ``None`` to record it as the literal string
+        ``"none"``.
+    path : str or pathlib.Path, optional
+        Base output directory. ``output/`` (with an extra ``inverse/``
+        subdirectory) and ``run_scripts/`` are created inside it. Default
+        is ``"result"``.
+    config_cli : dict or None, optional
+        CLI-side overrides applied after reading the config. See
+        :func:`_render_forward_run` for the recognized keys. Default is
+        ``None`` (no overrides).
+    debug : bool, optional
+        If ``True``, skip rendering the template (leave it empty) but still
+        write the resolved post-processing TOML. Default is ``False``.
+    uq : Mapping[str, object] or pandas.Series or None, optional
+        Ensemble overrides. Keys are dotted PISM flags belonging to either
+        the forward (``run``) or inverse (``inv``) dict; each key is routed
+        to the dict that owns it, so e.g. ``inverse.file`` propagates into
+        ``inv_str``.
+    sample : int or None, optional
+        Ensemble member identifier. If not provided, and ``uq`` has
+        ``"sample"``, that value is used. Changes the filename stem used
+        for outputs (e.g., ``..._id_0042``).
+    pism_config_cdl : str or pathlib.Path or None, optional
+        Path to a PISM CDL master config file. If provided, all forward
+        run options are validated against it before generating the
+        command line.
     """
 
-    # set up the option parser
+    outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
+    cfg = load_config(config_file)
+
+    config_cli = config_cli or {}
+    resolution = config_cli.get("resolution")
+    if resolution:
+        resolution = re.sub(r"\s+", "", resolution)
+
+        # update GridConfig and force dx/dy to be derived from the new resolution
+        cfg.grid.resolution = resolution
+        cfg.grid.dx = None
+        cfg.grid.dy = None
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    log_path = path / Path("logs")
+    log_path.mkdir(parents=True, exist_ok=True)
+    output_path = path / Path("output")
+    output_path.mkdir(parents=True, exist_ok=True)
+    scalar_path = output_path / Path("scalar")
+    scalar_path.mkdir(parents=True, exist_ok=True)
+    spatial_path = output_path / Path("spatial")
+    spatial_path.mkdir(parents=True, exist_ok=True)
+    state_path = output_path / Path("state")
+    state_path.mkdir(parents=True, exist_ok=True)
+    inv_path = output_path / Path("inverse")
+    inv_path.mkdir(parents=True, exist_ok=True)
+
+    run = {}
+    for section in (
+        "geometry",
+        "calving",
+        "iceflow",
+        "reporting",
+        "input",
+        "time_stepping",
+    ):
+        run.update(getattr(cfg, section))
+    run.update(cfg.atmosphere.selected())
+    run.update(cfg.energy.selected())
+    run.update(cfg.ocean.selected())
+    run.update(cfg.frontal_melt.selected())
+    run.update(cfg.grid.as_params())
+    run.update(cfg.hydrology.selected())
+    run.update(cfg.run_info.as_params())
+    run.update(cfg.surface.selected())
+    run.update(cfg.stress_balance.selected())
+    run.update(cfg.time.as_params())
+
+    inv: dict = {}
+    inv.update(getattr(cfg, "iceflow"))
+    inv.update(getattr(cfg, "inverse"))
+
+    # cfg.stress_balance.selected() carries everything the forward run needs
+    # (model options + PETSc solver knobs like bp_* / inv_adj_*). The pismi
+    # call only needs the ``stress_balance.*`` dotted options; the solver
+    # flags are picked up by the prior pism call (and inherited from the
+    # state file). Filter so inv_str stays minimal.
+    inv.update({k: v for k, v in cfg.stress_balance.selected().items() if k.startswith("stress_balance.")})
+
+    template_file = Path(template_file)
+    env = Environment(loader=FileSystemLoader(template_file.parent))
+    template = env.get_template(template_file.name)
+
+    # CLI overrides for time bounds. ``cfg.time`` is a TimeConfig pydantic
+    # model with field names ``time_start`` / ``time_end`` (aliased to the
+    # dotted ``"time.start"`` / ``"time.end"``), so we set attributes, not
+    # items. We drop the prior value from ``run`` first and re-apply via
+    # ``as_params()`` so the dotted alias replaces cleanly.
+    _start = config_cli.get("start")
+    _end = config_cli.get("end")
+    if _start is not None:
+        run.pop("time.start", None)
+        cfg.time.time_start = _start
+        run.update(cfg.time.as_params())
+    if _end is not None:
+        run.pop("time.end", None)
+        cfg.time.time_end = _end
+        run.update(cfg.time.as_params())
+
+    start = cfg.model_dump(by_alias=True)["time"]["time.start"]
+    end = cfg.model_dump(by_alias=True)["time"]["time.end"]
+
+    if resolution is None:
+        resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
+    # CLI override for the stress-balance model.
+    stress_balance = config_cli.get("stress_balance")
+    if stress_balance is not None:
+        for old_key in cfg.stress_balance.selected():
+            run.pop(old_key, None)
+        cfg.stress_balance.model = stress_balance
+        run.update(cfg.stress_balance.selected())
+    stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
+
+    energy = cfg.model_dump(by_alias=True)["energy"]["model"]
+    surface = cfg.model_dump(by_alias=True)["surface"]["model"]
+
+    if sample is None:
+        name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
+    else:
+        name_options = f"id_{sample}"
+
+    uq_clean = normalize_row(uq) if uq is not None else {}
+    # Prefer explicit `sample` arg; else default from uq['sample']
+    if sample is None and "sample" in uq_clean:
+        try:
+            sample = int(uq_clean["sample"])
+        except Exception:
+            pass
+
+    # Drop any uq key that isn't in either the ``run`` or ``inv`` dicts (e.g.
+    # surface.debm_simple.std_dev.file when surface.model == "pdd"). ``inverse.*``
+    # keys live in ``inv`` only, so filtering against ``run.keys()`` alone would
+    # silently drop them.
+    all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
+    run_overrides, _ = filter_overrides_by_config(all_overrides, run.keys())
+    inv_overrides, _ = filter_overrides_by_config(all_overrides, inv.keys())
+    skipped = [k for k in all_overrides if k not in run and k not in inv]
+    if skipped:
+        print(f"Skipping uq overrides not in config: {skipped}")
+    run.update(run_overrides)
+    inv.update(inv_overrides)
+
+    scalar_file = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
+    spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start}_{end}.nc")
+    state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
+    run.update(
+        {
+            "output.file": state_file.resolve(),
+            "output.scalar.file": scalar_file.resolve(),
+            "output.spatial.file": spatial_file.resolve(),
+        }
+    )
+
+    if pism_config_cdl is not None:
+        validate_pism_options(run, pism_config_cdl)
+
+    run_str = dict2str(sort_dict_by_key(run))
+
+    inv_file = inv_path / Path(f"inv_g{resolution}_{name_options}_{start}_{end}.nc")
+    # Feed the forward run's state file into pismi as its input.
+    inv.update({"input.file": state_file.resolve()})
+    inv.update({"o": inv_file.resolve()})
+    inv_str = dict2str(sort_dict_by_key(inv))
+
+    job_opts = JobConfig(**cfg.job.model_dump())
+
+    params = {
+        **job_opts.model_dump(exclude_none=True, by_alias=True),
+    }
+
+    job_kwargs = {
+        k: v
+        for k, v in {
+            "nodes": config_cli.get("nodes"),
+            "ntasks": config_cli.get("ntasks"),
+            "queue": config_cli.get("queue"),
+            "output_path": log_path.resolve(),
+            "tasks": config_cli.get("tasks"),
+            "walltime": config_cli.get("walltime"),
+        }.items()
+        if v is not None
+    }
+    if job_kwargs:
+        params.update(JobConfig(**job_kwargs).as_params())
+
+    run_toml = {
+        "basin": {"basin": "Mouginot/Rignot", "outline": outline_file},
+        "output": {
+            "spatial": str(spatial_file.resolve()),
+            "state": str(state_file.resolve()),
+        },
+        "config": run,
+    }
+    post_path = output_path / Path("post_processing")
+    post_path.mkdir(parents=True, exist_ok=True)
+
+    post_file = post_path / Path(f"g{resolution}_{name_options}_{start}_{end}.toml")
+    with open(post_file, "w", encoding="utf-8") as toml_file:
+        toml.dump(run_toml, toml_file)
+
+    params.update({"run_str": run_str})
+    params.update({"inv_str": inv_str})
+    rendered_script = "" if debug else template.render(params)
+
+    run_script_path = path / Path("run_scripts")
+    run_script_path.mkdir(parents=True, exist_ok=True)
+
+    run_script = run_script_path / Path(f"submit_g{resolution}_{name_options}_{start}_{end}.sh")
+
+    run_script.write_text(rendered_script)
+
+    print(f"\nJob script written to {run_script.resolve()}\n")
+    print(f"Postprocessing script written to {post_file.resolve()}\n")
+
+
+def _nullable_string(argument_string: str) -> str | None:
+    """
+    Treat the literal CLI argument ``"none"`` as Python ``None``.
+
+    Lets job submission systems that can't omit arguments pass a sentinel
+    string instead of dropping the flag. Mirrors
+    :func:`pism_terra.glacier.run._nullable_string`.
+
+    Parameters
+    ----------
+    argument_string : str
+        Argument string to parse.
+
+    Returns
+    -------
+    str or None
+        ``None`` if the argument is the case-insensitive literal ``"none"``,
+        otherwise the argument unchanged.
+    """
+    if argument_string.strip().lower() == "none":
+        return None
+    return argument_string
+
+
+def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentParser:
+    """
+    Build the argparse parser shared by ``run_forward`` and ``run_inverse``.
+
+    ``UQ_FILE`` is exposed as an *optional* positional: omit it to render one
+    job script (single mode), supply it to render an ensemble.
+
+    Parameters
+    ----------
+    description : str
+        Parser description shown in ``--help``.
+    supports_execute : bool
+        Whether to add the ``--execute`` flag. Currently a placeholder for
+        symmetry with the glacier CLI; ISMIP7 templates are normally
+        submitted via SLURM rather than executed in-process.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Run ISMIP7 Greenland."
+    parser.description = description
+    parser.add_argument(
+        "--output-path",
+        help="Base path to save all files to.",
+        type=str,
+        default="data",
+    )
     parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
         default=False,
     )
+    parser.add_argument("--queue", type=str, default=None, help="Overrides queue in config file.")
+    parser.add_argument("--ntasks", type=int, default=None, help="Numbers of cores.")
+    parser.add_argument("--tasks", type=int, default=None, help="Cores per node.")
+    parser.add_argument("--nodes", type=int, default=None, help="Overrides nodes in config file.")
+    parser.add_argument("--walltime", type=str, default=None, help="Overrides walltime in config file.")
     parser.add_argument(
-        "--output-path",
-        help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
-        type=str,
-        default="data",
-    )
-    parser.add_argument(
-        "--queue",
-        help="Overrides queue in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--ntasks",
-        help="Numbers of cores.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--tasks",
-        help="Cores per node.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--nodes",
-        help="Overrides nodes in config file.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--walltime",
-        help="Overrides walltime in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--resolution",
-        help="Override horizontal grid resolution.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--start",
-        help="Override the time.start selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--end",
-        help="Override the time.end selection.",
-        type=str,
-        default=None,
+        "--resolution", type=_nullable_string, default=None, help="Override horizontal grid resolution."
     )
     parser.add_argument(
         "--stress-balance",
+        type=_nullable_string,
+        default=None,
         help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
-        type=str,
-        default=None,
     )
-    parser.add_argument(
-        "--debug",
-        help="Debug or testing mode, do not write template, just the run command.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--pism-config-cdl",
-        help="Path to PISM CDL config file for option validation.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "CONFIG_FILE",
-        help="CONFIG TOML.",
-        nargs=1,
-    )
-    parser.add_argument(
-        "TEMPLATE_FILE",
-        help="TEMPLATE J2.",
-        nargs=1,
-    )
-
-    options, _ = parser.parse_known_args()
-    force_overwrite = options.force_overwrite
-    path = options.output_path
-    config_file = options.CONFIG_FILE[0]
-    template_file = options.TEMPLATE_FILE[0]
-    resolution = options.resolution
-    debug = options.debug
-    queue = options.queue
-    ntasks = options.ntasks
-    nodes = options.nodes
-    tasks = options.tasks
-    walltime = options.walltime
-    stress_balance = options.stress_balance
-    start_cli = options.start
-    end_cli = options.end
-    pism_config_cdl = options.pism_config_cdl
-
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
-    input_path = path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
-    output_path = path / Path("output")
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    cfg = load_config(config_file)
-    campaign_config = cfg.campaign.as_params()
-
-    bucket = campaign_config["bucket"]
-    prefix = campaign_config["prefix"]
-
-    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-
-    f = Figlet(font="standard")
-    banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print("Generate Run for ISMIP7")
-    print("-" * 120)
-    for idx, row in df.iterrows():
-        uq = {
-            "input.file": row["boot_file"],
-            "input.regrid.file": row["regrid_file"],
-            "frontal_melt.routing.file": row["frontal_melt_file"],
-            "geometry.front_retreat.prescribed.file": row["retreat_file"],
-            "grid.file": row["grid_file"],
-            "energy.bedrock_thermal.file": row["heatflux_file"],
-            "atmosphere.given.file": row["climate_file"],
-            "surface.given.file": row["climate_file"],
-            "surface.ismip6.file": row["climate_file"],
-            "surface.ismip6.reference_file": row["climate_file"],
-            "hydrology.surface_input.file": row["surface_input_file"],
-            "ocean.th.file": row["ocean_file"],
-        }
-        sample = int(row["sample"]) if "sample" in row else idx
-        outline_file = row["outline_file"] if "outline_file" in row else None
-        run_greenland(
-            config_file,
-            template_file,
-            outline_file,
-            path=path,
-            config_cli={
-                "resolution": resolution,
-                "nodes": nodes,
-                "ntasks": ntasks,
-                "tasks": tasks,
-                "queue": queue,
-                "walltime": walltime,
-                "stress_balance": stress_balance,
-                "start": start_cli,
-                "end": end_cli,
-            },
-            debug=debug,
-            uq=uq,
-            sample=sample,
-            pism_config_cdl=pism_config_cdl,
-        )
-
-
-def run_ensemble():
-    """
-    Run single glacier.
-    """
-
-    # set up the option parser
-    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Run RGI Glacier Ensemble."
-    parser.add_argument(
-        "--output-path",
-        help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
-        type=str,
-        default="data",
-    )
-    parser.add_argument(
-        "--queue",
-        help="Overrides queue in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--ntasks",
-        help="Numbers of cores.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--tasks",
-        help="Cores per node.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--nodes",
-        help="Overrides nodes in config file.",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--walltime",
-        help="Overrides walltime in config file.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--resolution",
-        help="Override horizontal grid resolution.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--start",
-        help="Override the time.start selection.",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--end",
-        help="Override the time.end selection.",
-        type=str,
-        default=None,
-    )
+    parser.add_argument("--start", type=_nullable_string, default=None, help="Override the time.start selection.")
+    parser.add_argument("--end", type=_nullable_string, default=None, help="Override the time.end selection.")
     parser.add_argument(
         "--posterior-file",
-        help="CSV file posterior parameter distributions to sample from. Default=None.",
-        type=str,
+        type=_nullable_string,
         default=None,
+        help="CSV file of posterior parameter distributions to sample from (ensemble mode only).",
     )
-    parser.add_argument(
-        "--stress-balance",
-        help="Override the [stress_balance].model selection (e.g. 'sia', 'blatter').",
-        type=str,
-        default=None,
-    )
+    if supports_execute:
+        parser.add_argument(
+            "--execute",
+            action="store_true",
+            help="Reserved for parity with the glacier CLI; currently a no-op for ISMIP7.",
+        )
     parser.add_argument(
         "--debug",
-        help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
         default=False,
+        help="Debug or testing mode, do not write template, just the run command.",
     )
     parser.add_argument(
         "--pism-config-cdl",
-        help="Path to PISM CDL config file for option validation.",
-        type=str,
+        type=_nullable_string,
         default=None,
+        help="Path to PISM CDL config file for option validation.",
     )
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "CONFIG_FILE",
-        help="CONFIG TOML.",
-        nargs=1,
-    )
-    parser.add_argument(
-        "TEMPLATE_FILE",
-        help="TEMPLATE J2.",
-        nargs=1,
-    )
+    parser.add_argument("CONFIG_FILE", help="CONFIG TOML.")
+    parser.add_argument("TEMPLATE_FILE", help="TEMPLATE J2.")
     parser.add_argument(
         "UQ_FILE",
-        help="UQ TOML.",
-        nargs=1,
+        nargs="?",
+        default=None,
+        type=_nullable_string,
+        help="UQ TOML (optional). Supply to render an ensemble; omit for a single run.",
     )
+    return parser
 
-    options, _ = parser.parse_known_args()
-    force_overwrite = options.force_overwrite
-    path = options.output_path
-    config_file = options.CONFIG_FILE[0]
-    template_file = options.TEMPLATE_FILE[0]
-    uq_file = options.UQ_FILE[0]
-    resolution = options.resolution
-    posterior_file = options.posterior_file
-    debug = options.debug
-    queue = options.queue
-    ntasks = options.ntasks
-    nodes = options.nodes
-    tasks = options.tasks
-    walltime = options.walltime
-    stress_balance = options.stress_balance
-    start_cli = options.start
-    end_cli = options.end
-    pism_config_cdl = options.pism_config_cdl
 
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
-    input_path = path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
-    output_path = path / Path("output")
-    output_path.mkdir(parents=True, exist_ok=True)
+def _build_ensemble_df(
+    df: pd.DataFrame,
+    uq_file: Path,
+    output_path: Path,
+    posterior_file: str | Path | None,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """
+    Build the per-member DataFrame for an ensemble run.
 
-    cfg = load_config(config_file)
-    campaign_config = cfg.campaign.as_params()
+    Samples the UQ specification, optionally folds in a posterior CSV, then
+    cross-joins with the staged DataFrame ``df`` and assigns a composite
+    ``sample`` ID per row.
 
-    bucket = campaign_config["bucket"]
-    prefix = campaign_config["prefix"]
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Output of :func:`pism_terra.ismip7.greenland.stage.stage` (one row
+        per staged forcing tuple).
+    uq_file : Path
+        Path to the UQ TOML.
+    output_path : Path
+        Directory under which the realised sample CSV is persisted.
+    posterior_file : str or Path or None
+        Optional CSV of posterior parameter draws to override / extend the
+        UQ samples with.
+    seed : int, default 42
+        Seed for sampling (and posterior row choice).
 
-    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
-
-    seed = 42
+    Returns
+    -------
+    pandas.DataFrame
+        Per-ensemble-member DataFrame with all columns from ``df`` plus the
+        sampled UQ columns and a composite string ``sample`` column.
+    """
     rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
     n_samples = uq.samples
-    mapping = uq.mapping
 
     uq_df = generate_samples(uq.to_flat(), n_samples=n_samples, method=uq.method, seed=seed)
+
     if posterior_file is not None:
         posterior_df = pd.read_csv(posterior_file).drop(columns=["Unnamed: 0", "exp_id"], errors="ignore")
         choice_indices = rng.choice(range(len(posterior_df)), n_samples)
@@ -662,16 +714,7 @@ def run_ensemble():
             uq_df = uq_df.drop(columns=duplicate_cols)
         uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
-    uq_file = output_path / Path("uq.csv")
-    uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)
-
-    f = Figlet(font="standard")
-    banner = f.renderText("pism-terra")
-    print("=" * 120)
-    print(banner)
-    print("=" * 120)
-    print("Generate Ensemble Runs for Greenland")
-    print("-" * 120)
+    uq_df.rename(columns={"sample": "uq"}).to_csv(output_path / "uq.csv", index=False)
 
     if uq.mapping:
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
@@ -679,48 +722,153 @@ def run_ensemble():
     merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
     merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
     merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
+    return merged_df
 
-    for _, row in merged_df.iterrows():
-        row_uq = {
-            "input.file": row["boot_file"],
-            "input.regrid.file": row["regrid_file"],
-            "frontal_melt.routing.file": row["frontal_melt_file"],
-            "geometry.front_retreat.prescribed.file": row["retreat_file"],
-            "grid.file": row["grid_file"],
-            "energy.bedrock_thermal.file": row["heatflux_file"],
-            "atmosphere.given.file": row["climate_file"],
-            "surface.given.file": row["climate_file"],
-            "surface.ismip6.file": row["climate_file"],
-            "surface.ismip6.reference_file": row["climate_file"],
-            "hydrology.surface_input.file": row["surface_input_file"],
-            "ocean.th.file": row["ocean_file"],
-        }
-        row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())
-        sample = row["sample"]
+
+def _run(*, kind: str) -> None:
+    """
+    Shared CLI body for ISMIP7 Greenland forward and inverse runs.
+
+    Parses arguments, stages inputs, optionally builds an ensemble, then
+    renders one run script per member by calling ``_render_<kind>_run``.
+    The two CLI entry points :func:`run_forward` and :func:`run_inverse`
+    are one-line wrappers around this function.
+
+    Parameters
+    ----------
+    kind : {"forward", "inverse"}
+        Which run script template to render. Selects the per-row worker
+        and decides whether to forward ``inverse.file`` to PISM.
+    """
+    if kind not in ("forward", "inverse"):
+        raise ValueError(f"kind must be 'forward' or 'inverse', got {kind!r}")
+    render = _render_forward_run if kind == "forward" else _render_inverse_run
+
+    parser = _build_cli_parser(
+        description=f"Stage ISMIP7 Greenland and render a {kind} run script (ensemble if UQ_FILE is given).",
+        supports_execute=False,
+    )
+    options = parser.parse_args()
+    force_overwrite = options.force_overwrite
+
+    path = Path(options.output_path)
+    path.mkdir(parents=True, exist_ok=True)
+    input_path = path / Path("input")
+    input_path.mkdir(parents=True, exist_ok=True)
+    output_path = path / Path("output")
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    config_file = options.CONFIG_FILE
+    template_file = options.TEMPLATE_FILE
+    uq_file = options.UQ_FILE
+    pism_config_cdl = options.pism_config_cdl
+
+    cfg = load_config(config_file)
+    campaign_config = cfg.campaign.as_params()
+    bucket = campaign_config["bucket"]
+    prefix = campaign_config["prefix"]
+
+    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
+
+    if uq_file is not None:
+        rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
+        header = f"Generate Ensemble {kind.capitalize()} Runs for ISMIP7 Greenland"
+    else:
+        rows_df = df
+        header = f"Generate {kind.capitalize()} Run for ISMIP7 Greenland"
+    is_ensemble = uq_file is not None
+
+    f = Figlet(font="standard")
+    banner = f.renderText("pism-terra")
+    print("=" * 120)
+    print(banner)
+    print("=" * 120)
+    print(header)
+    print("-" * 120)
+
+    config_cli = {
+        "resolution": options.resolution,
+        "nodes": options.nodes,
+        "ntasks": options.ntasks,
+        "tasks": options.tasks,
+        "queue": options.queue,
+        "walltime": options.walltime,
+        "stress_balance": options.stress_balance,
+        "start": options.start,
+        "end": options.end,
+    }
+
+    for idx, row in rows_df.iterrows():
+        if is_ensemble:
+            # Drop the staged columns and the composite sample id; whatever
+            # remains is a row of UQ overrides to forward to PISM.
+            uq_overrides = row.drop(labels=list(df.columns) + ["sample"]).to_dict()
+        else:
+            uq_overrides = {}
+
+        # File paths from the staging table override UQ-supplied paths for the
+        # same flag (matches the glacier behavior).
+        uq_overrides.update(
+            {
+                "input.file": row["boot_file"],
+                "input.regrid.file": row["regrid_file"],
+                "frontal_melt.routing.file": row["frontal_melt_file"],
+                "geometry.front_retreat.prescribed.file": row["retreat_file"],
+                "grid.file": row["grid_file"],
+                "energy.bedrock_thermal.file": row["heatflux_file"],
+                "atmosphere.given.file": row["climate_file"],
+                "surface.given.file": row["climate_file"],
+                "surface.ismip6.file": row["climate_file"],
+                "surface.ismip6.reference_file": row["climate_file"],
+                "hydrology.surface_input.file": row["surface_input_file"],
+                "ocean.th.file": row["ocean_file"],
+            }
+        )
+        # Wire the inverse observation file only when the stage produced one
+        # (campaign config can opt in via an ``obs_file`` key); otherwise
+        # rely on whatever ``inverse.file`` the UQ supplied.
+        if kind == "inverse" and "obs_file" in row and pd.notna(row["obs_file"]):
+            uq_overrides["inverse.file"] = row["obs_file"]
+
         outline_file = row["outline_file"] if "outline_file" in row else None
-        run_greenland(
+        sample = row["sample"] if is_ensemble else (int(row["sample"]) if "sample" in row else idx)
+        render(
             config_file,
             template_file,
             outline_file,
             path=path,
-            config_cli={
-                "resolution": resolution,
-                "nodes": nodes,
-                "ntasks": ntasks,
-                "tasks": tasks,
-                "queue": queue,
-                "walltime": walltime,
-                "stress_balance": stress_balance,
-                "start": start_cli,
-                "end": end_cli,
-            },
-            debug=debug,
-            uq=row_uq,
+            config_cli=config_cli,
+            debug=options.debug,
+            uq=uq_overrides,
             sample=sample,
             pism_config_cdl=pism_config_cdl,
         )
 
 
+def run_forward() -> None:
+    """
+    CLI entry point for ISMIP7 Greenland forward runs (single or ensemble).
+
+    Behaves as a single run when no ``UQ_FILE`` positional is supplied, and
+    as a UQ ensemble when one is. The argument schema and output layout are
+    otherwise identical.
+    """
+    _run(kind="forward")
+
+
+def run_inverse() -> None:
+    """
+    CLI entry point for ISMIP7 Greenland inverse runs (single or ensemble).
+
+    Behaves as a single inverse run when no ``UQ_FILE`` positional is
+    supplied, and as a UQ ensemble when one is. When the staged row
+    includes an ``obs_file`` column (set by the campaign config), it is
+    wired through as ``inverse.file``; otherwise the user can pass
+    ``inverse.file`` via the UQ TOML.
+    """
+    _run(kind="inverse")
+
+
 if __name__ == "__main__":
     __spec__ = None  # type: ignore
-    run_single()
+    run_forward()

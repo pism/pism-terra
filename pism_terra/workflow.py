@@ -691,9 +691,9 @@ def check_dataset_fully(ds: xr.Dataset) -> None:
     _ = ds.load()
 
 
-def drop_geotransform_attr(ds: xr.Dataset) -> xr.Dataset:
+def drop_geotransform_attr(ds: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
     """
-    Drop the ``GeoTransform`` attribute from the dataset's grid-mapping variable.
+    Drop the ``GeoTransform`` attribute from the grid-mapping variable.
 
     rioxarray writes a ``GeoTransform`` on ``spatial_ref`` whose ``dy`` follows
     the in-memory y-axis order. With CF-ordered (ascending) y this means
@@ -703,17 +703,109 @@ def drop_geotransform_attr(ds: xr.Dataset) -> xr.Dataset:
 
     Parameters
     ----------
+    ds : xarray.Dataset or xarray.DataArray
+        Object whose grid-mapping variable/coordinate is modified in place. A
+        ``DataArray`` carries the grid mapping as the ``spatial_ref`` coordinate.
+
+    Returns
+    -------
+    xarray.Dataset or xarray.DataArray
+        The same object, for chaining.
+    """
+    container = ds.coords if isinstance(ds, xr.DataArray) else ds.variables
+    for name in ("spatial_ref", "crs"):
+        if name in container and "GeoTransform" in ds[name].attrs:
+            del ds[name].attrs["GeoTransform"]
+    return ds
+
+
+def stamp_grid_mapping(ds: xr.Dataset, name: str = "spatial_ref") -> xr.Dataset:
+    """
+    Canonicalize the CF grid mapping and drop stray ``coordinates`` attributes.
+
+    The CRS is advertised by the CF ``grid_mapping`` attribute, which names the
+    grid-mapping variable (``spatial_ref``). PISM, GDAL, and QGIS all follow that
+    attribute to read the projection. rioxarray records it in each variable's
+    *encoding*, but operations such as ``concat``/``fillna`` drop encoding, so it
+    can go missing on write — and consumers then fail to find the CRS.
+
+    This finds the real CRS variable (the one carrying a projection WKT or a CF
+    ``grid_mapping_name``), renames it to ``name``, and drops any other CRS
+    variable. Source datasets often ship their own grid mapping (ITS_LIVE names it
+    ``mapping``) that rides through reprojection; an older pipeline could even leave
+    a dangling ``grid_mapping = "spatial_ref"`` pointing at a variable that is
+    actually named ``mapping``. Keying off the metadata rather than the (possibly
+    wrong) attribute fixes both.
+
+    It then re-asserts ``grid_mapping`` on every spatial data variable and strips
+    every grid-mapping name from any ``coordinates`` attribute: ``coordinates`` is
+    for auxiliary coordinate variables (e.g. 2-D lat/lon), and listing the CRS
+    variable there is a CF misuse that confuses PISM (it treats the CRS variable as
+    a data coordinate rather than the projection).
+
+    Stale *empty* grid mappings are also removed. A leftover scalar coordinate (an
+    old ``mapping`` with no projection metadata) survives metadata-based detection,
+    and because it stays attached as a coordinate xarray keeps re-emitting
+    ``coordinates = "mapping"`` on write. Any scalar (0-D) non-dimension coordinate
+    other than the canonical CRS variable is dropped — genuine auxiliary coordinates
+    (lat/lon) are multi-dimensional, so this only catches grid-mapping debris.
+
+    Parameters
+    ----------
     ds : xarray.Dataset
-        Dataset modified in place.
+        Dataset carrying a CRS variable written by rioxarray (or an upstream
+        source). Not modified in place; callers must use the returned dataset.
+    name : str, default ``"spatial_ref"``
+        Canonical name for the grid-mapping variable.
 
     Returns
     -------
     xarray.Dataset
-        The same dataset, for chaining.
+        Dataset with a single CRS variable named ``name``, ``grid_mapping``
+        re-asserted on every spatial variable, and no CRS name left in any
+        ``coordinates`` attribute.
     """
-    for name in ("spatial_ref", "crs"):
-        if name in ds.variables and "GeoTransform" in ds[name].attrs:
-            del ds[name].attrs["GeoTransform"]
+    # Every variable that looks like a CF grid mapping (carries a projection WKT or
+    # a CF ``grid_mapping_name``) — the real CRS carriers, by name or otherwise.
+    gm_vars = {n for n in ds.variables if "crs_wkt" in ds[n].attrs or "grid_mapping_name" in ds[n].attrs}
+    if not gm_vars:
+        return ds
+
+    # Pick the source CRS variable: the canonical name if it already carries the
+    # metadata, otherwise any real one (e.g. ITS_LIVE's ``mapping``).
+    src = name if name in gm_vars else sorted(gm_vars)[0]
+    if src != name:
+        if name in ds.variables:  # a dangling/empty target by the canonical name
+            ds = ds.drop_vars(name)
+        ds = ds.rename({src: name})
+
+    # Drop other real CRS variables and stale empty scalar grid-mapping coordinates.
+    stale = {s for s in gm_vars if s != name}
+    stale |= {c for c in ds.coords if c != name and c not in ds.dims and ds[c].ndim == 0}
+    stale &= set(ds.variables)
+    if stale:
+        ds = ds.drop_vars(list(stale))
+    ds = ds.set_coords(name)
+
+    # Names that must never appear in a ``coordinates`` attribute.
+    crs_names = gm_vars | stale | {name}
+    for var in list(ds.data_vars) + list(ds.coords):
+        if var == name:
+            continue
+        if var in ds.data_vars:
+            ds[var].encoding["grid_mapping"] = name
+            ds[var].attrs.pop("grid_mapping", None)  # keep it in encoding only
+        # Strip every grid-mapping name from ``coordinates``, keeping legitimate
+        # auxiliary coordinates if present.
+        for store in (ds[var].attrs, ds[var].encoding):
+            coords = store.get("coordinates")
+            if not coords:
+                continue
+            kept = [c for c in coords.split() if c not in crs_names]
+            if kept:
+                store["coordinates"] = " ".join(kept)
+            else:
+                store.pop("coordinates", None)
     return ds
 
 

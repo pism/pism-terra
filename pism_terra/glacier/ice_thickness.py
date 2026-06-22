@@ -48,7 +48,7 @@ from tqdm.auto import tqdm
 from pism_terra.aws import download_from_s3, s3_to_local
 from pism_terra.download import download_archive, extract_archive
 from pism_terra.raster import check_overlap
-from pism_terra.workflow import check_xr_lazy
+from pism_terra.workflow import check_xr_lazy, drop_geotransform_attr
 
 logger = logging.getLogger(__name__)
 
@@ -905,6 +905,9 @@ def get_ice_thickness_frank(
         thickness.rio.write_nodata(None, inplace=True)
         thickness.name = "thickness"
         thickness = thickness.rio.write_crs(target_grid.rio.crs).rio.write_grid_mapping()
+        # Drop the GeoTransform so GDAL/QGIS derive the (top-down) transform from
+        # the ascending y coordinate instead of rendering the raster upside-down.
+        drop_geotransform_attr(thickness)
         thickness.to_netcdf(thickness_file)
         logger.info("Thickness saved to %s", thickness_file)
         # Return the in-memory result; CRS doesn't always survive the netCDF
@@ -982,6 +985,9 @@ def get_ice_thickness_maffezzoli(
         thickness.rio.write_nodata(None, inplace=True)
         thickness.name = "thickness"
         thickness = thickness.rio.write_crs(target_grid.rio.crs).rio.write_grid_mapping()
+        # Drop the GeoTransform so GDAL/QGIS derive the (top-down) transform from
+        # the ascending y coordinate instead of rendering the raster upside-down.
+        drop_geotransform_attr(thickness)
         thickness.to_netcdf(thickness_file)
         logger.info("Thickness saved to %s", thickness_file)
         # Return the in-memory result; CRS doesn't always survive the netCDF
@@ -1109,6 +1115,9 @@ def get_ice_thickness_millan(
 
         thickness = xr.concat(thicknesses, dim="raster").sum(dim="raster")
         thickness = thickness.rio.write_crs(target_grid.rio.crs).rio.write_grid_mapping()
+        # Drop the GeoTransform so GDAL/QGIS derive the (top-down) transform from
+        # the ascending y coordinate instead of rendering the raster upside-down.
+        drop_geotransform_attr(thickness)
         thickness.to_netcdf(thickness_file)
         logger.info("Millan thickness saved to %s", thickness_file)
         return thickness

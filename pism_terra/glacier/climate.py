@@ -66,7 +66,12 @@ from pism_terra.download import (
 from pism_terra.grids import load_grid
 from pism_terra.raster import add_time_bounds
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_xr_fully, check_xr_lazy
+from pism_terra.workflow import (
+    check_xr_fully,
+    check_xr_lazy,
+    drop_geotransform_attr,
+    stamp_grid_mapping,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +86,48 @@ CARRA2_PROJ = (
     "+x_0=172840.374543307 +y_0=645049.059394855 "
     "+R=6371229 +units=m +no_defs"
 )
+
+
+def _finalize_pism_crs(ds: xr.Dataset, crs_wkt: str) -> xr.Dataset:
+    """
+    Stamp a single, PISM-readable CF grid mapping on a reprojected dataset.
+
+    Two issues otherwise leave the written file un-georeferenced for PISM:
+
+    1. The source CARRA2 Zarr stores its CRS in a coordinate named ``crs``
+       (polar stereographic). After reprojection to ``crs_wkt`` that variable
+       is stale but rides along on the reprojected arrays, so the file ends up
+       with two grid-mapping variables — and a consumer might pick the wrong one.
+    2. rioxarray records the active ``grid_mapping`` in each variable's *encoding*.
+       Operations such as ``xr.concat`` (year expansion) and ``fillna`` drop
+       encoding, so the ``grid_mapping`` attribute never reaches the file. PISM
+       then can't locate the projection, falls back to a raw x/y comparison, and
+       rejects the forcing ("computational domain is not a subset") when the
+       model grid uses a different projection.
+
+    Dropping any pre-existing grid-mapping variables and re-applying
+    ``write_crs``/``write_grid_mapping`` immediately before writing fixes both.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Reprojected dataset, just before ``to_netcdf``.
+    crs_wkt : str
+        WKT/PROJ string of the dataset's (target) CRS.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with a single CF grid mapping that PISM can read and that
+        round-trips through a plain ``xarray.open_dataset``.
+    """
+    ds = ds.drop_vars(["crs", "spatial_ref"], errors="ignore")
+    ds = ds.rio.write_crs(crs_wkt).rio.write_grid_mapping().rio.write_coordinate_system()
+    ds = stamp_grid_mapping(ds)
+    # Drop the GeoTransform so GDAL/QGIS derive the (top-down) transform from the
+    # ascending y coordinate instead of rendering the raster upside-down.
+    drop_geotransform_attr(ds)
+    return ds
 
 
 def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | None:
@@ -270,32 +317,7 @@ def prepare_glaciermip4(
 
 def prepare_carra2(
     path: str | Path,
-    year: list[str | int] = [
-        "1986",
-        "1987",
-        "1988",
-        "1991",
-        "1992",
-        "1993",
-        "1996",
-        "1997",
-        "1998",
-        "2001",
-        "2002",
-        "2003",
-        "2006",
-        "2007",
-        "2008",
-        "2011",
-        "2012",
-        "2013",
-        "2016",
-        "2017",
-        "2018",
-        "2021",
-        "2022",
-        "2023",
-    ],
+    years: list[int] | Iterable[int] = range(1986, 2026),
     max_workers: int = 8,
     force_overwrite: bool = False,
     **kwargs,
@@ -308,7 +330,7 @@ def prepare_carra2(
     path : str or pathlib.Path
         Working/output directory. The final NetCDF and intermediate
         ``carra2/`` cache subfolder are written under this path.
-    year : list[str | int]
+    years : list[str | int]
         List of years to download.
     max_workers : int, default 8
         Maximum number of concurrent CDS download requests.
@@ -330,6 +352,8 @@ def prepare_carra2(
     - Output variables:
       - ``air_temp`` (K) from CARRA ``t2m``.
       - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
+      - ``albedo`` (1) derived as ``1 - SW_net / SW_down`` from the surface
+        shortwave radiation budget (NaN where ``SW_down == 0``).
     - ``time_bounds`` are added for CF-style climatological metadata.
     - If missing values are detected in the regional subset, the function
       patches them from the global reanalysis (same period).
@@ -377,7 +401,7 @@ def prepare_carra2(
         "level_type": "single_levels",
         "variable": ["total_precipitation"],
         "product_type": "forecast_based",
-        "year": year,
+        "year": years,
         "month": [
             "01",
             "02",
@@ -410,7 +434,7 @@ def prepare_carra2(
         "level_type": "single_levels",
         "variable": ["2m_temperature"],
         "product_type": "analysis_based",
-        "year": year,
+        "year": years,
         "month": [
             "01",
             "02",
@@ -470,10 +494,70 @@ def prepare_carra2(
         **kwargs,  # pass the full CARRA request dict
     )
 
+    # Surface albedo is not a CARRA2 variable, so derive it from the shortwave
+    # radiation budget: albedo = SW_up / SW_down = 1 - SW_net / SW_down. Download the
+    # two forecast radiation fields as monthly means; albedo is computed after merge.
+    radiation_dataset = "reanalysis-pan-carra-means"
+    radiation_request = {
+        "time_aggregation": "monthly",
+        "level_type": "single_levels",
+        "variable": [
+            "surface_solar_radiation_downwards",
+            "surface_net_solar_radiation",
+        ],
+        "product_type": "forecast_based",
+        "year": years,
+        "month": [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10",
+            "11",
+            "12",
+        ],
+        "data_format": "netcdf",
+        "area": [90, -180, 40, 180],
+    }
+
+    radiation_files = carra_download_request(
+        radiation_dataset,
+        radiation_request,
+        file_path=path / Path("radiation.nc"),
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    # ECMWF short names are not guaranteed stable, so identify the two shortwave
+    # fields from their attributes. The net field carries "net" in its name/metadata
+    # (its standard_name also contains "down", so it can't be matched on "down"); the
+    # remaining shortwave field is the downward flux.
+    radiation_sorted = sorted(radiation_files)
+    with xr.open_dataset(radiation_sorted[0]) as _rad_ds:
+        _spatial = {n: da for n, da in _rad_ds.data_vars.items() if {"y", "x"}.issubset(da.dims)}
+
+        def _meta(name):
+            da = _spatial[name]
+            return f"{name} {da.attrs.get('long_name', '')} {da.attrs.get('standard_name', '')}".lower()
+
+        sw_net_var = next((n for n in _spatial if "net" in _meta(n)), None)
+        sw_down_var = next((n for n in _spatial if n != sw_net_var), None)
+        if sw_net_var is None or sw_down_var is None or len(_spatial) != 2:
+            raise ValueError(
+                "Expected exactly two shortwave (net, downward) variables in CARRA2 "
+                f"radiation file {radiation_sorted[0]}: {list(_spatial)}"
+            )
+
     logger.info(
-        "Downloaded %d precipitation files, %d temperature files",
+        "Downloaded %d precipitation files, %d temperature files, %d radiation files",
         len(precipitation_files),
         len(temperature_files),
+        len(radiation_files),
     )
 
     grid = str(carra2_grid_path.resolve())
@@ -486,9 +570,9 @@ def prepare_carra2(
     tas_sorted = sorted(temperature_files)
 
     batches = []
-    for yr, pr_f, tas_f in zip(year, pr_sorted, tas_sorted):
+    for yr, pr_f, tas_f, rad_f in zip(years, pr_sorted, tas_sorted, radiation_sorted):
         batch_out = str((path / f"batch_{yr}.nc").resolve())
-        batches.append((yr, str(pr_f), str(tas_f), batch_out))
+        batches.append((yr, str(pr_f), str(tas_f), str(rad_f), batch_out))
 
     def _process_carra2_batch(args):
         """
@@ -497,15 +581,15 @@ def prepare_carra2(
         Parameters
         ----------
         args : tuple
-            A ``(yr, pr_f, tas_f, batch_out)`` tuple with the year string,
-            precipitation file, temperature file, and output path.
+            A ``(yr, pr_f, tas_f, rad_f, batch_out)`` tuple with the year string,
+            precipitation file, temperature file, radiation file, and output path.
 
         Returns
         -------
         str
             Path to the merged output file.
         """
-        yr, pr_f, tas_f, batch_out = args
+        yr, pr_f, tas_f, rad_f, batch_out = args
         tmp = path
         cdo_local = Cdo(tempdir=tmp)
 
@@ -516,6 +600,17 @@ def prepare_carra2(
             input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation """
             f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {pr_f}""",
             output=pr_fixed,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Shortwave radiation: monthly means (already monthly, just fix grid + time).
+        # Both SW-down and SW-net are kept; albedo is derived from them after merge.
+        rad_fixed = os.path.join(tmp, f"radiation_{yr}.nc")
+        cdo_local.setgrid(
+            grid,
+            input=f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days """
+            f"""-settaxis,{yr}-01-15,00:00:00,1mon {rad_f}""",
+            output=rad_fixed,
             options="--reduce_dim -f nc4 -z zip_2",
         )
 
@@ -538,19 +633,19 @@ def prepare_carra2(
             options="--reduce_dim -f nc4 -z zip_2",
         )
 
-        # Merge pr + tas_mm + tas_mstd for this year
+        # Merge pr + tas_mm + tas_mstd + radiation for this year
         cdo_local.merge(
-            input=f"{pr_fixed} {tas_mm} {tas_mstd}",
+            input=f"{pr_fixed} {tas_mm} {tas_mstd} {rad_fixed}",
             output=batch_out,
             options="-f nc4 -z zip_2",
         )
         # Clean up per-year intermediate files only (not the shared directory)
-        for f in (pr_fixed, tas_mm, tas_mstd):
+        for f in (pr_fixed, tas_mm, tas_mstd, rad_fixed):
             Path(f).unlink(missing_ok=True)
         return batch_out
 
     # Only process batches that don't already exist (unless force_overwrite)
-    batches_to_run = [b for b in batches if (not check_xr_lazy(b[3])) or force_overwrite]
+    batches_to_run = [b for b in batches if (not check_xr_lazy(b[4])) or force_overwrite]
     if batches_to_run:
         logger.info(
             "CDO: processing %d year batches (setgrid + monmean/monstd)...",
@@ -567,7 +662,7 @@ def prepare_carra2(
     else:
         logger.info("CDO: all %d year batches already exist, skipping.", len(batches))
 
-    batch_files = sorted(b[3] for b in batches)
+    batch_files = sorted(b[4] for b in batches)
 
     # --- Step 2: mergetime all year batches  ---
     if (not check_xr_lazy(carra2_filename)) or force_overwrite:
@@ -607,6 +702,22 @@ def prepare_carra2(
             }
         )
         ds["orography"] = orog
+
+        # Derive surface albedo from the shortwave budget: albedo = SW_up / SW_down
+        # = 1 - SW_net / SW_down. SW_down is zero during polar night, where albedo is
+        # undefined and is masked to NaN. The raw radiation fields are then dropped.
+        sw_down = ds[sw_down_var]
+        sw_net = ds[sw_net_var]
+        albedo = xr.where(sw_down > 0, 1.0 - sw_net / sw_down, np.nan)
+        albedo.attrs.update(
+            {
+                "standard_name": "surface_albedo",
+                "long_name": "surface shortwave albedo",
+                "units": "1",
+            }
+        )
+        ds["albedo"] = albedo
+        ds = ds.drop_vars([sw_down_var, sw_net_var])
 
         ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
         ds = (
@@ -769,9 +880,19 @@ def prepare_carra2_for_group(
         ):
             out[name].encoding.pop(k, None)
 
+    # Drop the stale source grid mapping and stamp a single PISM-readable one,
+    # so the per-group cache (and the per-glacier file derived from it) carries
+    # the projection PISM needs to reproject the forcing on the fly.
+    out = _finalize_pism_crs(out, dst_crs)
+    if "time" in out.coords:
+        # CF time-axis identity so ncview/PISM recognise the time coordinate;
+        # the dimension itself is written unlimited below.
+        out["time"].attrs.update({"standard_name": "time", "long_name": "time", "axis": "T"})
+
     encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
     output_file.unlink(missing_ok=True)
-    out.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
+    unlimited = ["time"] if "time" in out.dims else None
+    out.to_netcdf(output_file, encoding=encoding, engine="h5netcdf", unlimited_dims=unlimited)
     return output_file
 
 
@@ -1108,17 +1229,33 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
         pieces.append(sub.assign_coords(time=new_times))
 
     merged = xr.concat(pieces, dim="time")
+
+    # Orography is time-invariant; concat (or an upstream broadcast) gives it a
+    # redundant time dimension with identical slices. Drop it back to a single
+    # 2-D field.
+    if "orography" in merged and "time" in merged["orography"].dims:
+        merged["orography"] = merged["orography"].isel(time=0, drop=True)
+
     times = merged["time"].values
     bounds = np.stack([times, np.array([_next_month(t) for t in times])], axis=1)
     merged["time_bnds"] = xr.DataArray(bounds, dims=["time", "nv"], coords={"time": merged["time"]})
-    merged["time"].attrs["bounds"] = "time_bnds"
+    # CF time-axis identity so ncview/PISM recognise the time coordinate. (The
+    # time dimension must also be written unlimited — see the to_netcdf calls.)
+    merged["time"].attrs.update(
+        {
+            "standard_name": "time",
+            "long_name": "time",
+            "axis": "T",
+            "bounds": "time_bnds",
+        }
+    )
     return merged
 
 
 def carra2(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(1978, 2025),
+    years: list[int] | Iterable[int] = range(11986, 2026),
     path: Path | str = ".",
     bucket: str = "pism-cloud-data",
     prefix: str = "",
@@ -1140,7 +1277,7 @@ def carra2(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2026)``
         Years to materialize in the output. CARRA2 only stores a sparse set
         of source years; any requested year not in the source is filled by
         copying the nearest available source year (ties go to the earlier
@@ -1171,8 +1308,11 @@ def carra2(
     Notes
     -----
     - Output variables and their units are inherited from the source CARRA2
-      Zarr store (typically ``air_temp`` in K and ``precipitation`` in
-      kg m^-2 day^-1).
+      Zarr store (typically ``air_temp`` in K, ``precipitation`` in
+      kg m^-2 day^-1, and dimensionless ``albedo``).
+    - Floating-point variables have NaNs filled with 0 for PISM; for
+      ``albedo`` this only affects polar-night months (no insolation), where
+      the value is irrelevant.
     - Compression: zlib level 2 + shuffle.
     """
     path = Path(path)
@@ -1235,8 +1375,11 @@ def carra2(
                 },
             }
         )
+        # Re-stamp the grid mapping (dropped by the fill/fillna above) so PISM
+        # can find the projection and reproject the forcing on the fly.
+        out = _finalize_pism_crs(out, dst_crs)
         carra2_filename.unlink(missing_ok=True)
-        out.to_netcdf(carra2_filename, encoding=encoding, engine="h5netcdf")
+        out.to_netcdf(carra2_filename, encoding=encoding, engine="h5netcdf", unlimited_dims=["time"])
         tmp_pre.unlink(missing_ok=True)
         return carra2_filename
 
@@ -1435,13 +1578,17 @@ def carra2(
                 }
             )
 
+            # Re-stamp the grid mapping (dropped by the concat/fillna above) so
+            # PISM can find the projection and reproject the forcing on the fly.
+            out = _finalize_pism_crs(out, dst_crs)
+
             # Stream from the per-batch shards straight into the final NetCDF
             # — never materializing the full reprojected dataset in RAM, which
             # for high-res grids over 50 years is easily 10+ GiB per variable.
             # Writing here (inside the temp-dir context) keeps the shards alive
             # for dask to read from.
             carra2_filename.unlink(missing_ok=True)
-            out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf")
+            out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf", unlimited_dims=["time"])
     finally:
         Callback.active.update(saved_callbacks)
 
@@ -1451,7 +1598,7 @@ def carra2(
 def era5(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(1978, 2025),
+    years: list[int] | Iterable[int] = range(1978, 2026),
     dataset: str = "reanalysis-era5-land-monthly-means",
     path: Path | str = ".",
     **kwargs,
@@ -1468,7 +1615,7 @@ def era5(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2026)``
         Years to request from ERA5.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
         CDS dataset name for monthly single-level means (ERA5). Adjust if you
@@ -1555,7 +1702,7 @@ def era5(
             file_path=era5_filename_2,
             **kwargs,
         )
-        .squeeze()
+        .squeeze("time", drop=True)
         .drop_vars("time", errors="ignore")
     )
     ds_geo_ = (
@@ -1631,7 +1778,7 @@ def era5_mean(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2026)``
         Years to request from ERA5.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
         CDS dataset name for monthly single-level means (ERA5). Adjust if you
@@ -1718,7 +1865,7 @@ def era5_mean(
             file_path=era5_filename_2,
             **kwargs,
         )
-        .squeeze()
+        .squeeze("time", drop=True)
         .drop_vars("time", errors="ignore")
     )
     ds_geo_ = (
@@ -1843,7 +1990,7 @@ def jif_cosipy(url: str, download_path: Path | str, path: Path | str) -> None:
 def era5_monthly_mean(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(1978, 2025),
+    years: list[int] | Iterable[int] = range(1978, 2026),
     dataset: str = "reanalysis-era5-land-monthly-means",
     path: Path | str = ".",
     **kwargs,
@@ -1860,7 +2007,7 @@ def era5_monthly_mean(
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2025)``
+    years : list of int or Iterable of int, default ``range(1978, 2026)``
         Years to request from ERA5.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
         CDS dataset name for monthly single-level means (ERA5). Adjust if you
@@ -1948,7 +2095,7 @@ def era5_monthly_mean(
             file_path=era5_filename_2,
             **kwargs,
         )
-        .squeeze()
+        .squeeze("time", drop=True)
         .drop_vars("time", errors="ignore")
     )
     ds_geo_ = (

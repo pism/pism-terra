@@ -98,19 +98,6 @@ model = 'blatter'
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
-bp_ksp_monitor =  ""
-bp_ksp_view_singularvalues = ""
-bp_snes_monitor_ratio = ""
-bp_pc_type = "mg"
-bp_mg_levels_ksp_type = "richardson"
-bp_mg_levels_pc_type ="sor"
-bp_mg_coarse_ksp_type = "preonly"
-bp_mg_coarse_pc_type = "lu"
-bp_pc_mg_levels = 3
-bp_snes_ksp_ew = 1
-bp_snes_ksp_ew_version = 3
-bp_snes_rtol = 1e-3
-bp_ksp_rtol = 1e-3
 
 [stress_balance.options.hybrid]
 
@@ -191,3 +178,21 @@ model = "null"
 model = "off"
 
 [frontal_melt.options.off]
+
+[solver.forward]
+bp_ksp_monitor = ""
+bp_ksp_view_singularvalues = ""
+bp_snes_monitor_ratio = ""
+bp_ksp_type = "fgmres"
+bp_pc_type = "mg"
+bp_mg_levels_ksp_type = "richardson"
+bp_mg_levels_pc_type = "sor"
+bp_mg_coarse_ksp_type = "gmres"
+bp_mg_coarse_pc_type = "gamg"
+bp_mg_coarse_ksp_rtol = 1e-2
+bp_mg_coarse_ksp_max_it = 50
+bp_pc_mg_levels = 3
+bp_snes_ksp_ew = 1
+bp_snes_ksp_ew_version = 3
+bp_snes_rtol = 1e-3
+bp_ksp_rtol = 1e-3

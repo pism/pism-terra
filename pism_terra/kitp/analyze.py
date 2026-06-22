@@ -251,20 +251,24 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
 
     gcm_sub_baseline = gcm_computed - baseline_computed
 
-    print(
-        gcm_sub_baseline.sel({"time": slice(cftime.DatetimeNoLeap(90, 1, 1), cftime.DatetimeNoLeap(110, 1, 1))}).mean(
-            dim="time"
-        )
-    )
     with mpl.rc_context(rc=rc_params):
         for basin_name in baseline.basin.values:
             basin_gcm = gcm_computed.sel(basin=basin_name)
             basin_slc = ((basin_gcm["ice_mass"] - basin_gcm["ice_mass"].isel({"time": 0})) * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
+            basin_baseline = baseline_computed.sel(basin=basin_name)
+            basin_baseline_slc = (
+                (basin_baseline["ice_mass"] - basin_baseline["ice_mass"].isel({"time": 0})) * gt2mmsle
+            ).pint.dequantify()
 
             fig, ax = plt.subplots(1, 1, figsize=(6.4, 3.6))
 
             l = []
+
+            _l = basin_baseline_slc.plot(
+                ax=ax, color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], label=BASELINE_OPTS["title"], lw=1
+            )
+            l.append(_l)
 
             for exp_name, exp in EXPS_OPTS.items():
                 _gcm_slc = basin_slc.sel({"exp_id": exp_name})
@@ -300,9 +304,57 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     with mpl.rc_context(rc=rc_params):
         for basin_name in baseline.basin.values:
             basin_gcm = gcm_sub_baseline.sel(basin=basin_name)
+            basin_glf = (
+                gcm.sel(basin=basin_name)["grounding_line_flux"] * xr.DataArray(900**2).pint.quantify("m2")
+            ).pint.to("Gt/yr")
             basin_slc = (basin_gcm["ice_mass"] * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
-            print(time_vals)
+
+            exps_palette = {k: v["color"] for k, v in EXPS_OPTS.items()}
+            gcm_palette = [v["color"] for v in EXPS_OPTS.values()]
+
+            fig, axs = plt.subplots(2, 1, figsize=(6.4, 4.8))
+
+            l = []
+
+            for exp_name, exp in EXPS_OPTS.items():
+                _gcm_slc = basin_slc.sel({"exp_id": exp_name})
+                _ = _gcm_slc.plot(ax=axs[0], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
+                _gcm_glf = basin_glf.sel({"exp_id": exp_name})
+                _ = _gcm_glf.plot(ax=axs[1], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
+                _l = _gcm_slc.isel({"gcm_id": 0}).plot(
+                    ax=axs[0], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75, add_legend=False
+                )
+                l.append(_l)
+
+            axs[0].axhline(y=0, color="k", ls="dotted", lw=0.5)
+            axs[0].set_ylabel("Contribution to sea-level (mm)")
+            axs[1].set_xlabel("Time")
+            axs[0].set_title(basin_name)
+            axs[0].set_xlim(time_vals[0], time_vals[-1])
+            year_ticks = [t for t in time_vals if t.year % 50 == 0]
+            axs[1].set_xticks(year_ticks)
+            axs[1].set_xticklabels([f"{int(t.year)}" for t in year_ticks])
+
+            leg_line = fig.legend(
+                handles=[h for item in l for h in (item if isinstance(item, list) else [item])],
+                loc="upper left",
+                bbox_to_anchor=(0.08, 0.93),
+                ncol=1,
+            )
+            leg_line.get_frame().set_linewidth(0.0)
+            leg_line.get_frame().set_alpha(0.0)
+
+            fig.tight_layout()
+            fig.savefig(f"pism_kitp_norm_gcm_with_flux_{basin_name}_{res}.png", dpi=300)
+            fig.savefig(f"pism_kitp_norm_gcm_with_flux_{basin_name}_{res}.pdf")
+            plt.close(fig)
+
+    with mpl.rc_context(rc=rc_params):
+        for basin_name in baseline.basin.values:
+            basin_gcm = gcm_sub_baseline.sel(basin=basin_name)
+            basin_slc = (basin_gcm["ice_mass"] * gt2mmsle).pint.dequantify()
+            time_vals = basin_slc.time.values
             basin_slice = (
                 basin_slc.sel({"time": slice(cftime.DatetimeNoLeap(90, 1, 1), cftime.DatetimeNoLeap(110, 1, 1))})
                 .mean(dim="time")
@@ -311,7 +363,6 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             basin_slice.name = "SLC"
             _slice_df = basin_slice.to_dataframe()
 
-            print(_slice_df)
             exps_palette = {k: v["color"] for k, v in EXPS_OPTS.items()}
             gcm_palette = [v["color"] for v in EXPS_OPTS.values()]
 

@@ -38,7 +38,12 @@ from scipy.interpolate import RegularGridInterpolator
 from shapely.geometry import box as _shapely_box
 
 from pism_terra.vector import get_glacier_from_rgi_id
-from pism_terra.workflow import check_rio, check_xr_lazy
+from pism_terra.workflow import (
+    check_rio,
+    check_xr_lazy,
+    drop_geotransform_attr,
+    stamp_grid_mapping,
+)
 
 # RGI o1 codes for which ITS_LIVE v2.1 publishes a per-region COG. 13/15/16 are
 # absent because they're merged into the High Mountain Asia (14) mosaic.
@@ -443,15 +448,19 @@ def glacier_velocities_from_grid(
         # ``landice``) would otherwise carry it through to the written file.
         mapping_var = target_grid.rio.grid_mapping
         crs = target_grid[mapping_var].attrs["crs_wkt"]
-        ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping("mapping")
+        ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping().rio.write_coordinate_system()
 
+        ds_clipped = stamp_grid_mapping(ds_clipped)
+        # Drop the GeoTransform so GDAL/QGIS derive the (top-down) transform from
+        # the ascending y coordinate instead of rendering the raster upside-down.
+        drop_geotransform_attr(ds_clipped)
         ds_clipped.to_netcdf(path)
 
     else:
         ds_clipped = xr.open_dataset(path)
         mapping_var = target_grid.rio.grid_mapping
     crs = target_grid[mapping_var].attrs["crs_wkt"]
-    ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping("mapping")
+    ds_clipped = ds_clipped.rio.write_crs(crs).rio.write_grid_mapping().rio.write_coordinate_system()
     return ds_clipped
 
 
@@ -528,6 +537,9 @@ def bathymetry_from_grid(
         # Strip stale per-band attrs that confuse xarray on re-read
         for k in ("scale_factor", "add_offset", "AREA_OR_POINT"):
             out.attrs.pop(k, None)
+        # Drop the GeoTransform so GDAL/QGIS derive the (top-down) transform from
+        # the ascending y coordinate instead of rendering the raster upside-down.
+        drop_geotransform_attr(out)
         out.to_netcdf(path)
 
     else:

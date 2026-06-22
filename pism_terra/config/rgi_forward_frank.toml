@@ -10,6 +10,7 @@ climate = "era5"
 dem = "glo_90"
 ice_thickness = "frank"
 bathymetry = "gebco"
+heatflux = "lucazeau"
 name = "Calibration"
 prefix = "rgi/glacier"
 rgi_complex_file = "rgi_c.gpkg"
@@ -52,7 +53,7 @@ forcing_mask = "none"
 'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 
@@ -81,6 +82,7 @@ model = "enthalpy"
 [energy.options.enthalpy]
 
 'energy.model' = "enthalpy"
+'energy.bedrock_thermal.file' = "none"
 'stress_balance.blatter.flow_law' = "gpbld"
 'stress_balance.sia.flow_law' = "gpbld"
 'stress_balance.ssa.flow_law' = "gpbld"
@@ -98,16 +100,6 @@ model = 'blatter'
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
-bp_pc_type = "mg"
-bp_mg_levels_ksp_type = "richardson"
-bp_mg_levels_pc_type ="sor"
-bp_mg_coarse_ksp_type = "preonly"
-bp_mg_coarse_pc_type = "lu"
-bp_pc_mg_levels = 3
-bp_snes_ksp_ew = 1
-bp_snes_ksp_ew_version = 3
-bp_snes_rtol = 1e-3
-bp_ksp_rtol = 1e-3
 
 [stress_balance.options.hybrid]
 
@@ -217,14 +209,31 @@ model = "off"
 'inverse.adjoint.method' =  "exact"
 'inverse.state_func' = "huber"
 'inverse.huber.delta' =  1e2
-'inv_adj_ksp_type' = "gmres"
-'inv_adj_pc_type' = "jacobi"
-'bp_ksp_rtol' = 1e-4
-'bp_mg_coarse_ksp_type' = "preonly"
-'bp_mg_coarse_pc_type' = "lu"
-'bp_mg_levels_ksp_type' = "chebyshev"
-'bp_pc_mg_levels' = 3
-'bp_pc_type' = "mg"
-'bp_snes_ksp_ew' = 0
-'bp_snes_ksp_ew_version' = 3
-'bp_snes_rtol' = 1e-4
+
+[solver.forward]
+bp_ksp_type = "fgmres"
+bp_pc_type = "mg"
+bp_mg_levels_ksp_type = "richardson"
+bp_mg_levels_pc_type = "sor"
+bp_mg_coarse_ksp_type = "gmres"
+bp_mg_coarse_pc_type = "gamg"
+bp_mg_coarse_ksp_rtol = 1e-2
+bp_mg_coarse_ksp_max_it = 50
+bp_pc_mg_levels = 3
+bp_snes_ksp_ew = 1
+bp_snes_ksp_ew_version = 3
+bp_snes_rtol = 1e-3
+bp_ksp_rtol = 1e-3
+
+[solver.inverse]
+inv_adj_ksp_type = "gmres"
+inv_adj_pc_type = "jacobi"
+bp_ksp_rtol = 1e-4
+bp_mg_coarse_ksp_type = "preonly"
+bp_mg_coarse_pc_type = "lu"
+bp_mg_levels_ksp_type = "chebyshev"
+bp_pc_mg_levels = 3
+bp_pc_type = "mg"
+bp_snes_ksp_ew = 0
+bp_snes_ksp_ew_version = 3
+bp_snes_rtol = 1e-4

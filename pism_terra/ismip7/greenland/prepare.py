@@ -199,6 +199,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         "heatflux_file": obs_files["heatflux_file"],
         "forcing_files": forcing_files,
         "retreat_file": retreat_file,
+        "obs_file": obs_files["obs_file"],
     }
 
 

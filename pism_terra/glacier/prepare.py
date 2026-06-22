@@ -69,6 +69,7 @@ from pism_terra.glacier.ice_thickness import (
     prepare_ice_thickness_maffezzoli,
 )
 from pism_terra.glacier.rgi import prepare_rgi
+from pism_terra.heatflux import prepare_heatflux_lucazeau
 from pism_terra.log import setup_logging
 from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
@@ -179,9 +180,6 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
         ntasks=ntasks,
     )
 
-    complexes = gpd.read_file(rgi_files["rgi_complexes"])
-    glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
-
     # https://springernature.figshare.com/ndownloader/articles/29940932/versions/1
     # https://springernature.figshare.com/ndownloader/files/57288257
 
@@ -194,6 +192,8 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     frank_path = ice_thickness_path / Path("frank")
     frank_path.mkdir(parents=True, exist_ok=True)
 
+    complexes = gpd.read_file(rgi_files["rgi_complexes"])
+    glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
     # prepare_ice_thickness_frank(
     #     regions.index,
     #     complexes=complexes,
@@ -205,18 +205,18 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     #     ntasks=ntasks,
     # )
 
-    maffezzoli_path = ice_thickness_path / Path("maffezzoli")
-    maffezzoli_path.mkdir(parents=True, exist_ok=True)
+    # maffezzoli_path = ice_thickness_path / Path("maffezzoli")
+    # maffezzoli_path.mkdir(parents=True, exist_ok=True)
 
-    prepare_ice_thickness_maffezzoli(
-        regions.index,
-        complexes=complexes,
-        glaciers=glaciers,
-        output_path=maffezzoli_path,
-        extract_path=ice_thickness_staging,
-        force_overwrite=force_overwrite,
-        ntasks=ntasks,
-    )
+    # prepare_ice_thickness_maffezzoli(
+    #     regions.index,
+    #     complexes=complexes,
+    #     glaciers=glaciers,
+    #     output_path=maffezzoli_path,
+    #     extract_path=ice_thickness_staging,
+    #     force_overwrite=force_overwrite,
+    #     ntasks=ntasks,
+    # )
 
     # --- GEBCO ---
     # Source NetCDF download lands in staging; only the COG goes to glacier/.
@@ -227,9 +227,6 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     gebco_nc = download_gebco(target_dir=gebco_staging)
     cog_gebco_p = gebco_path / Path("bathymetry.tif")
 
-    # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
-    # geotransform; rxr.open_rasterio treats netCDF as a generic raster and
-    # loses the georeferencing.
     ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
     da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
     if da.rio.crs is None:
@@ -244,6 +241,17 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
         bigtiff="YES",
         overview_resampling="AVERAGE",
         num_threads="ALL_CPUS",
+    )
+
+    # --- Heat flow (Lucazeau 2019) ---
+    heatflux_path = glacier_path / Path("heatflux")
+    heatflux_path.mkdir(parents=True, exist_ok=True)
+    heatflux_staging = staging_path / Path("heatflux")
+    heatflux_staging.mkdir(parents=True, exist_ok=True)
+    prepare_heatflux_lucazeau(
+        output_path=heatflux_path,
+        extract_path=heatflux_staging,
+        force_overwrite=force_overwrite,
     )
 
     # --- Climate (CARRA2) ---
@@ -384,8 +392,16 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
         ntasks=ntasks,
     )
 
-    complexes = gpd.read_file(rgi_files["rgi_complexes"])
-    glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
+    # --- Heat flow (Lucazeau 2019) ---
+    heatflux_path = glacier_path / Path("heatflux")
+    heatflux_path.mkdir(parents=True, exist_ok=True)
+    heatflux_staging = staging_path / Path("heatflux")
+    heatflux_staging.mkdir(parents=True, exist_ok=True)
+    prepare_heatflux_lucazeau(
+        output_path=heatflux_path,
+        extract_path=heatflux_staging,
+        force_overwrite=force_overwrite,
+    )
 
     # --- Ice thickness ---
     ice_thickness_path = glacier_path / Path("ice_thickness")
@@ -397,6 +413,8 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
     frank_path = ice_thickness_path / Path("frank")
     frank_path.mkdir(parents=True, exist_ok=True)
 
+    # complexes = gpd.read_file(rgi_files["rgi_complexes"])
+    # glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
     # prepare_ice_thickness_frank(
     #     regions.index,
     #     complexes=complexes,
@@ -411,15 +429,15 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
     maffezzoli_path = ice_thickness_path / Path("maffezzoli")
     maffezzoli_path.mkdir(parents=True, exist_ok=True)
 
-    prepare_ice_thickness_maffezzoli(
-        regions.index,
-        complexes=complexes,
-        glaciers=glaciers,
-        output_path=maffezzoli_path,
-        extract_path=ice_thickness_staging,
-        force_overwrite=force_overwrite,
-        ntasks=ntasks,
-    )
+    # prepare_ice_thickness_maffezzoli(
+    #     regions.index,
+    #     complexes=complexes,
+    #     glaciers=glaciers,
+    #     output_path=maffezzoli_path,
+    #     extract_path=ice_thickness_staging,
+    #     force_overwrite=force_overwrite,
+    #     ntasks=ntasks,
+    # )
 
     # --- GEBCO ---
     # Source NetCDF download lands in staging; only the COG goes to glacier/.
@@ -448,6 +466,26 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
         overview_resampling="AVERAGE",
         num_threads="ALL_CPUS",
     )
+
+    # --- Climate (CARRA2) ---
+    # Run the download/merge under staging, then move only the merged product
+    # into glacier/climate. Year-by-year CDS intermediates stay in staging.
+    climate_path = glacier_path / Path("climate")
+    climate_path.mkdir(parents=True, exist_ok=True)
+
+    carra2_staging = staging_path / Path("carra2")
+    carra2_staging.mkdir(parents=True, exist_ok=True)
+
+    carra2_staging_file = prepare_carra2(carra2_staging)
+    carra2_final = climate_path / Path(carra2_staging_file.name)
+    if carra2_staging_file.is_dir():
+        # Zarr store — copytree
+        if carra2_final.exists():
+            shutil.rmtree(carra2_final)
+        shutil.copytree(carra2_staging_file, carra2_final)
+    else:
+        # NetCDF or other single-file output
+        shutil.copy2(carra2_staging_file, carra2_final)
 
     return rgi_files
 

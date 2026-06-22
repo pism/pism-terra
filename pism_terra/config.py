@@ -763,6 +763,11 @@ class PismConfig(BaseModelWithDot):
         Time-stepping-related options to pass through. Defaults to ``{}``.
     inverse : dict of str to Any, optional
         Inverse options to pass through. Defaults to ``{}``.
+    solver : dict of str to Any, optional
+        PETSc/Blatter solver knobs split by run kind, with ``forward`` and
+        ``inverse`` sub-tables (``[solver.forward]`` / ``[solver.inverse]``).
+        The ``forward`` half is injected into the forward ``pism`` command and
+        the ``inverse`` half into the ``pismi`` command. Defaults to ``{}``.
 
     Notes
     -----
@@ -801,6 +806,7 @@ class PismConfig(BaseModelWithDot):
     input: dict[str, Any] = {}
     time_stepping: dict[str, Any] = {}
     inverse: dict[str, Any] = {}
+    solver: dict[str, Any] = {}
 
 
 class RestartConfig(BaseModelWithDot):
@@ -1190,6 +1196,8 @@ class CampaignConfig(BaseModel):
         Forcing mask ("all", "glacier", "none").
     velocity : str or None
         Velocity data source identifier (e.g., ``"its_live"``).
+    heatflux : str or None
+        Heat-flow data source identifier (e.g., ``"lucazeau"``).
     gcms : str, list, dict, or None
         GCM model name(s) used for climate forcing.
     boot_file : str or None
@@ -1235,6 +1243,7 @@ class CampaignConfig(BaseModel):
     dem: str | None = Field(default=None)
     forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
+    heatflux: str | None = Field(default=None)
     gcms: str | list | dict | None = Field(default=None)
     boot_file: str | None = Field(default=None)
     outline_file: str | None = Field(default=None)

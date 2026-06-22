@@ -216,10 +216,14 @@ def _render_inverse_run(
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
+    # Forward solver knobs ([solver.forward]) drive the forward pism call.
+    run.update(cfg.solver.get("forward", {}))
 
     inv = {}
     inv.update(getattr(cfg, "iceflow"))
     inv.update(getattr(cfg, "inverse"))
+    # Inverse solver knobs ([solver.inverse]) drive the pismi call.
+    inv.update(cfg.solver.get("inverse", {}))
 
     # cfg.stress_balance.selected() carries everything the forward run needs
     # (model options + PETSc solver knobs like bp_* / inv_adj_*). The pismi
@@ -227,6 +231,13 @@ def _render_inverse_run(
     # flags are picked up by the prior pism call (and inherited from the
     # state file). Filter so inv_str stays minimal.
     inv.update({k: v for k, v in cfg.stress_balance.selected().items() if k.startswith("stress_balance.")})
+
+    # The energy block defines the ice rheology (``energy.model`` and the
+    # ``flow_law``/ice-softness settings), which the Blatter forward and adjoint
+    # solves in pismi depend on. It is pure physics (no PETSc solver knobs), so
+    # forward it whole; without it the inverse run silently uses PISM's default
+    # rheology instead of the configured one.
+    inv.update(cfg.energy.selected())
 
     template_file = Path(template_file)
     env = Environment(loader=FileSystemLoader(template_file.parent))
@@ -533,6 +544,8 @@ def _render_forward_run(
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
+    # Forward solver knobs ([solver.forward]) drive the forward pism call.
+    run.update(cfg.solver.get("forward", {}))
 
     template_file = Path(template_file)
     env = Environment(loader=FileSystemLoader(template_file.parent))
@@ -958,6 +971,8 @@ def _run(*, kind: str) -> None:
                 "atmosphere.elevation_change.file": row["boot_file"],
                 "atmosphere.precip_scaling.file": scalar_offset_file,
                 "atmosphere.given.file": row["climate_file"],
+                "energy.bedrock_thermal.file": row["heatflux_file"],
+                "surface.debm_simple.albedo_input.file": row["climate_file"],
                 "surface.debm_simple.std_dev.file": row["climate_file"],
                 "surface.force_to_thickness.file": row["boot_file"],
                 "surface.pdd.std_dev.file": row["climate_file"],
