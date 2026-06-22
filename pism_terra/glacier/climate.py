@@ -69,6 +69,7 @@ from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import (
     check_xr_fully,
     check_xr_lazy,
+    drop_geotransform_attr,
     stamp_grid_mapping,
 )
 
@@ -122,7 +123,10 @@ def _finalize_pism_crs(ds: xr.Dataset, crs_wkt: str) -> xr.Dataset:
     """
     ds = ds.drop_vars(["crs", "spatial_ref"], errors="ignore")
     ds = ds.rio.write_crs(crs_wkt).rio.write_grid_mapping().rio.write_coordinate_system()
-    stamp_grid_mapping(ds)
+    ds = stamp_grid_mapping(ds)
+    # Drop the GeoTransform so GDAL/QGIS derive the (top-down) transform from the
+    # ascending y coordinate instead of rendering the raster upside-down.
+    drop_geotransform_attr(ds)
     return ds
 
 

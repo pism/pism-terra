@@ -40,7 +40,7 @@ from pism_terra.glacier.observations import (
     bathymetry_from_grid,
     glacier_velocities_from_grid,
 )
-from pism_terra.workflow import check_xr_lazy
+from pism_terra.workflow import check_xr_lazy, drop_geotransform_attr
 
 xr.set_options(keep_attrs=True)
 
@@ -116,6 +116,9 @@ def get_surface_dem_by_bounds(
     ds.attrs["Conventions"] = "CF-1.8"
 
     geo_file.unlink(missing_ok=True)
+    # Drop the GeoTransform so GDAL/QGIS derive the (top-down) transform from the
+    # ascending y coordinate instead of rendering the raster upside-down.
+    drop_geotransform_attr(ds)
     ds.to_netcdf(geo_file, engine="h5netcdf")
     return geo_file
 
@@ -220,6 +223,7 @@ def prepare_surface(
         surface_reprojected = surface.rio.reproject_match(target_grid, resampling=Resampling.bilinear).fillna(0)
 
     surface_file = Path(path) / "surface.nc"
+    drop_geotransform_attr(surface_reprojected)
     surface_reprojected.to_netcdf(surface_file)
 
     return surface_reprojected

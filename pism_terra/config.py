@@ -763,6 +763,11 @@ class PismConfig(BaseModelWithDot):
         Time-stepping-related options to pass through. Defaults to ``{}``.
     inverse : dict of str to Any, optional
         Inverse options to pass through. Defaults to ``{}``.
+    solver : dict of str to Any, optional
+        PETSc/Blatter solver knobs split by run kind, with ``forward`` and
+        ``inverse`` sub-tables (``[solver.forward]`` / ``[solver.inverse]``).
+        The ``forward`` half is injected into the forward ``pism`` command and
+        the ``inverse`` half into the ``pismi`` command. Defaults to ``{}``.
 
     Notes
     -----
@@ -801,6 +806,7 @@ class PismConfig(BaseModelWithDot):
     input: dict[str, Any] = {}
     time_stepping: dict[str, Any] = {}
     inverse: dict[str, Any] = {}
+    solver: dict[str, Any] = {}
 
 
 class RestartConfig(BaseModelWithDot):
