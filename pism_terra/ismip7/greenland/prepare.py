@@ -158,7 +158,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     )
     if data_path is not None:
-        url = data_path / Path(config["ice_sheet"]) / Path("obs") / Path("mipkit") / Path("GreenlandObsISMIP7-v1.3")
+        url = data_path / Path(config["ice_sheet"]) / Path("obs") / Path("mipkit") / Path("GreenlandObsISMIP7-v1.3.nc")
 
     logger.info("-" * 120)
     logger.info("Boot File")
@@ -166,7 +166,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
     # When data_path is None, fall back to an obs-cache subdir under output_path
     # so prepare_observations always has a real directory to download into.
-    obs_input_path = data_path if data_path is not None else output_path / Path("obs")
+    obs_input_path = (
+        data_path / Path("GrIS") / Path("obs") / Path("mipkit") if data_path is not None else output_path / Path("obs")
+    )
     obs_files = prepare_observations(
         url,
         obs_input_path,

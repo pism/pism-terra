@@ -751,6 +751,8 @@ class PismConfig(BaseModelWithDot):
         Hydrology model selection and its option set.
     geometry : dict of str to Any, optional
         Geometry-related options to pass through. Defaults to ``{}``.
+    bed_deformation : BedDeformationConfig
+        Bed deformation model selection and its option set.
     calving : dict of str to Any, optional
         Calving-related options to pass through. Defaults to ``{}``.
     iceflow : dict of str to Any, optional
@@ -798,6 +800,7 @@ class PismConfig(BaseModelWithDot):
     ocean: OceanConfig
     surface: SurfaceConfig
     frontal_melt: FrontalMeltConfig
+    bed_deformation: BedDeformationConfig
     hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
     calving: dict[str, Any] = {}
@@ -1151,6 +1154,16 @@ class HydrologyConfig(ModelWithOptions):
     SECTION = "hydrology"
 
 
+class BedDeformationConfig(ModelWithOptions):
+    """
+    Bed deformation model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "bed_deformation"
+
+
 class FrontalMeltConfig(ModelWithOptions):
     """
     Frontal melt model configuration.
@@ -1214,6 +1227,8 @@ class CampaignConfig(BaseModel):
         Human-readable campaign name.
     ocean_file : str or None
         Ocean forcing file name.
+    obs_file : str or None
+        Observations file name.
     pathway : str or None
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     prefix : str or None
@@ -1251,6 +1266,7 @@ class CampaignConfig(BaseModel):
     heatflux_file: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
     name: str | None = Field(default=None)
+    obs_file: str | None = Field(default=None)
     ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)

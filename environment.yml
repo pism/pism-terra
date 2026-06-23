@@ -28,6 +28,7 @@ dependencies:
   - libgdal-netcdf
   - matplotlib
   - nc-time-axis
+  - nco
   - h5py
   - hdf5
   - netCDF4
