@@ -107,6 +107,11 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     data_path = Path(args.data_path) if args.data_path else None
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
+    # Intermediate scratch (cdo tmps, per-epoch hist/proj) goes here so the
+    # final ``output_path`` only carries the merged files we actually ship.
+    # Matches the ``staging`` convention used by ``pism-glacier-stage``.
+    staging_path = output_path / "staging"
+    staging_path.mkdir(parents=True, exist_ok=True)
 
     setup_logging(output_path / "prepare.log")
 
@@ -143,7 +148,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
 
-    forcing_files = prepare_ismip7_forcing(base_url, output_path, config, data_path=data_path)
+    forcing_files = prepare_ismip7_forcing(
+        base_url, output_path, config, data_path=data_path, staging_path=staging_path
+    )
 
     logger.info("-" * 120)
     logger.info("Calfin Glacier Fronts File")

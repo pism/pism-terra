@@ -115,8 +115,9 @@ def stage(
     # ``prefix`` is a plain string in CampaignConfig; build the S3-side
     # prefix with f-string concatenation rather than Path division (Path /
     # str would TypeError on the leading str, and S3 keys aren't filesystem
-    # paths anyway).
-    prefix = f"{config['prefix']}"
+    # paths anyway). Include ``version`` so the URL resolves to the layout
+    # ``prepare`` writes, e.g. ``s3://…/ismip7/greenland/input/v2/…``.
+    prefix = f"{config['prefix']}/{config['version']}"
 
     pathway = config["pathway"]
     gcms = config["gcms"]
@@ -144,8 +145,15 @@ def stage(
         (config["outline_file"], outline_file),
         (config["obs_file"], obs_file),
     ]
+    # Only the final merged forcing files are published to S3 by
+    # ``prepare`` — the per-epoch hist/proj outputs are now scratch and
+    # disappear with the staging tempdir. The filename pattern below
+    # matches that merged-file naming exactly (start_year is the
+    # historical start, end_year the projection end). ``climate_gradient``
+    # is the annual elevation-gradient companion of ``climate`` (see
+    # ``prepare_ismip7_forcing``); validation downstream expects all three.
     for gcm in gcms:
-        for forcing in ("climate", "ocean"):
+        for forcing in ("climate", "climate_gradient", "ocean"):
             rel = f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc"
             required_files.append((rel, input_path / rel))
 

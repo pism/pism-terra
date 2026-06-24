@@ -403,6 +403,7 @@ def _process_single_forcing(
     freq: str = "1mon",
     calendar: str = "365_day",
     data_path: Path | None = None,
+    staging_path: Path | None = None,
 ) -> list[Path]:
     """
     Process a single GCM/forcing combination.
@@ -448,6 +449,12 @@ def _process_single_forcing(
         with their Globus filename under ``data_path`` (or under
         ``data_path/GrIS``). When ``None`` (default), the function downloads
         from Globus and stores files under ``base_path``.
+    staging_path : pathlib.Path or None, optional
+        Directory for intermediate scratch (the per-variable cdo
+        ``mergetime`` tmp files and the per-epoch hist/proj outputs).
+        Auto-cleaned at the end of the function via ``TemporaryDirectory``.
+        When ``None`` (default), ``output_path`` is used — but only the
+        final merged file is left in ``output_path`` either way.
 
     Returns
     -------
@@ -608,14 +615,23 @@ def _process_single_forcing(
     else:
         groups = [(forcing, fields, freq, "01-16 12:00")]
 
-    with tempfile.TemporaryDirectory(prefix=f"_ismip7_{gcm}_{forcing}_", dir=str(output_path)) as _tmp:
+    # Intermediates (cdo ``mergetime`` tmps, per-epoch hist/proj outputs)
+    # live under ``staging_path`` instead of ``output_path``. The whole
+    # tempdir is removed when the ``with`` block exits, so disk usage
+    # drops back to just the final merged files in ``output_path``.
+    staging_root = Path(staging_path) if staging_path is not None else output_path
+    staging_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"_ismip7_{gcm}_{forcing}_", dir=str(staging_root)) as _tmp:
         tmp_root = Path(_tmp)
 
         for label, sub_fields, sub_freq, time_anchor in groups:
-            hist_output_file = output_path / Path(
+            # Per-epoch hist/proj outputs are intermediates: they're read
+            # once by the final ``mergetime`` below and never staged or
+            # published, so they live in the tempdir and disappear with it.
+            hist_output_file = tmp_root / Path(
                 f"ismip7_greenland_{label}_historical_{gcm}_{version}_{hist_start_year}_{hist_end_year}.nc"
             )
-            proj_output_file = output_path / Path(
+            proj_output_file = tmp_root / Path(
                 f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}_{proj_start_year}_{proj_end_year}.nc"
             )
 
@@ -645,8 +661,6 @@ def _process_single_forcing(
                 output=str(hist_output_file.resolve()),
                 options="-f nc4 -z zip_2",
             )
-            _strip_fill_attrs(hist_output_file)
-            output_files.append(hist_output_file)
 
             cdo.setmisstoc(
                 0,
@@ -660,9 +674,8 @@ def _process_single_forcing(
                 output=str(proj_output_file.resolve()),
                 options="-f nc4 -z zip_2",
             )
-            _strip_fill_attrs(proj_output_file)
-            output_files.append(proj_output_file)
 
+            # The merged file is the only output that survives this call.
             merged_file = output_path / Path(
                 f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}_{hist_start_year}_{proj_end_year}.nc"
             )
@@ -1057,6 +1070,7 @@ def prepare_ismip7_forcing(
     config: dict,
     data_path: Path | str | None = None,
     n_workers: int = 2,
+    staging_path: Path | str | None = None,
 ) -> Sequence[Path | str]:
     """
     Process forcing data for all GCMs and forcings in parallel.
@@ -1067,7 +1081,7 @@ def prepare_ismip7_forcing(
         Base path (or URL) to the remote ISMIP7 forcing tree. Used only when
         ``data_path`` is ``None``; otherwise downloads are skipped entirely.
     output_path : Path or str
-        Output directory.
+        Output directory. Only the final merged forcing files end up here.
     config : dict
         Configuration dictionary.
     data_path : Path or str or None, optional
@@ -1077,6 +1091,12 @@ def prepare_ismip7_forcing(
         or being that ``GrIS/`` directory itself.
     n_workers : int, optional
         Number of dask workers, by default 2.
+    staging_path : Path or str or None, optional
+        Directory for intermediate scratch (per-variable cdo tmps and the
+        per-epoch hist/proj outputs). The whole staging tree is removed
+        after each forcing finishes, so the only artifact left on disk is
+        the final merged file in ``output_path``. Defaults to
+        ``output_path`` when omitted, matching the legacy behavior.
 
     Returns
     -------
@@ -1089,6 +1109,9 @@ def prepare_ismip7_forcing(
     output_path = Path(output_path)
     if data_path is not None:
         data_path = Path(data_path)
+    if staging_path is not None:
+        staging_path = Path(staging_path)
+        staging_path.mkdir(parents=True, exist_ok=True)
 
     ismip7_to_pism = config["ismip7_to_pism"]
     # Build list of tasks
@@ -1154,6 +1177,7 @@ def prepare_ismip7_forcing(
                 fields,
                 ismip7_to_pism,
                 data_path=data_path,
+                staging_path=staging_path,
             )
             futures.append(future)
 
