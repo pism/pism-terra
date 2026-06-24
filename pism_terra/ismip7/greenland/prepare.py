@@ -132,6 +132,11 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         raise ValueError(f"Cannot parse resolution string: {resolution_str!r}")
     resolution, _ = int(match.group(1)), match.group(2)
 
+    grid_ds = create_domain(x_bnds, y_bnds, resolution)
+    grid_file = output_path / Path("ismip7_greenland_grid.nc")
+    grid_ds.to_netcdf(grid_file)
+    check_xr_fully(grid_file)
+
     logger.info("-" * 120)
     logger.info("Forcings")
     logger.info("-" * 120)
@@ -139,12 +144,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
 
     forcing_files = prepare_ismip7_forcing(base_url, output_path, config, data_path=data_path)
-
-    grid_ds = create_domain(x_bnds, y_bnds, resolution)
-    grid_file = output_path / Path("ismip7_greenland_grid.nc")
-    encoding = {var: {"_FillValue": None} for var in list(grid_ds.data_vars) + list(grid_ds.coords)}
-    grid_ds.to_netcdf(grid_file, encoding=encoding)
-    check_xr_fully(grid_file)
 
     logger.info("-" * 120)
     logger.info("Calfin Glacier Fronts File")
