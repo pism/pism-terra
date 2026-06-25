@@ -48,7 +48,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 [reporting]
 
-'output.format' = "netcdf4_serial"
+'output.format' = "netcdf4_parallel"
 'output.compression_level' = 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
@@ -95,15 +95,12 @@ model = 'hybrid'
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
-'stress_balance.calving_front_stress_bc' = 'yes'
-'stress_balance.sia.max_diffusivity' = 100000.0
 'time_stepping.adaptive_ratio' = 500
 
 [stress_balance.options.hybrid]
 
 'stress_balance.model' = "ssa+sia"
 'stress_balance.ssa.method' = "fd"
-'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.max_diffusivity' = 100000.0
 
 [iceflow]
@@ -120,6 +117,7 @@ model = 'hybrid'
 'stress_balance.blatter.enhancement_factor' = 2.608046
 'stress_balance.sia.enhancement_factor' = 2.608046
 'stress_balance.ssa.Glen_exponent' = 3.309718
+'stress_balance.calving_front_stress_bc' = 'yes'
 
 [surface]
 
@@ -201,10 +199,10 @@ model="none"
 [solver]
 
 [solver.forward]
+
 bp_ksp_monitor = ""
-bp_snes_monitor_ratio = ""
+bp_ksp_rtol = 1e-3
 bp_ksp_type = "fgmres"
-bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
 bp_mg_levels_pc_type = "sor"
 bp_mg_coarse_ksp_type = "gmres"
@@ -212,22 +210,23 @@ bp_mg_coarse_pc_type = "gamg"
 bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
+bp_pc_type = "mg"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
+bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
-bp_ksp_rtol = 1e-3
 
 [solver.inverse]
 
-'bp_ksp_rtol' = 1e-4
-'bp_mg_coarse_ksp_type' = "preonly"
-'bp_mg_coarse_pc_type' = "lu"
-'bp_mg_levels_ksp_type' = "chebyshev"
-'bp_pc_mg_levels' = 3
-'bp_pc_type' = "mg"
-'bp_snes_ksp_ew' = 0
-'bp_snes_ksp_ew_version' = 3
-'bp_snes_rtol' = 1e-4
+bp_ksp_rtol = 1e-4
+bp_mg_coarse_ksp_type = "preonly"
+bp_mg_coarse_pc_type = "lu"
+bp_mg_levels_ksp_type = "chebyshev"
+bp_pc_mg_levels = 3
+bp_pc_type = "mg"
+bp_snes_ksp_ew = 0
+bp_snes_ksp_ew_version = 3
+bp_snes_rtol = 1e-4
 inv_adj_ksp_type = "gmres"
 inv_adj_pc_type = "jacobi"
 

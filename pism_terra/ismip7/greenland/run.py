@@ -404,10 +404,14 @@ def _render_inverse_run(
     run.update(cfg.surface.selected())
     run.update(cfg.stress_balance.selected())
     run.update(cfg.time.as_params())
+    # Forward solver knobs ([solver.forward]) drive the forward pism call.
+    run.update(cfg.solver.get("forward", {}))
 
     inv: dict = {}
     inv.update(getattr(cfg, "iceflow"))
     inv.update(getattr(cfg, "inverse"))
+    # Inverse solver knobs ([solver.inverse]) drive the pismi call.
+    inv.update(cfg.solver.get("inverse", {}))
 
     # cfg.stress_balance.selected() carries everything the forward run needs
     # (model options + PETSc solver knobs like bp_* / inv_adj_*). The pismi
