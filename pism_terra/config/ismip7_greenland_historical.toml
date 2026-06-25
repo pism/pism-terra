@@ -7,14 +7,14 @@
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
-pathway = "historical"
+pathway = "ssp370"
 version = "v2"
 start_year = "1978"
 end_year = "2015"
 gcms = ["CESM2-WACCM"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g600m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
+regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -57,9 +57,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.spatial.vars' = "lithk,orog,topg,hfgeoubed,acabf,libmassbfgr,libmassbffl,dlithkdt,velsurf,zvelsurf,velbase,zvelbase,velmean,litemptop,litempbotgr,litempbotfl,strbasemag,licalvf,lifmassbf,sftgif,sftgrf,sftflf"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
-'output.timeseries.filename' = "none"
-'output.timeseries.times' = "monthly"
-'output.timeseries.variables' = "lim,limnsw,iareagr,iareafl,tendacabf,tendlibmassbf,tendlibmassbffl,tendlicalvf,tendlifmassbf"
+'output.scalar.variables' = "lim,limnsw,iareagr,iareafl,tendacabf,tendlibmassbf,tendlibmassbffl,tendlicalvf,tendlifmassbf"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 'output.ISMIP6' = "yes"
@@ -173,7 +171,6 @@ model = "routing"
 
 'frontal_melt.models' = "routing"
 'frontal_melt.routing.file' = "none"
-'hydrology.surface_input.file' = "none"
 
 [hydrology]
 
@@ -190,6 +187,8 @@ model = "routing"
 'hydrology.surface_input_from_runoff' = "yes"
 
 [bed_deformation]
+
+model="none"
 
 [bed_deformation.options.none]
 

@@ -154,7 +154,7 @@ def stage(
     # ``prepare_ismip7_forcing``); validation downstream expects all three.
     for gcm in gcms:
         for forcing in ("climate", "climate_gradient", "ocean"):
-            rel = f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc"
+            rel = f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}.nc"
             required_files.append((rel, input_path / rel))
 
     # Skip files that already exist locally unless force_overwrite is set.
@@ -233,7 +233,7 @@ def stage(
         pathlib.Path
             Absolute path to the merged forcing file under ``input_path``.
         """
-        return input_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc")
+        return input_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}.nc")
 
     forcing_paths: dict[tuple[str, str], Path] = {}
     for gcm in gcms:

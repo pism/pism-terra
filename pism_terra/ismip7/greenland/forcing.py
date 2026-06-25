@@ -676,9 +676,7 @@ def _process_single_forcing(
             )
 
             # The merged file is the only output that survives this call.
-            merged_file = output_path / Path(
-                f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}_{hist_start_year}_{proj_end_year}.nc"
-            )
+            merged_file = output_path / Path(f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}.nc")
             cdo.mergetime(
                 input=" ".join([str(hist_output_file.resolve()), str(proj_output_file.resolve())]),
                 output=str(merged_file.resolve()),
@@ -783,6 +781,7 @@ def prepare_observations(
         else:
             ds = xr.open_dataset(surface_file)
         surface = ds["surface"].regrid.conservative(target_grid)
+        surface = surface.where(surface > 0, 0)
         surface.name = "surface"
         thickness = xr.where(surface > 0, surface - bed, 0)
         thickness = thickness.where(thickness > 10, 0)
