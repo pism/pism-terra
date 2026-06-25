@@ -159,7 +159,7 @@ model = "th"
 
 'ocean.models' = "th"
 'ocean.th.file' = "none"
-'ocean.th.clip_salinity' = "False"
+'ocean.th.clip_salinity' = "yes"
 
 [frontal_melt]
 
