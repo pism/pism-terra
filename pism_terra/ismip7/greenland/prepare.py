@@ -148,9 +148,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
 
-    # forcing_files = prepare_ismip7_forcing(
-    #     base_url, output_path, config, data_path=data_path, staging_path=staging_path
-    # )
+    forcing_files = prepare_ismip7_forcing(
+        base_url, output_path, config, data_path=data_path, staging_path=staging_path
+    )
 
     logger.info("-" * 120)
     logger.info("Calfin Glacier Fronts File")
