@@ -21,6 +21,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - fixed missing output filename for inverse state
 - fixed missing resolve()
 - fixed initialization
+- fixed CLI for stress balance
 
 ### Added
 
