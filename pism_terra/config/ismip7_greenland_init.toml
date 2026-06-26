@@ -226,6 +226,7 @@ bp_pc_mg_levels = 3
 bp_pc_type = "mg"
 bp_snes_ksp_ew = 0
 bp_snes_ksp_ew_version = 3
+bp_snes_monitor = ""
 bp_snes_rtol = 1e-4
 inv_adj_ksp_type = "gmres"
 inv_adj_pc_type = "jacobi"
@@ -233,8 +234,8 @@ inv_adj_pc_type = "jacobi"
 [inverse]
 
 'inverse.file' = "none"
-'inverse.stress_balance.velocity_scale' = 1e2
-'inverse.stress_balance.length_scale' = 1e3
+'inverse.stress_balance.velocity_scale' = 1e3
+'inverse.stress_balance.length_scale' = 1e6
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
 'inverse.max_iterations' = 50
@@ -244,6 +245,6 @@ inv_adj_pc_type = "jacobi"
 'inverse.stress_balance.tauc_max' = 5e7
 'inverse.tikhonov.penalty_weight' = 10
 'inverse.use_zeta_fixed_mask' = "yes"
-'inverse.adjoint.method' =  "exact"
+'inverse.adjoint.method' =  "approximate"
 'inverse.state_func' = "huber"
-'inverse.huber.delta' =  1e2
+'inverse.huber.delta' =  1e3

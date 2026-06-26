@@ -212,6 +212,7 @@ def stage(
         "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
         "outline_file": outline_file.resolve(),
+        "obs_file": obs_file.resolve(),
     }
 
     # Per-GCM climate/ocean forcing paths. ``surface_input_file`` aliases the
