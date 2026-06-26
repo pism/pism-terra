@@ -11,7 +11,7 @@
 module purge
 module load intel-compilers/2023.1.0 iimpi/2023a
 
-export container=$HOME/pism-dev.sif
+export container=$HOME/pism-ismip7.sif
 if [ ! -f "${container}" ]; then
     echo "Container ${container} not found." >&2
     exit 1
