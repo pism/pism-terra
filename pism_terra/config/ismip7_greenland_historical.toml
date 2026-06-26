@@ -198,6 +198,8 @@ model="none"
 
 'bed_deformation.model' = "lc"
 
+[solver]
+
 [solver.forward]
 
 bp_ksp_monitor = ""
