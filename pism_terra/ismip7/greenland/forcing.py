@@ -856,25 +856,19 @@ def prepare_observations(
     # downstream PISM inverse run knows which cells carry trustable obs.
 
     vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
-    mask = ds_bm["mask"]
-
-    # Grounded ice = mask == 2. Build a 0/1 indicator on the source grid, regrid it
-    # with the same conservative method as the velocity (-> grounded-ice area
-    # fraction), then threshold at 0.5 (= majority vote). Avoids xarray-regrid's
-    # brittle most_common() path, and reuses the regridder that already works here.
-    grounded = (mask == 2).astype("float32")
+    mask = ds_bm["icemask_promice"]
 
     if target_grid is not None:
         vel = vel.regrid.conservative(target_grid)
-        grounded = grounded.regrid.conservative(target_grid)
+        mask = mask.regrid.conservative(target_grid)
 
-    grounded = grounded > 0.5
+    icy = mask > 0.5
 
     vel["v"] = ((vel["vx"].fillna(0) ** 2 + vel["vy"].fillna(0) ** 2) ** 0.5).astype("float32")
     vel["u_observed"] = vel["vx"].fillna(0).astype("float32")
     vel["v_observed"] = vel["vy"].fillna(0).astype("float32")
-    vel["zeta_fixed_mask"] = xr.where(grounded, 0, 1).astype("int8")  # 1 where NOT grounded
-    vel["vel_misfit_weight"] = xr.where(grounded, 1, 0).astype("int8")  # 1 where grounded
+    vel["zeta_fixed_mask"] = xr.where(icy, 0, 1).astype("int8")  # 1 where NOT grounded
+    vel["vel_misfit_weight"] = xr.where(icy, 1, 0).astype("int8")  # 1 where grounded
     vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
 
     vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()

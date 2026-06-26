@@ -185,6 +185,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     retreat_file = prepare_calfin(
         output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
     )
+
     logger.info("Forcing files: %s", forcing_files)
 
     input_files = [grid_file] + list(obs_files.values()) + [retreat_file] + list(forcing_files)
