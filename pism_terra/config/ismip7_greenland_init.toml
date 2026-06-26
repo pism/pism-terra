@@ -88,7 +88,7 @@ model = "enthalpy"
 
 [stress_balance]
 
-model = 'hybrid'
+model = 'blatter'
 
 [stress_balance.options.blatter]
 
