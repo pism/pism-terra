@@ -141,24 +141,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     grid_ds.to_netcdf(grid_file)
     check_xr_fully(grid_file)
 
-    logger.info("-" * 120)
-    logger.info("Forcings")
-    logger.info("-" * 120)
-
-    base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
-
-    forcing_files = prepare_ismip7_forcing(
-        base_url, output_path, config, data_path=data_path, staging_path=staging_path
-    )
-
-    logger.info("-" * 120)
-    logger.info("Calfin Glacier Fronts File")
-    logger.info("-" * 120)
-
-    retreat_file = prepare_calfin(
-        output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
-    )
-
     url: str | Path = (
         "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     )
@@ -186,7 +168,25 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     for v in obs_files.values():
         check_xr_lazy(v)
 
+    logger.info("-" * 120)
+    logger.info("Forcings")
+    logger.info("-" * 120)
+
+    base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
+
+    forcing_files = prepare_ismip7_forcing(
+        base_url, output_path, config, data_path=data_path, staging_path=staging_path
+    )
+
+    logger.info("-" * 120)
+    logger.info("Calfin Glacier Fronts File")
+    logger.info("-" * 120)
+
+    retreat_file = prepare_calfin(
+        output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
+    )
     logger.info("Forcing files: %s", forcing_files)
+
     input_files = [grid_file] + list(obs_files.values()) + [retreat_file] + list(forcing_files)
 
     s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
