@@ -198,6 +198,13 @@ def _render_inverse_run(
     inv_path = output_path / Path("inverse")
     inv_path.mkdir(parents=True, exist_ok=True)
 
+    # CLI override for the stress-balance model. Apply before assembling the
+    # forward (``run``) and inverse (``inv``) option dicts so both pick up the
+    # swapped model — otherwise the pismi call keeps the config's model.
+    stress_balance_cli = config_cli.get("stress_balance")
+    if stress_balance_cli is not None:
+        cfg.stress_balance.model = stress_balance_cli
+
     run = {}
     for section in (
         "geometry",
@@ -265,15 +272,8 @@ def _render_inverse_run(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
-    # CLI override for the stress-balance model. Drop the previous model's
-    # options from ``run`` first so leftover keys (e.g. blatter.*) don't
-    # leak into e.g. a sia run.
-    stress_balance = config_cli.get("stress_balance")
-    if stress_balance is not None:
-        for old_key in cfg.stress_balance.selected():
-            run.pop(old_key, None)
-        cfg.stress_balance.model = stress_balance
-        run.update(cfg.stress_balance.selected())
+    # ``cfg.stress_balance.model`` was already swapped (if requested) before the
+    # option dicts were built, so the generated command(s) reflect the CLI choice.
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
 
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
@@ -525,6 +525,12 @@ def _render_forward_run(
     state_path = output_path / Path("state")
     state_path.mkdir(parents=True, exist_ok=True)
 
+    # CLI override for the stress-balance model. Apply before assembling the
+    # ``run`` option dict so it picks up the swapped model.
+    stress_balance_cli = config_cli.get("stress_balance")
+    if stress_balance_cli is not None:
+        cfg.stress_balance.model = stress_balance_cli
+
     run = {}
     for section in (
         "geometry",
@@ -573,15 +579,8 @@ def _render_forward_run(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
-    # CLI override for the stress-balance model. Drop the previous model's
-    # options from ``run`` first so leftover keys (e.g. blatter.*) don't
-    # leak into e.g. a sia run.
-    stress_balance = config_cli.get("stress_balance")
-    if stress_balance is not None:
-        for old_key in cfg.stress_balance.selected():
-            run.pop(old_key, None)
-        cfg.stress_balance.model = stress_balance
-        run.update(cfg.stress_balance.selected())
+    # ``cfg.stress_balance.model`` was already swapped (if requested) before the
+    # option dicts were built, so the generated command(s) reflect the CLI choice.
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
 
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]

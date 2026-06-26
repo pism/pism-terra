@@ -24,6 +24,8 @@ Prepare ISMIP7 Greenland data sets.
 import logging
 import os
 import re
+import shutil
+import subprocess
 import time
 from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor
@@ -56,7 +58,12 @@ from pism_terra.download import (
 )
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
-from pism_terra.workflow import check_xr_fully, check_xr_lazy
+from pism_terra.workflow import (
+    check_xr_fully,
+    check_xr_lazy,
+    drop_geotransform_attr,
+    stamp_grid_mapping,
+)
 
 xr.set_options(keep_attrs=True)
 
@@ -335,6 +342,49 @@ def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version):
     return str(url)
 
 
+def _strip_fill_attrs(path: Path) -> None:
+    """
+    Strip ``_FillValue`` and ``missing_value`` attrs in place.
+
+    CDO and netCDF-4 both treat ``_FillValue`` as a reserved attribute and
+    refuse to delete it via the public API. NCO's ``ncatted`` is the only
+    reliable way to remove it as a pure metadata edit (no data rewrite).
+    All NaN / missing cells have already been filled by ``setmisstoc`` (and
+    the per-variable temperature fill in ``_merge_one_var``) by the time
+    this runs, so the attributes carry no remaining information.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        NetCDF file to edit in place.
+
+    Raises
+    ------
+    RuntimeError
+        If ``ncatted`` is not installed; install ``nco`` in the active
+        conda env to satisfy this dependency.
+    subprocess.CalledProcessError
+        If ``ncatted`` runs but fails (e.g. permissions, corrupt file).
+    """
+    if shutil.which("ncatted") is None:
+        raise RuntimeError("ncatted not found on PATH; install the 'nco' conda package")
+    # The "...,,d,," form means: attribute name ".._FillValue", any var
+    # (empty middle field), action "d" (delete), no value, no type.
+    subprocess.run(
+        [
+            "ncatted",
+            "-O",
+            "-h",  # don't append a history line; the file stays bit-stable across reruns
+            "-a",
+            "_FillValue,,d,,",
+            "-a",
+            "missing_value,,d,,",
+            str(path),
+        ],
+        check=True,
+    )
+
+
 def _process_single_forcing(
     ice_sheet: Literal["AIS", "GrIS"],
     gcm: str,
@@ -353,6 +403,7 @@ def _process_single_forcing(
     freq: str = "1mon",
     calendar: str = "365_day",
     data_path: Path | None = None,
+    staging_path: Path | None = None,
 ) -> list[Path]:
     """
     Process a single GCM/forcing combination.
@@ -398,6 +449,12 @@ def _process_single_forcing(
         with their Globus filename under ``data_path`` (or under
         ``data_path/GrIS``). When ``None`` (default), the function downloads
         from Globus and stores files under ``base_path``.
+    staging_path : pathlib.Path or None, optional
+        Directory for intermediate scratch (the per-variable cdo
+        ``mergetime`` tmp files and the per-epoch hist/proj outputs).
+        Auto-cleaned at the end of the function via ``TemporaryDirectory``.
+        When ``None`` (default), ``output_path`` is used — but only the
+        final merged file is left in ``output_path`` either way.
 
     Returns
     -------
@@ -498,66 +555,136 @@ def _process_single_forcing(
         paths = [_resolve(year, pathway_name, m_var) for year in range(start_year, end_year)]
         k, v = m_var, ismip7_to_pism[m_var]
         out = tmp_root / f"{epoch_label}_{m_var}.nc"
-        cdo.chname(
-            f"{k},{v}",
-            input=(f"{tas_replace} -setgrid,{str(grid_file)} -mergetime [ " + " ".join(str(p) for p in paths) + " ]"),
-            output=str(out.resolve()),
-            options="-f nc4 -z zip_2",
+        # Per-variable fill applied in the per-tmp stage so the outer
+        # ``setmisstoc,0`` has nothing to do for this variable. The outer
+        # fill is correct for SMB / runoff (no-ice cells == 0 mass change)
+        # but unphysical for surface temperature, which the source masks
+        # out as NaN over non-ice cells and (in some files) ships with
+        # literal 0 K values. Replace both with 260 K — well below the
+        # outer fill range, so any real cold temperature is preserved.
+        if m_var in ("ts", "tas"):
+            fill_op = " -setrtoc,-1,1,260 -setmisstoc,260"
+        else:
+            fill_op = ""
+        mergetime_chain = (
+            f"{tas_replace}{fill_op} -setgrid,{str(grid_file)} -mergetime [ " + " ".join(str(p) for p in paths) + " ]"
         )
+        if m_var == "so":
+            # CMIP6 sea-water salinity ships with ``units = "psu"`` (practical
+            # salinity unit). PISM's ``ocean.th`` requires the numerically
+            # identical but udunits-parsable ``g/kg`` and refuses to read the
+            # file otherwise. Patch the attribute on the renamed variable in
+            # the same cdo invocation so we don't pay an extra read/write.
+            cdo.setattribute(
+                f"{v}@units=g/kg",
+                input=f"-chname,{k},{v} {mergetime_chain}",
+                output=str(out.resolve()),
+                options="-f nc4 -z zip_2",
+            )
+        else:
+            cdo.chname(
+                f"{k},{v}",
+                input=mergetime_chain,
+                output=str(out.resolve()),
+                options="-f nc4 -z zip_2",
+            )
         return out
 
-    hist_output_file = output_path / Path(
-        f"ismip7_greenland_{forcing}_historical_{gcm}_{version}_{hist_start_year}_{hist_end_year}.nc"
-    )
-    proj_output_file = output_path / Path(
-        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{proj_start_year}_{proj_end_year}.nc"
-    )
+    # ISMIP7 publishes "climate" fields at two cadences: ``acabf`` / ``mrro``
+    # / ``ts`` are monthly, while the elevation-gradient fields ``dacabfdz``
+    # and ``dmrrodz`` are annual. ``cdo -merge`` requires aligned time axes,
+    # so mixing the two would silently truncate the monthly streams to the 5
+    # annual timesteps (warning ``Input stream 2 has 5 timesteps. Stream 1
+    # has more timesteps, skipped!``). Emit two separate output files
+    # instead: the standard ``..._climate_...`` for the monthly fields and
+    # ``..._climate_gradient_...`` for the annual ones. Other forcings
+    # (ocean, …) keep the original single-group behavior.
+    annual_fields_set = {"dacabfdz", "dmrrodz", "dtsdz"}
+    if forcing == "climate":
+        monthly_fields = [f for f in fields if f not in annual_fields_set]
+        annual_fields = [f for f in fields if f in annual_fields_set]
+        groups: list[tuple[str, list[str], str, str]] = []
+        if monthly_fields:
+            groups.append(("climate", monthly_fields, freq, "01-16 12:00"))
+        if annual_fields:
+            # Mid-year anchor for the annual gradient timestamps. CDO's
+            # ``settbounds`` only accepts hour/day/month frequency tokens,
+            # so use ``12month`` (which both ``settbounds`` and ``settaxis``
+            # parse as one calendar year) instead of ``1yr``.
+            groups.append(("climate_gradient", annual_fields, "12month", "07-02 12:00"))
+    else:
+        groups = [(forcing, fields, freq, "01-16 12:00")]
 
-    with tempfile.TemporaryDirectory(prefix=f"_ismip7_{gcm}_{forcing}_", dir=str(output_path)) as _tmp:
+    # Intermediates (cdo ``mergetime`` tmps, per-epoch hist/proj outputs)
+    # live under ``staging_path`` instead of ``output_path``. The whole
+    # tempdir is removed when the ``with`` block exits, so disk usage
+    # drops back to just the final merged files in ``output_path``.
+    staging_root = Path(staging_path) if staging_path is not None else output_path
+    staging_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"_ismip7_{gcm}_{forcing}_", dir=str(staging_root)) as _tmp:
         tmp_root = Path(_tmp)
-        hist_tmp = [
-            _merge_one_var(tmp_root, "hist", "historical", hist_start_year, hist_end_year, m_var) for m_var in fields
-        ]
-        proj_tmp = [
-            _merge_one_var(tmp_root, "proj", pathway, proj_start_year, proj_end_year, m_var) for m_var in fields
-        ]
 
-        cdo.setmisstoc(
-            0,
-            input=(
-                f"-setgrid,{str(grid_file)} -settbounds,{freq} "
-                f"-setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} "
-                f"-settaxis,'{hist_start_year}-01-16 12:00,,{freq}' -merge "
-                + " ".join(str(p.resolve()) for p in hist_tmp)
-            ),
-            output=str(hist_output_file.resolve()),
-            options="-f nc4 -z zip_2",
-        )
-        output_files.append(hist_output_file)
+        for label, sub_fields, sub_freq, time_anchor in groups:
+            # Per-epoch hist/proj outputs are intermediates: they're read
+            # once by the final ``mergetime`` below and never staged or
+            # published, so they live in the tempdir and disappear with it.
+            hist_output_file = tmp_root / Path(
+                f"ismip7_greenland_{label}_historical_{gcm}_{version}_{hist_start_year}_{hist_end_year}.nc"
+            )
+            proj_output_file = tmp_root / Path(
+                f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}_{proj_start_year}_{proj_end_year}.nc"
+            )
 
-        cdo.setmisstoc(
-            0,
-            input=(
-                f"-setgrid,{str(grid_file)} -settbounds,{freq} "
-                f"-setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} "
-                f"-settaxis,'{proj_start_year}-01-16 12:00,,{freq}' -merge "
-                + " ".join(str(p.resolve()) for p in proj_tmp)
-            ),
-            output=str(proj_output_file.resolve()),
-            options="-f nc4 -z zip_2",
-        )
-        output_files.append(proj_output_file)
+            hist_tmp = [
+                _merge_one_var(tmp_root, f"hist_{label}", "historical", hist_start_year, hist_end_year, m_var)
+                for m_var in sub_fields
+            ]
+            proj_tmp = [
+                _merge_one_var(tmp_root, f"proj_{label}", pathway, proj_start_year, proj_end_year, m_var)
+                for m_var in sub_fields
+            ]
 
-    input_files = " ".join(str(f.resolve()) for f in output_files)
-    merged_file = output_path / Path(
-        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{hist_start_year}_{proj_end_year}.nc"
-    )
-    cdo.mergetime(
-        input=input_files,
-        options="-f nc4 -z zip_2",
-        output=str(merged_file.resolve()),
-    )
-    output_files.append(merged_file)
+            # ``-merge`` is variadic; without brackets the python-cdo wrapper
+            # appends the ``output=`` path as another positional argument and
+            # CDO treats it as a sixth input stream (then HDF5 fails to open
+            # the not-yet-existing output file). ``[ ... ]`` delimits the
+            # variadic file list so the output stays where it belongs.
+            cdo.setmisstoc(
+                0,
+                input=(
+                    f"-setgrid,{str(grid_file)} -settbounds,{sub_freq} "
+                    f"-setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} "
+                    f"-settaxis,'{hist_start_year}-{time_anchor},,{sub_freq}' -merge [ "
+                    + " ".join(str(p.resolve()) for p in hist_tmp)
+                    + " ]"
+                ),
+                output=str(hist_output_file.resolve()),
+                options="-f nc4 -z zip_2",
+            )
+
+            cdo.setmisstoc(
+                0,
+                input=(
+                    f"-setgrid,{str(grid_file)} -settbounds,{sub_freq} "
+                    f"-setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} "
+                    f"-settaxis,'{proj_start_year}-{time_anchor},,{sub_freq}' -merge [ "
+                    + " ".join(str(p.resolve()) for p in proj_tmp)
+                    + " ]"
+                ),
+                output=str(proj_output_file.resolve()),
+                options="-f nc4 -z zip_2",
+            )
+
+            # The merged file is the only output that survives this call.
+            merged_file = output_path / Path(f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}.nc")
+            cdo.mergetime(
+                input=" ".join([str(hist_output_file.resolve()), str(proj_output_file.resolve())]),
+                output=str(merged_file.resolve()),
+                options="-f nc4 -z zip_2",
+            )
+            _strip_fill_attrs(merged_file)
+            output_files.append(merged_file)
+
     return output_files
 
 
@@ -654,6 +781,7 @@ def prepare_observations(
         else:
             ds = xr.open_dataset(surface_file)
         surface = ds["surface"].regrid.conservative(target_grid)
+        surface = surface.where(surface > 0, 0)
         surface.name = "surface"
         thickness = xr.where(surface > 0, surface - bed, 0)
         thickness = thickness.where(thickness > 10, 0)
@@ -680,8 +808,20 @@ def prepare_observations(
     for v in ds.data_vars:
         ds[v].attrs.pop("coordinates", None)
         ds[v].encoding.pop("coordinates", None)
+        # BedMachine variables ship with stale per-variable ``grid_mapping``
+        # attrs (e.g. ``surface:grid_mapping = "polar_stereographic"``) that
+        # point at variables we never write. ``stamp_grid_mapping`` would
+        # canonicalize them on its own, but stripping here keeps the
+        # intermediate state cleaner and avoids surprises if the helper's
+        # heuristics change.
+        ds[v].attrs.pop("grid_mapping", None)
 
-    ds.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
+    # ``write_crs`` returns a new dataset — the old code threw the return
+    # away, leaving ``ds`` without any ``mapping`` variable and with the
+    # stale BedMachine attrs as the only grid-mapping evidence.
+    ds = ds.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
+    drop_geotransform_attr(ds)
+    ds = stamp_grid_mapping(ds, name="mapping")
 
     comp = {"zlib": True, "complevel": 2}
     for var in list(ds.data_vars) + list(ds.coords):
@@ -697,10 +837,13 @@ def prepare_observations(
     geo["bheatflx"].attrs.pop("coordinates", None)
     geo["bheatflx"].encoding.pop("coordinates", None)
     geo = geo.drop_vars("spatial_ref", errors="ignore")
-    geo["mapping"] = ds_bm["mapping"]
     for v in geo.data_vars:
         geo[v].attrs.pop("coordinates", None)
         geo[v].encoding.pop("coordinates", None)
+        geo[v].attrs.pop("grid_mapping", None)
+    geo = geo.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
+    drop_geotransform_attr(geo)
+    geo = stamp_grid_mapping(geo, name="mapping")
     geo_file = output_path / Path(f"heatflux_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
     geo_encoding = {var: {"_FillValue": None} for var in list(geo.data_vars) + list(geo.coords)}
     geo.to_netcdf(geo_file, encoding=geo_encoding, engine="h5netcdf")
@@ -711,33 +854,28 @@ def prepare_observations(
     # pism_terra.glacier.observations.glacier_velocities_from_grid — fillna
     # for u/v_observed and emit zeta_fixed_mask / vel_misfit_weight so the
     # downstream PISM inverse run knows which cells carry trustable obs.
-    vel_ts = ds_bm[["vx_timeseries", "vy_timeseries"]].rename_vars({"vx_timeseries": "vx", "vy_timeseries": "vy"})
-    nt = vel_ts.sizes["time"]
-    dt = xr.DataArray(np.arange(nt), dims=("time",))
-    speed_ts = (vel_ts["vx"] ** 2 + vel_ts["vy"] ** 2) ** 0.5
-    # Distance metric matches 05_prepare_itslive.py: earlier years carry the
-    # heavier weight; cells with no finite observation in a given year get
-    # distance 0 — but xarray.weighted skips NaN positions, so those huge
-    # weights never reach the mean.
-    distance = np.isfinite(speed_ts) * dt.broadcast_like(speed_ts)
-    power = 1.0
-    weights = 1.0 / (distance + 1e-12) ** power
-    vel = vel_ts.weighted(weights).mean(dim="time")
+
+    vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
+    mask = ds_bm["mask"]
+
+    # Grounded ice = mask == 2. Build a 0/1 indicator on the source grid, regrid it
+    # with the same conservative method as the velocity (-> grounded-ice area
+    # fraction), then threshold at 0.5 (= majority vote). Avoids xarray-regrid's
+    # brittle most_common() path, and reuses the regridder that already works here.
+    grounded = (mask == 2).astype("float32")
 
     if target_grid is not None:
         vel = vel.regrid.conservative(target_grid)
+        grounded = grounded.regrid.conservative(target_grid)
 
-    v_missing = vel["vx"].isnull()
+    grounded = grounded > 0.5
+
     vel["v"] = ((vel["vx"].fillna(0) ** 2 + vel["vy"].fillna(0) ** 2) ** 0.5).astype("float32")
     vel["u_observed"] = vel["vx"].fillna(0).astype("float32")
     vel["v_observed"] = vel["vy"].fillna(0).astype("float32")
-    vel["zeta_fixed_mask"] = xr.where(v_missing, 1, 0).fillna(0).astype("int8")
-    vel["vel_misfit_weight"] = xr.where(v_missing, 0, 1).fillna(0).astype("int8")
+    vel["zeta_fixed_mask"] = xr.where(grounded, 0, 1).astype("int8")  # 1 where NOT grounded
+    vel["vel_misfit_weight"] = xr.where(grounded, 1, 0).astype("int8")  # 1 where grounded
     vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
-    vel["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "fixed zeta mask (1=no obs, fix prior)"})
-    vel["v"].attrs.update({"units": "m year^-1", "long_name": "ice speed"})
-    vel["u_observed"].attrs.update({"units": "m year^-1", "long_name": "observed x velocity"})
-    vel["v_observed"].attrs.update({"units": "m year^-1", "long_name": "observed y velocity"})
 
     vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
     vel["x"].attrs.update(
@@ -761,9 +899,12 @@ def prepare_observations(
     for v in vel.data_vars:
         vel[v].attrs.pop("coordinates", None)
         vel[v].encoding.pop("coordinates", None)
+        vel[v].attrs.pop("grid_mapping", None)
         for k in ("scale_factor", "add_offset", "AREA_OR_POINT"):
             vel[v].attrs.pop(k, None)
             vel[v].encoding.pop(k, None)
+    drop_geotransform_attr(vel)
+    vel = stamp_grid_mapping(vel, name="mapping")
     vel = vel.drop_vars(["crs", "spatial_ref"], errors="ignore")
 
     obs_file = output_path / Path(f"obs_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
@@ -923,6 +1064,7 @@ def prepare_ismip7_forcing(
     config: dict,
     data_path: Path | str | None = None,
     n_workers: int = 2,
+    staging_path: Path | str | None = None,
 ) -> Sequence[Path | str]:
     """
     Process forcing data for all GCMs and forcings in parallel.
@@ -933,7 +1075,7 @@ def prepare_ismip7_forcing(
         Base path (or URL) to the remote ISMIP7 forcing tree. Used only when
         ``data_path`` is ``None``; otherwise downloads are skipped entirely.
     output_path : Path or str
-        Output directory.
+        Output directory. Only the final merged forcing files end up here.
     config : dict
         Configuration dictionary.
     data_path : Path or str or None, optional
@@ -943,6 +1085,12 @@ def prepare_ismip7_forcing(
         or being that ``GrIS/`` directory itself.
     n_workers : int, optional
         Number of dask workers, by default 2.
+    staging_path : Path or str or None, optional
+        Directory for intermediate scratch (per-variable cdo tmps and the
+        per-epoch hist/proj outputs). The whole staging tree is removed
+        after each forcing finishes, so the only artifact left on disk is
+        the final merged file in ``output_path``. Defaults to
+        ``output_path`` when omitted, matching the legacy behavior.
 
     Returns
     -------
@@ -955,6 +1103,9 @@ def prepare_ismip7_forcing(
     output_path = Path(output_path)
     if data_path is not None:
         data_path = Path(data_path)
+    if staging_path is not None:
+        staging_path = Path(staging_path)
+        staging_path.mkdir(parents=True, exist_ok=True)
 
     ismip7_to_pism = config["ismip7_to_pism"]
     # Build list of tasks
@@ -1020,6 +1171,7 @@ def prepare_ismip7_forcing(
                 fields,
                 ismip7_to_pism,
                 data_path=data_path,
+                staging_path=staging_path,
             )
             futures.append(future)
 

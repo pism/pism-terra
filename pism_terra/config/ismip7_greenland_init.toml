@@ -14,7 +14,7 @@ end_year = "2015"
 gcms = ["CESM2-WACCM"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1984-12-31.nc"
+regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -22,7 +22,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "1980-01-01"
-'time.end' =  "1982-01-01"
+'time.end' =  "1980-02-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1978-01-01"
 
@@ -44,11 +44,11 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 37
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
 
 [reporting]
 
-'output.format' = "netcdf4_serial"
+'output.format' = "netcdf4_parallel"
 'output.compression_level' = 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
@@ -95,15 +95,12 @@ model = 'hybrid'
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
-'stress_balance.calving_front_stress_bc' = 'yes'
-'stress_balance.sia.max_diffusivity' = 100000.0
 'time_stepping.adaptive_ratio' = 500
 
 [stress_balance.options.hybrid]
 
 'stress_balance.model' = "ssa+sia"
 'stress_balance.ssa.method' = "fd"
-'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.max_diffusivity' = 100000.0
 
 [iceflow]
@@ -120,6 +117,7 @@ model = 'hybrid'
 'stress_balance.blatter.enhancement_factor' = 2.608046
 'stress_balance.sia.enhancement_factor' = 2.608046
 'stress_balance.ssa.Glen_exponent' = 3.309718
+'stress_balance.calving_front_stress_bc' = 'yes'
 
 [surface]
 
@@ -198,12 +196,13 @@ model="none"
 
 'bed_deformation.model' = "lc"
 
+[solver]
+
 [solver.forward]
+
 bp_ksp_monitor = ""
-bp_ksp_view_singularvalues = ""
-bp_snes_monitor_ratio = ""
+bp_ksp_rtol = 1e-3
 bp_ksp_type = "fgmres"
-bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
 bp_mg_levels_pc_type = "sor"
 bp_mg_coarse_ksp_type = "gmres"
@@ -211,7 +210,41 @@ bp_mg_coarse_pc_type = "gamg"
 bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
+bp_pc_type = "mg"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
+bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
-bp_ksp_rtol = 1e-3
+
+[solver.inverse]
+
+bp_ksp_rtol = 1e-4
+bp_mg_coarse_ksp_type = "preonly"
+bp_mg_coarse_pc_type = "lu"
+bp_mg_levels_ksp_type = "chebyshev"
+bp_pc_mg_levels = 3
+bp_pc_type = "mg"
+bp_snes_ksp_ew = 0
+bp_snes_ksp_ew_version = 3
+bp_snes_monitor = ""
+bp_snes_rtol = 1e-4
+inv_adj_ksp_type = "gmres"
+inv_adj_pc_type = "jacobi"
+
+[inverse]
+
+'inverse.file' = "none"
+'inverse.stress_balance.velocity_scale' = 1e3
+'inverse.stress_balance.length_scale' = 1e6
+'inverse.design.cH1' = 1
+'inverse.design.cL2' = 0
+'inverse.max_iterations' = 50
+'inverse.design.param' = "exp"
+'inverse.stress_balance.method' = "tikhonov_blmvm"
+'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_max' = 5e7
+'inverse.tikhonov.penalty_weight' = 10
+'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.adjoint.method' =  "approximate"
+'inverse.state_func' = "huber"
+'inverse.huber.delta' =  1e3

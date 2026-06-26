@@ -157,6 +157,7 @@ def _render_forward_run(
     ):
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
+    run.update(cfg.bed_deformation.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.ocean.selected())
     run.update(cfg.frontal_melt.selected())
@@ -189,7 +190,6 @@ def _render_forward_run(
 
     start = cfg.model_dump(by_alias=True)["time"]["time.start"]
     end = cfg.model_dump(by_alias=True)["time"]["time.end"]
-    writer = cfg.model_dump()["run"]["writer"] if (cfg.model_dump()["run"]["writer"] is not None) else ""
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
@@ -230,7 +230,7 @@ def _render_forward_run(
     run.update(overrides)
 
     scalar_file = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
-    spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start}_{end}.nc")
+    spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{{var}}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
     run.update(
         {
@@ -404,10 +404,14 @@ def _render_inverse_run(
     run.update(cfg.surface.selected())
     run.update(cfg.stress_balance.selected())
     run.update(cfg.time.as_params())
+    # Forward solver knobs ([solver.forward]) drive the forward pism call.
+    run.update(cfg.solver.get("forward", {}))
 
     inv: dict = {}
     inv.update(getattr(cfg, "iceflow"))
     inv.update(getattr(cfg, "inverse"))
+    # Inverse solver knobs ([solver.inverse]) drive the pismi call.
+    inv.update(cfg.solver.get("inverse", {}))
 
     # cfg.stress_balance.selected() carries everything the forward run needs
     # (model options + PETSc solver knobs like bp_* / inv_adj_*). The pismi
@@ -765,10 +769,8 @@ def _run(*, kind: str) -> None:
 
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
-    bucket = campaign_config["bucket"]
-    prefix = campaign_config["prefix"]
 
-    df = stage(campaign_config, bucket=bucket, prefix=prefix, path=path, force_overwrite=force_overwrite)
+    df = stage(campaign_config, path=path, force_overwrite=force_overwrite)
 
     if uq_file is not None:
         rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
@@ -813,14 +815,13 @@ def _run(*, kind: str) -> None:
                 "input.file": row["boot_file"],
                 "input.regrid.file": row["regrid_file"],
                 "frontal_melt.routing.file": row["frontal_melt_file"],
-                "geometry.front_retreat.prescribed.file": row["retreat_file"],
                 "grid.file": row["grid_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
                 "atmosphere.given.file": row["climate_file"],
                 "surface.given.file": row["climate_file"],
-                "surface.ismip6.file": row["climate_file"],
-                "surface.ismip6.reference_file": row["climate_file"],
-                "hydrology.surface_input.file": row["surface_input_file"],
+                "surface.ismip7.file": row["climate_file"],
+                "surface.ismip7.gradient.file": row["climate_gradient_file"],
+                "surface.ismip7.reference.file": row["boot_file"],
                 "ocean.th.file": row["ocean_file"],
             }
         )
@@ -831,7 +832,10 @@ def _run(*, kind: str) -> None:
             uq_overrides["inverse.file"] = row["obs_file"]
 
         outline_file = row["outline_file"] if "outline_file" in row else None
-        sample = row["sample"] if is_ensemble else (int(row["sample"]) if "sample" in row else idx)
+        # ISMIP7 staging uses the GCM name (a string like "CESM2-WACCM") as
+        # the sample id, so don't try to coerce to int the way the glacier
+        # CLI does.
+        sample = row["sample"] if "sample" in row else idx
         render(
             config_file,
             template_file,

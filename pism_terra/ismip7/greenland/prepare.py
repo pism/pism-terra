@@ -88,7 +88,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
 
     parser = ArgumentParser()
-    parser.add_argument("--obs-path", default="data/obs")
     parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
@@ -107,6 +106,11 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     data_path = Path(args.data_path) if args.data_path else None
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
+    # Intermediate scratch (cdo tmps, per-epoch hist/proj) goes here so the
+    # final ``output_path`` only carries the merged files we actually ship.
+    # Matches the ``staging`` convention used by ``pism-glacier-stage``.
+    staging_path = output_path / "staging"
+    staging_path.mkdir(parents=True, exist_ok=True)
 
     setup_logging(output_path / "prepare.log")
 
@@ -132,33 +136,16 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         raise ValueError(f"Cannot parse resolution string: {resolution_str!r}")
     resolution, _ = int(match.group(1)), match.group(2)
 
-    logger.info("-" * 120)
-    logger.info("Forcings")
-    logger.info("-" * 120)
-
-    base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
-
-    forcing_files = prepare_ismip7_forcing(base_url, output_path, config, data_path=data_path)
-
     grid_ds = create_domain(x_bnds, y_bnds, resolution)
     grid_file = output_path / Path("ismip7_greenland_grid.nc")
-    encoding = {var: {"_FillValue": None} for var in list(grid_ds.data_vars) + list(grid_ds.coords)}
-    grid_ds.to_netcdf(grid_file, encoding=encoding)
+    grid_ds.to_netcdf(grid_file)
     check_xr_fully(grid_file)
-
-    logger.info("-" * 120)
-    logger.info("Calfin Glacier Fronts File")
-    logger.info("-" * 120)
-
-    retreat_file = prepare_calfin(
-        output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
-    )
 
     url: str | Path = (
         "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
     )
     if data_path is not None:
-        url = data_path / Path(config["ice_sheet"]) / Path("obs") / Path("mipkit") / Path("GreenlandObsISMIP7-v1.3")
+        url = data_path / Path(config["ice_sheet"]) / Path("obs") / Path("mipkit") / Path("GreenlandObsISMIP7-v1.3.nc")
 
     logger.info("-" * 120)
     logger.info("Boot File")
@@ -166,7 +153,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
     # When data_path is None, fall back to an obs-cache subdir under output_path
     # so prepare_observations always has a real directory to download into.
-    obs_input_path = data_path if data_path is not None else output_path / Path("obs")
+    obs_input_path = (
+        data_path / Path("GrIS") / Path("obs") / Path("mipkit") if data_path is not None else output_path / Path("obs")
+    )
     obs_files = prepare_observations(
         url,
         obs_input_path,
@@ -179,7 +168,25 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     for v in obs_files.values():
         check_xr_lazy(v)
 
+    logger.info("-" * 120)
+    logger.info("Forcings")
+    logger.info("-" * 120)
+
+    base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
+
+    forcing_files = prepare_ismip7_forcing(
+        base_url, output_path, config, data_path=data_path, staging_path=staging_path
+    )
+
+    logger.info("-" * 120)
+    logger.info("Calfin Glacier Fronts File")
+    logger.info("-" * 120)
+
+    retreat_file = prepare_calfin(
+        output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
+    )
     logger.info("Forcing files: %s", forcing_files)
+
     input_files = [grid_file] + list(obs_files.values()) + [retreat_file] + list(forcing_files)
 
     s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
