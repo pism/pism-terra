@@ -854,33 +854,28 @@ def prepare_observations(
     # pism_terra.glacier.observations.glacier_velocities_from_grid — fillna
     # for u/v_observed and emit zeta_fixed_mask / vel_misfit_weight so the
     # downstream PISM inverse run knows which cells carry trustable obs.
-    vel_ts = ds_bm[["vx_timeseries", "vy_timeseries"]].rename_vars({"vx_timeseries": "vx", "vy_timeseries": "vy"})
-    nt = vel_ts.sizes["vel_time"]
-    dt = xr.DataArray(np.arange(nt), dims=("vel_time",))
-    speed_ts = (vel_ts["vx"] ** 2 + vel_ts["vy"] ** 2) ** 0.5
-    # Distance metric matches 05_prepare_itslive.py: earlier years carry the
-    # heavier weight; cells with no finite observation in a given year get
-    # distance 0 — but xarray.weighted skips NaN positions, so those huge
-    # weights never reach the mean.
-    distance = np.isfinite(speed_ts) * dt.broadcast_like(speed_ts)
-    power = 1.0
-    weights = 1.0 / (distance + 1e-12) ** power
-    vel = vel_ts.weighted(weights).mean(dim="vel_time")
+
+    vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
+    mask = ds_bm["mask"]
+
+    # Grounded ice = mask == 2. Build a 0/1 indicator on the source grid, regrid it
+    # with the same conservative method as the velocity (-> grounded-ice area
+    # fraction), then threshold at 0.5 (= majority vote). Avoids xarray-regrid's
+    # brittle most_common() path, and reuses the regridder that already works here.
+    grounded = (mask == 2).astype("float32")
 
     if target_grid is not None:
         vel = vel.regrid.conservative(target_grid)
+        grounded = grounded.regrid.conservative(target_grid)
 
-    v_missing = vel["vx"].isnull()
+    grounded = grounded > 0.5
+
     vel["v"] = ((vel["vx"].fillna(0) ** 2 + vel["vy"].fillna(0) ** 2) ** 0.5).astype("float32")
     vel["u_observed"] = vel["vx"].fillna(0).astype("float32")
     vel["v_observed"] = vel["vy"].fillna(0).astype("float32")
-    vel["zeta_fixed_mask"] = xr.where(v_missing, 1, 0).fillna(0).astype("int8")
-    vel["vel_misfit_weight"] = xr.where(v_missing, 0, 1).fillna(0).astype("int8")
+    vel["zeta_fixed_mask"] = xr.where(grounded, 0, 1).astype("int8")  # 1 where NOT grounded
+    vel["vel_misfit_weight"] = xr.where(grounded, 1, 0).astype("int8")  # 1 where grounded
     vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
-    vel["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "fixed zeta mask (1=no obs, fix prior)"})
-    vel["v"].attrs.update({"units": "m year^-1", "long_name": "ice speed"})
-    vel["u_observed"].attrs.update({"units": "m year^-1", "long_name": "observed x velocity"})
-    vel["v_observed"].attrs.update({"units": "m year^-1", "long_name": "observed y velocity"})
 
     vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
     vel["x"].attrs.update(

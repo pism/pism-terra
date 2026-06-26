@@ -88,7 +88,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """
 
     parser = ArgumentParser()
-    parser.add_argument("--obs-path", default="data/obs")
     parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
