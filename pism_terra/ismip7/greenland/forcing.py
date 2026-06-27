@@ -846,6 +846,12 @@ def prepare_observations(
     geo = stamp_grid_mapping(geo, name="mapping")
     geo_file = output_path / Path(f"heatflux_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
     geo_encoding = {var: {"_FillValue": None} for var in list(geo.data_vars) + list(geo.coords)}
+    for var in geo.data_vars:
+        # See the obs write below: a per-variable encoding dict replaces the
+        # variable's ``.encoding``, so preserve the CF ``grid_mapping`` key.
+        grid_mapping = geo[var].encoding.get("grid_mapping")
+        if grid_mapping:
+            geo_encoding[var]["grid_mapping"] = grid_mapping
     geo.to_netcdf(geo_file, encoding=geo_encoding, engine="h5netcdf")
 
     # Velocity observations: collapse the ISMIP7 vx/vy time series with the
@@ -907,6 +913,12 @@ def prepare_observations(
     }
     for var in vel.data_vars:
         vel_encoding[var].update(comp)
+        # A per-variable encoding dict passed to ``to_netcdf`` replaces the
+        # variable's ``.encoding``, so the CF ``grid_mapping`` key set by
+        # stamp_grid_mapping would be dropped. Carry it through explicitly.
+        grid_mapping = vel[var].encoding.get("grid_mapping")
+        if grid_mapping:
+            vel_encoding[var]["grid_mapping"] = grid_mapping
     vel.to_netcdf(obs_file, encoding=vel_encoding, engine="h5netcdf")
 
     return {"boot_file": boot_file, "heatflux_file": geo_file, "obs_file": obs_file}

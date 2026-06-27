@@ -16,6 +16,7 @@ rgi_complex_file = "rgi_c.gpkg"
 rgi_glacier_file = "rgi_g.gpkg"
 velocity = "its_live"
 forcing_mask = "all"
+heatflux = "lucazeau"
 
 [time]
 
@@ -181,6 +182,12 @@ model = "null"
 model = "off"
 
 [frontal_melt.options.off]
+
+[bed_deformation]
+
+model = "none"
+
+[bed_deformation.options.none]
 
 [inverse]
 

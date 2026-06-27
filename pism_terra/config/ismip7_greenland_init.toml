@@ -13,7 +13,7 @@ start_year = "1978"
 end_year = "2015"
 gcms = ["CESM2-WACCM"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
-grid_file = "ismip7_greenland_grid.nc"
+grid_file = "bedmachine_greenland_grid.nc"
 regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
@@ -237,18 +237,19 @@ inv_adj_pc_type = "jacobi"
 
 [inverse]
 
-'inverse.file' = "none"
-'inverse.stress_balance.velocity_scale' = 1e3
-'inverse.stress_balance.length_scale' = 1e6
+'inverse.adjoint.method' =  "approximate"
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
-'inverse.max_iterations' = 50
+'inverse.file' = "none"
 'inverse.design.param' = "exp"
+'inverse.huber.delta' =  1e3
+'inverse.max_iterations' = 50
+'inverse.state_func' = "huber"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
 'inverse.stress_balance.tauc_min' = 1e4
 'inverse.stress_balance.tauc_max' = 5e7
+'inverse.stress_balance.velocity_scale' = 1e2
+'inverse.stress_balance.length_scale' = 1e5
 'inverse.tikhonov.penalty_weight' = 10
+'inverse.tikhonov.atol' = 1e-7
 'inverse.use_zeta_fixed_mask' = "yes"
-'inverse.adjoint.method' =  "approximate"
-'inverse.state_func' = "huber"
-'inverse.huber.delta' =  1e3
