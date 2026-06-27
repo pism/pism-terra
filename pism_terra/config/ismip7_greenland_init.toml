@@ -161,7 +161,7 @@ model = "th"
 
 [frontal_melt]
 
-model = "routing"
+model = "off"
 
 [frontal_melt.options.off]
 
@@ -172,7 +172,7 @@ model = "routing"
 
 [hydrology]
 
-model = "routing"
+model = "null"
 
 [hydrology.options.null]
 
