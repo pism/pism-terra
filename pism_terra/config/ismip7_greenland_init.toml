@@ -13,8 +13,8 @@ start_year = "1978"
 end_year = "2015"
 gcms = ["CESM2-WACCM"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
-grid_file = "ismip7_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
+grid_file = "pism_bedmachine_greenland_grid.nc"
+regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1990-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -88,7 +88,7 @@ model = "enthalpy"
 
 [stress_balance]
 
-model = 'hybrid'
+model = 'blatter'
 
 [stress_balance.options.blatter]
 
@@ -161,7 +161,7 @@ model = "th"
 
 [frontal_melt]
 
-model = "routing"
+model = "off"
 
 [frontal_melt.options.off]
 
@@ -172,7 +172,7 @@ model = "routing"
 
 [hydrology]
 
-model = "routing"
+model = "null"
 
 [hydrology.options.null]
 
@@ -218,33 +218,38 @@ bp_snes_rtol = 1e-3
 
 [solver.inverse]
 
-bp_ksp_rtol = 1e-4
-bp_mg_coarse_ksp_type = "preonly"
-bp_mg_coarse_pc_type = "lu"
-bp_mg_levels_ksp_type = "chebyshev"
+bp_ksp_rtol = 1e-3
+bp_ksp_type = "fgmres"
+bp_mg_levels_ksp_type = "richardson"
+bp_mg_levels_pc_type = "sor"
+bp_mg_coarse_ksp_type = "gmres"
+bp_mg_coarse_pc_type = "gamg"
+bp_mg_coarse_ksp_rtol = 1e-2
+bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
 bp_pc_type = "mg"
 bp_snes_ksp_ew = 0
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
-bp_snes_rtol = 1e-4
+bp_snes_rtol = 1e-3
 inv_adj_ksp_type = "gmres"
 inv_adj_pc_type = "jacobi"
 
 [inverse]
 
-'inverse.file' = "none"
-'inverse.stress_balance.velocity_scale' = 1e3
-'inverse.stress_balance.length_scale' = 1e6
+'inverse.adjoint.method' =  "approximate"
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
-'inverse.max_iterations' = 50
+'inverse.file' = "none"
 'inverse.design.param' = "exp"
+'inverse.huber.delta' =  1e3
+'inverse.max_iterations' = 50
+'inverse.state_func' = "huber"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
 'inverse.stress_balance.tauc_min' = 1e4
 'inverse.stress_balance.tauc_max' = 5e7
+'inverse.stress_balance.velocity_scale' = 1e2
+'inverse.stress_balance.length_scale' = 1e5
 'inverse.tikhonov.penalty_weight' = 10
+'inverse.tikhonov.atol' = 1e-7
 'inverse.use_zeta_fixed_mask' = "yes"
-'inverse.adjoint.method' =  "approximate"
-'inverse.state_func' = "huber"
-'inverse.huber.delta' =  1e3

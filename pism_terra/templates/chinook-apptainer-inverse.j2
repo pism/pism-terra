@@ -26,5 +26,14 @@ ulimit -l unlimited
 ulimit -s unlimited
 ulimit
 
+# ###############################################################################
+# FORWARD RUN
+# ###############################################################################
+
 mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} pism {{ run_str }}
+
+# ###############################################################################
+# INVERSION RUN
+# ###############################################################################
+
 mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} python -m PISM.pismi {{ inv_str }}

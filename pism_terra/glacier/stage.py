@@ -21,6 +21,7 @@
 Staging.
 """
 
+import re
 import shutil
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -71,7 +72,7 @@ CLIMATE: Mapping[str, Callable] = {
     "era5": era5,
     "era5-mean": era5_mean,
     "era5-monthly-mean": era5_monthly_mean,
-    "snap": snap,
+    "snap-monthly-mean": snap,
 }
 MODIFIER: Mapping[str, Callable] = {
     "era5": create_offset_file,
@@ -332,7 +333,13 @@ def stage_glacier(
     }
     dfs: list[pd.DataFrame] = []
     for idx, fpath in enumerate(responses):
-        row = {**files_dict, "climate_file": Path(fpath).resolve(), "sample": idx}
+        # When the climate source emits period-tagged files (e.g. SNAP's
+        # ``snap_1920_1949_<rgi_id>.nc``), use that tag as the sample id so the
+        # run id carries the period (``id_snap_1920_1949``) and composes with a
+        # UQ file (``id_snap_1920_1949_uq_0``). Otherwise fall back to the index.
+        m = re.search(r"snap_\d{4}_\d{4}", Path(fpath).stem)
+        sample: str | int = m.group(0) if m else idx
+        row = {**files_dict, "climate_file": Path(fpath).resolve(), "sample": sample}
         dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)

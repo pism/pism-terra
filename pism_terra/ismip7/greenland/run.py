@@ -167,6 +167,9 @@ def _render_forward_run(
     run.update(cfg.surface.selected())
     run.update(cfg.stress_balance.selected())
     run.update(cfg.time.as_params())
+    # PETSc / blatter solver knobs from [solver.forward]. Matches what the
+    # inverse runner does for the prior pism call; see also pism_terra.glacier.run.
+    run.update(cfg.solver.get("forward", {}))
 
     template_file = Path(template_file)
     env = Environment(loader=FileSystemLoader(template_file.parent))

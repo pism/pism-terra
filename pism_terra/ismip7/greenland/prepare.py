@@ -137,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     resolution, _ = int(match.group(1)), match.group(2)
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution)
-    grid_file = output_path / Path("ismip7_greenland_grid.nc")
+    grid_file = output_path / Path("pism_bedmachine_greenland_grid.nc")
     grid_ds.to_netcdf(grid_file)
     check_xr_fully(grid_file)
 
@@ -185,6 +185,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     retreat_file = prepare_calfin(
         output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
     )
+
     logger.info("Forcing files: %s", forcing_files)
 
     input_files = [grid_file] + list(obs_files.values()) + [retreat_file] + list(forcing_files)

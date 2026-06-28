@@ -846,6 +846,12 @@ def prepare_observations(
     geo = stamp_grid_mapping(geo, name="mapping")
     geo_file = output_path / Path(f"heatflux_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
     geo_encoding = {var: {"_FillValue": None} for var in list(geo.data_vars) + list(geo.coords)}
+    for var in geo.data_vars:
+        # See the obs write below: a per-variable encoding dict replaces the
+        # variable's ``.encoding``, so preserve the CF ``grid_mapping`` key.
+        grid_mapping = geo[var].encoding.get("grid_mapping")
+        if grid_mapping:
+            geo_encoding[var]["grid_mapping"] = grid_mapping
     geo.to_netcdf(geo_file, encoding=geo_encoding, engine="h5netcdf")
 
     # Velocity observations: collapse the ISMIP7 vx/vy time series with the
@@ -856,25 +862,19 @@ def prepare_observations(
     # downstream PISM inverse run knows which cells carry trustable obs.
 
     vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
-    mask = ds_bm["mask"]
-
-    # Grounded ice = mask == 2. Build a 0/1 indicator on the source grid, regrid it
-    # with the same conservative method as the velocity (-> grounded-ice area
-    # fraction), then threshold at 0.5 (= majority vote). Avoids xarray-regrid's
-    # brittle most_common() path, and reuses the regridder that already works here.
-    grounded = (mask == 2).astype("float32")
+    mask = ds_bm["icemask_promice"]
 
     if target_grid is not None:
         vel = vel.regrid.conservative(target_grid)
-        grounded = grounded.regrid.conservative(target_grid)
+        mask = mask.regrid.conservative(target_grid)
 
-    grounded = grounded > 0.5
+    icy = mask > 0.5
 
     vel["v"] = ((vel["vx"].fillna(0) ** 2 + vel["vy"].fillna(0) ** 2) ** 0.5).astype("float32")
     vel["u_observed"] = vel["vx"].fillna(0).astype("float32")
     vel["v_observed"] = vel["vy"].fillna(0).astype("float32")
-    vel["zeta_fixed_mask"] = xr.where(grounded, 0, 1).astype("int8")  # 1 where NOT grounded
-    vel["vel_misfit_weight"] = xr.where(grounded, 1, 0).astype("int8")  # 1 where grounded
+    vel["zeta_fixed_mask"] = xr.where(icy, 0, 1).astype("int8")  # 1 where NOT grounded
+    vel["vel_misfit_weight"] = xr.where(icy, 1, 0).astype("int8")  # 1 where grounded
     vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
 
     vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
@@ -913,6 +913,12 @@ def prepare_observations(
     }
     for var in vel.data_vars:
         vel_encoding[var].update(comp)
+        # A per-variable encoding dict passed to ``to_netcdf`` replaces the
+        # variable's ``.encoding``, so the CF ``grid_mapping`` key set by
+        # stamp_grid_mapping would be dropped. Carry it through explicitly.
+        grid_mapping = vel[var].encoding.get("grid_mapping")
+        if grid_mapping:
+            vel_encoding[var]["grid_mapping"] = grid_mapping
     vel.to_netcdf(obs_file, encoding=vel_encoding, engine="h5netcdf")
 
     return {"boot_file": boot_file, "heatflux_file": geo_file, "obs_file": obs_file}

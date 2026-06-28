@@ -6,9 +6,10 @@ ice_sheet = "GrIS"
 
 [domain]
 
-x_bounds = [-653000.0, 879700.0]
-y_bounds = [-3384350.0, -632750.0]
-resolution = "900m"
+crs = "EPSG:3413"
+x_bounds = [-750650.0, 977350.0]
+y_bounds = [-3412550.0, -604550.0]
+resolution = "600m"
 
 [gcms]
 
