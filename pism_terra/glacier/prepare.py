@@ -218,41 +218,41 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     #     ntasks=ntasks,
     # )
 
-    # --- GEBCO ---
-    # Source NetCDF download lands in staging; only the COG goes to glacier/.
-    gebco_path = glacier_path / Path("gebco")
-    gebco_path.mkdir(parents=True, exist_ok=True)
-    gebco_staging = staging_path / Path("gebco")
-    gebco_staging.mkdir(parents=True, exist_ok=True)
-    gebco_nc = download_gebco(target_dir=gebco_staging)
-    cog_gebco_p = gebco_path / Path("bathymetry.tif")
+    # # --- GEBCO ---
+    # # Source NetCDF download lands in staging; only the COG goes to glacier/.
+    # gebco_path = glacier_path / Path("gebco")
+    # gebco_path.mkdir(parents=True, exist_ok=True)
+    # gebco_staging = staging_path / Path("gebco")
+    # gebco_staging.mkdir(parents=True, exist_ok=True)
+    # gebco_nc = download_gebco(target_dir=gebco_staging)
+    # cog_gebco_p = gebco_path / Path("bathymetry.tif")
 
-    ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
-    da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
-    if da.rio.crs is None:
-        da = da.rio.write_crs("EPSG:4326")
-    predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
-    da.rio.to_raster(
-        cog_gebco_p,
-        driver="COG",
-        compress="DEFLATE",
-        predictor=predictor,
-        blocksize=512,
-        bigtiff="YES",
-        overview_resampling="AVERAGE",
-        num_threads="ALL_CPUS",
-    )
+    # ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
+    # da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+    # if da.rio.crs is None:
+    #     da = da.rio.write_crs("EPSG:4326")
+    # predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
+    # da.rio.to_raster(
+    #     cog_gebco_p,
+    #     driver="COG",
+    #     compress="DEFLATE",
+    #     predictor=predictor,
+    #     blocksize=512,
+    #     bigtiff="YES",
+    #     overview_resampling="AVERAGE",
+    #     num_threads="ALL_CPUS",
+    # )
 
-    # --- Heat flow (Lucazeau 2019) ---
-    heatflux_path = glacier_path / Path("heatflux")
-    heatflux_path.mkdir(parents=True, exist_ok=True)
-    heatflux_staging = staging_path / Path("heatflux")
-    heatflux_staging.mkdir(parents=True, exist_ok=True)
-    prepare_heatflux_lucazeau(
-        output_path=heatflux_path,
-        extract_path=heatflux_staging,
-        force_overwrite=force_overwrite,
-    )
+    # # --- Heat flow (Lucazeau 2019) ---
+    # heatflux_path = glacier_path / Path("heatflux")
+    # heatflux_path.mkdir(parents=True, exist_ok=True)
+    # heatflux_staging = staging_path / Path("heatflux")
+    # heatflux_staging.mkdir(parents=True, exist_ok=True)
+    # prepare_heatflux_lucazeau(
+    #     output_path=heatflux_path,
+    #     extract_path=heatflux_staging,
+    #     force_overwrite=force_overwrite,
+    # )
 
     # --- Climate (CARRA2) ---
     # Run the download/merge under staging, then move only the merged product
@@ -260,9 +260,16 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     climate_path = glacier_path / Path("climate")
     climate_path.mkdir(parents=True, exist_ok=True)
 
-    glaciermip4_staging = staging_path / Path("glaciermip4")
-    glaciermip4_staging.mkdir(parents=True, exist_ok=True)
-    prepare_glaciermip4(glaciermip4_staging)
+    # glaciermip4_staging = staging_path / Path("glaciermip4")
+    # glaciermip4_staging.mkdir(parents=True, exist_ok=True)
+    # prepare_glaciermip4(glaciermip4_staging)
+
+    # SNAP/CRU-TS40 monthly climatologies (built under staging, copied to
+    # glacier/climate for upload; one file per 30-year window).
+    snap_staging = staging_path / Path("snap")
+    snap_staging.mkdir(parents=True, exist_ok=True)
+    for snap_file in prepare_snap(snap_staging, force_overwrite=force_overwrite):
+        shutil.copy2(snap_file, climate_path / Path(snap_file).name)
 
     carra2_staging = staging_path / Path("carra2")
     carra2_staging.mkdir(parents=True, exist_ok=True)
@@ -392,16 +399,16 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
         ntasks=ntasks,
     )
 
-    # --- Heat flow (Lucazeau 2019) ---
-    heatflux_path = glacier_path / Path("heatflux")
-    heatflux_path.mkdir(parents=True, exist_ok=True)
-    heatflux_staging = staging_path / Path("heatflux")
-    heatflux_staging.mkdir(parents=True, exist_ok=True)
-    prepare_heatflux_lucazeau(
-        output_path=heatflux_path,
-        extract_path=heatflux_staging,
-        force_overwrite=force_overwrite,
-    )
+    # # --- Heat flow (Lucazeau 2019) ---
+    # heatflux_path = glacier_path / Path("heatflux")
+    # heatflux_path.mkdir(parents=True, exist_ok=True)
+    # heatflux_staging = staging_path / Path("heatflux")
+    # heatflux_staging.mkdir(parents=True, exist_ok=True)
+    # prepare_heatflux_lucazeau(
+    #     output_path=heatflux_path,
+    #     extract_path=heatflux_staging,
+    #     force_overwrite=force_overwrite,
+    # )
 
     # --- Ice thickness ---
     ice_thickness_path = glacier_path / Path("ice_thickness")
@@ -439,39 +446,43 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
     #     ntasks=ntasks,
     # )
 
-    # --- GEBCO ---
-    # Source NetCDF download lands in staging; only the COG goes to glacier/.
-    gebco_path = glacier_path / Path("gebco")
-    gebco_path.mkdir(parents=True, exist_ok=True)
-    gebco_staging = staging_path / Path("gebco")
-    gebco_staging.mkdir(parents=True, exist_ok=True)
-    gebco_nc = download_gebco(target_dir=gebco_staging)
-    cog_gebco_p = gebco_path / Path("bathymetry.tif")
+    # # --- GEBCO ---
+    # # Source NetCDF download lands in staging; only the COG goes to glacier/.
+    # gebco_path = glacier_path / Path("gebco")
+    # gebco_path.mkdir(parents=True, exist_ok=True)
+    # gebco_staging = staging_path / Path("gebco")
+    # gebco_staging.mkdir(parents=True, exist_ok=True)
+    # gebco_nc = download_gebco(target_dir=gebco_staging)
+    # cog_gebco_p = gebco_path / Path("bathymetry.tif")
 
-    # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
-    # geotransform; rxr.open_rasterio treats netCDF as a generic raster and
-    # loses the georeferencing.
-    ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
-    da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
-    if da.rio.crs is None:
-        da = da.rio.write_crs("EPSG:4326")
-    predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
-    da.rio.to_raster(
-        cog_gebco_p,
-        driver="COG",
-        compress="DEFLATE",
-        predictor=predictor,
-        blocksize=512,
-        bigtiff="YES",
-        overview_resampling="AVERAGE",
-        num_threads="ALL_CPUS",
-    )
+    # # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
+    # # geotransform; rxr.open_rasterio treats netCDF as a generic raster and
+    # # loses the georeferencing.
+    # ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
+    # da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+    # if da.rio.crs is None:
+    #     da = da.rio.write_crs("EPSG:4326")
+    # predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
+    # da.rio.to_raster(
+    #     cog_gebco_p,
+    #     driver="COG",
+    #     compress="DEFLATE",
+    #     predictor=predictor,
+    #     blocksize=512,
+    #     bigtiff="YES",
+    #     overview_resampling="AVERAGE",
+    #     num_threads="ALL_CPUS",
+    # )
 
-    # --- Climate (CARRA2) ---
-    # Run the download/merge under staging, then move only the merged product
-    # into glacier/climate. Year-by-year CDS intermediates stay in staging.
     climate_path = glacier_path / Path("climate")
     climate_path.mkdir(parents=True, exist_ok=True)
+
+    # SNAP/CRU-TS40 monthly climatologies (built under staging, copied to
+    # glacier/climate for upload; one file per 30-year window).
+    snap_staging = staging_path / Path("snap")
+    snap_staging.mkdir(parents=True, exist_ok=True)
+    for snap_file in prepare_snap(snap_staging, force_overwrite=force_overwrite):
+        shutil.copy2(snap_file, climate_path / Path(snap_file).name)
 
     carra2_staging = staging_path / Path("carra2")
     carra2_staging.mkdir(parents=True, exist_ok=True)

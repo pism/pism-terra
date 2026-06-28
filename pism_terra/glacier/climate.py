@@ -50,7 +50,6 @@ from pyproj import Transformer
 from rasterio.enums import Resampling
 from tqdm.auto import tqdm
 
-from pism_terra.aws import s3_to_local
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.download import (
     FileInfo,
@@ -1085,45 +1084,157 @@ def create_step_file(
 
 
 def snap(
+    target_grid: xr.Dataset,
+    rgi_id: str,
+    years: list[int] | Iterable[int] = range(1980, 2010),
     path: Path | str = ".",
+    prefix: str = "",
     **kwargs,
 ) -> list[Path]:
     """
-    Download process SNAP forcing from PISM Cloud.
+    Build SNAP climatology forcing files for one glacier (one per 30-year window).
+
+    Downloads the pre-built SNAP/CRU-TS40 30-year climatologies from PISM Cloud,
+    clips each to the target grid's extent, converts to PISM/ERA5 conventions
+    (``air_temp`` in kelvin, ``precipitation`` in ``kg m^-2 day^-1``), and writes
+    one CF-georeferenced NetCDF per window that PISM reprojects from EPSG:3338
+    onto the model grid. Each output is a separate ensemble member, named so the
+    run id carries the period (``snap_1920_1949`` -> ``id_snap_1920_1949``, and
+    with a UQ file ``id_snap_1920_1949_uq_0``).
 
     Parameters
     ----------
+    target_grid : xarray.Dataset
+        Target grid providing the destination CRS (via its grid mapping) and
+        extent, used to clip the SNAP climatology to the glacier.
+    rgi_id : str
+        Glacier identifier, used in the output filenames.
+    years : list of int or Iterable of int, default ``range(1980, 2010)``
+        Unused; SNAP always emits all three 30-year windows. Accepted to match
+        the climate-builder dispatch contract.
     path : str or pathlib.Path, default ``"."``
         Output directory. Intermediate and final NetCDFs are written here.
+    prefix : str, default ``""``
+        S3 key prefix; the climatologies are fetched from
+        ``s3://<bucket>/<prefix>/climate/snap_cru_TS40_<lo>_<hi>.nc`` (where
+        :func:`pism_terra.glacier.prepare` uploads them).
     **kwargs
-        E.g. force_overwrite.
+        E.g. ``force_overwrite`` (bool), ``bucket`` (str).
 
     Returns
     -------
-    list[pathlib.Path]
-        Paths to the three 30-year climatology NetCDF files:
-        ``snap_cru_TS40_1920_1949.nc``, ``snap_cru_TS40_1950_1979.nc``,
-        ``snap_cru_TS40_1980_2009.nc``.
+    list of pathlib.Path
+        One forcing file per window: ``snap_<lo>_<hi>_<rgi_id>.nc``.
     """
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
+    bucket: str = str(kwargs.pop("bucket", "pism-cloud-data"))
+    _ = years  # SNAP emits all windows; ``years`` only satisfies the dispatch signature.
 
-    bucket: str = "pism-cloud-data"
+    print("")
+    print("Generate historical climate")
+    print("-" * 120)
+
     out_dir = Path(path)
 
-    for sn in (
-        "snap_cru_TS40_1920_1949.nc",
-        "snap_cru_TS40_1950_1979.nc",
-        "snap_cru_TS40_1980_2009.nc",
-    ):
+    # Destination CRS/extent from the target grid; SNAP is on EPSG:3338, so clip
+    # in that CRS (PISM reprojects 3338 -> model grid via the grid mapping).
+    mapping_var = target_grid.rio.grid_mapping
+    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
+    bounds = [
+        target_grid.x_bnds.values[0][0],
+        target_grid.y_bnds.values[0][0],
+        target_grid.x_bnds.values[-1][-1],
+        target_grid.y_bnds.values[-1][-1],
+    ]
+    t = Transformer.from_crs(dst_crs, "EPSG:3338", always_xy=True)
+    minx, miny, maxx, maxy = t.transform_bounds(*bounds)
 
+    windows = {
+        (1920, 1949): "snap_cru_TS40_1920_1949.nc",
+        (1950, 1979): "snap_cru_TS40_1950_1979.nc",
+        (1980, 2009): "snap_cru_TS40_1980_2009.nc",
+    }
+    fs = s3fs.S3FileSystem(anon=True)
+
+    out_files: list[Path] = []
+    for (lo, hi), sn in windows.items():
+        snap_filename = out_dir / Path(f"snap_{lo}_{hi}_{rgi_id}.nc")
+        if check_xr_lazy(snap_filename) and not force_overwrite:
+            out_files.append(snap_filename)
+            continue
+
+        # Fetch the climatology from the same ``<prefix>/climate`` location that
+        # prepare.py uploads to (matching stage.carra2()).
         snap_file = out_dir / sn
-
         if (not check_xr_lazy(snap_file)) or force_overwrite:
+            uri = f"s3://{bucket}/{prefix}/climate/{sn}".replace("//", "/").replace("s3:/", "s3://")
             snap_file.unlink(missing_ok=True)
-            s3_to_local(bucket, prefix="snap", dest=path)
-    snap_files = list(Path(path).rglob("snap_*.nc"))
-    return snap_files
+            fs.get(uri, str(snap_file))
+
+        ds = xr.open_dataset(snap_file, decode_coords="all")
+        ds = ds.rio.write_crs("EPSG:3338")
+        # Pad the clip by a few cells so PISM's reprojected domain stays a subset.
+        pad = 3 * float(abs(ds.x.values[1] - ds.x.values[0]))
+        ds = ds.rio.clip_box(minx - pad, miny - pad, maxx + pad, maxy + pad)
+        # SNAP rasters are north-up (descending y); PISM requires a strictly
+        # increasing y axis, so flip to ascending (and keep x ascending).
+        ds = ds.sortby(["y", "x"])
+
+        # Convert to PISM/ERA5 conventions (units PISM's atmosphere.given expects).
+        # ``air_temp_sd`` is an interannual standard deviation, so it stays a
+        # difference (no +273.15 offset). ``precipitation`` already arrives as a
+        # daily rate (kg m^-2 day^-1) from prepare_snap.
+        ds["air_temp"] = ds["air_temp"] + 273.15
+        ds["air_temp"].attrs.update({"units": "kelvin", "standard_name": "air_temperature"})
+        if "air_temp_sd" in ds:
+            ds["air_temp_sd"].attrs.update({"units": "kelvin"})
+        ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
+        if "surface" in ds:
+            ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
+
+        # Rebuild a CF monthly time axis + bounds so PISM reads the 12-month
+        # climatology as a periodic monthly cycle (see kitp.forcing.process_carra2).
+        # clip_box can drop ``time_bounds``, so re-create it deterministically.
+        if ds.sizes.get("time") == 12:
+            ds = ds.drop_vars(["time_bounds", "time_bnds"], errors="ignore")
+            month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+            bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
+            bounds_end = np.cumsum(month_lengths).astype("float64")
+            time_mid = (bounds_start + bounds_end) / 2.0
+            time_bounds = np.column_stack([bounds_start, bounds_end])
+            ds = ds.assign_coords(time=("time", time_mid))
+            ds["time"].encoding.clear()  # drop stale decode units so attrs win on write
+            ds["time"].attrs.update(
+                {
+                    "standard_name": "time",
+                    "axis": "T",
+                    "units": "days since 0001-01-01",
+                    "calendar": "365_day",
+                    "bounds": "time_bounds",
+                }
+            )
+            ds["time_bounds"] = (("time", "nv"), time_bounds)
+
+        ds = _finalize_pism_crs(ds, "EPSG:3338")
+        drop_geotransform_attr(ds)
+
+        encoding = {
+            v: {"_FillValue": None}
+            for v in ("x", "y", "surface", "air_temp", "air_temp_sd", "precipitation", "time", "time_bounds")
+            if v in ds
+        }
+        # A per-variable encoding dict replaces the variable's ``.encoding``, so
+        # carry the CF ``grid_mapping`` set by _finalize_pism_crs through it.
+        for v in ds.data_vars:
+            grid_mapping = ds[v].encoding.get("grid_mapping")
+            if grid_mapping and v in encoding:
+                encoding[v]["grid_mapping"] = grid_mapping
+        snap_filename.unlink(missing_ok=True)
+        ds.to_netcdf(snap_filename, encoding=encoding, engine="h5netcdf", unlimited_dims=["time"])
+        out_files.append(snap_filename)
+
+    return out_files
 
 
 def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Dataset:
@@ -1255,7 +1366,7 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
 def carra2(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(11986, 2026),
+    years: list[int] | Iterable[int] = range(1986, 2026),
     path: Path | str = ".",
     bucket: str = "pism-cloud-data",
     prefix: str = "",
@@ -2270,9 +2381,15 @@ def prepare_snap(
 
     ds = xr.merge(dss).rio.write_crs("EPSG:3338").fillna(0)
     ds = ds.rename_vars({"pr": "precipitation", "tas": "air_temp"})
-    ds["precipitation"] *= 12
-    ds["precipitation"].attrs.update({"units": "kg m^-2 year^-1"})
     ds["air_temp"].attrs.update({"units": "celsius"})
+    # ``precipitation`` is the monthly total (kg m^-2); it is converted to a
+    # daily rate per calendar month inside the period loop.
+
+    # Fixed-length months for the 365_day calendar used by the climatologies.
+    month_lengths = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=float)
+    month_edges = np.concatenate([[0.0], np.cumsum(month_lengths)])  # 13 edges, days
+    time_mid = month_edges[:-1] + month_lengths / 2.0
+    time_bounds = np.column_stack([month_edges[:-1], month_edges[1:]])
 
     period_starts = [1920, 1950, 1980]
     ps: list[Path] = []
@@ -2289,10 +2406,16 @@ def prepare_snap(
             # Reuse existing file; no work scheduled
             continue
 
-        # --- compute weighted monthly climatology for this period (all lazy) ---
+        # --- compute the 12-month climatology for this period (all lazy) ---
+        # Mean over years for each calendar month; ``surface`` (no time dim)
+        # passes through unchanged and stays time-invariant.
         ds_sel = ds.sel(time=slice(start, end))
-        ds_weighted = ds_sel.mean(dim="time")
-        ds_weighted["air_temp_sd"] = ds_sel["air_temp"].std(dim="time")
+        ds_weighted = ds_sel.groupby("time.month").mean("time").rename({"month": "time"})
+        ds_weighted["air_temp_sd"] = ds_sel["air_temp"].groupby("time.month").std("time").rename({"month": "time"})
+        # The surface DEM is time-invariant; groupby broadcasts it across the 12
+        # month groups, so collapse the redundant time dimension back to 2-D.
+        if "surface" in ds_weighted and "time" in ds_weighted["surface"].dims:
+            ds_weighted["surface"] = ds_weighted["surface"].isel(time=0, drop=True)
 
         # coordinate metadata on x/y
         for c, axis, stdname in (
@@ -2308,21 +2431,25 @@ def prepare_snap(
             if c in ds_weighted.coords:
                 ds_weighted[c].attrs.update(attrs)
 
-        bounds_start = 0.0
-        bounds_end = 365.0
-        time_mid = (bounds_start + bounds_end) / 2.0
-
-        time_bounds = np.column_stack([bounds_start, bounds_end])
-
-        ds_weighted = ds_weighted.expand_dims({"time": [time_mid]}, axis=0)
+        # Monthly mid-point time axis (days, 365_day calendar) with month bounds.
+        ds_weighted = ds_weighted.assign_coords(time=("time", time_mid))
         ds_weighted["time"].attrs.update(
             {
+                "standard_name": "time",
+                "axis": "T",
                 "units": "days since 0001-01-01",
                 "calendar": "365_day",
                 "bounds": "time_bounds",
             }
         )
         ds_weighted["time_bounds"] = (("time", "nv"), time_bounds)
+
+        # Convert each month's precipitation total (kg m^-2) to a daily rate.
+        ml = xr.DataArray(month_lengths, coords={"time": ds_weighted["time"]}, dims="time")
+        ds_weighted["precipitation"] = ds_weighted["precipitation"] / ml
+        ds_weighted["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
+        ds_weighted["air_temp"].attrs.update({"units": "celsius"})
+        ds_weighted["air_temp_sd"].attrs.update({"units": "celsius"})
 
         # CRS + spatial dims + grid_mapping tags
         ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")

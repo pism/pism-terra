@@ -137,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     resolution, _ = int(match.group(1)), match.group(2)
 
     grid_ds = create_domain(x_bnds, y_bnds, resolution)
-    grid_file = output_path / Path("bedmachine_greenland_grid.nc")
+    grid_file = output_path / Path("pism_bedmachine_greenland_grid.nc")
     grid_ds.to_netcdf(grid_file)
     check_xr_fully(grid_file)
 

@@ -9,7 +9,7 @@ ice_sheet = "GrIS"
 crs = "EPSG:3413"
 x_bounds = [-750650.0, 977350.0]
 y_bounds = [-3412550.0, -604550.0]
-resolution = "900m"
+resolution = "600m"
 
 [gcms]
 

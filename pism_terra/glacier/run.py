@@ -981,7 +981,15 @@ def _run(*, kind: str) -> None:
             uq_overrides["inverse.file"] = row["obs_file"]
 
         outline_file = row["outline_file"] if "outline_file" in row else None
-        sample = row["sample"] if is_ensemble else (int(row["sample"]) if "sample" in row else idx)
+        # Keep numeric sample ids as ints (``id_0``) but preserve string period
+        # tags such as ``snap_1920_1949`` (``id_snap_1920_1949``).
+        if is_ensemble or "sample" not in row:
+            sample = row["sample"] if is_ensemble else idx
+        else:
+            try:
+                sample = int(row["sample"])
+            except (ValueError, TypeError):
+                sample = row["sample"]
         render(
             rgi_id,
             config_file,
