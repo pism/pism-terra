@@ -52,6 +52,7 @@ from pism_terra.kitp.forcing import (
     prepare_hirham5_climatology,
     prepare_ocean_forcing,
 )
+from pism_terra.prepare_select import add_include_argument, select_datasets
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -59,6 +60,9 @@ from pism_terra.workflow import check_xr_fully, check_xr_lazy
 xr.set_options(keep_attrs=True)
 
 logger = logging.getLogger(__name__)
+
+# Datasets the KITP Greenland prepare can process, in execution order.
+KITP_DATASETS = ["grid", "observations", "ocean", "baseline", "anomalies"]
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -103,6 +107,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         type=int,
         default=8,
     )
+    add_include_argument(parser, KITP_DATASETS)
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -111,6 +116,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     force_overwrite = args.force_overwrite
     ntasks = args.ntasks
     data_path = Path(args.data_path)
+    selected = select_datasets(args.include, KITP_DATASETS)
 
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
@@ -136,10 +142,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     config = toml.loads(Path(config_file).read_text("utf-8"))
     version = config["version"]
 
-    logger.info("-" * 120)
-    logger.info("Grid File")
-    logger.info("-" * 120)
-
     stage_path = output_path / Path(f"stage_{config["version"]}")
     stage_path.mkdir(exist_ok=True)
 
@@ -152,95 +154,130 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         raise ValueError(f"Cannot parse resolution string: {resolution_str!r}")
     resolution, _ = int(match.group(1)), match.group(2)
 
-    grid_ds = create_domain(x_bnds, y_bnds, resolution, crs=crs)
+    # --- Grid (a dependency of the observations target grid) ---
     grid_file = data_path / Path("ismip7_greenland_grid.nc")
-    grid_ds.to_netcdf(grid_file)
-    check_xr_fully(grid_file)
+    grid_ds = None
+    if {"grid", "observations"} & set(selected):
+        logger.info("-" * 120)
+        logger.info("Grid File")
+        logger.info("-" * 120)
+        grid_ds = create_domain(x_bnds, y_bnds, resolution, crs=crs)
+        if "grid" in selected:
+            grid_ds.to_netcdf(grid_file)
+            check_xr_fully(grid_file)
 
-    url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
-    logger.info("-" * 120)
-    logger.info("Boot File")
-    logger.info("-" * 120)
-    obs_path = data_path / Path("obs")
-    obs_files = prepare_observations(
-        url,
-        obs_path,
-        stage_path,
-        config,
-        target_grid=grid_ds,
-        force_overwrite=force_overwrite,
-    )
-    for v in obs_files.values():
-        check_xr_lazy(v)
-
-    logger.info("-" * 120)
-    logger.info("Ocean Forcing")
-    logger.info("-" * 120)
-
-    bmelt_0: float = 228.0
-    bmelt_1: float = 10.0
-    lat_0: float = 69.0
-    lat_1: float = 80.0
-
-    ocean_forcing_file = stage_path / Path(f"ocean_forcing_{bmelt_0}_{bmelt_1}_{lat_0}_{lat_1}.nc")
-    prepare_ocean_forcing(
-        input_path=obs_files["boot_file"],
-        output_path=ocean_forcing_file,
-        bmelt_0=bmelt_0,
-        bmelt_1=bmelt_1,
-        lat_0=lat_0,
-        lat_1=lat_1,
-    )
-
-    logger.info("-" * 120)
-    logger.info("Baseline Climatology")
-    logger.info("-" * 120)
-    baseline = config["baseline"]
-    if baseline == "hirham5":
-        start_year = config["climatology"][baseline]["start_year"]
-        end_year = config["climatology"][baseline]["end_year"]
-        baseline_file = stage_path / Path(f"HIRHAM5-ERA5_YMM_{start_year}_{end_year}_{version}.nc")
-        prepare_hirham5_climatology(
-            baseline_file,
-            data_path,
-            start_year=start_year,
-            end_year=end_year,
-            n_workers=ntasks,
+    # --- Observations (boot, heatflux) ---
+    obs_files: dict[str, Any] = {}
+    if "observations" in selected:
+        url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP6/ISMIP7_Prep/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
+        logger.info("-" * 120)
+        logger.info("Boot File")
+        logger.info("-" * 120)
+        obs_path = data_path / Path("obs")
+        obs_files = prepare_observations(
+            url,
+            obs_path,
+            stage_path,
+            config,
+            target_grid=grid_ds,
             force_overwrite=force_overwrite,
         )
-    elif baseline == "carra2":
-        year = config["climatology"][baseline]["year"]
-        baseline_file = prepare_carra2_climatology(
-            data_path,
-            year=year,
-            version=version,
-            n_workers=ntasks,
-            force_overwrite=force_overwrite,
+        for v in obs_files.values():
+            check_xr_lazy(v)
+
+    # --- Ocean forcing (needs the boot file from observations) ---
+    ocean_forcing_file = None
+    if "ocean" in selected:
+        if "boot_file" not in obs_files:
+            raise SystemExit("--include ocean requires 'observations' (it reads the boot file).")
+        logger.info("-" * 120)
+        logger.info("Ocean Forcing")
+        logger.info("-" * 120)
+
+        bmelt_0: float = 228.0
+        bmelt_1: float = 10.0
+        lat_0: float = 69.0
+        lat_1: float = 80.0
+
+        ocean_forcing_file = stage_path / Path(f"ocean_forcing_{bmelt_0}_{bmelt_1}_{lat_0}_{lat_1}.nc")
+        prepare_ocean_forcing(
+            input_path=obs_files["boot_file"],
+            output_path=ocean_forcing_file,
+            bmelt_0=bmelt_0,
+            bmelt_1=bmelt_1,
+            lat_0=lat_0,
+            lat_1=lat_1,
         )
-    else:
-        raise ValueError(f"Unknown baseline {baseline!r}. Supported: 'hirham5', 'carra2'.")
 
-    logger.info("-" * 120)
-    logger.info("Anomaly Forcing")
-    logger.info("-" * 120)
+    # --- Baseline climatology ---
+    baseline_file = None
+    if "baseline" in selected:
+        logger.info("-" * 120)
+        logger.info("Baseline Climatology")
+        logger.info("-" * 120)
+        baseline = config["baseline"]
+        if baseline == "hirham5":
+            start_year = config["climatology"][baseline]["start_year"]
+            end_year = config["climatology"][baseline]["end_year"]
+            baseline_file = stage_path / Path(f"HIRHAM5-ERA5_YMM_{start_year}_{end_year}_{version}.nc")
+            prepare_hirham5_climatology(
+                baseline_file,
+                data_path,
+                start_year=start_year,
+                end_year=end_year,
+                n_workers=ntasks,
+                force_overwrite=force_overwrite,
+            )
+        elif baseline == "carra2":
+            year = config["climatology"][baseline]["year"]
+            baseline_file = prepare_carra2_climatology(
+                data_path,
+                year=year,
+                version=version,
+                n_workers=ntasks,
+                force_overwrite=force_overwrite,
+            )
+        else:
+            raise ValueError(f"Unknown baseline {baseline!r}. Supported: 'hirham5', 'carra2'.")
 
-    bucket = config["forcing"]["bucket"]
-    prefix = config["forcing"]["prefix"]
-    gcms = config["gcms"]
+    # --- Anomaly forcing (combined with the baseline when both are present) ---
+    forcing_files: list = []
+    combined_files: list = []
+    if "anomalies" in selected:
+        logger.info("-" * 120)
+        logger.info("Anomaly Forcing")
+        logger.info("-" * 120)
 
-    forcing_files = prepare_anomalies(
-        stage_path,
-        bucket=bucket,
-        prefix=prefix,
-        gcms=gcms,
-        version=version,
-        n_workers=ntasks,
-        force_overwrite=force_overwrite,
-    )
+        bucket = config["forcing"]["bucket"]
+        prefix = config["forcing"]["prefix"]
+        gcms = config["gcms"]
 
-    combined_files = baseline_with_anomalies(baseline_file, forcing_files)
+        forcing_files = list(
+            prepare_anomalies(
+                stage_path,
+                bucket=bucket,
+                prefix=prefix,
+                gcms=gcms,
+                version=version,
+                n_workers=ntasks,
+                force_overwrite=force_overwrite,
+            )
+        )
+        if baseline_file is not None:
+            combined_files = list(baseline_with_anomalies(baseline_file, forcing_files))
+        else:
+            logger.warning("Anomalies produced without a baseline; skipping baseline_with_anomalies merge.")
 
-    input_files = [grid_file] + list(obs_files.values()) + [baseline_file] + [ocean_forcing_file] + combined_files
+    # Ship only the outputs produced by the selected datasets.
+    input_files: list = []
+    if "grid" in selected:
+        input_files.append(grid_file)
+    input_files += list(obs_files.values())
+    if baseline_file is not None:
+        input_files.append(baseline_file)
+    if ocean_forcing_file is not None:
+        input_files.append(ocean_forcing_file)
+    input_files += combined_files
 
     s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
     s3_output_path.mkdir(parents=True, exist_ok=True)
@@ -255,8 +292,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     return {
         "config": config,
         "grid_file": grid_file,
-        "boot_file": obs_files["boot_file"],
-        "heatflux_file": obs_files["heatflux_file"],
+        "boot_file": obs_files.get("boot_file"),
+        "heatflux_file": obs_files.get("heatflux_file"),
         "baseline_file": baseline_file,
     }
 
