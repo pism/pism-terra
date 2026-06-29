@@ -1,4 +1,4 @@
-name: pism-terra
+4name: pism-terra
 channels:
   - conda-forge
 dependencies:
@@ -86,12 +86,13 @@ dependencies:
   - cmcrameri
   - bokeh
   - cartopy
-  - flox  # FIXME: possibly a runtime requirement for xarray/dask performance
+  - ffmpeg
   - hyp3_sdk
   - jupyter
   - jupyter-server-proxy
   - moviepy
   - python-dateutil
+  - pyvista
   - seaborn
   # pism-cloud Voila app (notebooks/pism_cloud_app.ipynb)
   - ipywidgets
