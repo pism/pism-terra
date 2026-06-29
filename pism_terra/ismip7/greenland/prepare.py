@@ -49,6 +49,7 @@ from pism_terra.ismip7.greenland.forcing import (
     prepare_observations,
 )
 from pism_terra.log import setup_logging
+from pism_terra.prepare_select import add_include_argument, select_datasets
 from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
@@ -56,6 +57,9 @@ from pism_terra.workflow import check_xr_fully, check_xr_lazy
 xr.set_options(keep_attrs=True)
 
 logger = logging.getLogger(__name__)
+
+# Datasets the ISMIP7 Greenland prepare can process, in execution order.
+ISMIP7_DATASETS = ["grid", "observations", "forcings", "calfin"]
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -97,6 +101,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     parser.add_argument(
         "--data-path", help="Path to ISMIP7 data folder. If not None, use local folder instead of remote.", default=None
     )
+    add_include_argument(parser, ISMIP7_DATASETS)
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -114,6 +119,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     setup_logging(output_path / "prepare.log")
 
+    selected = select_datasets(args.include, ISMIP7_DATASETS)
+
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
     logger.info("=" * 120)
@@ -124,10 +131,6 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     config = toml.loads(Path(config_file).read_text("utf-8"))
 
-    logger.info("-" * 120)
-    logger.info("Grid File")
-    logger.info("-" * 120)
-
     x_bnds = config["domain"]["x_bounds"]
     y_bnds = config["domain"]["y_bounds"]
     resolution_str = config["domain"]["resolution"]
@@ -136,59 +139,86 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         raise ValueError(f"Cannot parse resolution string: {resolution_str!r}")
     resolution, _ = int(match.group(1)), match.group(2)
 
-    grid_ds = create_domain(x_bnds, y_bnds, resolution)
+    # --- Grid (a dependency of the observations target grid) ---
     grid_file = output_path / Path("pism_bedmachine_greenland_grid.nc")
-    grid_ds.to_netcdf(grid_file)
-    check_xr_fully(grid_file)
+    grid_ds = None
+    if {"grid", "observations"} & set(selected):
+        logger.info("-" * 120)
+        logger.info("Grid File")
+        logger.info("-" * 120)
+        grid_ds = create_domain(x_bnds, y_bnds, resolution)
+        if "grid" in selected:
+            grid_ds.to_netcdf(grid_file)
+            check_xr_fully(grid_file)
 
-    url: str | Path = (
-        "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
-    )
-    if data_path is not None:
-        url = data_path / Path(config["ice_sheet"]) / Path("obs") / Path("mipkit") / Path("GreenlandObsISMIP7-v1.3.nc")
+    # --- Observations (boot, heatflux, velocity) ---
+    obs_files: dict[str, Any] = {}
+    if "observations" in selected:
+        url: str | Path = (
+            "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
+        )
+        if data_path is not None:
+            url = (
+                data_path
+                / Path(config["ice_sheet"])
+                / Path("obs")
+                / Path("mipkit")
+                / Path("GreenlandObsISMIP7-v1.3.nc")
+            )
 
-    logger.info("-" * 120)
-    logger.info("Boot File")
-    logger.info("-" * 120)
-    surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
-    # When data_path is None, fall back to an obs-cache subdir under output_path
-    # so prepare_observations always has a real directory to download into.
-    obs_input_path = (
-        data_path / Path("GrIS") / Path("obs") / Path("mipkit") if data_path is not None else output_path / Path("obs")
-    )
-    obs_files = prepare_observations(
-        url,
-        obs_input_path,
-        output_path,
-        config,
-        surface_dem=surface_dem,
-        target_grid=grid_ds,
-        force_overwrite=force_overwrite,
-    )
-    for v in obs_files.values():
-        check_xr_lazy(v)
+        logger.info("-" * 120)
+        logger.info("Boot File")
+        logger.info("-" * 120)
+        surface_dem = "s3://pism-cloud-data/dem_reconstructions/bedmachine1980_GP_reconstruction_g600.nc"
+        # When data_path is None, fall back to an obs-cache subdir under output_path
+        # so prepare_observations always has a real directory to download into.
+        obs_input_path = (
+            data_path / Path("GrIS") / Path("obs") / Path("mipkit")
+            if data_path is not None
+            else output_path / Path("obs")
+        )
+        obs_files = prepare_observations(
+            url,
+            obs_input_path,
+            output_path,
+            config,
+            surface_dem=surface_dem,
+            target_grid=grid_ds,
+            force_overwrite=force_overwrite,
+        )
+        for v in obs_files.values():
+            check_xr_lazy(v)
 
-    logger.info("-" * 120)
-    logger.info("Forcings")
-    logger.info("-" * 120)
+    # --- Forcings ---
+    forcing_files: list = []
+    if "forcings" in selected:
+        logger.info("-" * 120)
+        logger.info("Forcings")
+        logger.info("-" * 120)
+        base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
+        forcing_files = list(
+            prepare_ismip7_forcing(base_url, output_path, config, data_path=data_path, staging_path=staging_path)
+        )
+        logger.info("Forcing files: %s", forcing_files)
 
-    base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
+    # --- CalFin glacier fronts ---
+    retreat_file = None
+    if "calfin" in selected:
+        logger.info("-" * 120)
+        logger.info("Calfin Glacier Fronts File")
+        logger.info("-" * 120)
+        retreat_file = prepare_calfin(
+            output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
+        )
 
-    forcing_files = prepare_ismip7_forcing(
-        base_url, output_path, config, data_path=data_path, staging_path=staging_path
-    )
-
-    logger.info("-" * 120)
-    logger.info("Calfin Glacier Fronts File")
-    logger.info("-" * 120)
-
-    retreat_file = prepare_calfin(
-        output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
-    )
-
-    logger.info("Forcing files: %s", forcing_files)
-
-    input_files = [grid_file] + list(obs_files.values()) + [retreat_file] + list(forcing_files)
+    # Ship only the outputs produced by the selected datasets.
+    input_files: list = []
+    if "grid" in selected:
+        input_files.append(grid_file)
+    input_files += list(obs_files.values())
+    if retreat_file is not None:
+        input_files.append(retreat_file)
+    input_files += list(forcing_files)
 
     s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
     s3_output_path.mkdir(parents=True, exist_ok=True)
@@ -203,11 +233,11 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     return {
         "config": config,
         "grid_file": grid_file,
-        "boot_file": obs_files["boot_file"],
-        "heatflux_file": obs_files["heatflux_file"],
+        "boot_file": obs_files.get("boot_file"),
+        "heatflux_file": obs_files.get("heatflux_file"),
         "forcing_files": forcing_files,
         "retreat_file": retreat_file,
-        "obs_file": obs_files["obs_file"],
+        "obs_file": obs_files.get("obs_file"),
     }
 
 

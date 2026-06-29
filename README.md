@@ -30,13 +30,6 @@ Install pism-terra:
 
     python -m pip install .
 
-To install the dev version, replace the previous command with
-
-    python -m pip install -e .
-
-For rapid development and without internet, you can also run
-
-    python -m pip install . --no-deps --no-build-isolation
 
 ## Documentation
 
@@ -52,3 +45,21 @@ To build the docs locally:
 Live-reload while editing:
 
     make livehtml
+
+## Development
+
+For development work and actual use of the package install the `dev` environment instead:
+
+    conda env create -f environment-dev.yml
+
+or
+
+    mamba env create -f environment-dev.yml
+
+Install it *editabble*:
+
+    python -m pip install -e .
+
+For rapid development and without internet, you can also run
+
+    python -m pip install -e . --no-deps --no-build-isolation

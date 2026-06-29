@@ -2,6 +2,14 @@
 
 'run_info.institution' = "University of Alaska Fairbanks"
 'run_info.title' = "PISM-TERRA ISMIP7 Greenland Historical Run"
+'run_info.group' = "UAF"
+'run_info.contact_email' = "aaschwanden@alaska.edu"
+'run_info.contact_name' = "Andy Aschwanden"
+'run_info.model' = "PISM"
+'run_info.ism' = "PISMDEV"
+'run_info.experiment' = "historical"
+'run_info.domain' = "GrIS"
+'run_info.set' = "CORE"
 
 [campaign]
 
@@ -23,8 +31,8 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 'time.start' = "1985-01-01"
 'time.end' =  "2015-01-01"
-'time.calendar' =  "standard"
-'time.reference_date' = "1978-01-01"
+'time.calendar' =  "365_day"
+'time.reference_date' = "1985-01-01"
 
 [time_stepping]
 

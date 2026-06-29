@@ -36,6 +36,7 @@ from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.ismip7.greenland.stage import stage
+from pism_terra.ismip7.naming import ISMIP7Names, member_ids
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     apply_choice_mapping,
@@ -235,6 +236,43 @@ def _render_forward_run(
     scalar_file = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{{var}}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
+
+    # ISMIP7 submission naming (conventions doc section 8): when output.ISMIP6 is
+    # set, write the spatial/scalar outputs into the
+    # <domain>/<source>/<ism>/<set>/<set_counter>/ tree with conforming names.
+    # PISM expands the {var} placeholder, so the spatial output is already one
+    # conforming file per variable. The scalar time series stays a single file
+    # (its per-variable split is deferred to post-processing). The state/restart
+    # file is not an ISMIP7 product, so it stays in state/.
+    if str(run.get("output.ISMIP6", "no")).strip().strip("\"'").lower() in ("yes", "true", "1"):
+        ri = cfg.run_info
+        missing = [a for a in ("domain", "group", "ism", "set_id", "experiment") if not getattr(ri, a)]
+        if missing:
+            raise SystemExit(f"output.ISMIP6 requires run_info fields: {', '.join(f'run_info.{m}' for m in missing)}")
+        gcms = cfg.campaign.as_params().get("gcms") or []
+        esm_id = str(sample) if sample is not None else (gcms[0] if gcms else "none")
+        member_index = gcms.index(esm_id) if esm_id in gcms else 0
+        end_ts = pd.Timestamp(end)
+        last_year = end_ts.year - 1 if (end_ts.month == 1 and end_ts.day == 1) else end_ts.year
+        time_range = f"{pd.Timestamp(start).year}-{last_year}"
+        set_counter, ism_member, forcing_member = member_ids(str(ri.set_id), member_index)
+        names = ISMIP7Names(
+            domain_id=str(ri.domain),
+            source_id=str(ri.group),
+            ism_id=str(ri.ism),
+            ism_member_id=ism_member,
+            esm_id=esm_id,
+            forcing_member_id=forcing_member,
+            experiment_id=str(ri.experiment),
+            set_id=str(ri.set_id),
+            set_counter=set_counter,
+            time_range=time_range,
+        )
+        ismip7_dir = names.directory(output_path)
+        ismip7_dir.mkdir(parents=True, exist_ok=True)
+        spatial_file = ismip7_dir / names.filename("{var}")
+        scalar_file = ismip7_dir / f"scalar_{names.stem()}.nc"
+
     run.update(
         {
             "output.file": state_file.resolve(),
