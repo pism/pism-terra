@@ -131,6 +131,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--time-stride", type=int, default=1, help="Render every Nth time step (default: 1).")
     p.add_argument(
+        "--font-size",
+        type=int,
+        default=None,
+        help="Time-label font size in points (default: auto-scaled to the image height).",
+    )
+    p.add_argument(
         "--window-size",
         type=int,
         nargs=2,
@@ -384,7 +390,13 @@ def _render_frame(t: int) -> str:
             show_scalar_bar=True,
             scalar_bar_args=bar_args(_var_title(ds, cfg["overlay_var"]), position_x=0.55),
         )
-    pl.add_text(time_label(ds, t), position="upper_left", font_size=12, color="black")
+    pl.add_text(
+        time_label(ds, t),
+        position="upper_left",
+        font_size=cfg["font_size"],
+        color="black",
+        shadow=True,
+    )
     pl.camera_position = cfg["camera"]["position"]
     # camera_position carries position/focal/up but NOT the view angle that zoom
     # changes, so reapply it explicitly to preserve the zoom.
@@ -447,13 +459,16 @@ def main() -> None:
         raise SystemExit(f"'thk' not in {infile}; needed to overlay {args.overlay_var} on ice.")
 
     window_size = list(args.window_size) if args.window_size else list(detect_screen_size())
+    # Scale the time-label font to the image height (~2.5%) so it stays legible
+    # at high resolution and survives H.264/yuv420p compression.
+    font_size = args.font_size if args.font_size else max(14, round(window_size[1] * 0.025))
 
     xx, yy = np.meshgrid(ds["x"].values, ds["y"].values)  # scalars must ravel(order="F")
     steps = list(range(0, int(ds.sizes.get("time", 1)), args.time_stride))
 
     # Fixed color limits (defaults match the elevation/velocity scales).
     base_clim = tuple(args.base_clim) if args.base_clim else (-2000.0, 3500.0)
-    overlay_clim = tuple(args.overlay_clim) if args.overlay_clim else (10.0, 750.0)
+    overlay_clim = tuple(args.overlay_clim) if args.overlay_clim else (1.0, 100.0)
 
     # Small upward offset so the ice overlay wins the depth test over the base.
     surf0 = np.asarray(ds[args.surface_var].isel(time=steps[0]).values, dtype=float) * args.z_exaggeration
@@ -478,6 +493,7 @@ def main() -> None:
         "camera": camera,
         "outdir": str(outdir),
         "aa": args.aa,
+        "font_size": font_size,
     }
 
     total = len(steps)

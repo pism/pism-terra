@@ -833,7 +833,7 @@ class InfoConfig(BaseModelWithDot):
     """
 
     SECTION = "run_info"
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    model_config = ConfigDict(populate_by_name=True)
 
     institution: str = Field(
         default="University of Alaska Fairbanks",
@@ -843,6 +843,16 @@ class InfoConfig(BaseModelWithDot):
         default="PISM Campaign",
         alias="run_info.title",
     )
+    # ISMIP7 metadata used for submission directory/filenames (section 8) and
+    # global attributes (section 5). These are NOT forwarded to PISM as options.
+    group: str | None = Field(default=None, alias="run_info.group")
+    model: str | None = Field(default=None, alias="run_info.model")
+    domain: str | None = Field(default=None, alias="run_info.domain")
+    set_id: str | None = Field(default=None, alias="run_info.set")
+    ism: str | None = Field(default=None, alias="run_info.ism")
+    experiment: str | None = Field(default=None, alias="run_info.experiment")
+    contact_name: str | None = Field(default=None, alias="run_info.contact_name")
+    contact_email: str | None = Field(default=None, alias="run_info.contact_email")
 
     @staticmethod
     def _quote(v: Any) -> str:
@@ -868,17 +878,22 @@ class InfoConfig(BaseModelWithDot):
 
     def as_params(self) -> dict[str, Any]:
         """
-        Export run-info parameters with dotted aliases and quoted string values.
+        Export PISM run-info parameters with dotted aliases and quoted string values.
+
+        Only the PISM-relevant fields (``institution``, ``title``) are emitted;
+        the ISMIP7 metadata fields (``group``, ``domain``, ``set``, ``ism``, ...)
+        are kept out of the PISM command and consumed by the naming logic instead.
 
         Returns
         -------
         dict[str, Any]
             Dictionary like ``{'run_info.institution': '\"Foo\"', 'run_info.title': '\"Bar\"'}``.
         """
-        out = self.model_dump(by_alias=True, exclude_none=True)
+        out = {}
         for key in ("run_info.institution", "run_info.title"):
-            if key in out and out[key] is not None:
-                out[key] = self._quote(out[key])
+            value = getattr(self, "institution" if key.endswith("institution") else "title")
+            if value is not None:
+                out[key] = self._quote(value)
         return out
 
 
