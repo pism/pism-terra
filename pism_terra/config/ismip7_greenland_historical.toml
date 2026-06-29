@@ -177,8 +177,13 @@ model = "routing"
 
 [frontal_melt.options.routing]
 
+# multiply default values by 1.63
+# as recommended by ISMIP7
+
 'frontal_melt.models' = "routing"
 'frontal_melt.routing.file' = "none"
+'frontal_melt.routing.parameter_a' = 4.89e-4
+'frontal_melt.routing.parameter_b' = 0.25
 
 [hydrology]
 
