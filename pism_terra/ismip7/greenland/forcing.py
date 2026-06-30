@@ -861,20 +861,38 @@ def prepare_observations(
     # for u/v_observed and emit zeta_fixed_mask / vel_misfit_weight so the
     # downstream PISM inverse run knows which cells carry trustable obs.
 
-    vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
-    mask = ds_bm["icemask_promice"]
+    ice_mask = ds_bm["icemask_promice"]
 
+    vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
     if target_grid is not None:
         vel = vel.regrid.conservative(target_grid)
-        mask = mask.regrid.conservative(target_grid)
+        ice_mask = ice_mask.regrid.conservative(target_grid)
 
-    icy = mask > 0.5
+    ice_mask = ice_mask > 0.5
+
+    # Grounded ice via PISM's flotation criterion (src/util/Mask.hh): ice is
+    # grounded where its base rests on the bed (not floating) and ice is present.
+    #   hgrounded = bed + thickness;  hfloating = sea_level + alpha * thickness
+    #   alpha = 1 - rho_ice / rho_sea_water;  floating if hfloating > hgrounded;
+    #   ice_free if thickness <= ice_free_thickness_standard.
+    # Uses the (regridded) boot geometry, which is on the same grid as ``vel``.
+    rho_ice = 910.0  # constants.ice.density
+    rho_sea_water = 1028.0  # constants.sea_water.density
+    ice_free_thickness = 0.01  # geometry.ice_free_thickness_standard
+    sea_level = 0.0
+    alpha = 1.0 - rho_ice / rho_sea_water
+    bed = boot["bed"]
+    thk = boot["thickness"]
+    grounded_ice = (bed + thk >= sea_level + alpha * thk) & (thk > ice_free_thickness) & ice_mask
 
     vel["v"] = ((vel["vx"].fillna(0) ** 2 + vel["vy"].fillna(0) ** 2) ** 0.5).astype("float32")
     vel["u_observed"] = vel["vx"].fillna(0).astype("float32")
     vel["v_observed"] = vel["vy"].fillna(0).astype("float32")
-    vel["zeta_fixed_mask"] = xr.where(icy, 0, 1).astype("int8")  # 1 where NOT grounded
-    vel["vel_misfit_weight"] = xr.where(icy, 1, 0).astype("int8")  # 1 where grounded
+    # zeta is FREE (0) where there is grounded ice and FIXED (1) elsewhere;
+    # the misfit weight is the inverse (1 = trust obs on grounded ice, 0 = ignore).
+    vel["zeta_fixed_mask"] = xr.where(grounded_ice, 0, 1).astype("int8")
+    vel["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "tauc_unchanging integer mask (1=fixed)"})
+    vel["vel_misfit_weight"] = xr.where(grounded_ice, 1, 0).astype("int8")
     vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
 
     vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
