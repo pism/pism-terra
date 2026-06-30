@@ -330,10 +330,25 @@ def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: 
     if str(dl_path).endswith(".zip"):
         extracted = extract_archive(dl_path, extract_to=dest / f"_cds_{year}", force_overwrite=True, verbose=False)
         want_suffix = nc_path.suffix.lower()
-        matching = [p for p in extracted if str(p).lower().endswith(want_suffix)]
-        if matching:
+        matching = sorted(p for p in extracted if str(p).lower().endswith(want_suffix))
+        if not matching:
+            raise FileNotFoundError(f"No '{want_suffix}' files found in archive for year {year}")
+        if len(matching) == 1:
             return Path(matching[0])
-        raise FileNotFoundError(f"No '{want_suffix}' files found in archive for year {year}")
+        # CDS splits multi-variable requests into one ``data_<i>.nc`` per
+        # variable inside the ZIP. Callers (e.g. CARRA2 radiation, which
+        # asks for both ``ssrd`` and ``ssr`` in one go) expect a single
+        # file per (dataset, year) so they can read every requested
+        # variable from the same handle. Merge the parts onto the
+        # canonical ``nc_path`` and return that.
+        parts = [xr.open_dataset(p) for p in matching]
+        try:
+            merged = xr.merge(parts, compat="no_conflicts")
+            merged.to_netcdf(nc_path)
+        finally:
+            for ds in parts:
+                ds.close()
+        return nc_path
 
     return nc_path
 
