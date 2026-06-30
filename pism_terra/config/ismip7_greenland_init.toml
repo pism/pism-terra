@@ -237,37 +237,19 @@ inv_adj_pc_type = "jacobi"
 
 [inverse]
 
-<<<<<<< Updated upstream
 'inverse.adjoint.method' =  "approximate"
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
 'inverse.file' = "none"
-=======
-'inverse.file' = "none"
 'inverse.stress_balance.velocity_scale' = 1e3
 'inverse.stress_balance.length_scale' = 50e3
-'inverse.design.cH1' = 1
-'inverse.design.cL2' = 0
-'inverse.max_iterations' = 100
->>>>>>> Stashed changes
 'inverse.design.param' = "exp"
 'inverse.huber.delta' =  1e3
 'inverse.max_iterations' = 50
 'inverse.state_func' = "huber"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
 'inverse.stress_balance.tauc_min' = 1e4
-<<<<<<< Updated upstream
 'inverse.stress_balance.tauc_max' = 5e7
-'inverse.stress_balance.velocity_scale' = 1e2
-'inverse.stress_balance.length_scale' = 1e5
 'inverse.tikhonov.penalty_weight' = 10
 'inverse.tikhonov.atol' = 1e-7
 'inverse.use_zeta_fixed_mask' = "yes"
-=======
-'inverse.stress_balance.tauc_max' = 5e8
-'inverse.tikhonov.penalty_weight' = 1e6
-'inverse.use_zeta_fixed_mask' = "yes"
-'inverse.adjoint.method' =  "approximate"
-'inverse.state_func' = "huber"
-'inverse.huber.delta' =  1e4
->>>>>>> Stashed changes
