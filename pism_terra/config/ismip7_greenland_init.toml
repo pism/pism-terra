@@ -95,7 +95,7 @@ model = 'blatter'
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
-'time_stepping.adaptive_ratio' = 500
+'time_stepping.adaptive_ratio' = 1000
 
 [stress_balance.options.hybrid]
 
@@ -250,6 +250,6 @@ inv_adj_pc_type = "jacobi"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
 'inverse.stress_balance.tauc_min' = 1e4
 'inverse.stress_balance.tauc_max' = 5e7
-'inverse.tikhonov.penalty_weight' = 10
+'inverse.tikhonov.penalty_weight' = 1000
 'inverse.tikhonov.atol' = 1e-7
 'inverse.use_zeta_fixed_mask' = "yes"

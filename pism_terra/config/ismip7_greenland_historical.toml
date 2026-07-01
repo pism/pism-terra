@@ -61,7 +61,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "monthly"
+'output.spatial.times' = "yearly"
 'output.spatial.vars' = "lithk,orog,topg,hfgeoubed,acabf,libmassbfgr,libmassbffl,dlithkdt,velsurf,zvelsurf,velbase,zvelbase,velmean,litemptop,litempbotgr,litempbotfl,strbasemag,licalvf,lifmassbf,sftgif,sftgrf,sftflf"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
@@ -105,7 +105,7 @@ model = 'blatter'
 'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.max_diffusivity' = 100000.0
-'time_stepping.adaptive_ratio' = 500
+'time_stepping.adaptive_ratio' = 1000
 
 [stress_balance.options.hybrid]
 
