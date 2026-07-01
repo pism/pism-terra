@@ -71,3 +71,4 @@ dependencies:
   # (PyPI-only) switched to the new file_path signature, so install via pip.
   - pip:
       - pytest-codeblocks>=0.18
+      - git+https://github.com/aaschwanden/ISM_SimulationChecker.git

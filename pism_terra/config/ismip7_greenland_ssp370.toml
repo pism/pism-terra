@@ -7,7 +7,7 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.experiment' = "ssp585"
+'run_info.experiment' = "ssp370"
 'run_info.domain' = "GrIS"
 'run_info.set' = "CORE"
 
@@ -15,7 +15,7 @@
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
-pathway = "ssp585"
+pathway = "ssp370"
 version = "v2"
 start_year = "1978"
 end_year = "2015"
@@ -30,7 +30,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "1985-01-01"
-'time.end' =  "2300-01-01"
+'time.end' =  "2100-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
