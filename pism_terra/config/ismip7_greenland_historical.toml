@@ -6,7 +6,7 @@
 'run_info.contact_email' = "aaschwanden@alaska.edu"
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
-'run_info.ism' = "PISMDEV"
+'run_info.ism' = "PISM"
 'run_info.experiment' = "historical"
 'run_info.domain' = "GrIS"
 'run_info.set' = "CORE"
@@ -32,7 +32,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'time.start' = "1985-01-01"
 'time.end' =  "2015-01-01"
 'time.calendar' =  "365_day"
-'time.reference_date' = "1985-01-01"
+'time.reference_date' = "1850-01-01"
 
 [time_stepping]
 

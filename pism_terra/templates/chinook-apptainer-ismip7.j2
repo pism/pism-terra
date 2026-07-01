@@ -26,4 +26,6 @@ ulimit -l unlimited
 ulimit -s unlimited
 ulimit
 
-mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} pism {{ run_str }} : -n 1 apptainer run ${container} pism_ismip7_writer -d
+pismtasks=$(( SLURM_NTASKS - 4 ))
+
+mpiexec -n 1  apptainer run ${container} pism_ismip7_writer -r 1 : -n ${pismtasks} apptainer run ${container} pism {{ run_str }} -output.asynchronous
