@@ -6,7 +6,7 @@
 'run_info.contact_email' = "aaschwanden@alaska.edu"
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
-'run_info.ism' = "PISMDEV"
+'run_info.ism' = "PISM"
 'run_info.experiment' = "historical"
 'run_info.domain' = "GrIS"
 'run_info.set' = "CORE"
@@ -22,7 +22,7 @@ end_year = "2015"
 gcms = ["CESM2-WACCM"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1990-01-01.nc"
+regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -32,7 +32,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'time.start' = "1985-01-01"
 'time.end' =  "2015-01-01"
 'time.calendar' =  "365_day"
-'time.reference_date' = "1985-01-01"
+'time.reference_date' = "1850-01-01"
 
 [time_stepping]
 
@@ -177,8 +177,13 @@ model = "routing"
 
 [frontal_melt.options.routing]
 
+# multiply default values by 1.63
+# as recommended by ISMIP7
+
 'frontal_melt.models' = "routing"
 'frontal_melt.routing.file' = "none"
+'frontal_melt.routing.parameter_a' = 4.89e-4
+'frontal_melt.routing.parameter_b' = 0.25
 
 [hydrology]
 

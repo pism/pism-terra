@@ -843,16 +843,18 @@ class InfoConfig(BaseModelWithDot):
         default="PISM Campaign",
         alias="run_info.title",
     )
-    # ISMIP7 metadata used for submission directory/filenames (section 8) and
-    # global attributes (section 5). These are NOT forwarded to PISM as options.
+    # Forwarded to PISM as run_info.* options (written as output global
+    # attributes, ISMIP7 section 5) AND used for submission naming (section 8).
     group: str | None = Field(default=None, alias="run_info.group")
     model: str | None = Field(default=None, alias="run_info.model")
+    contact_name: str | None = Field(default=None, alias="run_info.contact_name")
+    contact_email: str | None = Field(default=None, alias="run_info.contact_email")
+    # pism-terra-only ISMIP7 naming metadata (section 8); NOT PISM options, so
+    # they are kept out of the run command and consumed by the naming logic.
     domain: str | None = Field(default=None, alias="run_info.domain")
     set_id: str | None = Field(default=None, alias="run_info.set")
     ism: str | None = Field(default=None, alias="run_info.ism")
     experiment: str | None = Field(default=None, alias="run_info.experiment")
-    contact_name: str | None = Field(default=None, alias="run_info.contact_name")
-    contact_email: str | None = Field(default=None, alias="run_info.contact_email")
 
     @staticmethod
     def _quote(v: Any) -> str:
@@ -876,24 +878,38 @@ class InfoConfig(BaseModelWithDot):
         s = s.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{s}"'
 
+    # Fields PISM recognizes as run_info.* options (written as output global
+    # attributes). The ISMIP7 naming-only fields (domain/set/ism/experiment)
+    # are intentionally excluded so they don't reach the PISM command.
+    _PISM_FIELDS: ClassVar[tuple[str, ...]] = (
+        "institution",
+        "title",
+        "group",
+        "model",
+        "contact_name",
+        "contact_email",
+    )
+
     def as_params(self) -> dict[str, Any]:
         """
         Export PISM run-info parameters with dotted aliases and quoted string values.
 
-        Only the PISM-relevant fields (``institution``, ``title``) are emitted;
-        the ISMIP7 metadata fields (``group``, ``domain``, ``set``, ``ism``, ...)
-        are kept out of the PISM command and consumed by the naming logic instead.
+        Emits only the fields PISM understands (``institution``, ``title``,
+        ``group``, ``model``, ``contact_name``, ``contact_email``), which it
+        writes as output global attributes. The ISMIP7 naming-only fields
+        (``domain``, ``set``, ``ism``, ``experiment``) are kept out of the PISM
+        command and consumed by the naming logic instead.
 
         Returns
         -------
         dict[str, Any]
-            Dictionary like ``{'run_info.institution': '\"Foo\"', 'run_info.title': '\"Bar\"'}``.
+            Dictionary like ``{'run_info.institution': '\"Foo\"', 'run_info.group': '\"UAF\"'}``.
         """
         out = {}
-        for key in ("run_info.institution", "run_info.title"):
-            value = getattr(self, "institution" if key.endswith("institution") else "title")
+        for name in self._PISM_FIELDS:
+            value = getattr(self, name)
             if value is not None:
-                out[key] = self._quote(value)
+                out[f"run_info.{name}"] = self._quote(value)
         return out
 
 

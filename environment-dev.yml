@@ -1,4 +1,4 @@
-4name: pism-terra
+name: pism-terra
 channels:
   - conda-forge
 dependencies:

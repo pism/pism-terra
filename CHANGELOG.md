@@ -23,6 +23,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - fixed initialization
 - fixed CLI for stress balance
 - fixed SNAP climate
+- fixed environment-dev.yml
 
 ### Added
 
