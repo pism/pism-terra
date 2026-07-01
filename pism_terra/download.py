@@ -343,7 +343,14 @@ def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: 
         # canonical ``nc_path`` and return that.
         parts = [xr.open_dataset(p) for p in matching]
         try:
-            merged = xr.merge(parts, compat="no_conflicts")
+            # join="outer" preserves every timestamp present in any part —
+            # only relevant when CDS hands back per-variable files whose
+            # time coordinates don't match exactly (CARRA2 ``forecast_based``
+            # has done this for ssrd vs ssr). xarray's default is about to
+            # flip to "exact", which would crash on the first such mismatch,
+            # so pin it here. combine_attrs="override" silences the noise
+            # from per-variable attribute differences (cell_methods etc.).
+            merged = xr.merge(parts, compat="no_conflicts", join="outer", combine_attrs="override")
             merged.to_netcdf(nc_path)
         finally:
             for ds in parts:
