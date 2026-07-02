@@ -35,6 +35,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.stage import stage
 from pism_terra.ismip7.naming import ISMIP7Names, member_ids
 from pism_terra.sampling import generate_samples
@@ -256,6 +257,15 @@ def _render_forward_run(
     # ``experiment_id`` and ``time_range`` differ. Precompute the parts that
     # only depend on the ensemble member (gcm / ism member / set counter) and
     # then generate the two file triples via ``_output_files``.
+    # ISMIP7 Core Experiment counter (e.g. "C003"), if this run is counter-driven.
+    # It fixes the ISMIP7 ``set_counter`` and selects which of the two forward legs
+    # is the submission product (the other leg gets flat filenames). ``None`` keeps
+    # the legacy behavior: both legs use ISMIP7 names when ``output.ISMIP6`` is set.
+    counter = cfg.run_info.counter
+    product_leg: str | None = None
+    if counter:
+        product_leg = resolve_counter(counter).product_leg
+
     use_ismip6 = str(run_hist.get("output.ISMIP6", "no")).strip().strip("\"'").lower() in ("yes", "true", "1")
     ismip7_ctx: dict | None = None
     if use_ismip6:
@@ -267,6 +277,10 @@ def _render_forward_run(
         esm_id = str(sample) if sample is not None else (gcms[0] if gcms else "none")
         member_index = gcms.index(esm_id) if esm_id in gcms else 0
         set_counter, ism_member, forcing_member = member_ids(str(ri.set_id), member_index)
+        # A counter-driven run uses its protocol counter as the ISMIP7 set_counter
+        # (member_ids still supplies the CORE m001/f001 member ids).
+        if counter:
+            set_counter = counter
         ismip7_ctx = {
             "domain_id": str(ri.domain),
             "source_id": str(ri.group),
@@ -278,7 +292,7 @@ def _render_forward_run(
             "set_counter": set_counter,
         }
 
-    def _output_files(experiment_id: str, start_str: str, end_str: str) -> tuple[Path, Path, Path]:
+    def _output_files(experiment_id: str, start_str: str, end_str: str, *, ismip7: bool) -> tuple[Path, Path, Path]:
         """
         Build the (state, spatial, scalar) file triple for one PISM invocation.
 
@@ -303,6 +317,11 @@ def _render_forward_run(
             the trailing year of ``time_range`` (with a ``-1`` correction
             when the timestamp lands exactly on Jan 1 so the range reads
             inclusive on the source-year side).
+        ismip7 : bool
+            Whether *this* leg is the ISMIP7 submission product. When ``False``
+            (or ``output.ISMIP6`` is off) the flat ``spatial_``/``scalar_`` layout
+            is used even if ``ismip7_ctx`` is populated, so the non-product leg of
+            a counter-driven run does not land in the submission tree.
 
         Returns
         -------
@@ -314,7 +333,7 @@ def _render_forward_run(
         """
         tag = f"g{resolution}_{name_options}_{start_str}_{end_str}"
         state = state_path / Path(f"state_{tag}.nc")
-        if ismip7_ctx is None:
+        if ismip7_ctx is None or not ismip7:
             spatial = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{{var}}_{start_str}_{end_str}.nc")
             scalar = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
             return state, spatial, scalar
@@ -328,9 +347,16 @@ def _render_forward_run(
         scalar = ismip7_dir / f"scalar_{names.stem()}.nc"
         return state, spatial, scalar
 
-    state_hist, spatial_hist, scalar_hist = _output_files("historical", start, "2015-01-01")
+    # Which leg is the ISMIP7 submission product: for a counter-driven run only the
+    # designated leg gets ISMIP7 names (the other is an internal continuation with
+    # flat names); legacy runs (product_leg is None) keep both legs on ISMIP7 names.
+    hist_ismip7 = product_leg in (None, "historical")
+    proj_ismip7 = product_leg in (None, "projection")
+    state_hist, spatial_hist, scalar_hist = _output_files("historical", start, "2015-01-01", ismip7=hist_ismip7)
     proj_experiment = str(cfg.run_info.experiment) if cfg.run_info.experiment else "none"
-    state_proj, spatial_proj, scalar_proj = _output_files(proj_experiment, "2015-01-01", "2300-01-01")
+    # Projection end comes from the config (time.end), which the counter resolver
+    # sets from the Core Experiment's proj_end_year (2100 or 2300).
+    state_proj, spatial_proj, scalar_proj = _output_files(proj_experiment, "2015-01-01", end, ismip7=proj_ismip7)
 
     run_hist.update(
         {
@@ -360,7 +386,7 @@ def _render_forward_run(
     run_proj.pop("time.start", None)
     run_proj.update({"time.start": "2015-01-01"})
     run_proj.pop("time.end", None)
-    run_proj.update({"time.end": "2300-01-01"})
+    run_proj.update({"time.end": end})
     run_proj.pop("input.bootstrap", None)
     run_proj.pop("input.regrid.file", None)
     run_proj.pop("input.regrid.vars", None)
