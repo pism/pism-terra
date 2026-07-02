@@ -1314,10 +1314,16 @@ class CampaignConfig(BaseModel):
         Filename of the RGI glacier-complex ("-C") outlines in the bucket.
     rgi_glacier_file : str or None
         Filename of the RGI glacier ("-G") outlines in the bucket.
-    start_year : str, float, or None
-        Start year of the forcing period.
-    end_year : str, float, or None
-        End year of the forcing period.
+    historical_start_year : str, float, or None
+        First year of the historical forcing file.
+    historical_end_year : str, float, or None
+        Last (inclusive) year of the historical forcing file (e.g. 2014
+        under the ISMIP7 convention where projections start in 2015).
+    projection_start_year : str, float, or None
+        First year of the projection forcing file (e.g. 2015 for ISMIP7).
+    projection_end_year : str, float, or None
+        Last (inclusive) year of the projection forcing file. This value
+        differs per pathway (e.g. 2100 for ssp370, 2300 for ssp585).
     version : str or None
         Dataset or experiment version string.
     """
@@ -1346,8 +1352,10 @@ class CampaignConfig(BaseModel):
     retreat_file: str | None = Field(default=None)
     rgi_complex_file: str | None = Field(default=None)
     rgi_glacier_file: str | None = Field(default=None)
-    start_year: str | float | None = Field(default=None)
-    end_year: str | float | None = Field(default=None)
+    historical_start_year: str | float | None = Field(default=None)
+    historical_end_year: str | float | None = Field(default=None)
+    projection_start_year: str | float | None = Field(default=None)
+    projection_end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:

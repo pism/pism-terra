@@ -20,8 +20,8 @@ forcing_mask = "none"
 
 [time]
 
-'time.start' = "1994-01-01"
-'time.end' =  "1995-01-01"
+'time.start' = "1986-01-01"
+'time.end' =  "2025-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1980-01-01"
 
@@ -42,7 +42,7 @@ forcing_mask = "none"
 'input.bootstrap' = "yes"
 'input.file' = "none"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 390
+'input.forcing.buffer_size' = 24
 
 [reporting]
 
@@ -209,6 +209,13 @@ model = "null"
 model = "off"
 
 [frontal_melt.options.off]
+
+[bed_deformation]
+
+model = "none"
+
+[bed_deformation.options.none]
+
 
 [inverse]
 

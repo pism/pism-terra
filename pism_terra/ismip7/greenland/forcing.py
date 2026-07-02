@@ -393,10 +393,8 @@ def _process_single_forcing(
     output_path: Path,
     pathway: str,
     version: str,
-    hist_start_year: int,
-    hist_end_year: int,
-    proj_start_year: int,
-    proj_end_year: int,
+    start_year: int,
+    end_year: int,
     short_hand: str,
     fields: list[str],
     ismip7_to_pism: dict[str, str],
@@ -406,7 +404,12 @@ def _process_single_forcing(
     staging_path: Path | None = None,
 ) -> list[Path]:
     """
-    Process a single GCM/forcing combination.
+    Process a single (GCM, pathway, forcing) combination into one output file.
+
+    Each pathway (historical, ssp???) is now its own task: no more coupling
+    the historical and projection epochs inside one worker. The output
+    filename embeds ``pathway`` and the ``start_year``/``end_year`` span,
+    e.g. ``ismip7_greenland_climate_historical_CESM2-WACCM_v2_1978_2014.nc``.
 
     Parameters
     ----------
@@ -422,17 +425,14 @@ def _process_single_forcing(
     output_path : Path
         Output directory.
     pathway : str
-        Pathway name (e.g., "historical", "ssp585").
+        Pathway name (e.g., ``"historical"``, ``"ssp585"``).
     version : str
-        Version string (e.g., "v1").
-    hist_start_year : int
-        Start year for time selection.
-    hist_end_year : int
-        End year for time selection.
-    proj_start_year : int
-        Start year for time selection.
-    proj_end_year : int
-        End year for time selection.
+        Version string (e.g., ``"v1"``).
+    start_year : int
+        First year in the epoch (inclusive).
+    end_year : int
+        Last year in the epoch (**inclusive** — ``end_year = 2300`` means
+        the year 2300 is processed).
     short_hand : str
         Short hand identifier for forcing.
     fields : list[str]
@@ -451,15 +451,16 @@ def _process_single_forcing(
         from Globus and stores files under ``base_path``.
     staging_path : pathlib.Path or None, optional
         Directory for intermediate scratch (the per-variable cdo
-        ``mergetime`` tmp files and the per-epoch hist/proj outputs).
-        Auto-cleaned at the end of the function via ``TemporaryDirectory``.
-        When ``None`` (default), ``output_path`` is used — but only the
-        final merged file is left in ``output_path`` either way.
+        ``mergetime`` tmp files). Auto-cleaned at the end of the function
+        via ``TemporaryDirectory``. When ``None`` (default),
+        ``output_path`` is used — but only the final merged file is left
+        in ``output_path`` either way.
 
     Returns
     -------
     list[Path]
-        Paths to the historical, projection, and merged NetCDF files.
+        Paths to the produced NetCDF files (one per group: ``climate`` and
+        optionally ``climate_gradient`` when ``forcing == "climate"``).
     """
     os.environ["HDF5_LOG_LEVEL"] = "0"
     cdo = Cdo()
@@ -497,22 +498,18 @@ def _process_single_forcing(
         return Path(_make_path(year, base_path, gcm, pathway_name, short_hand, m_var, version))
 
     if data_path is None:
-        # Build (url, local_path) pairs for every (variable, year) we need,
-        # across both historical and projection epochs. Then download
-        # everything in parallel before any cdo step touches the files.
+        # Build (url, local_path) pairs for every (variable, year) we need
+        # for this pathway. ``end_year`` is inclusive per the campaign
+        # config convention, so the range hits ``end_year`` itself.
         download_pairs: list[tuple[str, Path]] = []
-        for pathway_name, start_year, end_year in (
-            ("historical", hist_start_year, hist_end_year),
-            (pathway, proj_start_year, proj_end_year),
-        ):
-            for m_var in fields:
-                for year in range(start_year, end_year):
-                    url = _make_url(year, ice_sheet, gcm, pathway_name, short_hand, m_var, version)
-                    download_pairs.append((url, _resolve(year, pathway_name, m_var)))
+        for m_var in fields:
+            for year in range(start_year, end_year + 1):
+                url = _make_url(year, ice_sheet, gcm, pathway, short_hand, m_var, version)
+                download_pairs.append((url, _resolve(year, pathway, m_var)))
 
-        _download_many(download_pairs, desc=f"Download {gcm}/{forcing}")
+        _download_many(download_pairs, desc=f"Download {gcm}/{pathway}/{forcing}")
     else:
-        logger.info("Using local ISMIP7 forcing under %s for %s/%s", data_path, gcm, forcing)
+        logger.info("Using local ISMIP7 forcing under %s for %s/%s/%s", data_path, gcm, pathway, forcing)
 
     # cdo merges run on the resolved local paths (downloaded or pre-existing).
     # Doing the per-variable mergetime in-process (alongside the final
@@ -552,7 +549,7 @@ def _process_single_forcing(
         pathlib.Path
             Path to the per-variable tmp NetCDF.
         """
-        paths = [_resolve(year, pathway_name, m_var) for year in range(start_year, end_year)]
+        paths = [_resolve(year, pathway_name, m_var) for year in range(start_year, end_year + 1)]
         k, v = m_var, ismip7_to_pism[m_var]
         out = tmp_root / f"{epoch_label}_{m_var}.nc"
         # Per-variable fill applied in the per-tmp stage so the outer
@@ -615,75 +612,44 @@ def _process_single_forcing(
     else:
         groups = [(forcing, fields, freq, "01-16 12:00")]
 
-    # Intermediates (cdo ``mergetime`` tmps, per-epoch hist/proj outputs)
-    # live under ``staging_path`` instead of ``output_path``. The whole
-    # tempdir is removed when the ``with`` block exits, so disk usage
-    # drops back to just the final merged files in ``output_path``.
+    # Intermediates (cdo ``mergetime`` tmps) live under ``staging_path``
+    # instead of ``output_path``. The tempdir is removed on ``with`` exit,
+    # so disk usage drops back to just the single output file per group.
     staging_root = Path(staging_path) if staging_path is not None else output_path
     staging_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"_ismip7_{gcm}_{forcing}_", dir=str(staging_root)) as _tmp:
+    with tempfile.TemporaryDirectory(prefix=f"_ismip7_{gcm}_{pathway}_{forcing}_", dir=str(staging_root)) as _tmp:
         tmp_root = Path(_tmp)
 
         for label, sub_fields, sub_freq, time_anchor in groups:
-            # Per-epoch hist/proj outputs are intermediates: they're read
-            # once by the final ``mergetime`` below and never staged or
-            # published, so they live in the tempdir and disappear with it.
-            hist_output_file = tmp_root / Path(
-                f"ismip7_greenland_{label}_historical_{gcm}_{version}_{hist_start_year}_{hist_end_year}.nc"
-            )
-            proj_output_file = tmp_root / Path(
-                f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}_{proj_start_year}_{proj_end_year}.nc"
-            )
-
-            hist_tmp = [
-                _merge_one_var(tmp_root, f"hist_{label}", "historical", hist_start_year, hist_end_year, m_var)
-                for m_var in sub_fields
-            ]
-            proj_tmp = [
-                _merge_one_var(tmp_root, f"proj_{label}", pathway, proj_start_year, proj_end_year, m_var)
+            tmps = [
+                _merge_one_var(tmp_root, f"{pathway}_{label}", pathway, start_year, end_year, m_var)
                 for m_var in sub_fields
             ]
 
-            # ``-merge`` is variadic; without brackets the python-cdo wrapper
-            # appends the ``output=`` path as another positional argument and
-            # CDO treats it as a sixth input stream (then HDF5 fails to open
-            # the not-yet-existing output file). ``[ ... ]`` delimits the
-            # variadic file list so the output stays where it belongs.
+            # Output name embeds the epoch: the historical file and each
+            # projection file live side-by-side and are consumed
+            # independently by PISM's two-invocation forward driver
+            # (see pism_terra.ismip7.greenland.run._render_forward_run).
+            out_file = output_path / Path(
+                f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc"
+            )
+            # ``-merge`` is variadic; ``[ ... ]`` delimits the file list
+            # so python-cdo doesn't misinterpret the ``output=`` argument
+            # as another input stream.
             cdo.setmisstoc(
                 0,
                 input=(
                     f"-setgrid,{str(grid_file)} -settbounds,{sub_freq} "
                     f"-setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} "
-                    f"-settaxis,'{hist_start_year}-{time_anchor},,{sub_freq}' -merge [ "
-                    + " ".join(str(p.resolve()) for p in hist_tmp)
+                    f"-settaxis,'{start_year}-{time_anchor},,{sub_freq}' -merge [ "
+                    + " ".join(str(p.resolve()) for p in tmps)
                     + " ]"
                 ),
-                output=str(hist_output_file.resolve()),
+                output=str(out_file.resolve()),
                 options="-f nc4 -z zip_2",
             )
-
-            cdo.setmisstoc(
-                0,
-                input=(
-                    f"-setgrid,{str(grid_file)} -settbounds,{sub_freq} "
-                    f"-setreftime,1850-01-01 -settunits,hours -setcalendar,{calendar} "
-                    f"-settaxis,'{proj_start_year}-{time_anchor},,{sub_freq}' -merge [ "
-                    + " ".join(str(p.resolve()) for p in proj_tmp)
-                    + " ]"
-                ),
-                output=str(proj_output_file.resolve()),
-                options="-f nc4 -z zip_2",
-            )
-
-            # The merged file is the only output that survives this call.
-            merged_file = output_path / Path(f"ismip7_greenland_{label}_{pathway}_{gcm}_{version}.nc")
-            cdo.mergetime(
-                input=" ".join([str(hist_output_file.resolve()), str(proj_output_file.resolve())]),
-                output=str(merged_file.resolve()),
-                options="-f nc4 -z zip_2",
-            )
-            _strip_fill_attrs(merged_file)
-            output_files.append(merged_file)
+            _strip_fill_attrs(out_file)
+            output_files.append(out_file)
 
     return output_files
 
@@ -1132,15 +1098,19 @@ def prepare_ismip7_forcing(
         staging_path.mkdir(parents=True, exist_ok=True)
 
     ismip7_to_pism = config["ismip7_to_pism"]
-    # Build list of tasks
+    # Build list of tasks. Each ``pathway`` (``historical`` / ``ssp???``) is
+    # its own task now; the caller decides which forward run pairs them up
+    # (see run.py where ``run_hist`` uses the historical file and
+    # ``run_proj`` uses the ssp file). ``end`` is inclusive per the
+    # setup TOML convention.
     tasks = []
 
     for gcm, _gcm_config in config["gcms"].items():
         for pathway, _pathway_config in _gcm_config.items():
             ice_sheet = config["ice_sheet"]
             version = "v" + str(_pathway_config["version"])
-            hist_start_year, hist_end_year = _pathway_config["historical"]
-            proj_start_year, proj_end_year = _pathway_config["projection"]
+            start_year = int(_pathway_config["start"])
+            end_year = int(_pathway_config["end"])
             for forcing, forcing_dict in config["forcing"].items():
                 short_hand = forcing_dict["short_hand"]
                 fields = forcing_dict["fields"]
@@ -1150,11 +1120,9 @@ def prepare_ismip7_forcing(
                         gcm,
                         forcing,
                         version,
-                        hist_start_year,
-                        hist_end_year,
-                        proj_start_year,
-                        proj_end_year,
                         pathway,
+                        start_year,
+                        end_year,
                         short_hand,
                         fields,
                     )
@@ -1170,11 +1138,9 @@ def prepare_ismip7_forcing(
             gcm,
             forcing,
             version,
-            hist_start_year,
-            hist_end_year,
-            proj_start_year,
-            proj_end_year,
             pathway,
+            start_year,
+            end_year,
             short_hand,
             fields,
         ) in tasks:
@@ -1187,10 +1153,8 @@ def prepare_ismip7_forcing(
                 output_path,
                 pathway,
                 version,
-                hist_start_year,
-                hist_end_year,
-                proj_start_year,
-                proj_end_year,
+                start_year,
+                end_year,
                 short_hand,
                 fields,
                 ismip7_to_pism,

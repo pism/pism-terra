@@ -25,6 +25,7 @@ Prepare Climate.
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import re
@@ -1608,6 +1609,12 @@ def carra2(
     out_vars: dict[str, xr.DataArray] = {}
     saved_callbacks = Callback.active.copy()
     Callback.active.clear()
+    # Track every shard DataArray we lazy-open so we can close them
+    # explicitly before the TemporaryDirectory exit tries to unlink them.
+    # Without the explicit close, non-deterministic GC leaves file handles
+    # open and NFS / networked filesystems emit ``.nfs*`` lock files that
+    # then trip ``rmtree`` with ``ENOTEMPTY`` on the per-variable subdirs.
+    open_shards: list[xr.DataArray] = []
     try:
         with tempfile.TemporaryDirectory(prefix="carra2_reproj_", dir=str(path)) as tmp_dir_name:
             tmp_dir = Path(tmp_dir_name)
@@ -1642,6 +1649,7 @@ def carra2(
                 pbar.close()
                 # Lazy assemble: open each shard chunked, concat along time.
                 shards = [xr.open_dataarray(p, chunks={}) for p in batch_files]
+                open_shards.extend(shards)
                 out_vars[var_name] = xr.concat(shards, dim="time")
             out = xr.Dataset(out_vars, attrs=sub.attrs)
 
@@ -1700,6 +1708,18 @@ def carra2(
             # for dask to read from.
             carra2_filename.unlink(missing_ok=True)
             out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf", unlimited_dims=["time"])
+
+            # Release every file handle *before* the TemporaryDirectory
+            # context manager runs its rmtree — otherwise networked-FS
+            # ``.nfs*`` lock files strand the per-variable subdirs and
+            # cleanup dies with ``ENOTEMPTY``.
+            out.close()
+            for shard in open_shards:
+                shard.close()
+            open_shards.clear()
+            out_vars.clear()
+            del out
+            gc.collect()
     finally:
         Callback.active.update(saved_callbacks)
 

@@ -63,6 +63,7 @@ def _render_forward_run(
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
     pism_config_cdl: str | Path | None = None,
+    proj_overrides: Mapping[str, object] | None = None,
 ):
     """
     Configure and generate a PISM forward job script for ISMIP7 Greenland (ensemble-ready).
@@ -114,6 +115,12 @@ def _render_forward_run(
     pism_config_cdl : str or Path or None, optional
         Path to a PISM CDL master config file. If provided, all run options
         are validated against it before generating the command line.
+    proj_overrides : Mapping[str, object] or None, optional
+        Projection-only overrides applied to ``run_proj`` after it is
+        copied from ``run_hist``. Same schema as ``uq`` (dotted PISM
+        flags). Used to point ``atmosphere.given.file`` etc. at the
+        projection-epoch forcing file while ``run_hist`` keeps the
+        historical file. Default is ``None`` (no proj-only overrides).
 
     Raises
     ------
@@ -397,6 +404,15 @@ def _render_forward_run(
             "output.scalar.file": scalar_proj.resolve(),
         }
     )
+    # Projection-epoch file paths supplied by ``_run()`` (climate / ocean
+    # / gradient) — filtered against ``run_proj`` so a mis-typed key from
+    # the caller doesn't silently vanish.
+    if proj_overrides:
+        proj_clean = {k: v for k, v in dict(proj_overrides).items() if k != "sample"}
+        proj_clean, proj_skipped = filter_overrides_by_config(proj_clean, run_proj.keys())
+        if proj_skipped:
+            print(f"Skipping proj overrides not in config: {proj_skipped}")
+        run_proj.update(proj_clean)
 
     job_opts = JobConfig(**cfg.job.model_dump())
 
@@ -462,6 +478,9 @@ def _render_inverse_run(
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
     pism_config_cdl: str | Path | None = None,
+    proj_overrides: (  # pylint: disable=unused-argument
+        Mapping[str, object] | None
+    ) = None,  # accepted for signature parity with _render_forward_run; ignored
 ):
     """
     Configure and generate a PISM inverse job script for ISMIP7 Greenland (ensemble-ready).
@@ -509,6 +528,13 @@ def _render_inverse_run(
         Path to a PISM CDL master config file. If provided, all forward
         run options are validated against it before generating the
         command line.
+    proj_overrides : Mapping[str, object] or None, optional
+        Accepted for signature parity with :func:`_render_forward_run`
+        and **ignored** here — the inverse workflow doesn't split the
+        forward run into hist/proj epochs, so there's no ``run_proj`` to
+        apply projection-only overrides to. ``_run()`` always passes the
+        keyword when it calls a renderer, so the parameter has to exist
+        even though it's a no-op. Default is ``None``.
     """
 
     outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
@@ -965,22 +991,33 @@ def _run(*, kind: str) -> None:
             uq_overrides = {}
 
         # File paths from the staging table override UQ-supplied paths for the
-        # same flag (matches the glacier behavior).
+        # same flag (matches the glacier behavior). ``uq_overrides`` carries
+        # the *historical*-epoch paths (which populate ``run_hist``); the
+        # projection paths ride on ``proj_overrides`` and only touch
+        # ``run_proj``.
         uq_overrides.update(
             {
                 "input.file": row["boot_file"],
                 "input.regrid.file": row["regrid_file"],
-                "frontal_melt.routing.file": row["frontal_melt_file"],
                 "grid.file": row["grid_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
-                "atmosphere.given.file": row["climate_file"],
-                "surface.given.file": row["climate_file"],
-                "surface.ismip7.file": row["climate_file"],
-                "surface.ismip7.gradient.file": row["climate_gradient_file"],
                 "surface.ismip7.reference.file": row["boot_file"],
-                "ocean.th.file": row["ocean_file"],
+                "atmosphere.given.file": row["climate_hist_file"],
+                "surface.given.file": row["climate_hist_file"],
+                "surface.ismip7.file": row["climate_hist_file"],
+                "surface.ismip7.gradient.file": row["climate_gradient_hist_file"],
+                "ocean.th.file": row["ocean_hist_file"],
+                "frontal_melt.routing.file": row["ocean_hist_file"],
             }
         )
+        proj_overrides = {
+            "atmosphere.given.file": row["climate_proj_file"],
+            "surface.given.file": row["climate_proj_file"],
+            "surface.ismip7.file": row["climate_proj_file"],
+            "surface.ismip7.gradient.file": row["climate_gradient_proj_file"],
+            "ocean.th.file": row["ocean_proj_file"],
+            "frontal_melt.routing.file": row["ocean_proj_file"],
+        }
         # Wire the inverse observation file only when the stage produced one
         # (campaign config can opt in via an ``obs_file`` key); otherwise
         # rely on whatever ``inverse.file`` the UQ supplied.
@@ -1002,6 +1039,7 @@ def _run(*, kind: str) -> None:
             uq=uq_overrides,
             sample=sample,
             pism_config_cdl=pism_config_cdl,
+            proj_overrides=proj_overrides if kind == "forward" else None,
         )
 
 
