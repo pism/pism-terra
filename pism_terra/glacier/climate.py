@@ -1665,9 +1665,25 @@ def carra2(
             # Expand to all requested years (filling missing ones from the
             # nearest source year) and attach CF time_bnds for PISM.
             out = _carra2_fill_years_and_bounds(out, list(years))
+            # Per-variable NaN fills. 0 is physically fine for precipitation
+            # and orography (no precip / sea level at the masked corners),
+            # but plugging 0 into ``air_temp`` gives 0 K, which is
+            # unphysical and blows up PISM's energy balance. Use 260 K
+            # (well below any real surface temperature we'd care about
+            # preserving) so the corners have a plausible cold value.
+            # ``air_temp_sd`` stays at 0 because a missing standard
+            # deviation is best interpreted as "no variability observed".
+            fill_defaults: dict[str, float] = {
+                "air_temp": 260.0,
+                "air_temp_sd": 0.0,
+                "precipitation": 0.0,
+                "orography": 0.0,
+            }
             for v in out.data_vars:
-                if np.issubdtype(out[v].dtype, np.floating):
-                    out[v] = out[v].fillna(0)
+                if not np.issubdtype(out[v].dtype, np.floating):
+                    continue
+                fill_value = fill_defaults.get(str(v), 0.0)
+                out[v] = out[v].fillna(fill_value)
 
             # Clear stale encoding inherited from the Zarr source so netCDF4
             # doesn't see half-prescribed datetime encoding (e.g. dtype=int64
