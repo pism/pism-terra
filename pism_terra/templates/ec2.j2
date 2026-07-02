@@ -3,3 +3,5 @@
 ulimit -a
 
 mpirun -np  {{ ntasks | default(32) }} pism {{ run_str }}
+
+{{ ism_checker_str }}

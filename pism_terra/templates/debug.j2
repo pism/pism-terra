@@ -1,1 +1,3 @@
 mpirun -np  {{ ntasks | default(8) }} pism {{ run_str }}
+
+{{ ism_checker_str }}

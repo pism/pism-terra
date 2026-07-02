@@ -423,6 +423,21 @@ def _render_forward_run(
 
     run_proj_str = dict2str(sort_dict_by_key(run_proj))
     params.update({"run_proj_str": run_proj_str})
+
+    # Point the compliance checker at this run's actual ISMIP7 submission
+    # directory (output/<domain>/<source>/<ism>/<set>/<set_counter>/) rather than a
+    # hardcoded path. The directory depends only on the ismip7_ctx identity fields
+    # (experiment_id/time_range don't affect it), and both forward legs write into
+    # it. When ISMIP7 naming is off there is no submission tree, so leave it empty.
+    if ismip7_ctx is not None:
+        submission_dir = ISMIP7Names(experiment_id=proj_experiment, time_range="", **ismip7_ctx).directory(
+            output_path.resolve()
+        )
+        ism_checker_str = f"ismip7-compliance-checker --source-path {submission_dir}/ --variable-list ismip7"
+    else:
+        ism_checker_str = ""
+    params.update({"ism_checker_str": ism_checker_str})
+
     rendered_script = "" if debug else template.render(params)
 
     run_script_path = path / Path("run_scripts")
