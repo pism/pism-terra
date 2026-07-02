@@ -7,7 +7,7 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.experiment' = "historical"
+'run_info.counter' = "C001"
 'run_info.domain' = "GrIS"
 'run_info.set' = "CORE"
 
@@ -15,11 +15,8 @@
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
-pathway = "ssp370"
 version = "v2"
 start_year = "1978"
-end_year = "2015"
-gcms = ["CESM2-WACCM"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
 regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
@@ -30,7 +27,6 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "1985-01-01"
-'time.end' =  "2015-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -50,7 +46,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.file' = "none"
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 37
+'input.forcing.buffer_size' = 13
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
 

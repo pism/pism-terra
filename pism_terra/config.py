@@ -38,6 +38,10 @@ from pydantic import (
     model_validator,
 )
 
+# Dependency-free (imports only the stdlib), so a top-level import here cannot
+# create a cycle back into this module.
+from pism_terra.ismip7.experiments import resolve_counter
+
 # one Jinja environment for all renders
 _JINJA = Environment(autoescape=False)
 
@@ -811,6 +815,36 @@ class PismConfig(BaseModelWithDot):
     inverse: dict[str, Any] = {}
     solver: dict[str, Any] = {}
 
+    @model_validator(mode="after")
+    def _expand_ismip7_counter(self) -> "PismConfig":
+        """
+        Expand ``run_info.counter`` into the derived experiment fields.
+
+        When an ISMIP7 Core Experiment counter (e.g. ``"C003"``) is set, it is the
+        single source of truth for the experiment identity: it fills
+        ``run_info.experiment``, ``campaign.pathway``, ``campaign.gcms``, and the
+        projection end (``time.end``) from
+        :data:`pism_terra.ismip7.experiments.CORE_EXPERIMENTS`. This runs for both
+        the staging and running entry points (both call :func:`load_config`), so a
+        single field drives the whole ISMIP7 pipeline. Non-counter (legacy) configs
+        are left untouched.
+
+        Returns
+        -------
+        PismConfig
+            The same instance, with counter-derived fields populated.
+        """
+        if not self.run_info.counter:
+            if self.time.time_end is None:
+                raise ValueError("time.end is required unless run_info.counter is set")
+            return self
+        spec = resolve_counter(self.run_info.counter)
+        self.run_info.experiment = spec.experiment_id
+        self.campaign.pathway = spec.pathway
+        self.campaign.gcms = [spec.esm_id]
+        self.time.time_end = f"{spec.proj_end_year}-01-01"
+        return self
+
 
 class RestartConfig(BaseModelWithDot):
     """
@@ -855,6 +889,10 @@ class InfoConfig(BaseModelWithDot):
     set_id: str | None = Field(default=None, alias="run_info.set")
     ism: str | None = Field(default=None, alias="run_info.ism")
     experiment: str | None = Field(default=None, alias="run_info.experiment")
+    # ISMIP7 Core Experiment counter (e.g. "C003"). When set, PismConfig expands it
+    # into experiment/pathway/gcms/time.end (see PismConfig's counter resolver and
+    # pism_terra.ismip7.experiments). Naming-only, so kept out of _PISM_FIELDS.
+    counter: str | None = Field(default=None, alias="run_info.counter")
 
     @staticmethod
     def _quote(v: Any) -> str:
@@ -1064,8 +1102,10 @@ class TimeConfig(BaseModelWithDot):
     ----------
     time_start : str
         Simulation start time (alias: ``"time.start"``).
-    time_end : str
-        Simulation end time (alias: ``"time.end"``).
+    time_end : str or None
+        Simulation end time (alias: ``"time.end"``). May be omitted when the run
+        is ISMIP7 counter-driven, in which case ``PismConfig`` fills it from the
+        Core Experiment's projection end year.
     calendar : str or None
         Calendar name (alias: ``"time.calendar"``), e.g., ``"standard"``.
     reference_date : str or None
@@ -1076,7 +1116,7 @@ class TimeConfig(BaseModelWithDot):
     model_config = ConfigDict(populate_by_name=True)
 
     time_start: str = Field(alias="time.start")
-    time_end: str = Field(alias="time.end")
+    time_end: str | None = Field(default=None, alias="time.end")
     calendar: str | None = Field(default=None, alias="time.calendar")
     reference_date: str | None = Field(default=None, alias="time.reference_date")
 
