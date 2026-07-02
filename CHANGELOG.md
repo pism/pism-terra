@@ -27,6 +27,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- compliance checker run after simulation
 - notebooks/pism_cloud_app.ipynb, a `voila` app.
 - pism_terra/glacier/render_terrain_3.py
 
