@@ -1,0 +1,102 @@
+name: pism-terra
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  # runtime requirements
+  - awscli
+  - awscrt  # boto3 extra needed
+  - boto3
+  - botocore
+  - python-cdo
+  - cf_xarray
+  - cfgrib
+  - cftime
+  - cmap
+  - cmweather
+  - dask
+  - distributed  # dask[distributed,dataframe] is dask and distributed for conda
+  - dem_stitcher
+  - earthaccess
+  - ecmwf-datastores-client
+  - geocube
+  - geopandas
+  - jinja2
+  - joblib
+  - libgdal-core
+  - libgdal-hdf5
+  - libgdal-netcdf
+  - matplotlib
+  - nc-time-axis
+  - nco
+  - h5py
+  - hdf5
+  - netCDF4
+  - numpy
+  - pandas
+  - pint-xarray
+  - pyamg
+  - pyarrow
+  - pydantic
+  - pyfiglet
+  - pyogrio
+  - pyproj
+  - pytest
+  - rasterio
+  - requests
+  - rioxarray
+  - s3fs
+  - scikit-learn
+  - scipy
+  - shapely
+  - toml
+  - tqdm
+  - xarray
+  - xarray-regrid
+  - zarr
+  # for development and testing
+  - black
+  - pre-commit
+  - pylint
+  - pytest
+  - pytest-codeblocks
+  - pytest-cov
+  - setuptools_scm>=6.2
+  # for docs
+  - furo
+  - ipykernel
+  - myst-nb
+  - numpydoc
+  - pydata-sphinx-theme
+  - sphinx
+  - sphinx-autodoc-typehints
+  - sphinx-book-theme
+  - sphinx-design
+  - sphinx-gallery
+  - sphinx-autobuild
+  - sphinx-autodoc-typehints
+  - sphinx-copybutton
+  - sphinxcontrib-bibtex
+  - myst-parser
+  - numpydoc
+  # for notebooks and convenience
+  - cdo
+  - ncview
+  - cmcrameri
+  - bokeh
+  - cartopy
+  - ffmpeg
+  - hyp3_sdk
+  - jupyter
+  - jupyter-server-proxy
+  - moviepy
+  - python-dateutil
+  - pyvista
+  - seaborn
+  # pism-cloud Voila app (notebooks/pism_cloud_app.ipynb)
+  - ipywidgets
+  - voila
+  - pip:
+      - pytest-codeblocks>=0.18
+      - git+https://github.com/aaschwanden/ISM_SimulationChecker.git

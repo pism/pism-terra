@@ -131,34 +131,34 @@ def _make_frozen(dist_name: str, spec: dict[str, Any]):
     return dist(*args, loc=loc, scale=scale)
 
 
-def create_samples(d: dict[str, dict[str, Any]], n_samples: int = 10, seed: int | None = None) -> pd.DataFrame:
+def _transform_quantiles(U: np.ndarray, d: dict[str, dict[str, Any]]) -> pd.DataFrame:
     """
-    Draw Latin Hypercube samples and transform by the specified SciPy distributions.
+    Map unit-cube quantiles to parameter values via each variable's inverse CDF.
+
+    Shared back end for :func:`create_samples` (LHS quantiles) and
+    :func:`create_grid_samples` (regular-grid quantiles): both produce a matrix
+    ``U`` of quantiles in ``[0, 1]`` and differ only in how those quantiles are
+    laid out.
 
     Parameters
     ----------
+    U : numpy.ndarray
+        Array of shape ``(n, len(d))`` of quantiles in ``[0, 1]``; column ``i``
+        corresponds to the ``i``-th variable in ``d`` (insertion order).
     d : dict
-        Mapping ``name -> spec`` where spec includes at least ``distribution`` and any
-        required parameters (e.g., ``low, high`` for ``randint`` or ``loc, scale`` for
-        continuous distributions; plus any shapes like ``a, b`` for ``truncnorm``).
-    n_samples : int, default 10
-        Number of samples to draw.
-    seed : int or None, default None
-        Seed for the Latin Hypercube sampler.
+        Mapping ``name -> spec`` where spec includes at least ``distribution``
+        and any required parameters.
 
     Returns
     -------
     pandas.DataFrame
-        A DataFrame with one column per variable in ``d`` and an
-        integer ``sample`` column. Discrete variables are returned as integer dtype.
+        One column per variable in ``d`` plus an integer ``sample`` column.
+        Discrete variables are returned as integer dtype.
     """
     names = list(d.keys())
 
-    # LHS in [0,1]
-    engine = qmc.LatinHypercube(d=len(names), seed=seed)
-    U = engine.random(n_samples)
-
-    # clip away exactly 0 or 1 so ppf is well-defined
+    # clip away exactly 0 or 1 so ppf is well-defined (ppf(1) is +inf for
+    # unbounded distributions)
     eps = np.finfo(float).eps  # pylint: disable=no-member
     U = np.clip(U, eps, 1 - eps)
 
@@ -186,5 +186,136 @@ def create_samples(d: dict[str, dict[str, Any]], n_samples: int = 10, seed: int 
         df[col] = df[col].round().astype("int64")
 
     # add sample id
-    df.insert(0, "sample", np.arange(n_samples, dtype=int))
+    df.insert(0, "sample", np.arange(len(df), dtype=int))
     return df
+
+
+def create_samples(d: dict[str, dict[str, Any]], n_samples: int = 10, seed: int | None = None) -> pd.DataFrame:
+    """
+    Draw Latin Hypercube samples and transform by the specified SciPy distributions.
+
+    Parameters
+    ----------
+    d : dict
+        Mapping ``name -> spec`` where spec includes at least ``distribution`` and any
+        required parameters (e.g., ``low, high`` for ``randint`` or ``loc, scale`` for
+        continuous distributions; plus any shapes like ``a, b`` for ``truncnorm``).
+    n_samples : int, default 10
+        Number of samples to draw.
+    seed : int or None, default None
+        Seed for the Latin Hypercube sampler.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame with one column per variable in ``d`` and an
+        integer ``sample`` column. Discrete variables are returned as integer dtype.
+    """
+    names = list(d.keys())
+
+    # LHS in [0,1]
+    engine = qmc.LatinHypercube(d=len(names), seed=seed)
+    U = engine.random(n_samples)
+
+    return _transform_quantiles(U, d)
+
+
+def create_grid_samples(d: dict[str, dict[str, Any]], n_levels: int = 10, kind: str = "edge") -> pd.DataFrame:
+    """
+    Build a full-factorial (regular grid) design and transform by the SciPy distributions.
+
+    Unlike :func:`create_samples` (a randomized Latin Hypercube), this lays each
+    variable on an equidistant grid of quantiles and takes the **Cartesian
+    product** across variables, so the result has ``n_levels ** len(d)`` rows.
+    For a single variable this is just ``n_levels`` equidistant draws.
+
+    Parameters
+    ----------
+    d : dict
+        Mapping ``name -> spec`` (same structure as :func:`create_samples`).
+    n_levels : int, default 10
+        Number of equidistant levels **per variable**. Total rows are
+        ``n_levels ** len(d)``.
+    kind : {"edge", "midpoint", "endpoint"}, default "edge"
+        Quantile convention for the per-variable grid of ``n`` levels:
+
+        - ``"edge"``: ``i / n`` for ``i = 1..n`` (e.g. ``1/3, 2/3, 3/3``). Reaches
+          the distribution's upper bound; for *unbounded* distributions the top
+          level is an extreme (clipped) value, so prefer ``"midpoint"`` there.
+        - ``"midpoint"``: ``(i + 0.5) / n`` for ``i = 0..n-1`` (e.g.
+          ``1/6, 1/2, 5/6``). Symmetric; never hits a bound.
+        - ``"endpoint"``: ``linspace(0, 1, n)`` (e.g. ``0, 1/2, 1``). Includes
+          both bounds.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame with one column per variable in ``d`` and an integer
+        ``sample`` column. Discrete variables are returned as integer dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``n_levels < 1`` or ``kind`` is not recognized.
+    """
+    if n_levels < 1:
+        raise ValueError(f"n_levels must be >= 1, got {n_levels}")
+
+    names = list(d.keys())
+
+    if kind == "edge":
+        q = np.arange(1, n_levels + 1) / n_levels
+    elif kind == "midpoint":
+        q = (np.arange(n_levels) + 0.5) / n_levels
+    elif kind == "endpoint":
+        q = np.linspace(0.0, 1.0, n_levels)
+    else:
+        raise ValueError(f"unknown kind '{kind}'; use 'edge', 'midpoint', or 'endpoint'")
+
+    # Cartesian product of the per-variable grids -> (n_levels ** d, d)
+    grids = np.meshgrid(*([q] * len(names)), indexing="ij")
+    U = np.stack([g.ravel() for g in grids], axis=1)
+
+    return _transform_quantiles(U, d)
+
+
+def generate_samples(
+    d: dict[str, dict[str, Any]],
+    n_samples: int = 10,
+    method: str | None = None,
+    seed: int | None = None,
+) -> pd.DataFrame:
+    """
+    Dispatch to a sampling strategy by name.
+
+    Parameters
+    ----------
+    d : dict
+        Mapping ``name -> spec`` (same structure as :func:`create_samples`).
+    n_samples : int, default 10
+        For ``method="lhs"`` the total number of draws; for ``method="factorial"``
+        the number of equidistant levels **per variable** (total rows are
+        ``n_samples ** len(d)``).
+    method : str or None, default None
+        Sampling strategy. ``None`` or ``"lhs"`` (and aliases) selects the
+        Latin Hypercube; ``"factorial"`` (and aliases ``"grid"``,
+        ``"full_factorial"``) selects the full-factorial grid. Case-insensitive.
+    seed : int or None, default None
+        Seed for the Latin Hypercube sampler (ignored for the deterministic grid).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Sample table as returned by the selected sampler.
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is not recognized.
+    """
+    m = (method or "lhs").strip().lower()
+    if m in {"lhs", "latin", "latin_hypercube", "latinhypercube"}:
+        return create_samples(d, n_samples=n_samples, seed=seed)
+    if m in {"factorial", "grid", "full_factorial"}:
+        return create_grid_samples(d, n_levels=n_samples)
+    raise ValueError(f"unknown sampling method '{method}'; use 'lhs' or 'factorial'")

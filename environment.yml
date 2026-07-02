@@ -8,20 +8,29 @@ dependencies:
   - awscrt  # boto3 extra needed
   - boto3
   - botocore
-  - cdsapi
   - python-cdo
-  # - cf_units  # FIXME: Breaks this environment; doesn't appear to be needed
   - cf_xarray
+  - cfgrib
   - cftime
-  - dask[distributed,dataframe]
+  - cmap
+  - cmweather
+  - dask
+  - distributed   # dask[distributed,dataframe] is dask and distributed for conda
   - dem_stitcher
   - earthaccess
+  - ecmwf-datastores-client
   - geocube
   - geopandas
-  - h5netcdf
   - jinja2
   - joblib
+  - libgdal-core
+  - libgdal-hdf5
+  - libgdal-netcdf
   - matplotlib
+  - nc-time-axis
+  - nco
+  - h5py
+  - hdf5
   - netCDF4
   - numpy
   - pandas
@@ -45,30 +54,21 @@ dependencies:
   - xarray
   - xarray-regrid
   - zarr
+  # pism-cloud Voila app (notebooks/pism_cloud_app.ipynb)
+  - hyp3_sdk
+  - ipywidgets
+  - voila
   # for development and testing
   - black
+  - jupyterlab
   - pre-commit
   - pylint
   - pytest
   - pytest-cov
   - setuptools_scm>=6.2
-  # for docs
-  - furo
-  - sphinx
-  - sphinx-autodoc-typehints
-  - sphinx-copybutton
-  - myst-parser
-  - numpydoc
-  # for notebooks and convenience
-  - cdo
-  - ncview
-  - cmcrameri
-  - bokeh
-  - cartopy
-  - flox  # FIXME: possibly a runtime requirement for xarray/dask performance
-  - hyp3_sdk
-  - jupyter
-  - jupyter-server-proxy
-  - moviepy
-  - python-dateutil
-  - seaborn
+  # conda-forge tops out at pytest-codeblocks 0.17.0, which still uses the
+  # pytest_collect_file(path=...) hook removed in pytest 9.1. Only 0.18.0
+  # (PyPI-only) switched to the new file_path signature, so install via pip.
+  - pip:
+      - pytest-codeblocks>=0.18
+      - git+https://github.com/aaschwanden/ISM_SimulationChecker.git

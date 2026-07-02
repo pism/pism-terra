@@ -8,9 +8,28 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- `glacier.execute` no longer accepts a `--job-id` parameter and now stages files based on the full S3 URI of `RUN_SCIPT`, if needed.
+
 ### Fixed
 
 - missing force_to_thickness.file
+- runtime environment is now default, for dev work use environment-dev.yml.
+- merged missing commits from summer school
+- updated Docker image to pull to fix build bug in pism/pism
+- improved postprocessing of RGI
+- fixed missing output filename for inverse state
+- fixed missing resolve()
+- fixed initialization
+- fixed CLI for stress balance
+- fixed SNAP climate
+- fixed environment-dev.yml
+
+### Added
+
+- compliance checker run after simulation
+- notebooks/pism_cloud_app.ipynb, a `voila` app.
+- pism_terra/glacier/render_terrain_3.py
 
 ## [0.1.3]
 

@@ -22,6 +22,7 @@ Postprocessing.
 """
 
 import json
+import logging
 import time
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -36,8 +37,13 @@ from dask.distributed import Client, progress
 from pyfiglet import Figlet
 from tqdm import tqdm
 
+from pism_terra.log import setup_logging
+
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
+
+logger = logging.getLogger(__name__)
 
 
 def process_file(
@@ -47,8 +53,10 @@ def process_file(
     Clip a NetCDF dataset to the glacier geometry defined in an BASIN file.
 
     This function reads a NetCDF file containing geospatial data and clips it to the
-    geometry defined in a glacier outline file (e.g., BASIN shapefile). The clipped dataset
-    is saved to a new NetCDF file prefixed with "clipped_".
+    geometry defined in a glacier outline file (e.g., BASIN shapefile). Clipped spatial
+    output is written to ``<output_root>/processed_spatial/clipped_<name>.nc`` and
+    per-basin scalar sums to ``<output_root>/processed_scalar/fldsum_<name>.nc``,
+    where ``output_root`` is the parent of the input file's directory.
 
     Parameters
     ----------
@@ -56,89 +64,95 @@ def process_file(
         Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
     basin_file : str or Path
         Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
-        the geometry to clip the dataset to. Must include an `epsg` column to define the CRS.
+        the geometry to clip the dataset to.
     client : dask.Client
         Dask client.
-    column : str
-        Column.
-    crs : str
-        CRS code.
+    column : str, default "SUBREGION1"
+        Name of the column in ``basin_file`` used to identify basins (e.g.
+        ``"GIS"`` is selected for the merged-basin clip).
+    crs : str, default "EPSG:3413"
+        CRS code applied to the input dataset before clipping.
     """
 
     infile = Path(infile)
     infile_name = infile.name
-    infile_path = infile.parent
-    clipped_file = infile_path / Path("clipped_" + infile_name)
-    scalar_file = infile_path / Path("fldsum_" + infile_name)
+    output_root = infile.parent.parent
+    clipped_dir = output_root / "processed_spatial"
+    scalar_dir = output_root / "processed_scalar"
+    clipped_dir.mkdir(parents=True, exist_ok=True)
+    scalar_dir.mkdir(parents=True, exist_ok=True)
+    clipped_file = clipped_dir / Path("clipped_" + infile_name)
+    scalar_file = scalar_dir / Path("fldsum_" + infile_name)
 
     basin = gpd.read_file(basin_file)
+    if basin.crs is None or str(basin.crs) != str(crs):
+        basin = basin.to_crs(crs)
 
     start = time.time()
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    ds = (
-        xr.open_dataset(
-            infile,
-            decode_times=False,
-            decode_timedelta=False,
-            chunks="auto",
-            engine="h5netcdf",
-        )
-        .drop_vars("time_bounds", errors="ignore")
-        .rio.set_spatial_dims(x_dim="x", y_dim="y")
+    ds = xr.open_dataset(
+        infile,
+        decode_timedelta=False,
+        decode_times=False,
+        chunks="auto",
+        engine="netcdf4",
     )
 
-    ds = ds.rio.write_crs(crs, inplace=False)
+    # Spatial bounds vars (``x_bnds``/``y_bnds``) reference the pre-clip
+    # x/y sizes and would inject dangling dimensions back into the output
+    # after merge — h5netcdf serializes those as duplicate "x" dims. Drop
+    # them before splitting; PISM doesn't require them on the clipped output.
+    ds = ds.drop_vars(["x_bnds", "x_bounds", "y_bnds", "y_bounds", "mapping"], errors="ignore")
 
-    # Separate variables that lack spatial (x, y) dimensions, as rio.clip cannot handle them
-    non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
+    # Separate variables that lack BOTH spatial (x, y) dimensions, as
+    # rio.clip cannot handle them. Use ``and`` so that vars carrying only
+    # one spatial dim (rare, but possible) still go down the spatial path.
+    non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims and "y" not in ds[var].dims]
     ds_non_spatial = ds[non_spatial_vars]
-    ds = ds.drop_vars(non_spatial_vars)
-
+    ds = ds.drop_vars(non_spatial_vars).rio.write_crs(crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
     ds = client.persist(ds)
     progress(ds)
 
-    gis_clipped = ds.rio.clip(basin[basin[column] == "GIS"].geometry, drop=False)
-    gis_clipped = xr.merge([gis_clipped, ds_non_spatial])
-    print(f"Writing {clipped_file}")
     comp = {"zlib": True, "complevel": 2}
-    encoding = {var: comp for var in gis_clipped.data_vars}
-    write_clipped = gis_clipped.to_netcdf(clipped_file, engine="h5netcdf", encoding=encoding, compute=False)
-    future_clipped = client.compute(write_clipped)
-    progress(future_clipped)
 
     dss = []
-    for _, basin in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
-        ds_clipped = ds.rio.clip([basin.geometry], drop=False)
-        dss.append(ds_clipped.expand_dims({"basin": [basin[column]]}))
+    for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
+        ds_clipped = ds.rio.clip([row.geometry], drop=False)
+        ds_sum = ds_clipped.sum(dim=["y", "x"]).compute()
+        ds_sum["area"] = row.geometry.area
+        ds_sum["area"].attrs.update({"units": "m^2"})
+        dss.append(ds_sum.expand_dims({"basin": [row[column]]}))
 
-    clipped = xr.concat(dss, dim="basin")
+    scalar = xr.concat(dss, dim="basin")
 
-    print(f"Writing {scalar_file}")
-    scalar = clipped.sum(dim=["y", "x"])
+    logger.info("Writing %s", scalar_file)
+    # Keep non-spatial vars (e.g. pism_config)
+    extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims]
+    if extra_vars:
+        scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
     encoding_scalar = {var: comp for var in scalar.data_vars}
-    write_scalar = scalar.to_netcdf(scalar_file, engine="h5netcdf", encoding=encoding_scalar, compute=False)
-    future_scalar = client.compute(write_scalar)
-    progress(future_scalar)
+    scalar.to_netcdf(scalar_file, encoding=encoding_scalar, engine="netcdf4")
 
     end = time.time()
     time_elapsed = end - start
-    print(f"Time elapsed for {infile_name}: {time_elapsed:.0f}s")
+    logger.info("Time elapsed for %s: %.0fs", infile_name, time_elapsed)
 
 
-def postprocess_glacier(config_file: str | Path):
+def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
     """
-    Configure and print a PISM model run command for a glacier.
+    Postprocess KITP output by clipping spatial output to basin geometries.
 
-    This function reads glacier metadata from a CSV file and simulation settings
-    from a TOML configuration file, then builds and prints a full PISM command-line
-    string for executing a model run. It sets up output directories and constructs
-    appropriate output filenames.
+    Reads a TOML run-configuration, opens the configured ``spatial`` output
+    NetCDF, and clips it to the basin outline using a Dask client.
 
     Parameters
     ----------
     config_file : str or Path
-        Path to a TOML file containing PISM run configuration, including time,
-        energy model, stress balance model, and reporting options.
+        Path to a TOML file containing PISM run configuration with at least
+        ``[basin].outline`` and ``[output].spatial`` keys.
+    n_workers : int, optional
+        Number of Dask workers, by default 4.
     """
 
     config_toml = toml.load(config_file)
@@ -147,8 +161,8 @@ def postprocess_glacier(config_file: str | Path):
     start = time.time()
     outline_file = config["basin"]["outline"]
 
-    client = Client(n_workers=4, threads_per_worker=1, memory_limit="8GiB")
-    print(f"Dask dashboard: {client.dashboard_link}")
+    client = Client(n_workers=n_workers, threads_per_worker=1)
+    logger.info("Dask dashboard: %s", client.dashboard_link)
 
     for o in ["spatial"]:
         s_file = Path(config["output"][o])
@@ -158,7 +172,7 @@ def postprocess_glacier(config_file: str | Path):
 
     end = time.time()
     time_elapsed = end - start
-    print(f"Time elapsed {time_elapsed:.0f}s")
+    logger.info("Time elapsed %.0fs", time_elapsed)
 
 
 def main():
@@ -170,6 +184,12 @@ def main():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Postprocess KITP Greenland."
     parser.add_argument(
+        "--ntasks",
+        help="Sets number of tasks.",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
         "RUN_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -177,8 +197,12 @@ def main():
 
     options, unknown = parser.parse_known_args()
     config_file = options.RUN_FILE[0]
+    ntasks = options.ntasks
 
-    postprocess_glacier(config_file)
+    config_path = Path(config_file).resolve().parent
+    setup_logging(config_path / "postprocess.log")
+
+    postprocess_glacier(config_file, n_workers=ntasks)
 
 
 if __name__ == "__main__":

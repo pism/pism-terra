@@ -1,0 +1,39 @@
+#!/bin/sh
+#SBATCH --partition={{ queue | default("t2small") }}
+#SBATCH --ntasks={{ ntasks | default(36) }}
+#SBATCH --tasks-per-node={{ tasks | default(40) }}
+#SBATCH --time={{ walltime | default("24:00:00") }}
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH --mail-type=FAIL
+#SBATCH --output="{{ output_path }}/pism.%j"
+
+module purge
+module load intel-compilers/2023.1.0 iimpi/2023a
+
+export container=$HOME/pism-ismip7.sif
+if [ ! -f "${container}" ]; then
+    echo "Container ${container} not found." >&2
+    exit 1
+fi
+echo "Using container ${container}"
+
+umask 007
+
+cd $SLURM_SUBMIT_DIR
+
+ulimit -l unlimited
+ulimit -s unlimited
+ulimit
+
+# ###############################################################################
+# FORWARD RUN
+# ###############################################################################
+
+mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} pism {{ run_str }}
+
+# ###############################################################################
+# INVERSION RUN
+# ###############################################################################
+
+mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} python -m PISM.pismi {{ inv_str }}

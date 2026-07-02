@@ -29,7 +29,7 @@ from typing import Any, ClassVar, Iterator
 
 import scipy.stats as st
 import toml
-from jinja2 import Environment, StrictUndefined
+from jinja2 import Environment
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -38,8 +38,12 @@ from pydantic import (
     model_validator,
 )
 
+# Dependency-free (imports only the stdlib), so a top-level import here cannot
+# create a cycle back into this module.
+from pism_terra.ismip7.experiments import resolve_counter
+
 # one Jinja environment for all renders
-_JINJA = Environment(undefined=StrictUndefined, autoescape=False)
+_JINJA = Environment(autoescape=False)
 
 
 def load_config(path: str | Path) -> PismConfig:
@@ -244,10 +248,15 @@ class UQConfig(BaseModel):
     ----------
     samples : int, default=1
         Number of draws to use when generating ensemble samples. Must be > 0.
-    mapping : str or None, optional
-        Optional column name indicating a mapping key (e.g., to join against a
-        lookup table of file paths). Not interpreted by validation; simply
-        preserved for downstream use.
+        For ``method="factorial"`` this is the number of levels **per variable**
+        (total runs are ``samples ** n_variables``).
+    method : str or None, optional
+        Sampling strategy passed to :func:`pism_terra.sampling.generate_samples`.
+        ``None`` (default) or ``"lhs"`` selects Latin Hypercube; ``"factorial"``
+        selects the full-factorial grid.
+    mapping : dict or None, optional
+        Optional mapping (e.g., to join against a lookup table of file paths).
+        Not interpreted by validation; simply preserved for downstream use.
     tree : dict[str, DistSpec]
         Flat mapping from dotted variable names to validated :class:`DistSpec`
         objects.
@@ -288,8 +297,48 @@ class UQConfig(BaseModel):
     """
 
     samples: int = Field(default=1, gt=0)
+    method: str | None = Field(default=None)
     mapping: dict | None = None
     tree: dict[str, "DistSpec"]  # values parsed as DistSpec after 'before' validator
+
+    @field_validator("method")
+    @classmethod
+    def _normalize_method(cls, v: Any) -> str | None:
+        """
+        Normalize and validate the sampling ``method`` name.
+
+        Parameters
+        ----------
+        v : Any
+            Raw method value (any case, may contain surrounding spaces) or
+            ``None``.
+
+        Returns
+        -------
+        str or None
+            Lower-cased, stripped method name, or ``None`` when unset (which
+            downstream treats as Latin Hypercube).
+
+        Raises
+        ------
+        ValueError
+            If the method is not a recognized Latin Hypercube or factorial alias.
+        """
+        if v is None:
+            return None
+        m = str(v).strip().lower()
+        allowed = {
+            "lhs",
+            "latin",
+            "latin_hypercube",
+            "latinhypercube",
+            "factorial",
+            "grid",
+            "full_factorial",
+        }
+        if m not in allowed:
+            raise ValueError(f"unknown sampling method '{v}'; use 'lhs' or 'factorial'")
+        return m
 
     @staticmethod
     def _is_leaf(node: Any) -> bool:
@@ -402,6 +451,7 @@ class UQConfig(BaseModel):
 
         # Pull top-level fields if present
         samples = v.get("samples")
+        method = v.get("method")
         mapping = v.get("mapping")
 
         # Where the specs live: either under 'tree' or at top level
@@ -410,20 +460,25 @@ class UQConfig(BaseModel):
             outv: dict[str, Any] = {"tree": {}}
             if samples is not None:
                 outv["samples"] = samples
+            if method is not None:
+                outv["method"] = method
             if mapping is not None:
                 outv["mapping"] = mapping
             return outv
 
         raw = dict(raw)  # shallow copy so we can pop safely
 
-        # Allow samples/mapping inside the raw block too
+        # Allow samples/method/mapping inside the raw block too
         if samples is None and "samples" in raw:
             samples = raw.pop("samples")
+        if method is None and "method" in raw:
+            method = raw.pop("method")
         if mapping is None and "mapping" in raw:
             mapping = raw.pop("mapping")
 
         # Ensure these don't leak into tree
         raw.pop("samples", None)
+        raw.pop("method", None)
         raw.pop("mapping", None)
 
         # If keys are already dotted (['a.b.c']), keep only dict-valued items
@@ -436,6 +491,8 @@ class UQConfig(BaseModel):
         out: dict[str, Any] = {"tree": tree}
         if samples is not None:
             out["samples"] = samples
+        if method is not None:
+            out["method"] = method
         if mapping is not None:
             out["mapping"] = mapping
         return out
@@ -579,95 +636,6 @@ class BaseModelWithDot(BaseModel):
         return out
 
 
-class RunConfig(BaseModel):
-    """
-    Execution settings for a PISM run.
-
-    Provides executable/launcher options and a helper to export parameters
-    for templating. String fields that contain Jinja expressions (e.g.,
-    ``"mpirun -np {{ ntasks }}"``) are rendered using the model values.
-
-    Attributes
-    ----------
-    mpi : str
-        MPI launcher template, e.g., ``"mpirun -np {{ ntasks }}"``.
-        Defaults to ``"mpirun"``.
-    executable : str
-        Path to the PISM executable, or command name. Defaults to ``"pism"``.
-    ntasks : int
-        Total number of MPI ranks. Must be >= 1.
-
-    Notes
-    -----
-    The :meth:`as_params` method returns only non-empty fields and renders any
-    string value containing Jinja delimiters ``{{ ... }}`` using the current
-    field values (plus any extra context provided).
-
-    Examples
-    --------
-    >>> rc = RunConfig(mpi="mpirun -np {{ ntasks }}", executable="/path/pism", ntasks=56)
-    >>> rc.as_params()["mpi"]
-    'mpirun -np 56'
-    """
-
-    mpi: str = Field(default="mpirun")
-    executable: str = Field(default="pism")
-    ntasks: int = Field(ge=1)
-    writer: str | None = None
-
-    def as_params(self, **extra: Any) -> dict[str, Any]:
-        """
-        Export non-empty parameters and render templated strings.
-
-        Any string field containing Jinja expressions is rendered using a
-        context composed of the model's own values plus ``extra``.
-
-        Parameters
-        ----------
-        **extra
-            Additional key/value pairs to inject into the Jinja render
-            context (these do not mutate the model).
-
-        Returns
-        -------
-        dict of str to Any
-            Dictionary of parameters suitable for template rendering.
-            Fields with ``None``/unset/default values are omitted; templated
-            strings (e.g., ``mpi``) are rendered to plain strings.
-        """
-        params = self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
-        ctx = {**params, **extra}
-
-        def _render(v: Any) -> Any:
-            """
-            Render templated strings using the current context.
-
-            Parameters
-            ----------
-            v : Any
-                Candidate value to render. If `v` is a string containing Jinja
-                delimiters (``{{ ... }}``), it is rendered using the closure
-                context ``ctx``; otherwise it is returned unchanged.
-
-            Returns
-            -------
-            Any
-                The rendered string when `v` is a templated string; otherwise the
-                original value.
-
-            Raises
-            ------
-            jinja2.UndefinedError
-                If the template references an undefined variable and the Jinja
-                environment uses ``StrictUndefined``.
-            """
-            if isinstance(v, str) and "{{" in v:
-                return _JINJA.from_string(v).render(ctx)
-            return v
-
-        return {k: _render(v) for k, v in params.items()}
-
-
 class JobConfig(BaseModelWithDot):
     """
     Scheduler job options parsed from configuration.
@@ -698,16 +666,18 @@ class JobConfig(BaseModelWithDot):
 
     model_config = ConfigDict()
 
-    queue: str | None = None
-    walltime: str | None = None
+    ntasks: int | None = None
     nodes: int | None = Field(default=None, ge=1)
     output_path: str | Path | None = None
+    queue: str | None = None
+    walltime: str | None = None
+    tasks: int | None = None
 
     @field_validator("walltime")
     @classmethod
     def _hhmmss(cls, v: str | None) -> str | None:
         """
-        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS``.
+        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS`` or ``HHH:MM:SS``.
 
         Parameters
         ----------
@@ -755,9 +725,10 @@ class PismConfig(BaseModelWithDot):
 
     Attributes
     ----------
-    run : RunConfig
-        Execution settings (launcher template, executable path/name,
-        number of MPI ranks) with support for rendering Jinja placeholders.
+    campaign : CampaignConfig
+        Campaign-level metadata (data sources, forcing scenario, file references).
+    run_info : InfoConfig
+        Run metadata such as institution and title.
     job : JobConfig
         Scheduler options such as queue/partition, walltime, and number of
         nodes. Unknown keys are forbidden in this section.
@@ -772,27 +743,37 @@ class PismConfig(BaseModelWithDot):
     grid : GridConfig
         Horizontal/vertical grid settings and registration. Derives
         ``grid.dx``/``grid.dy`` from ``resolution`` when not explicitly set.
-    atmosphere : dict of str to Any, optional
-        Additional atmosphere-related options to pass through (keys are
-        typically dotted, e.g., ``"atmosphere.given.file"``). Defaults to ``{}``.
+    atmosphere : AtmosphereConfig
+        Atmosphere model selection and its option set.
+    ocean : OceanConfig
+        Ocean model selection and its option set.
+    surface : SurfaceConfig
+        Surface model selection and its option set.
+    frontal_melt : FrontalMeltConfig
+        Frontal melt model selection and its option set.
+    hydrology : HydrologyConfig
+        Hydrology model selection and its option set.
     geometry : dict of str to Any, optional
         Geometry-related options to pass through. Defaults to ``{}``.
-    ocean : dict of str to Any, optional
-        Ocean-related options to pass through. Defaults to ``{}``.
+    bed_deformation : BedDeformationConfig
+        Bed deformation model selection and its option set.
     calving : dict of str to Any, optional
         Calving-related options to pass through. Defaults to ``{}``.
     iceflow : dict of str to Any, optional
         Ice-flow-related options to pass through. Defaults to ``{}``.
-    frontal_melt : dict of str to Any, optional
-        Frontal melt-related options to pass through. Defaults to ``{}``.
-    hydrology : dict of str to Any, optional
-        Hydrology-related options to pass through. Defaults to ``{}``.
-    surface : dict of str to Any, optional
-        Surface-related options to pass through. Defaults to ``{}``.
     reporting : dict of str to Any, optional
         Reporting/output options to pass through. Defaults to ``{}``.
     input : dict of str to Any, optional
         Input file options to pass through. Defaults to ``{}``.
+    time_stepping : dict of str to Any, optional
+        Time-stepping-related options to pass through. Defaults to ``{}``.
+    inverse : dict of str to Any, optional
+        Inverse options to pass through. Defaults to ``{}``.
+    solver : dict of str to Any, optional
+        PETSc/Blatter solver knobs split by run kind, with ``forward`` and
+        ``inverse`` sub-tables (``[solver.forward]`` / ``[solver.inverse]``).
+        The ``forward`` half is injected into the forward ``pism`` command and
+        the ``inverse`` half into the ``pismi`` command. Defaults to ``{}``.
 
     Notes
     -----
@@ -813,24 +794,56 @@ class PismConfig(BaseModelWithDot):
     """
 
     campaign: CampaignConfig
-    run: RunConfig
     run_info: InfoConfig
-    job: JobConfig
+    job: JobConfig = Field(default_factory=JobConfig)
     time: TimeConfig
     energy: EnergyConfig
     stress_balance: StressBalanceConfig
     grid: GridConfig
     atmosphere: AtmosphereConfig
+    ocean: OceanConfig
     surface: SurfaceConfig
     frontal_melt: FrontalMeltConfig
+    bed_deformation: BedDeformationConfig
     hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
-    ocean: dict[str, Any] = {}
     calving: dict[str, Any] = {}
     iceflow: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
     input: dict[str, Any] = {}
     time_stepping: dict[str, Any] = {}
+    inverse: dict[str, Any] = {}
+    solver: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def _expand_ismip7_counter(self) -> "PismConfig":
+        """
+        Expand ``run_info.counter`` into the derived experiment fields.
+
+        When an ISMIP7 Core Experiment counter (e.g. ``"C003"``) is set, it is the
+        single source of truth for the experiment identity: it fills
+        ``run_info.experiment``, ``campaign.pathway``, ``campaign.gcms``, and the
+        projection end (``time.end``) from
+        :data:`pism_terra.ismip7.experiments.CORE_EXPERIMENTS`. This runs for both
+        the staging and running entry points (both call :func:`load_config`), so a
+        single field drives the whole ISMIP7 pipeline. Non-counter (legacy) configs
+        are left untouched.
+
+        Returns
+        -------
+        PismConfig
+            The same instance, with counter-derived fields populated.
+        """
+        if not self.run_info.counter:
+            if self.time.time_end is None:
+                raise ValueError("time.end is required unless run_info.counter is set")
+            return self
+        spec = resolve_counter(self.run_info.counter)
+        self.run_info.experiment = spec.experiment_id
+        self.campaign.pathway = spec.pathway
+        self.campaign.gcms = [spec.esm_id]
+        self.time.time_end = f"{spec.proj_end_year}-01-01"
+        return self
 
 
 class RestartConfig(BaseModelWithDot):
@@ -854,7 +867,7 @@ class InfoConfig(BaseModelWithDot):
     """
 
     SECTION = "run_info"
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    model_config = ConfigDict(populate_by_name=True)
 
     institution: str = Field(
         default="University of Alaska Fairbanks",
@@ -864,6 +877,22 @@ class InfoConfig(BaseModelWithDot):
         default="PISM Campaign",
         alias="run_info.title",
     )
+    # Forwarded to PISM as run_info.* options (written as output global
+    # attributes, ISMIP7 section 5) AND used for submission naming (section 8).
+    group: str | None = Field(default=None, alias="run_info.group")
+    model: str | None = Field(default=None, alias="run_info.model")
+    contact_name: str | None = Field(default=None, alias="run_info.contact_name")
+    contact_email: str | None = Field(default=None, alias="run_info.contact_email")
+    # pism-terra-only ISMIP7 naming metadata (section 8); NOT PISM options, so
+    # they are kept out of the run command and consumed by the naming logic.
+    domain: str | None = Field(default=None, alias="run_info.domain")
+    set_id: str | None = Field(default=None, alias="run_info.set")
+    ism: str | None = Field(default=None, alias="run_info.ism")
+    experiment: str | None = Field(default=None, alias="run_info.experiment")
+    # ISMIP7 Core Experiment counter (e.g. "C003"). When set, PismConfig expands it
+    # into experiment/pathway/gcms/time.end (see PismConfig's counter resolver and
+    # pism_terra.ismip7.experiments). Naming-only, so kept out of _PISM_FIELDS.
+    counter: str | None = Field(default=None, alias="run_info.counter")
 
     @staticmethod
     def _quote(v: Any) -> str:
@@ -887,19 +916,38 @@ class InfoConfig(BaseModelWithDot):
         s = s.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{s}"'
 
+    # Fields PISM recognizes as run_info.* options (written as output global
+    # attributes). The ISMIP7 naming-only fields (domain/set/ism/experiment)
+    # are intentionally excluded so they don't reach the PISM command.
+    _PISM_FIELDS: ClassVar[tuple[str, ...]] = (
+        "institution",
+        "title",
+        "group",
+        "model",
+        "contact_name",
+        "contact_email",
+    )
+
     def as_params(self) -> dict[str, Any]:
         """
-        Export run-info parameters with dotted aliases and quoted string values.
+        Export PISM run-info parameters with dotted aliases and quoted string values.
+
+        Emits only the fields PISM understands (``institution``, ``title``,
+        ``group``, ``model``, ``contact_name``, ``contact_email``), which it
+        writes as output global attributes. The ISMIP7 naming-only fields
+        (``domain``, ``set``, ``ism``, ``experiment``) are kept out of the PISM
+        command and consumed by the naming logic instead.
 
         Returns
         -------
         dict[str, Any]
-            Dictionary like ``{'run_info.institution': '\"Foo\"', 'run_info.title': '\"Bar\"'}``.
+            Dictionary like ``{'run_info.institution': '\"Foo\"', 'run_info.group': '\"UAF\"'}``.
         """
-        out = self.model_dump(by_alias=True, exclude_none=True)
-        for key in ("run_info.institution", "run_info.title"):
-            if key in out and out[key] is not None:
-                out[key] = self._quote(out[key])
+        out = {}
+        for name in self._PISM_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                out[f"run_info.{name}"] = self._quote(value)
         return out
 
 
@@ -919,6 +967,7 @@ class GridConfig(BaseModelWithDot):
     Mz: int | None = Field(default=None, alias="grid.Mz")
     extrapolation: str | None = Field(default=None, alias="grid.allow_extrapolation")
     registration: str | None = Field(default=None, alias="grid.registration")
+    file: str | None = Field(default=None, alias="grid.file")
 
     # derived / optionally provided:
     dx: str | None = Field(default=None, alias="grid.dx")
@@ -1053,8 +1102,10 @@ class TimeConfig(BaseModelWithDot):
     ----------
     time_start : str
         Simulation start time (alias: ``"time.start"``).
-    time_end : str
-        Simulation end time (alias: ``"time.end"``).
+    time_end : str or None
+        Simulation end time (alias: ``"time.end"``). May be omitted when the run
+        is ISMIP7 counter-driven, in which case ``PismConfig`` fills it from the
+        Core Experiment's projection end year.
     calendar : str or None
         Calendar name (alias: ``"time.calendar"``), e.g., ``"standard"``.
     reference_date : str or None
@@ -1065,7 +1116,7 @@ class TimeConfig(BaseModelWithDot):
     model_config = ConfigDict(populate_by_name=True)
 
     time_start: str = Field(alias="time.start")
-    time_end: str = Field(alias="time.end")
+    time_end: str | None = Field(default=None, alias="time.end")
     calendar: str | None = Field(default=None, alias="time.calendar")
     reference_date: str | None = Field(default=None, alias="time.reference_date")
 
@@ -1134,6 +1185,16 @@ class AtmosphereConfig(ModelWithOptions):
     SECTION = "atmosphere"
 
 
+class OceanConfig(ModelWithOptions):
+    """
+    Ocean model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "ocean"
+
+
 class SurfaceConfig(ModelWithOptions):
     """
     Surface model configuration.
@@ -1162,6 +1223,16 @@ class HydrologyConfig(ModelWithOptions):
     """
 
     SECTION = "hydrology"
+
+
+class BedDeformationConfig(ModelWithOptions):
+    """
+    Bed deformation model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "bed_deformation"
 
 
 class FrontalMeltConfig(ModelWithOptions):
@@ -1195,63 +1266,88 @@ class CampaignConfig(BaseModel):
 
     Attributes
     ----------
-    boot_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
-    outline_file : str or None
-        Path to GPKG basin file (relative to the input directory).
+    bathymetry : str or None
+        bathymetry data source identifier (e.g., ``"gebco"``).
     bucket : str or None
         S3 bucket (e.g., ``"pism-cloud7-data"``).
     climate : str or None
         Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
+    climatology : str or None
+        Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
-    end_year : str, float, or None
-        End year of the forcing period.
+    forcing_mask : str or None
+        Forcing mask ("all", "glacier", "none").
     velocity : str or None
         Velocity data source identifier (e.g., ``"its_live"``).
-    gcm : str, list, or None
+    heatflux : str or None
+        Heat-flow data source identifier (e.g., ``"lucazeau"``).
+    gcms : str, list, dict, or None
         GCM model name(s) used for climate forcing.
     boot_file : str or None
-        Path to the grid NetCDF boot (relative to the input directory).
+        Path to the boot NetCDF file (relative to the input directory).
+    outline_file : str or None
+        Path to GPKG basin file (relative to the input directory).
     grid_file : str or None
         Path to the grid NetCDF file (relative to the input directory).
     heatflux_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
+        Path to the heat flux NetCDF file (relative to the input directory).
     ice_thickness : str or None
         Ice thickness data source identifier (e.g., ``"millan2022"``).
     name : str or None
         Human-readable campaign name.
+    ocean_file : str or None
+        Ocean forcing file name.
+    obs_file : str or None
+        Observations file name.
     pathway : str or None
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     prefix : str or None
         path to data in bucket (e.g., ``"ismip7_greenland_input"``).
+    present_day_forcings : str, list, or None
+        Present-day forcing identifier(s).
+    regrid_file : str or None
+        Path to a file used for regridding (relative to the input directory).
     retreat_file : str or None
         Path to the retreat NetCDF file (relative to the input directory).
+    rgi_complex_file : str or None
+        Filename of the RGI glacier-complex ("-C") outlines in the bucket.
+    rgi_glacier_file : str or None
+        Filename of the RGI glacier ("-G") outlines in the bucket.
     start_year : str, float, or None
         Start year of the forcing period.
+    end_year : str, float, or None
+        End year of the forcing period.
     version : str or None
         Dataset or experiment version string.
     """
 
+    bathymetry: str | None = Field(default=None)
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
+    climatology: str | None = Field(default=None)
     dem: str | None = Field(default=None)
+    forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
-    gcms: str | list | None = Field(default=None)
-    present_day_forcings: str | list | None = Field(default=None)
-    future_forcings: str | list | None = Field(default=None)
+    heatflux: str | None = Field(default=None)
+    gcms: str | list | dict | None = Field(default=None)
     boot_file: str | None = Field(default=None)
     outline_file: str | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     heatflux_file: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
     name: str | None = Field(default=None)
+    obs_file: str | None = Field(default=None)
+    ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)
+    present_day_forcings: str | list | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)
-    rgi_file: str | None = Field(default=None)
+    rgi_complex_file: str | None = Field(default=None)
+    rgi_glacier_file: str | None = Field(default=None)
     start_year: str | float | None = Field(default=None)
+    end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
@@ -1293,12 +1389,6 @@ class CampaignConfig(BaseModel):
             Any
                 The rendered string when `v` is a templated string; otherwise the
                 original value.
-
-            Raises
-            ------
-            jinja2.UndefinedError
-                If the template references an undefined variable and the Jinja
-                environment uses ``StrictUndefined``.
             """
             if isinstance(v, str) and "{{" in v:
                 return _JINJA.from_string(v).render(ctx)

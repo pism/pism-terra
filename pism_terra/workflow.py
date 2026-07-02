@@ -24,6 +24,8 @@ Workflow management.
 from __future__ import annotations
 
 import contextlib
+import logging
+import re
 from pathlib import Path
 from typing import Any, Iterable, TypeVar
 
@@ -36,7 +38,63 @@ import xarray as xr
 from pydantic import BaseModel
 from tqdm.auto import tqdm
 
+logger = logging.getLogger(__name__)
+
 T = TypeVar("T", bound=BaseModel)
+
+
+def parse_cdl_options(cdl_file: str | Path) -> set[str]:
+    """
+    Parse a PISM CDL file and return the set of valid configuration parameter names.
+
+    Extracts names from lines matching ``pism_config:<name> = ...``, ignoring
+    metadata suffixes (``_doc``, ``_type``, ``_units``, ``_option``, ``_choices``,
+    ``_valid_min``, ``_valid_max``).
+
+    Parameters
+    ----------
+    cdl_file : str or Path
+        Path to the CDL file (e.g., ``pism_config.cdl``).
+
+    Returns
+    -------
+    set of str
+        Valid PISM configuration parameter names.
+    """
+    pattern = re.compile(r"^\s*pism_config:(\S+)\s*=")
+    suffixes = ("_doc", "_type", "_units", "_option", "_choices", "_valid_min", "_valid_max")
+    options: set[str] = set()
+    with open(cdl_file, encoding="utf-8") as fh:
+        for line in fh:
+            m = pattern.match(line)
+            if m:
+                name = m.group(1).rstrip(";")
+                if not any(name.endswith(s) for s in suffixes):
+                    options.add(name)
+    return options
+
+
+def validate_pism_options(run: dict[str, Any], cdl_file: str | Path) -> None:
+    """
+    Validate that all keys in a PISM run dictionary are recognized config parameters.
+
+    Prints a warning for each key not found in the master CDL file.
+
+    Parameters
+    ----------
+    run : dict
+        Dictionary of PISM run options (dotted keys like ``"surface.pdd.factor_ice"``).
+    cdl_file : str or Path
+        Path to the PISM CDL master config file.
+    """
+    valid = parse_cdl_options(cdl_file)
+    invalid = sorted(k for k in run if k not in valid)
+    if invalid:
+        logger.warning("%d unrecognized PISM option(s):", len(invalid))
+        for k in invalid:
+            logger.warning("  - %s", k)
+    else:
+        logger.info("All %d PISM options are valid.", len(run))
 
 
 def merge_model(base_model: T, **overrides: Any) -> T:
@@ -239,6 +297,51 @@ def dict2str(d: dict) -> str:
      -b 2'
     """
     return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
+
+
+def filter_overrides_by_config(
+    overrides: dict[str, Any], allowed_keys: Iterable[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """
+    Restrict UQ overrides to keys the selected config exposes.
+
+    Drops any entry in ``overrides`` whose key is not in ``allowed_keys``.
+    Returned alongside the kept dict is a sorted list of dropped keys so the
+    caller can surface what was filtered.
+
+    Parameters
+    ----------
+    overrides : dict[str, Any]
+        Candidate dotted PISM-flag overrides (typically the merged uq.toml
+        sample row plus any hardcoded file-path defaults).
+    allowed_keys : Iterable[str]
+        Keys present in the config-derived run dict. Only the selected model's
+        options block contributes here, so an override for a non-selected model
+        (e.g. ``surface.debm_simple.std_dev.file`` when ``surface.model == "pdd"``)
+        is correctly dropped.
+
+    Returns
+    -------
+    kept : dict[str, Any]
+        ``overrides`` filtered to keys present in ``allowed_keys``.
+    skipped : list[str]
+        Keys from ``overrides`` that were not in ``allowed_keys``, sorted.
+
+    Examples
+    --------
+    >>> overrides = {"surface.force_to_thickness.file": "/tmp/boot.nc",
+    ...              "surface.debm_simple.std_dev.file": "/tmp/clim.nc"}
+    >>> allowed = {"surface.force_to_thickness.file", "input.file"}
+    >>> kept, skipped = filter_overrides_by_config(overrides, allowed)
+    >>> kept
+    {'surface.force_to_thickness.file': '/tmp/boot.nc'}
+    >>> skipped
+    ['surface.debm_simple.std_dev.file']
+    """
+    allowed = set(allowed_keys)
+    kept = {k: v for k, v in overrides.items() if k in allowed}
+    skipped = sorted(k for k in overrides if k not in allowed)
+    return kept, skipped
 
 
 def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
@@ -477,7 +580,7 @@ def check_dataset_lazy(
 
     # coord monotonicity
     for xd in ("x", "lon"):
-        if xd in ds.coords:
+        if xd in ds.dims:
             xv = ds[xd].values
             if xv.size < 2:
                 raise ValueError(f"Coordinate '{xd}' has <1 elements")
@@ -485,7 +588,7 @@ def check_dataset_lazy(
                 raise ValueError(f"Coordinate '{xd}' is not strictly monotonic")
 
     for yd in ("y", "lat"):
-        if yd in ds.coords:
+        if yd in ds.dims:
             yv = ds[yd].values
             if yv.size < 2:
                 raise ValueError(f"Coordinate '{yd}' has <1 elements")
@@ -496,13 +599,10 @@ def check_dataset_lazy(
     if "time" in ds.coords:
         _ = xr.decode_cf(ds[["time"]])  # raises if invalid CF time
 
-    # CRS (if rioxarray is available)
+    # CRS (if rioxarray is available) — skip silently on any error
     try:
-        _crs = getattr(ds.rio, "crs", None)
-        if _crs is None:
-            raise ValueError("Dataset has no CRS (.rio.crs is None)")
+        _crs = ds.rio.crs
     except Exception:
-        # If rioxarray not present, skip CRS check
         pass
 
     def nbytes_est(da: xr.DataArray) -> int:
@@ -558,8 +658,10 @@ def check_dataset_lazy(
 
     # Optional: quick global metadata sanity
     if ds.attrs.get("Conventions", "").lower().startswith("cf"):
-        # try writing minimal in-memory netcdf header/coords only (super light)
-        _ = xr.Dataset(coords={k: ds[k].isel({k: slice(0, 1)}) for k in ds.coords})
+        # Try slicing each *dim* coord. Non-dim coords (e.g. ``crs`` /
+        # ``spatial_ref`` grid-mapping placeholders) are 0-D scalars and can't
+        # be isel'd by their own name — skip them.
+        _ = xr.Dataset(coords={k: ds[k].isel({k: slice(0, 1)}) for k in ds.coords if k in ds[k].dims})
 
     # If we reached here, the dataset is healthy enough for downstream steps.
 
@@ -587,6 +689,124 @@ def check_dataset_fully(ds: xr.Dataset) -> None:
     modify the dataset.
     """
     _ = ds.load()
+
+
+def drop_geotransform_attr(ds: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
+    """
+    Drop the ``GeoTransform`` attribute from the grid-mapping variable.
+
+    rioxarray writes a ``GeoTransform`` on ``spatial_ref`` whose ``dy`` follows
+    the in-memory y-axis order. With CF-ordered (ascending) y this means
+    ``dy > 0``, which GDAL prefers over the y coordinate variable and so
+    renders the raster upside-down in QGIS. Dropping the attribute makes GDAL
+    fall back to deriving the transform from the y coordinate (top-down).
+
+    Parameters
+    ----------
+    ds : xarray.Dataset or xarray.DataArray
+        Object whose grid-mapping variable/coordinate is modified in place. A
+        ``DataArray`` carries the grid mapping as the ``spatial_ref`` coordinate.
+
+    Returns
+    -------
+    xarray.Dataset or xarray.DataArray
+        The same object, for chaining.
+    """
+    container = ds.coords if isinstance(ds, xr.DataArray) else ds.variables
+    for name in ("spatial_ref", "crs"):
+        if name in container and "GeoTransform" in ds[name].attrs:
+            del ds[name].attrs["GeoTransform"]
+    return ds
+
+
+def stamp_grid_mapping(ds: xr.Dataset, name: str = "spatial_ref") -> xr.Dataset:
+    """
+    Canonicalize the CF grid mapping and drop stray ``coordinates`` attributes.
+
+    The CRS is advertised by the CF ``grid_mapping`` attribute, which names the
+    grid-mapping variable (``spatial_ref``). PISM, GDAL, and QGIS all follow that
+    attribute to read the projection. rioxarray records it in each variable's
+    *encoding*, but operations such as ``concat``/``fillna`` drop encoding, so it
+    can go missing on write — and consumers then fail to find the CRS.
+
+    This finds the real CRS variable (the one carrying a projection WKT or a CF
+    ``grid_mapping_name``), renames it to ``name``, and drops any other CRS
+    variable. Source datasets often ship their own grid mapping (ITS_LIVE names it
+    ``mapping``) that rides through reprojection; an older pipeline could even leave
+    a dangling ``grid_mapping = "spatial_ref"`` pointing at a variable that is
+    actually named ``mapping``. Keying off the metadata rather than the (possibly
+    wrong) attribute fixes both.
+
+    It then re-asserts ``grid_mapping`` on every spatial data variable and strips
+    every grid-mapping name from any ``coordinates`` attribute: ``coordinates`` is
+    for auxiliary coordinate variables (e.g. 2-D lat/lon), and listing the CRS
+    variable there is a CF misuse that confuses PISM (it treats the CRS variable as
+    a data coordinate rather than the projection).
+
+    Stale *empty* grid mappings are also removed. A leftover scalar coordinate (an
+    old ``mapping`` with no projection metadata) survives metadata-based detection,
+    and because it stays attached as a coordinate xarray keeps re-emitting
+    ``coordinates = "mapping"`` on write. Any scalar (0-D) non-dimension coordinate
+    other than the canonical CRS variable is dropped — genuine auxiliary coordinates
+    (lat/lon) are multi-dimensional, so this only catches grid-mapping debris.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset carrying a CRS variable written by rioxarray (or an upstream
+        source). Not modified in place; callers must use the returned dataset.
+    name : str, default ``"spatial_ref"``
+        Canonical name for the grid-mapping variable.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with a single CRS variable named ``name``, ``grid_mapping``
+        re-asserted on every spatial variable, and no CRS name left in any
+        ``coordinates`` attribute.
+    """
+    # Every variable that looks like a CF grid mapping (carries a projection WKT or
+    # a CF ``grid_mapping_name``) — the real CRS carriers, by name or otherwise.
+    gm_vars = {n for n in ds.variables if "crs_wkt" in ds[n].attrs or "grid_mapping_name" in ds[n].attrs}
+    if not gm_vars:
+        return ds
+
+    # Pick the source CRS variable: the canonical name if it already carries the
+    # metadata, otherwise any real one (e.g. ITS_LIVE's ``mapping``).
+    src = name if name in gm_vars else sorted(gm_vars)[0]
+    if src != name:
+        if name in ds.variables:  # a dangling/empty target by the canonical name
+            ds = ds.drop_vars(name)
+        ds = ds.rename({src: name})
+
+    # Drop other real CRS variables and stale empty scalar grid-mapping coordinates.
+    stale = {s for s in gm_vars if s != name}
+    stale |= {c for c in ds.coords if c != name and c not in ds.dims and ds[c].ndim == 0}
+    stale &= set(ds.variables)
+    if stale:
+        ds = ds.drop_vars(list(stale))
+    ds = ds.set_coords(name)
+
+    # Names that must never appear in a ``coordinates`` attribute.
+    crs_names = gm_vars | stale | {name}
+    for var in list(ds.data_vars) + list(ds.coords):
+        if var == name:
+            continue
+        if var in ds.data_vars:
+            ds[var].encoding["grid_mapping"] = name
+            ds[var].attrs.pop("grid_mapping", None)  # keep it in encoding only
+        # Strip every grid-mapping name from ``coordinates``, keeping legitimate
+        # auxiliary coordinates if present.
+        for store in (ds[var].attrs, ds[var].encoding):
+            coords = store.get("coordinates")
+            if not coords:
+                continue
+            kept = [c for c in coords.split() if c not in crs_names]
+            if kept:
+                store["coordinates"] = " ".join(kept)
+            else:
+                store.pop("coordinates", None)
+    return ds
 
 
 def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
@@ -627,8 +847,10 @@ def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     p = Path(path).resolve()
     is_ok: bool
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
     try:
-        ds = xr.open_dataset(p)
+        ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_lazy(ds)  # your sampled checker
         if verbose:
             print(f"{p} is valid ✓")
@@ -670,14 +892,16 @@ def check_xr_fully(path: Path | str) -> bool:
 
     Notes
     -----
-    Prefer :func:`check_xr_sampled` for very large datasets to avoid
+    Prefer :func:`check_xr_lazy` for very large datasets to avoid
     out-of-memory errors. This variant is useful when the dataset is expected
     to fit comfortably in memory and you want a strong integrity check.
     """
     p = Path(path).resolve()
     is_ok: bool
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
     try:
-        ds = xr.open_dataset(p)
+        ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_fully(ds)  # your full-load checker
         print(f"{p} is valid ✓")
         is_ok = True
