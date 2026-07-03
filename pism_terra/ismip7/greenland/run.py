@@ -601,6 +601,13 @@ def _render_inverse_run(
     # state file). Filter so inv_str stays minimal.
     inv.update({k: v for k, v in cfg.stress_balance.selected().items() if k.startswith("stress_balance.")})
 
+    # pismi runs the (Blatter) stress balance during the inversion, so it needs the
+    # same energy model and flow law as the forward prior. These live in
+    # cfg.energy.selected() (e.g. energy.model and stress_balance.*.flow_law =
+    # gpbld); without them pismi would silently fall back to PISM's default flow
+    # law, making the inversion inconsistent with the forward runs.
+    inv.update(cfg.energy.selected())
+
     template_file = Path(template_file)
     env = Environment(loader=FileSystemLoader(template_file.parent))
     template = env.get_template(template_file.name)
@@ -626,19 +633,31 @@ def _render_inverse_run(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
-    # CLI override for the stress-balance model.
+    # CLI override for the stress-balance model. Apply it to BOTH the forward
+    # prior (``run``) and the pismi inversion (``inv``). ``inv`` was populated
+    # with the config's default stress-balance options above, so without syncing
+    # it here the inversion would keep using that model (e.g. blatter) even when
+    # the CLI selects hybrid. ``inv`` only carried the ``stress_balance.*`` subset
+    # (not the bp_* solver flags), and the ``[iceflow]`` stress_balance.* keys are
+    # not part of ``selected()``, so popping the old model's keys leaves them intact.
     stress_balance = config_cli.get("stress_balance")
     if stress_balance is not None:
-        for old_key in cfg.stress_balance.selected():
+        old_selected = cfg.stress_balance.selected()
+        for old_key in old_selected:
             run.pop(old_key, None)
+            if old_key.startswith("stress_balance."):
+                inv.pop(old_key, None)
         cfg.stress_balance.model = stress_balance
-        run.update(cfg.stress_balance.selected())
+        new_selected = cfg.stress_balance.selected()
+        run.update(new_selected)
+        inv.update({k: v for k, v in new_selected.items() if k.startswith("stress_balance.")})
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
 
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
 
-    experiment = cfg.run_info.as_params()["run_info.experiment"]
+    # Note: the inverse run uses flat output names and is not an ISMIP7 product,
+    # so run_info.experiment is not needed here (unlike the forward render).
     if sample is None:
         name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
     else:
@@ -952,7 +971,14 @@ def _run(*, kind: str) -> None:
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
 
-    df = stage(campaign_config, path=path, force_overwrite=force_overwrite)
+    # The inverse run only uses the historical forcing, so skip staging the
+    # (large) projection epoch for it.
+    df = stage(
+        campaign_config,
+        path=path,
+        force_overwrite=force_overwrite,
+        include_projection=(kind == "forward"),
+    )
 
     if uq_file is not None:
         rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
@@ -1010,14 +1036,19 @@ def _run(*, kind: str) -> None:
                 "frontal_melt.routing.file": row["ocean_hist_file"],
             }
         )
-        proj_overrides = {
-            "atmosphere.given.file": row["climate_proj_file"],
-            "surface.given.file": row["climate_proj_file"],
-            "surface.ismip7.file": row["climate_proj_file"],
-            "surface.ismip7.gradient.file": row["climate_gradient_proj_file"],
-            "ocean.th.file": row["ocean_proj_file"],
-            "frontal_melt.routing.file": row["ocean_proj_file"],
-        }
+        # Projection-epoch overrides only exist for forward runs; the inverse
+        # stage skips the projection forcing, so the ``*_proj_file`` columns are
+        # absent from the row (see stage(..., include_projection=...)).
+        proj_overrides = None
+        if kind == "forward":
+            proj_overrides = {
+                "atmosphere.given.file": row["climate_proj_file"],
+                "surface.given.file": row["climate_proj_file"],
+                "surface.ismip7.file": row["climate_proj_file"],
+                "surface.ismip7.gradient.file": row["climate_gradient_proj_file"],
+                "ocean.th.file": row["ocean_proj_file"],
+                "frontal_melt.routing.file": row["ocean_proj_file"],
+            }
         # Wire the inverse observation file only when the stage produced one
         # (campaign config can opt in via an ``obs_file`` key); otherwise
         # rely on whatever ``inverse.file`` the UQ supplied.
@@ -1039,7 +1070,7 @@ def _run(*, kind: str) -> None:
             uq=uq_overrides,
             sample=sample,
             pism_config_cdl=pism_config_cdl,
-            proj_overrides=proj_overrides if kind == "forward" else None,
+            proj_overrides=proj_overrides,
         )
 
 

@@ -48,6 +48,7 @@ def stage(
     config: dict,
     path: str | Path = "input_files",
     force_overwrite: bool = False,
+    include_projection: bool = True,
 ) -> pd.DataFrame:
     """
     Stage ISMIP7 Greenland inputs and return a file index.
@@ -68,8 +69,6 @@ def stage(
             Path to the heatflux NetCDF file relative to the input directory.
         - ``"regrid_file"`` : str
             Path to the regrid NetCDF file relative to the input directory.
-        - ``"pathway"`` : str
-            ISMIP7 pathway identifier.
         - ``"gcms"`` : str or list[str]
             GCM model name(s).
         - ``"version"`` : str
@@ -78,6 +77,12 @@ def stage(
             First year of the historical forcing file.
         - ``"historical_end_year"`` : int
             Last (inclusive) year of the historical forcing file.
+
+        The following are required only when ``include_projection`` is ``True``
+        (forward runs); an inverse/calibration config may omit them:
+
+        - ``"pathway"`` : str
+            ISMIP7 pathway identifier.
         - ``"projection_start_year"`` : int
             First year of the projection forcing file.
         - ``"projection_end_year"`` : int
@@ -88,6 +93,12 @@ def stage(
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
+    include_projection : bool, default ``True``
+        If ``True``, stage both the historical and the projection (pathway) forcing
+        epochs. If ``False``, stage only the historical epoch and omit the ``*_proj_*``
+        columns from the returned index. The inverse run passes ``False`` because it
+        only uses the historical forcing, so the (large) projection files never need
+        to be downloaded.
 
     Returns
     -------
@@ -124,16 +135,14 @@ def stage(
     # ``prepare`` writes, e.g. ``s3://…/ismip7/greenland/input/v2/…``.
     prefix = f"{config['prefix']}/{config['version']}"
 
-    pathway = config["pathway"]
     gcms = config["gcms"]
     gcms = [gcms] if isinstance(gcms, str) else gcms
     version = config["version"]
     # Historical and projection year ranges. End years are inclusive per
-    # the campaign-config convention (see CampaignConfig).
+    # the campaign-config convention (see CampaignConfig). Projection years are
+    # only needed when the projection epoch is staged (forward runs).
     hist_start = int(config["historical_start_year"])
     hist_end = int(config["historical_end_year"])
-    proj_start = int(config["projection_start_year"])
-    proj_end = int(config["projection_end_year"])
 
     grid_file = input_path / Path(config["grid_file"])
     boot_file = input_path / Path(config["boot_file"])
@@ -163,8 +172,14 @@ def stage(
     # Per-epoch spec: (pathway_name, start_year, end_year, column_suffix)
     epoch_specs = [
         ("historical", hist_start, hist_end, "hist"),
-        (pathway, proj_start, proj_end, "proj"),
     ]
+    if include_projection:
+        # ``pathway`` and the projection year range are only needed for the
+        # projection epoch, so an inverse/calibration config need not set them.
+        pathway = config["pathway"]
+        proj_start = int(config["projection_start_year"])
+        proj_end = int(config["projection_end_year"])
+        epoch_specs.append((pathway, proj_start, proj_end, "proj"))
     for gcm in gcms:
         for epoch_pathway, ep_start, ep_end, _ in epoch_specs:
             for forcing in ("climate", "climate_gradient", "ocean"):
@@ -278,9 +293,10 @@ def stage(
                 print(f"{p.resolve()} is not valid ✗")
 
     dfs: list[pd.DataFrame] = []
+    epoch_keys = [key for *_, key in epoch_specs]
     for gcm in gcms:
         row = dict(files_dict)
-        for epoch_key in ("hist", "proj"):
+        for epoch_key in epoch_keys:
             climate_f = forcing_paths[(gcm, epoch_key, "climate")]
             climate_grad_f = forcing_paths[(gcm, epoch_key, "climate_gradient")]
             ocean_f = forcing_paths[(gcm, epoch_key, "ocean")]

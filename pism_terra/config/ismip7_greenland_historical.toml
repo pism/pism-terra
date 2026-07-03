@@ -56,7 +56,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 [reporting]
 
-'output.format' = "netcdf4_serial"
+'output.format' = "netcdf4_parallel"
 'output.compression_level' = 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
