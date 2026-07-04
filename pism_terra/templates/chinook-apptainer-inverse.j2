@@ -36,10 +36,10 @@ mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} pism {{ run_st
 # INVERSION RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} python -m PISM.pismi {{ inv_str }}
+mpirun -np  {{ ntasks | default(36) }} apptainer run ${container} pismi {{ inv_str }}
 
 # ###############################################################################
 # Postprocessing
 # ###############################################################################
 
-{{ post_stript }} --ntasks  {{ ntasks | default(8) }} {{ post_file }}
+{{ post_stript }} --ntasks  {{ ntasks | default(36) }} {{ post_file }}
