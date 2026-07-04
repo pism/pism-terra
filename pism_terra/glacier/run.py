@@ -369,6 +369,8 @@ def _render_inverse_run(
 
     params.update({"run_str": run_str})
     params.update({"inv_str": inv_str})
+    params.update({"post_script": "pism-glacier-postprocess"})
+    params.update({"post_file": post_file})
     rendered_script = "" if debug else template.render(params)
 
     run_script_path = glacier_path / Path("run_scripts")
@@ -662,6 +664,8 @@ def _render_forward_run(
         toml.dump(run_toml, toml_file)
 
     params.update({"run_str": run_str})
+    params.update({"post_script": "pism-glacier-postprocess"})
+    params.update({"post_file": post_file})
     rendered_script = "" if debug else template.render(params)
 
     run_script_path = glacier_path / Path("run_scripts")
