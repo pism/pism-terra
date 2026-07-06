@@ -21,7 +21,7 @@ heatflux = "lucazeau"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "006-01-01"
+'time.end' =  "0101-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -203,11 +203,12 @@ model = "none"
 'inverse.stress_balance.tauc_max' = 5e7
 'inverse.tikhonov.penalty_weight' = 10
 'inverse.use_zeta_fixed_mask' = "yes"
-'inverse.adjoint.method' =  "exact"
+'inverse.adjoint.method' =  "incomplete"
 'inverse.state_func' = "huber"
 'inverse.huber.delta' =  1e2
 
 [solver.forward]
+
 bp_ksp_type = "fgmres"
 bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
@@ -223,6 +224,7 @@ bp_snes_rtol = 1e-3
 bp_ksp_rtol = 1e-3
 
 [solver.inverse]
+
 inv_adj_ksp_type = "gmres"
 inv_adj_pc_type = "jacobi"
 bp_ksp_rtol = 1e-4
