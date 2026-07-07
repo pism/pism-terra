@@ -2,4 +2,4 @@ mpirun -np  {{ ntasks | default(8) }} pism {{ run_str }}
 
 mpirun -np  {{ ntasks | default(8) }} pismi {{ inv_str }}
 
-{{ post_stript }} --ntasks  {{ ntasks | default(8) }} {{ post_file }}
+{{ post_script }} --ntasks  {{ ntasks | default(8) }} {{ post_file }}

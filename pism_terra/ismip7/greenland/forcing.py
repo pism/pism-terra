@@ -654,6 +654,82 @@ def _process_single_forcing(
     return output_files
 
 
+# Selected Mouginot basin IDs -> compact basin index. Everything not listed maps to 0.
+_MOUGINOT_BASIN_LOOKUP = {53: 1, 58: 2, 59: 3, 146: 4, 219: 5, 223: 6}
+
+
+def mouginot_basin_mask(
+    mouginot_basins: xr.DataArray,
+    target_grid: xr.Dataset | xr.DataArray | None = None,
+) -> xr.DataArray:
+    """
+    Map selected Mouginot basin IDs to a compact integer basin mask.
+
+    The selected Mouginot basin IDs are mapped to ``1..6`` and every other value
+    (including NaN) to ``0`` (see ``_MOUGINOT_BASIN_LOOKUP``). When ``target_grid``
+    is given, the (categorical) field is first regridded with nearest-neighbour so
+    basin IDs are never averaged/blended.
+
+    Parameters
+    ----------
+    mouginot_basins : xarray.DataArray
+        Source Mouginot basin-ID field (integer basin identifiers).
+    target_grid : xarray.Dataset, xarray.DataArray, or None, optional
+        Grid to regrid onto (nearest-neighbour). When ``None`` (default) the
+        field is mapped on its native grid.
+
+    Returns
+    -------
+    xarray.DataArray
+        ``int8`` basin mask named ``"basins"`` with values ``0..6``.
+    """
+    if target_grid is not None:
+        # Categorical field: nearest-neighbour so basin IDs are never blended.
+        mouginot_basins = mouginot_basins.regrid.nearest(target_grid)
+    basins = xr.zeros_like(mouginot_basins, dtype="int8")
+    for src_id, dst_id in _MOUGINOT_BASIN_LOOKUP.items():
+        basins = basins.where(mouginot_basins != src_id, dst_id)
+    basins = basins.astype("int8")
+    basins.name = "basins"
+    basins.attrs.update({"units": "1", "long_name": "basin id (1-6 selected Mouginot basins, 0=other)"})
+    return basins
+
+
+def add_basins_to_ocean_files(ocean_files: list[Path], obs_url: Path | str) -> None:
+    """
+    Add the Mouginot basin mask to each ocean forcing file, in place.
+
+    Opens each ocean file, regrids the observation ``mouginot_basins`` field onto
+    that file's grid (nearest-neighbour) via :func:`mouginot_basin_mask`, and
+    writes the result back as an ``int8`` ``basins`` variable. Files are rewritten
+    atomically via a sibling ``*.tmp`` file. A file whose grid cannot be matched is
+    logged and skipped rather than aborting the whole batch.
+
+    Parameters
+    ----------
+    ocean_files : list of pathlib.Path
+        Ocean forcing NetCDFs to annotate.
+    obs_url : pathlib.Path or str
+        Location of the observation NetCDF that carries ``mouginot_basins``
+        (a Globus URL or a local mirror path).
+    """
+    obs = download_netcdf(str(obs_url))
+    mouginot_basins = obs["mouginot_basins"]
+    for ocean_file in ocean_files:
+        try:
+            with xr.open_dataset(ocean_file) as ds:
+                ds = ds.load()
+            basins = mouginot_basin_mask(mouginot_basins, ds)
+            ds["basins"] = basins
+            encoding = {"basins": {"zlib": True, "complevel": 2, "_FillValue": None}}
+            tmp = ocean_file.with_name(ocean_file.name + ".tmp")
+            ds.to_netcdf(tmp, encoding=encoding, engine="h5netcdf")
+            os.replace(tmp, ocean_file)
+            logger.info("Added basin mask to %s", ocean_file.name)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("Could not add basin mask to %s: %s", ocean_file, exc)
+
+
 def prepare_observations(
     url: Path | str,
     input_path: Path | str,
@@ -828,13 +904,20 @@ def prepare_observations(
     # downstream PISM inverse run knows which cells carry trustable obs.
 
     ice_mask = ds_bm["icemask_promice"]
-
     vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
+
+    # Compact integer basin mask from the Mouginot basins: map the selected
+    # Mouginot basin IDs to 1..6 and everything else to 0. This is a categorical
+    # field, so it is regridded with nearest-neighbour (never averaged/blended).
+    mouginot_basins = ds_bm["mouginot_basins"]
+
     if target_grid is not None:
         vel = vel.regrid.conservative(target_grid)
         ice_mask = ice_mask.regrid.conservative(target_grid)
 
     ice_mask = ice_mask > 0.5
+
+    basins = mouginot_basin_mask(mouginot_basins, target_grid)
 
     # Grounded ice via PISM's flotation criterion (src/util/Mask.hh): ice is
     # grounded where its base rests on the bed (not floating) and ice is present.
@@ -860,6 +943,7 @@ def prepare_observations(
     vel["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "tauc_unchanging integer mask (1=fixed)"})
     vel["vel_misfit_weight"] = xr.where(grounded_ice, 1, 0).astype("int8")
     vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
+    vel["basins"] = basins
 
     vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
     vel["x"].attrs.update(
@@ -1055,6 +1139,7 @@ def prepare_ismip7_forcing(
     data_path: Path | str | None = None,
     n_workers: int = 2,
     staging_path: Path | str | None = None,
+    obs_url: Path | str | None = None,
 ) -> Sequence[Path | str]:
     """
     Process forcing data for all GCMs and forcings in parallel.
@@ -1081,6 +1166,11 @@ def prepare_ismip7_forcing(
         after each forcing finishes, so the only artifact left on disk is
         the final merged file in ``output_path``. Defaults to
         ``output_path`` when omitted, matching the legacy behavior.
+    obs_url : Path or str or None, optional
+        Location of the observation NetCDF carrying ``mouginot_basins`` (a Globus
+        URL or a local mirror path). When given, the Mouginot basin mask is
+        regridded onto each generated **ocean** forcing file and written back as a
+        ``basins`` variable. When ``None`` (default) ocean files are left as-is.
 
     Returns
     -------
@@ -1169,6 +1259,15 @@ def prepare_ismip7_forcing(
             output_files = future.result()
             logger.info("Completed: %s", output_files)
             processed_files.extend(output_files)
+
+    # Stamp the Mouginot basin mask onto every generated ocean forcing file (all
+    # share the ISMIP7 ocean grid, so the mask is regridded per file). Done here,
+    # after the dask loop, so the observation file is downloaded/opened only once.
+    if obs_url is not None:
+        ocean_files = [Path(f) for f in processed_files if "_ocean_" in Path(f).name]
+        if ocean_files:
+            logger.info("Adding basin mask to %d ocean forcing file(s)", len(ocean_files))
+            add_basins_to_ocean_files(ocean_files, obs_url)
 
     elapsed = time.perf_counter() - start_time
     logger.info("Total processing time: %.2f seconds", elapsed)

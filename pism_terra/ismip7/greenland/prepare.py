@@ -44,6 +44,7 @@ from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
 from pism_terra.ismip7.greenland.forcing import (
+    add_basins_to_ocean_files,
     prepare_calfin,
     prepare_ismip7_forcing,
     prepare_observations,
@@ -60,6 +61,9 @@ logger = logging.getLogger(__name__)
 
 # Datasets the ISMIP7 Greenland prepare can process, in execution order.
 ISMIP7_DATASETS = ["grid", "observations", "forcings", "calfin"]
+
+# Default observation NetCDF (Globus) that carries ``mouginot_basins``.
+DEFAULT_OBS_URL = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -151,21 +155,18 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
             grid_ds.to_netcdf(grid_file)
             check_xr_fully(grid_file)
 
+    # Observation NetCDF that carries mouginot_basins (plus the boot/velocity
+    # inputs). Resolved up front so both the observations and forcings steps can
+    # use it (the latter to stamp the basin mask onto the ocean forcing files).
+    obs_url: str | Path = DEFAULT_OBS_URL
+    if data_path is not None:
+        obs_url = (
+            data_path / Path(config["ice_sheet"]) / Path("obs") / Path("mipkit") / Path("GreenlandObsISMIP7-v1.3.nc")
+        )
+
     # --- Observations (boot, heatflux, velocity) ---
     obs_files: dict[str, Any] = {}
     if "observations" in selected:
-        url: str | Path = (
-            "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
-        )
-        if data_path is not None:
-            url = (
-                data_path
-                / Path(config["ice_sheet"])
-                / Path("obs")
-                / Path("mipkit")
-                / Path("GreenlandObsISMIP7-v1.3.nc")
-            )
-
         logger.info("-" * 120)
         logger.info("Boot File")
         logger.info("-" * 120)
@@ -178,7 +179,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
             else output_path / Path("obs")
         )
         obs_files = prepare_observations(
-            url,
+            obs_url,
             obs_input_path,
             output_path,
             config,
@@ -197,7 +198,14 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         logger.info("-" * 120)
         base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
         forcing_files = list(
-            prepare_ismip7_forcing(base_url, output_path, config, data_path=data_path, staging_path=staging_path)
+            prepare_ismip7_forcing(
+                base_url,
+                output_path,
+                config,
+                data_path=data_path,
+                staging_path=staging_path,
+                obs_url=obs_url,
+            )
         )
         logger.info("Forcing files: %s", forcing_files)
 
@@ -239,6 +247,60 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         "retreat_file": retreat_file,
         "obs_file": obs_files.get("obs_file"),
     }
+
+
+def add_basins(argv: Sequence[str] | None = None) -> int:
+    """
+    Backfill the Mouginot basin mask onto existing ISMIP7 ocean forcing files.
+
+    Console entry point (``pism-ismip7-greenland-add-basins``) that stamps the
+    ``basins`` variable onto already-generated ocean forcing files without
+    regenerating them. Each positional argument may be an ocean NetCDF or a
+    directory (scanned for ``ismip7_greenland_ocean_*.nc``); only files whose name
+    contains ``_ocean_`` are processed.
+
+    Parameters
+    ----------
+    argv : sequence of str or None, optional
+        Command-line arguments (without the program name). If ``None`` (default),
+        uses ``sys.argv``.
+
+    Returns
+    -------
+    int
+        Exit code: ``0`` on success, ``1`` if no ocean files were found.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    parser = ArgumentParser(description="Add the Mouginot basin mask to existing ISMIP7 ocean forcing files.")
+    parser.add_argument(
+        "--obs-url",
+        default=DEFAULT_OBS_URL,
+        help="Observation NetCDF carrying mouginot_basins (Globus URL or local path).",
+    )
+    parser.add_argument(
+        "OCEAN_FILES",
+        nargs="+",
+        help="Ocean forcing NetCDF file(s), or directories to scan for ismip7_greenland_ocean_*.nc.",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    candidates: list[Path] = []
+    for entry in args.OCEAN_FILES:
+        p = Path(entry)
+        if p.is_dir():
+            candidates.extend(sorted(p.glob("ismip7_greenland_ocean_*.nc")))
+        else:
+            candidates.append(p)
+    ocean_files = [p for p in candidates if "_ocean_" in p.name]
+
+    if not ocean_files:
+        logger.warning("No ocean forcing files found (need '_ocean_' in the filename).")
+        return 1
+
+    logger.info("Adding basin mask to %d ocean forcing file(s)", len(ocean_files))
+    add_basins_to_ocean_files(ocean_files, args.obs_url)
+    return 0
 
 
 def cli(argv: Sequence[str] | None = None) -> int:

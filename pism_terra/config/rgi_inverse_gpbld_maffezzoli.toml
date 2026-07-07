@@ -21,13 +21,13 @@ heatflux = "lucazeau"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0101-01-01"
+'time.end' =  "0006-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 500
+'time_stepping.adaptive_ratio' = 1000
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -42,7 +42,7 @@ heatflux = "lucazeau"
 'input.bootstrap' = "yes"
 'input.file' = "none"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 390
+'input.forcing.buffer_size' = 24
 
 [reporting]
 
@@ -134,7 +134,7 @@ model = "pdd"
 [surface.options.pdd]
 
 'surface.models' = "pdd,forcing"
-'surface.force_to_thickness.alpha' = 0.75
+'surface.force_to_thickness.alpha' = 0.95
 'surface.force_to_thickness.ice_free_alpha_factor' = 10.0
 'surface.force_to_thickness.file' = "none"
 
@@ -196,7 +196,7 @@ model = "none"
 'inverse.stress_balance.length_scale' = 1e3
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
-'inverse.max_iterations' = 50
+'inverse.max_iterations' = 250
 'inverse.design.param' = "exp"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
 'inverse.stress_balance.tauc_min' = 1e4
