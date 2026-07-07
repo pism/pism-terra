@@ -1034,6 +1034,8 @@ def _run(*, kind: str) -> None:
                 "surface.given.file": row["climate_hist_file"],
                 "surface.ismip7.file": row["climate_hist_file"],
                 "surface.ismip7.gradient.file": row["climate_gradient_hist_file"],
+                "ocean.pico.file": row["ocean_hist_file"],
+                "ocean.picop.file": row["ocean_hist_file"],
                 "ocean.th.file": row["ocean_hist_file"],
                 "frontal_melt.routing.file": row["ocean_hist_file"],
             }
@@ -1048,6 +1050,8 @@ def _run(*, kind: str) -> None:
                 "surface.given.file": row["climate_proj_file"],
                 "surface.ismip7.file": row["climate_proj_file"],
                 "surface.ismip7.gradient.file": row["climate_gradient_proj_file"],
+                "ocean.pico.file": row["ocean_proj_file"],
+                "ocean.picop.file": row["ocean_proj_file"],
                 "ocean.th.file": row["ocean_proj_file"],
                 "frontal_melt.routing.file": row["ocean_proj_file"],
             }

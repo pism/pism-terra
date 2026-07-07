@@ -684,6 +684,12 @@ def mouginot_basin_mask(
         ``int8`` basin mask named ``"basins"`` with values ``0..6``.
     """
     if target_grid is not None:
+        # Some BedMachine-family fields (e.g. the 1 km Mouginot basins) live on a
+        # ``x1km``/``y1km`` grid; the regrid accessor expects ``x``/``y``, so
+        # normalise the spatial dim names before regridding.
+        rename = {src: dst for src, dst in (("x1km", "x"), ("y1km", "y")) if src in mouginot_basins.dims}
+        if rename:
+            mouginot_basins = mouginot_basins.rename(rename)
         # Categorical field: nearest-neighbour so basin IDs are never blended.
         mouginot_basins = mouginot_basins.regrid.nearest(target_grid)
     basins = xr.zeros_like(mouginot_basins, dtype="int8")
@@ -691,7 +697,9 @@ def mouginot_basin_mask(
         basins = basins.where(mouginot_basins != src_id, dst_id)
     basins = basins.astype("int8")
     basins.name = "basins"
-    basins.attrs.update({"units": "1", "long_name": "basin id (1-6 selected Mouginot basins, 0=other)"})
+    # Replace (not update) attrs so stray attributes copied from the source field
+    # (e.g. ``time`` / ``data_url`` / a source-specific ``grid_mapping``) are dropped.
+    basins.attrs = {"units": "1", "long_name": "basin id (1-6 selected Mouginot basins, 0=other)"}
     return basins
 
 
@@ -711,9 +719,14 @@ def add_basins_to_ocean_files(ocean_files: list[Path], obs_url: Path | str) -> N
         Ocean forcing NetCDFs to annotate.
     obs_url : pathlib.Path or str
         Location of the observation NetCDF that carries ``mouginot_basins``
-        (a Globus URL or a local mirror path).
+        (a Globus/S3 URL or a local file path).
     """
-    obs = download_netcdf(str(obs_url))
+    # ``download_netcdf`` only understands remote (http/s3) URLs; open an
+    # existing local file directly instead.
+    if Path(obs_url).exists():
+        obs = xr.open_dataset(obs_url)
+    else:
+        obs = download_netcdf(str(obs_url))
     mouginot_basins = obs["mouginot_basins"]
     for ocean_file in ocean_files:
         try:
@@ -721,6 +734,14 @@ def add_basins_to_ocean_files(ocean_files: list[Path], obs_url: Path | str) -> N
                 ds = ds.load()
             basins = mouginot_basin_mask(mouginot_basins, ds)
             ds["basins"] = basins
+            # Georeference basins like the file's other data variables (match
+            # their ``grid_mapping``, e.g. ``crs``, rather than the source field's).
+            grid_mapping = next(
+                (ds[v].attrs["grid_mapping"] for v in ds.data_vars if v != "basins" and "grid_mapping" in ds[v].attrs),
+                None,
+            )
+            if grid_mapping:
+                ds["basins"].attrs["grid_mapping"] = grid_mapping
             encoding = {"basins": {"zlib": True, "complevel": 2, "_FillValue": None}}
             tmp = ocean_file.with_name(ocean_file.name + ".tmp")
             ds.to_netcdf(tmp, encoding=encoding, engine="h5netcdf")
