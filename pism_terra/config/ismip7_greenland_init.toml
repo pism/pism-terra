@@ -266,3 +266,4 @@ inv_adj_pc_type = "jacobi"
 'inverse.tikhonov.penalty_weight' = 10
 'inverse.tikhonov.atol' = 1e-7
 'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.use_design_prior' = "no"

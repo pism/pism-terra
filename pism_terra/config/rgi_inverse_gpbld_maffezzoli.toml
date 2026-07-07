@@ -206,6 +206,7 @@ model = "none"
 'inverse.adjoint.method' =  "incomplete"
 'inverse.state_func' = "huber"
 'inverse.huber.delta' =  1e2
+'inverse.use_design_prior' = "yes"
 
 [solver.forward]
 
