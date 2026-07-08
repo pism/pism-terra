@@ -561,6 +561,8 @@ def _process_single_forcing(
         # outer fill range, so any real cold temperature is preserved.
         if m_var in ("ts", "tas"):
             fill_op = " -setrtoc,-1,1,260 -setmisstoc,260"
+        elif m_var in ("so"):
+            fill_op = " -setrtoc,-1,1,34.5 -setmisstoc,34.5"
         else:
             fill_op = ""
         mergetime_chain = (
@@ -655,7 +657,7 @@ def _process_single_forcing(
 
 
 # Selected Mouginot basin IDs -> compact basin index. Everything not listed maps to 0.
-_MOUGINOT_BASIN_LOOKUP = {53: 1, 58: 2, 59: 3, 146: 4, 219: 5, 223: 6}
+_MOUGINOT_BASIN_LOOKUP = {53: 1, 58: 2, 59: 3, 146: 4, 218: 5, 223: 6}
 
 
 def mouginot_basin_mask(
@@ -862,6 +864,7 @@ def prepare_observations(
         .regrid.conservative(target_grid)
     )
     geo = geo.where(geo != -9999, 0.042)
+    geo = geo.where(geo <= 1e36, 0.042)
 
     ds["surface"].attrs.update({"standard_name": "surface_altitude", "units": "m"})
     ds["bed"].attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
