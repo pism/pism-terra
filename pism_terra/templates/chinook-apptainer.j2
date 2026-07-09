@@ -30,7 +30,7 @@ ulimit
 # FORWARD RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(40) }} apptainer run ${container} pism {{ run_str }}
+mpirun -np  {{ ntasks | default(40) }} apptainer apptainer run --cleanenv run ${container} pism {{ run_str }}
 
 # ###############################################################################
 # Postprocessing

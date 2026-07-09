@@ -32,13 +32,13 @@ conda deactivate
 # FORWARD RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(40) }} apptainer run ${container} pism {{ run_str }}
+mpirun -np  {{ ntasks | default(40) }} apptainer run --cleanenv ${container} pism {{ run_str }}
 
 # ###############################################################################
 # INVERSION RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(40) }} apptainer run ${container} pismi {{ inv_str }}
+mpirun -np  {{ ntasks | default(40) }} apptainer run --cleanenv ${container} pismi {{ inv_str }}
 
 # ###############################################################################
 # Postprocessing
