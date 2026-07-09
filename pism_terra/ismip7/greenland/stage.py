@@ -49,6 +49,7 @@ def stage(
     path: str | Path = "input_files",
     force_overwrite: bool = False,
     include_projection: bool = True,
+    data_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """
     Stage ISMIP7 Greenland inputs and return a file index.
@@ -99,6 +100,12 @@ def stage(
         columns from the returned index. The inverse run passes ``False`` because it
         only uses the historical forcing, so the (large) projection files never need
         to be downloaded.
+    data_path : str or pathlib.Path or None, default ``None``
+        Directory where the staged input data is written. When given, all inputs go
+        here (a shared location that multiple experiment output directories can
+        reuse to save disk); when ``None``, they go to ``<path>/input`` as before.
+        Files already present are not re-downloaded, so pointing several runs at the
+        same ``data_path`` stages the data once.
 
     Returns
     -------
@@ -122,7 +129,9 @@ def stage(
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
-    input_path = path / Path("input")
+    # Input data goes to a shared ``data_path`` when given (so several experiment
+    # output dirs can reuse one staged copy), otherwise to ``<output-path>/input``.
+    input_path = Path(data_path) if data_path is not None else path / Path("input")
     if force_overwrite:
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)
@@ -333,6 +342,12 @@ def main():
         default=Path("data/ismip7_greenland"),
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared directory for staged input data (reused across runs). " "Defaults to <output-path>/input.",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -346,6 +361,7 @@ def main():
 
     options, unknown = parser.parse_known_args()
     path = options.output_path
+    data_path = options.data_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
 
@@ -354,8 +370,9 @@ def main():
 
     path.mkdir(parents=True, exist_ok=True)
 
-    is_df = stage(config, path=path, force_overwrite=force_overwrite)
-    is_df.to_csv(path / Path("input") / Path("ismip7_greenland_files.csv"))
+    is_df = stage(config, path=path, force_overwrite=force_overwrite, data_path=data_path)
+    input_dir = Path(data_path) if data_path is not None else path / Path("input")
+    is_df.to_csv(input_dir / Path("ismip7_greenland_files.csv"))
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/ismip7_greenland" if options.bucket_prefix else "ismip7_greenland"

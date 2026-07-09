@@ -813,6 +813,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         default="data",
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared directory for staged input data (reused across runs). " "Defaults to <output-path>/input.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -960,8 +966,8 @@ def _run(*, kind: str) -> None:
 
     path = Path(options.output_path)
     path.mkdir(parents=True, exist_ok=True)
-    input_path = path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
+    # Input data location is handled by ``stage`` (``--data-path`` or <path>/input).
+    data_path = options.data_path
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -980,6 +986,7 @@ def _run(*, kind: str) -> None:
         path=path,
         force_overwrite=force_overwrite,
         include_projection=(kind == "forward"),
+        data_path=data_path,
     )
 
     if uq_file is not None:
