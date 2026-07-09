@@ -822,9 +822,10 @@ def prepare_observations(
         gebco_bm_regridded = gebco.rio.reproject_match(
             ds_bm_regridded.rio.write_crs("EPSG:3413"), resampling=Resampling.bilinear
         ).compute()
-        ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(
-            ds_bm_regridded["bed"].notnull(), gebco_bm_regridded["elevation"]
-        )
+        # Use GEBCO bathymetry over ocean (mask == 0), and also to fill any gaps in
+        # BedMachine's bed; keep BedMachine's bed everywhere else.
+        use_gebco = (ds_bm_regridded["mask"] == 0) | ds_bm_regridded["bed"].isnull()
+        ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(~use_gebco, gebco_bm_regridded["elevation"])
         ds_bm_regridded = ds_bm_regridded.fillna(0)
     else:
         ds_bm_regridded = ds_bm
