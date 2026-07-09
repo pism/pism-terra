@@ -159,11 +159,21 @@ model = "given"
 
 [ocean]
 
-model = "pico"
+model = "picop"
 
 [ocean.options.pico]
 
 'ocean.models' = "pico"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 5
+'ocean.pico.overturning_coefficent' = 1e6
+
+[ocean.options.picop]
+
+'ocean.models' = "picop"
 'ocean.pico.file' = "none"
 'ocean.pico.continental_shelf_depth' = -280
 'ocean.pico.heat_exchange_coefficent' = 2e-5
