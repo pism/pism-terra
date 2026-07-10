@@ -868,6 +868,30 @@ def prepare_observations(
         boot = xr.merge([bed, ftt_mask, surface, thickness, liafr])
     else:
         boot = xr.merge([ds_bm_regridded[["bed", "thickness", "surface"]], ftt_mask, liafr])
+
+    # Ellesmere Island sits inside the domain but is not part of the modeled
+    # Greenland ice sheet; force it to deep ocean so no ice can grow there.
+    # Inside the polygon set bed = -2000 m, surface = 0 m, thickness = 0 m.
+    ellesmere_gpkg = Path(__file__).resolve().parents[2] / "data" / "ellsmere.gpkg"
+    ellesmere = gpd.read_file(ellesmere_gpkg).to_crs("EPSG:3413")
+    if len(ellesmere) == 0:
+        logger.warning("%s has no geometry; skipping Ellesmere override", ellesmere_gpkg.name)
+    else:
+        try:
+            # Inside-polygon mask on the boot grid: clip a constant field (inside
+            # kept, outside -> NaN), so notnull() marks the polygon interior.
+            inside = (
+                xr.ones_like(boot["bed"])
+                .rio.write_crs("EPSG:3413")
+                .rio.clip(ellesmere.geometry, drop=False, all_touched=True)
+                .notnull()
+            )
+            boot["bed"] = boot["bed"].where(~inside, -2000.0)
+            boot["surface"] = boot["surface"].where(~inside, 0.0)
+            boot["thickness"] = boot["thickness"].where(~inside, 0.0)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("Ellesmere override skipped (%s)", exc)
+
     boot = boot.fillna(0)
     ds = boot
     geo = (

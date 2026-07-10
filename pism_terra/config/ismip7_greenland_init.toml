@@ -121,6 +121,7 @@ model = 'blatter'
 'basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min' = 7.193718
 'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_max' = 243.8239
 'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_min' = -369.6359
+'basal_yield_stress.slippery_grounding_lines' = "yes"
 'stress_balance.blatter.enhancement_factor' = 2.608046
 'stress_balance.sia.enhancement_factor' = 2.608046
 'stress_balance.ssa.Glen_exponent' = 3.309718
