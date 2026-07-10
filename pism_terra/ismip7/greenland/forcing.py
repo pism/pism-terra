@@ -561,8 +561,20 @@ def _process_single_forcing(
         # outer fill range, so any real cold temperature is preserved.
         if m_var in ("ts", "tas"):
             fill_op = " -setrtoc,-1,1,260 -setmisstoc,260"
-        elif m_var in ("so"):
-            fill_op = " -setrtoc,-1,1,34.5 -setmisstoc,34.5"
+        elif m_var == "tf":
+            # Ocean thermal forcing: extrapolate valid ocean values into the
+            # masked gaps (nearest-neighbour) instead of letting the outer
+            # ``setmisstoc,0`` zero-fill them. A zero thermal forcing (ocean at
+            # the freezing point) breaks PICO's box-1 quadratic (T_star ~ 0 ->
+            # negative sqrt); real thermal forcing can dip slightly below 0, so
+            # do NOT treat near-zero values as fill here.
+            fill_op = " -setmisstonn"
+        elif m_var == "so":
+            # Ocean salinity: convert the near-zero land/fill values to missing,
+            # then extrapolate valid ocean salinity into the gaps
+            # (nearest-neighbour) rather than filling with a constant. Real ocean
+            # salinity is ~30-35 g/kg, never near zero, so [-1, 1] is safe to drop.
+            fill_op = " -setmisstonn -setrtomiss,-1,1"
         else:
             fill_op = ""
         mergetime_chain = (
