@@ -171,6 +171,7 @@ model = "picop"
 'ocean.pico.maximum_ice_rise_area' = 10000.0
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
 
 [ocean.options.picop]
 
@@ -181,6 +182,7 @@ model = "picop"
 'ocean.pico.maximum_ice_rise_area' = 10000.0
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
 
 [ocean.options.th]
 
