@@ -169,7 +169,7 @@ model = "picop"
 'ocean.pico.continental_shelf_depth' = -280
 'ocean.pico.heat_exchange_coefficent' = 2e-5
 'ocean.pico.maximum_ice_rise_area' = 10000.0
-'ocean.pico.number_of_boxes' = 5
+'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 
 [ocean.options.picop]
@@ -179,7 +179,7 @@ model = "picop"
 'ocean.pico.continental_shelf_depth' = -280
 'ocean.pico.heat_exchange_coefficent' = 2e-5
 'ocean.pico.maximum_ice_rise_area' = 10000.0
-'ocean.pico.number_of_boxes' = 5
+'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 
 [ocean.options.th]
