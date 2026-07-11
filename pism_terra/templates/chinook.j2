@@ -16,16 +16,10 @@ ulimit -l unlimited
 ulimit -s unlimited
 ulimit
 
-conda deactivate
-
 # ###############################################################################
 # FORWARD RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(40) }} pism {{ run_str }}
+mpirun -np  {{ ntasks | default(40) }} pism {{ run_hist_str }}
 
-# ###############################################################################
-# Postprocessing
-# ###############################################################################
-
-{{ post_script }} --ntasks  {{ ntasks | default(40) }} {{ post_file }}
+mpirun -np  {{ ntasks | default(40) }} pism {{ run_proj_str }}
