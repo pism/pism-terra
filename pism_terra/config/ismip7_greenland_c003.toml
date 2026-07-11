@@ -75,8 +75,8 @@ resolution = "900m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
-'grid.Mbz' = 101
-'grid.Mz' = 201
+'grid.Mbz' = 51
+'grid.Mz' = 101
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 

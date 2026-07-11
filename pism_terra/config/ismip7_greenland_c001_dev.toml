@@ -76,7 +76,7 @@ resolution = "900m"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
 'grid.Mbz' = 51
-'grid.Mz' = 201
+'grid.Mz' = 101
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
@@ -173,6 +173,7 @@ model = "picop"
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
 
+
 [ocean.options.picop]
 
 'ocean.models' = "picop"
@@ -183,6 +184,7 @@ model = "picop"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
+
 
 [ocean.options.th]
 
