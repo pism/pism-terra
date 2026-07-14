@@ -359,11 +359,11 @@ def _render_forward_run(
     # flat names); legacy runs (product_leg is None) keep both legs on ISMIP7 names.
     hist_ismip7 = product_leg in (None, "historical")
     proj_ismip7 = product_leg in (None, "projection")
+    # Historical experiments (C001/C002) are historical-only: skip the projection
+    # continuation (and its forcing) entirely (product_leg == "historical").
+    run_projection = product_leg != "historical"
     state_hist, spatial_hist, scalar_hist = _output_files("historical", start, "2015-01-01", ismip7=hist_ismip7)
     proj_experiment = str(cfg.run_info.experiment) if cfg.run_info.experiment else "none"
-    # Projection end comes from the config (time.end), which the counter resolver
-    # sets from the Core Experiment's proj_end_year (2100 or 2300).
-    state_proj, spatial_proj, scalar_proj = _output_files(proj_experiment, "2015-01-01", end, ismip7=proj_ismip7)
 
     run_hist.update(
         {
@@ -378,41 +378,51 @@ def _render_forward_run(
 
     run_hist_str = dict2str(sort_dict_by_key(run_hist))
 
-    run_proj = run_hist.copy()
-    # Restore run_info.experiment to the projection value (run_hist has it
-    # forced to "historical"); the rest of run_info survives the copy.
-    # ``InfoConfig.as_params()`` deliberately drops the ISMIP7 naming-only
-    # fields (domain / set / ism / experiment) so they don't leak into the
-    # PISM command; we want ``run_info.experiment`` to survive, so bypass
-    # the filter with a direct assignment, quoted the same way as_params()
-    # would if it emitted the field.
-    run_proj.update(cfg.run_info.as_params())
-    if cfg.run_info.experiment:
-        run_proj["run_info.experiment"] = f'"{cfg.run_info.experiment}"'
-    run_proj.update({"input.file": state_hist.resolve()})
-    run_proj.pop("time.start", None)
-    run_proj.update({"time.start": "2015-01-01"})
-    run_proj.pop("time.end", None)
-    run_proj.update({"time.end": end})
-    run_proj.pop("input.bootstrap", None)
-    run_proj.pop("input.regrid.file", None)
-    run_proj.pop("input.regrid.vars", None)
-    run_proj.update(
-        {
-            "output.file": state_proj.resolve(),
-            "output.spatial.file": spatial_proj.resolve(),
-            "output.scalar.file": scalar_proj.resolve(),
-        }
-    )
-    # Projection-epoch file paths supplied by ``_run()`` (climate / ocean
-    # / gradient) — filtered against ``run_proj`` so a mis-typed key from
-    # the caller doesn't silently vanish.
-    if proj_overrides:
-        proj_clean = {k: v for k, v in dict(proj_overrides).items() if k != "sample"}
-        proj_clean, proj_skipped = filter_overrides_by_config(proj_clean, run_proj.keys())
-        if proj_skipped:
-            print(f"Skipping proj overrides not in config: {proj_skipped}")
-        run_proj.update(proj_clean)
+    # Projection continuation leg. Skipped entirely for historical-only
+    # experiments (C001/C002), whose projection forcing is neither staged nor run;
+    # ``run_proj_str`` stays empty so the template omits the projection invocation.
+    run_proj_str = ""
+    if run_projection:
+        # Projection end comes from the config (time.end), which the counter
+        # resolver sets from the Core Experiment's proj_end_year (2100 or 2300).
+        state_proj, spatial_proj, scalar_proj = _output_files(proj_experiment, "2015-01-01", end, ismip7=proj_ismip7)
+
+        run_proj = run_hist.copy()
+        # Restore run_info.experiment to the projection value (run_hist has it
+        # forced to "historical"); the rest of run_info survives the copy.
+        # ``InfoConfig.as_params()`` deliberately drops the ISMIP7 naming-only
+        # fields (domain / set / ism / experiment) so they don't leak into the
+        # PISM command; we want ``run_info.experiment`` to survive, so bypass
+        # the filter with a direct assignment, quoted the same way as_params()
+        # would if it emitted the field.
+        run_proj.update(cfg.run_info.as_params())
+        if cfg.run_info.experiment:
+            run_proj["run_info.experiment"] = f'"{cfg.run_info.experiment}"'
+        run_proj.update({"input.file": state_hist.resolve()})
+        run_proj.pop("time.start", None)
+        run_proj.update({"time.start": "2015-01-01"})
+        run_proj.pop("time.end", None)
+        run_proj.update({"time.end": end})
+        run_proj.pop("input.bootstrap", None)
+        run_proj.pop("input.regrid.file", None)
+        run_proj.pop("input.regrid.vars", None)
+        run_proj.update(
+            {
+                "output.file": state_proj.resolve(),
+                "output.spatial.file": spatial_proj.resolve(),
+                "output.scalar.file": scalar_proj.resolve(),
+            }
+        )
+        # Projection-epoch file paths supplied by ``_run()`` (climate / ocean
+        # / gradient) — filtered against ``run_proj`` so a mis-typed key from
+        # the caller doesn't silently vanish.
+        if proj_overrides:
+            proj_clean = {k: v for k, v in dict(proj_overrides).items() if k != "sample"}
+            proj_clean, proj_skipped = filter_overrides_by_config(proj_clean, run_proj.keys())
+            if proj_skipped:
+                print(f"Skipping proj overrides not in config: {proj_skipped}")
+            run_proj.update(proj_clean)
+        run_proj_str = dict2str(sort_dict_by_key(run_proj))
 
     job_opts = JobConfig(**cfg.job.model_dump())
 
@@ -436,8 +446,6 @@ def _render_forward_run(
         params.update(JobConfig(**job_kwargs).as_params())
 
     params.update({"run_hist_str": run_hist_str})
-
-    run_proj_str = dict2str(sort_dict_by_key(run_proj))
     params.update({"run_proj_str": run_proj_str})
 
     # Point the compliance checker at this run's actual ISMIP7 submission
@@ -979,13 +987,18 @@ def _run(*, kind: str) -> None:
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
 
-    # The inverse run only uses the historical forcing, so skip staging the
-    # (large) projection epoch for it.
+    # Skip staging the (large) projection forcing when it isn't used:
+    #  - inverse runs only use the historical forcing;
+    #  - Historical experiments (C001/C002, product_leg == "historical") are
+    #    historical-only and run no projection continuation.
+    counter = cfg.run_info.counter
+    historical_only = bool(counter and resolve_counter(counter).product_leg == "historical")
+    include_projection = kind == "forward" and not historical_only
     df = stage(
         campaign_config,
         path=path,
         force_overwrite=force_overwrite,
-        include_projection=(kind == "forward"),
+        include_projection=include_projection,
         data_path=data_path,
     )
 

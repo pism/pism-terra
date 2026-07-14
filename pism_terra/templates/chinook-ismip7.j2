@@ -22,4 +22,6 @@ ulimit
 
 mpirun -np  {{ ntasks | default(40) }} pism {{ run_hist_str }}
 
+{% if run_proj_str %}
 mpirun -np  {{ ntasks | default(40) }} pism {{ run_proj_str }}
+{% endif %}
