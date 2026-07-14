@@ -146,7 +146,8 @@ model = "ismip7"
 
 [calving]
 
-'calving.methods' = 'vonmises_calving'
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.thickness_calving.threshold' = 100
 'calving.vonmises_calving.sigma_max' = 7.5e5
 
 [atmosphere]

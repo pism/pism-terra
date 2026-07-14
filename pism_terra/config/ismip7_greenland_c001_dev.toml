@@ -103,6 +103,7 @@ model = 'blatter'
 'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.max_diffusivity' = 100000.0
+'stress_balance.blatter.use_eta_transform' = "yes"
 'time_stepping.adaptive_ratio' = 1000
 
 [stress_balance.options.hybrid]
@@ -146,7 +147,8 @@ model = "ismip7"
 
 [calving]
 
-'calving.methods' = 'vonmises_calving'
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.thickness_calving.threshold' = 100
 'calving.vonmises_calving.sigma_max' = 7.5e5
 
 [atmosphere]
@@ -207,6 +209,7 @@ model = "routing"
 'frontal_melt.routing.file' = "none"
 'frontal_melt.routing.parameter_a' = 4.89e-4
 'frontal_melt.routing.parameter_b' = 0.25
+'frontal_melt.include_floating_ice' = "yes"
 
 [hydrology]
 
