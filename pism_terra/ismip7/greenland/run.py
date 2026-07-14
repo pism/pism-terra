@@ -1060,11 +1060,12 @@ def _run(*, kind: str) -> None:
                 "frontal_melt.routing.file": row["ocean_hist_file"],
             }
         )
-        # Projection-epoch overrides only exist for forward runs; the inverse
-        # stage skips the projection forcing, so the ``*_proj_file`` columns are
-        # absent from the row (see stage(..., include_projection=...)).
+        # Projection-epoch overrides only exist when the projection forcing was
+        # staged. The inverse run and historical-only experiments (C001/C002)
+        # skip it, so the ``*_proj_file`` columns are absent from the row (see
+        # ``include_projection`` above / stage(..., include_projection=...)).
         proj_overrides = None
-        if kind == "forward":
+        if include_projection:
             proj_overrides = {
                 "atmosphere.given.file": row["climate_proj_file"],
                 "surface.given.file": row["climate_proj_file"],
