@@ -458,9 +458,24 @@ def _render_forward_run(
             output_path.resolve()
         )
         ism_checker_str = f"ismip7-compliance-checker --source-path {submission_dir}/ --variable-list ismip7"
+        # Split each ISMIP7 product scalar file into per-variable diagnostics via
+        # the packaged post-processing script. The product leg's scalar is used:
+        # scalar_hist for historical experiments (C001/C002), scalar_proj for the
+        # projection experiments; a legacy non-counter run treats both legs as
+        # products (hist_ismip7 and proj_ismip7 both True) and post-processes both.
+        post_script = Path(__file__).resolve().parents[2] / "data" / "postprocess_ismip7_scalar.sh"
+        post_scalars = []
+        if hist_ismip7:
+            post_scalars.append(scalar_hist)
+        if run_projection and proj_ismip7:
+            post_scalars.append(scalar_proj)
+        post_scalar_str = "\n".join(f"bash {post_script} {s.resolve()}" for s in post_scalars)
     else:
         ism_checker_str = ""
+        post_scalar_str = ""
+
     params.update({"ism_checker_str": ism_checker_str})
+    params.update({"post_scalar_str": post_scalar_str})
 
     rendered_script = "" if debug else template.render(params)
 

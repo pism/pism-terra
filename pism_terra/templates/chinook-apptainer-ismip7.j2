@@ -38,6 +38,8 @@ mpiexec -n 1  apptainer run --cleanenv ${container} pism_ismip7_writer -r 1 : -n
 mpiexec -n 1  apptainer run --cleanenv ${container} pism_ismip7_writer -r 1 : -n ${pismtasks} apptainer run --cleanenv ${container} pism {{ run_proj_str }} -output.asynchronous
 {% endif %}
 
+{{ post_scalar_str }}
+
 # ###############################################################################
 # COMPLIANCE CHECKER
 # ###############################################################################

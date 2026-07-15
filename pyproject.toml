@@ -124,7 +124,7 @@ include = ["pism_terra*"]
 py-modules = ["pism_terra"]
 
 [tool.setuptools.package-data]
-"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml', 'grids/*.txt']
+"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml', 'data/*.sh', 'grids/*.txt']
 
 [tool.setuptools_scm]
 
