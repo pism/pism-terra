@@ -101,8 +101,8 @@ model = 'blatter'
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
-'stress_balance.calving_front_stress_bc' = 'yes'
-'stress_balance.sia.max_diffusivity' = 100000.0
+'stress_balance.blatter.use_eta_transform' = "yes"
+'stress_balance.calving_front_stress_bc' = "yes"
 'time_stepping.adaptive_ratio' = 1000
 
 [stress_balance.options.hybrid]
