@@ -251,7 +251,7 @@ def _render_forward_run(
     # ``run_info.experiment`` the same way (see run_proj below).
     run_hist.update({"run_info.experiment": '"historical"'})
 
-    # ISMIP7 submission naming (conventions doc section 8): when output.ISMIP6 is
+    # ISMIP7 submission naming (conventions doc section 8): when output.ISMIP is
     # set, write the spatial/scalar outputs into the
     # <domain>/<source>/<ism>/<set>/<set_counter>/ tree with conforming names.
     # PISM expands the {var} placeholder, so the spatial output is already one
@@ -267,19 +267,19 @@ def _render_forward_run(
     # ISMIP7 Core Experiment counter (e.g. "C003"), if this run is counter-driven.
     # It fixes the ISMIP7 ``set_counter`` and selects which of the two forward legs
     # is the submission product (the other leg gets flat filenames). ``None`` keeps
-    # the legacy behavior: both legs use ISMIP7 names when ``output.ISMIP6`` is set.
+    # the legacy behavior: both legs use ISMIP7 names when ``output.ISMIP`` is set.
     counter = cfg.run_info.counter
     product_leg: str | None = None
     if counter:
         product_leg = resolve_counter(counter).product_leg
 
-    use_ismip6 = str(run_hist.get("output.ISMIP6", "no")).strip().strip("\"'").lower() in ("yes", "true", "1")
+    use_ismip = str(run_hist.get("output.ISMIP", "no")).strip().strip("\"'").lower() in ("yes", "true", "1")
     ismip7_ctx: dict | None = None
-    if use_ismip6:
+    if use_ismip:
         ri = cfg.run_info
         missing = [a for a in ("domain", "group", "ism", "set_id", "experiment") if not getattr(ri, a)]
         if missing:
-            raise SystemExit(f"output.ISMIP6 requires run_info fields: {', '.join(f'run_info.{m}' for m in missing)}")
+            raise SystemExit(f"output.ISMIP requires run_info fields: {', '.join(f'run_info.{m}' for m in missing)}")
         gcms = cfg.campaign.as_params().get("gcms") or []
         esm_id = str(sample) if sample is not None else (gcms[0] if gcms else "none")
         member_index = gcms.index(esm_id) if esm_id in gcms else 0
@@ -304,7 +304,7 @@ def _render_forward_run(
         Build the (state, spatial, scalar) file triple for one PISM invocation.
 
         Uses ISMIP7-conforming names under ``<domain>/<source>/…`` when
-        ``output.ISMIP6`` is enabled; falls back to the flat
+        ``output.ISMIP`` is enabled; falls back to the flat
         ``g<res>_<opts>_<start>_<end>`` layout under the usual ``scalar/`` /
         ``spatial/`` / ``state/`` subdirectories otherwise. The state file
         always stays in ``state/`` (not an ISMIP7 product).
@@ -313,7 +313,7 @@ def _render_forward_run(
         ----------
         experiment_id : str
             ISMIP7 experiment identifier (e.g. ``"historical"`` or
-            ``"ssp370"``). Only used when ``output.ISMIP6`` is enabled; feeds
+            ``"ssp370"``). Only used when ``output.ISMIP`` is enabled; feeds
             into both the directory tree and the encoded filename stem.
         start_str : str
             Start of the simulated interval as ``YYYY-MM-DD``. Contributes
@@ -326,7 +326,7 @@ def _render_forward_run(
             inclusive on the source-year side).
         ismip7 : bool
             Whether *this* leg is the ISMIP7 submission product. When ``False``
-            (or ``output.ISMIP6`` is off) the flat ``spatial_``/``scalar_`` layout
+            (or ``output.ISMIP`` is off) the flat ``spatial_``/``scalar_`` layout
             is used even if ``ismip7_ctx`` is populated, so the non-product leg of
             a counter-driven run does not land in the submission tree.
 
