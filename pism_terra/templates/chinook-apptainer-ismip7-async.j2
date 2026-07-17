@@ -26,8 +26,14 @@ ulimit -l unlimited
 ulimit -s unlimited
 ulimit
 
+pismtasks=$(( SLURM_NTASKS - 4 ))
+
 # ###############################################################################
 # FORWARD RUN
 # ###############################################################################
 
-mpiexec -n $SLURM_NTASKS apptainer run ${container} pism {{ run_str }}
+mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_hist_str }} -output.asynchronous
+
+{% if run_proj_str %}
+mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_proj_str }} -output.asynchronous
+{% endif %}
