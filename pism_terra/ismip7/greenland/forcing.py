@@ -798,6 +798,12 @@ def prepare_observations(
         shape as :func:`pism_terra.glacier.observations.glacier_velocities_from_grid`.
     """
 
+    rho_ice = 910.0  # constants.ice.density
+    rho_sea_water = 1028.0  # constants.sea_water.density
+    ice_free_thickness = 0.01  # geometry.ice_free_thickness_standard
+    sea_level = 0.0
+    alpha = 1.0 - rho_ice / rho_sea_water
+
     # ``url`` may be a Path (when reading from a local mirror) or a string
     # (when downloading from Globus). Normalize to str for split/download.
     url_str = str(url)
@@ -848,6 +854,17 @@ def prepare_observations(
         surface = surface.where(surface > 0, 0)
         surface.name = "surface"
         thickness = xr.where(surface > 0, surface - bed, 0)
+        # In the ocean (mask == 0) and on ice shelves (mask == 3) a positive
+        # surface is floating freeboard, not bed-referenced elevation, so recover
+        # the thickness from flotation: freeboard = alpha * H  =>  H = surface / alpha.
+        mask = ds_bm_regridded["mask"]
+        thickness_from_flotation = surface / alpha
+        # Only recover floating thickness inside the GrIS basin polygons
+        # (basin > 0); outside them, mask 0/3 cells are spurious ocean/shelf
+        # that would otherwise pick up bogus thicknesses.
+        in_basin = basin_mask(target_grid) > 0
+        is_floating = (surface > 0) & ((mask == 0) | (mask == 3)) & in_basin
+        thickness = xr.where(is_floating, thickness_from_flotation, thickness)
         thickness = thickness.where(thickness > 10, 0)
         thickness.name = "thickness"
         thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
@@ -969,11 +986,6 @@ def prepare_observations(
     #   alpha = 1 - rho_ice / rho_sea_water;  floating if hfloating > hgrounded;
     #   ice_free if thickness <= ice_free_thickness_standard.
     # Uses the (regridded) boot geometry, which is on the same grid as ``vel``.
-    rho_ice = 910.0  # constants.ice.density
-    rho_sea_water = 1028.0  # constants.sea_water.density
-    ice_free_thickness = 0.01  # geometry.ice_free_thickness_standard
-    sea_level = 0.0
-    alpha = 1.0 - rho_ice / rho_sea_water
     bed = boot["bed"]
     thk = boot["thickness"]
     grounded_ice = (bed + thk >= sea_level + alpha * thk) & (thk > ice_free_thickness) & ice_mask
