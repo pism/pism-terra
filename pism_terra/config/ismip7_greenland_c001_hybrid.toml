@@ -61,7 +61,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,subglacial_water_flux_mag,bmelt,picop_basal_melt_rate,picop_fresh_water_melt_rate,picop_discharge_flux"
+'output.spatial.vars' = "topg,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,bmelt"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -147,7 +147,7 @@ model = "ismip7"
 [calving]
 
 'calving.methods' = 'vonmises_calving,thickness_calving'
-'calving.thickness_calving.threshold' = 100
+'calving.thickness_calving.threshold' = 50
 'calving.vonmises_calving.sigma_max' = 5e5
 
 [atmosphere]
@@ -186,6 +186,8 @@ model = "picop_sgd"
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
 'ocean.picop.add_fresh_water_melt' = "no"
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
 
 [ocean.options.picop_sgd]
 
@@ -198,6 +200,8 @@ model = "picop_sgd"
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
 'ocean.picop.add_fresh_water_melt' = "yes"
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
 
 [ocean.options.th]
 
