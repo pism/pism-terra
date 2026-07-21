@@ -100,6 +100,7 @@ pism-glacier-prepare = "pism_terra.glacier.prepare:rgi"
 pism-glacier-run-inverse = "pism_terra.glacier.run:run_inverse"
 pism-glacier-run-forward = "pism_terra.glacier.run:run_forward"
 pism-glacier-stage = "pism_terra.glacier.stage:main"
+pism-ismip7-greenland-add-basins = "pism_terra.ismip7.greenland.prepare:add_basins"
 pism-ismip7-greenland-postprocess = "pism_terra.ismip7.greenland.postprocess:main"
 pism-ismip7-greenland-prepare = "pism_terra.ismip7.greenland.prepare:cli"
 pism-ismip7-greenland-run-forward = "pism_terra.ismip7.greenland.run:run_forward"
@@ -123,7 +124,7 @@ include = ["pism_terra*"]
 py-modules = ["pism_terra"]
 
 [tool.setuptools.package-data]
-"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml', 'grids/*.txt']
+"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml', 'data/*.sh', 'grids/*.txt']
 
 [tool.setuptools_scm]
 

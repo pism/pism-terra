@@ -2,19 +2,24 @@
 
 'run_info.institution' = "University of Alaska Fairbanks"
 'run_info.title' = "PISM-TERRA ISMIP7 Greenland Historical Run"
+'run_info.group' = "UAF"
+'run_info.contact_email' = "aaschwanden@alaska.edu"
+'run_info.contact_name' = "Andy Aschwanden"
+'run_info.model' = "PISM"
+'run_info.ism' = "PISM"
+'run_info.experiment' = "CALIB"
 
 [campaign]
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
-pathway = "ssp370"
 version = "v2"
-start_year = "1978"
-end_year = "2015"
-gcms = ["CESM2-WACCM"]
+historical_start_year = "1978"
+historical_end_year = "2014"
+gcms =["CESM2-WACCM"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1990-01-01.nc"
+regrid_file = "g900m_id_BAYES-MEDIAN_1980-01-01_1981-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -22,9 +27,9 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "1980-01-01"
-'time.end' =  "1980-02-01"
-'time.calendar' =  "standard"
-'time.reference_date' = "1978-01-01"
+'time.end' = "1985-01-01"
+'time.calendar' =  "365_day"
+'time.reference_date' = "1850-01-01"
 
 [time_stepping]
 
@@ -42,7 +47,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.file' = "none"
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 37
+'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
 
@@ -53,14 +58,13 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "monthly"
-'output.spatial.vars' = "lithk,orog,topg,hfgeoubed,acabf,libmassbfgr,libmassbffl,dlithkdt,velsurf,zvelsurf,velbase,zvelbase,velmean,litemptop,litempbotgr,litempbotfl,strbasemag,licalvf,lifmassbf,sftgif,sftgrf,sftflf"
+'output.spatial.times' = "yearly"
+'output.spatial.vars' = "climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,subglacial_water_flux"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
-'output.scalar.variables' = "lim,limnsw,iareagr,iareafl,tendacabf,tendlibmassbf,tendlibmassbffl,tendlicalvf,tendlifmassbf"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
-'output.ISMIP6' = "yes"
+'output.ISMIP6' = "no"
 
 
 [grid]
@@ -95,12 +99,15 @@ model = 'blatter'
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
+'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.sia.max_diffusivity' = 100000.0
 'time_stepping.adaptive_ratio' = 1000
 
 [stress_balance.options.hybrid]
 
 'stress_balance.model' = "ssa+sia"
 'stress_balance.ssa.method' = "fd"
+'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.max_diffusivity' = 100000.0
 
 [iceflow]
@@ -114,10 +121,10 @@ model = 'blatter'
 'basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min' = 7.193718
 'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_max' = 243.8239
 'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_min' = -369.6359
+'basal_yield_stress.slippery_grounding_lines' = "yes"
 'stress_balance.blatter.enhancement_factor' = 2.608046
 'stress_balance.sia.enhancement_factor' = 2.608046
 'stress_balance.ssa.Glen_exponent' = 3.309718
-'stress_balance.calving_front_stress_bc' = 'yes'
 
 [surface]
 
@@ -161,18 +168,23 @@ model = "th"
 
 [frontal_melt]
 
-model = "off"
+model = "routing"
 
 [frontal_melt.options.off]
 
 [frontal_melt.options.routing]
 
+# multiply default values by 1.63
+# as recommended by ISMIP7
+
 'frontal_melt.models' = "routing"
 'frontal_melt.routing.file' = "none"
+'frontal_melt.routing.parameter_a' = 4.89e-4
+'frontal_melt.routing.parameter_b' = 0.25
 
 [hydrology]
 
-model = "null"
+model = "routing"
 
 [hydrology.options.null]
 
@@ -186,7 +198,7 @@ model = "null"
 
 [bed_deformation]
 
-model="none"
+model="lc"
 
 [bed_deformation.options.none]
 
@@ -211,6 +223,7 @@ bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
 bp_pc_type = "mg"
+bp_pc_mg_galerkin = "both"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
@@ -228,6 +241,7 @@ bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
 bp_pc_type = "mg"
+bp_pc_mg_galerkin = "both"
 bp_snes_ksp_ew = 0
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
@@ -241,15 +255,16 @@ inv_adj_pc_type = "jacobi"
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
 'inverse.file' = "none"
-'inverse.stress_balance.velocity_scale' = 1e3
+'inverse.stress_balance.velocity_scale' = 1e2
 'inverse.stress_balance.length_scale' = 50e3
 'inverse.design.param' = "exp"
-'inverse.huber.delta' =  1e3
-'inverse.max_iterations' = 50
+'inverse.huber.delta' =  10e3
+'inverse.max_iterations' = 250
 'inverse.state_func' = "huber"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
 'inverse.stress_balance.tauc_min' = 1e4
 'inverse.stress_balance.tauc_max' = 5e7
-'inverse.tikhonov.penalty_weight' = 1000
+'inverse.tikhonov.penalty_weight' = 10
 'inverse.tikhonov.atol' = 1e-7
 'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.use_design_prior' = "no"

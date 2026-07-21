@@ -48,6 +48,8 @@ def stage(
     config: dict,
     path: str | Path = "input_files",
     force_overwrite: bool = False,
+    include_projection: bool = True,
+    data_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """
     Stage ISMIP7 Greenland inputs and return a file index.
@@ -68,21 +70,42 @@ def stage(
             Path to the heatflux NetCDF file relative to the input directory.
         - ``"regrid_file"`` : str
             Path to the regrid NetCDF file relative to the input directory.
-        - ``"pathway"`` : str
-            ISMIP7 pathway identifier.
         - ``"gcms"`` : str or list[str]
             GCM model name(s).
         - ``"version"`` : str
             Dataset version.
-        - ``"start_year"`` : int
-            Start year of the forcing period.
-        - ``"end_year"`` : int
-            End year of the forcing period.
+        - ``"historical_start_year"`` : int
+            First year of the historical forcing file.
+        - ``"historical_end_year"`` : int
+            Last (inclusive) year of the historical forcing file.
+
+        The following are required only when ``include_projection`` is ``True``
+        (forward runs); an inverse/calibration config may omit them:
+
+        - ``"pathway"`` : str
+            ISMIP7 pathway identifier.
+        - ``"projection_start_year"`` : int
+            First year of the projection forcing file.
+        - ``"projection_end_year"`` : int
+            Last (inclusive) year of the projection forcing file
+            (differs per pathway — 2100 for ssp370, 2300 for ssp126/585).
     path : str or pathlib.Path, default ``"input_files"``
         Output directory. Created if missing. All staged artifacts are written here.
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
+    include_projection : bool, default ``True``
+        If ``True``, stage both the historical and the projection (pathway) forcing
+        epochs. If ``False``, stage only the historical epoch and omit the ``*_proj_*``
+        columns from the returned index. The inverse run passes ``False`` because it
+        only uses the historical forcing, so the (large) projection files never need
+        to be downloaded.
+    data_path : str or pathlib.Path or None, default ``None``
+        Directory where the staged input data is written. When given, all inputs go
+        here (a shared location that multiple experiment output directories can
+        reuse to save disk); when ``None``, they go to ``<path>/input`` as before.
+        Files already present are not re-downloaded, so pointing several runs at the
+        same ``data_path`` stages the data once.
 
     Returns
     -------
@@ -106,7 +129,9 @@ def stage(
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
-    input_path = path / Path("input")
+    # Input data goes to a shared ``data_path`` when given (so several experiment
+    # output dirs can reuse one staged copy), otherwise to ``<output-path>/input``.
+    input_path = Path(data_path) if data_path is not None else path / Path("input")
     if force_overwrite:
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)
@@ -119,12 +144,14 @@ def stage(
     # ``prepare`` writes, e.g. ``s3://…/ismip7/greenland/input/v2/…``.
     prefix = f"{config['prefix']}/{config['version']}"
 
-    pathway = config["pathway"]
     gcms = config["gcms"]
     gcms = [gcms] if isinstance(gcms, str) else gcms
     version = config["version"]
-    start_year = config["start_year"]
-    end_year = config["end_year"]
+    # Historical and projection year ranges. End years are inclusive per
+    # the campaign-config convention (see CampaignConfig). Projection years are
+    # only needed when the projection epoch is staged (forward runs).
+    hist_start = int(config["historical_start_year"])
+    hist_end = int(config["historical_end_year"])
 
     grid_file = input_path / Path(config["grid_file"])
     boot_file = input_path / Path(config["boot_file"])
@@ -145,17 +172,28 @@ def stage(
         (config["outline_file"], outline_file),
         (config["obs_file"], obs_file),
     ]
-    # Only the final merged forcing files are published to S3 by
-    # ``prepare`` — the per-epoch hist/proj outputs are now scratch and
-    # disappear with the staging tempdir. The filename pattern below
-    # matches that merged-file naming exactly (start_year is the
-    # historical start, end_year the projection end). ``climate_gradient``
-    # is the annual elevation-gradient companion of ``climate`` (see
-    # ``prepare_ismip7_forcing``); validation downstream expects all three.
+    # ``prepare`` publishes one file per (epoch, gcm, forcing) — the
+    # historical span and each projection pathway live side-by-side.
+    # ``climate_gradient`` is the annual elevation-gradient companion of
+    # ``climate`` (see ``prepare_ismip7_forcing``); validation downstream
+    # expects all three per epoch.
+    #
+    # Per-epoch spec: (pathway_name, start_year, end_year, column_suffix)
+    epoch_specs = [
+        ("historical", hist_start, hist_end, "hist"),
+    ]
+    if include_projection:
+        # ``pathway`` and the projection year range are only needed for the
+        # projection epoch, so an inverse/calibration config need not set them.
+        pathway = config["pathway"]
+        proj_start = int(config["projection_start_year"])
+        proj_end = int(config["projection_end_year"])
+        epoch_specs.append((pathway, proj_start, proj_end, "proj"))
     for gcm in gcms:
-        for forcing in ("climate", "climate_gradient", "ocean"):
-            rel = f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}.nc"
-            required_files.append((rel, input_path / rel))
+        for epoch_pathway, ep_start, ep_end, _ in epoch_specs:
+            for forcing in ("climate", "climate_gradient", "ocean"):
+                rel = f"ismip7_greenland_{forcing}_{epoch_pathway}_{gcm}_{version}_{ep_start}_{ep_end}.nc"
+                required_files.append((rel, input_path / rel))
 
     # Skip files that already exist locally unless force_overwrite is set.
     # We intentionally do not re-validate cached files here; the explicit
@@ -215,31 +253,38 @@ def stage(
         "obs_file": obs_file.resolve(),
     }
 
-    # Per-GCM climate/ocean forcing paths. ``surface_input_file`` aliases the
-    # climate forcing and ``frontal_melt_file`` aliases the ocean forcing, so
-    # we only need to validate the two distinct paths per GCM.
-    def _forcing_path(forcing: str, gcm: str) -> Path:
+    # Per-GCM per-epoch forcing paths. Every forward run needs both a
+    # historical file and a projection file per (climate, climate_gradient,
+    # ocean); ``run.py`` wires them into ``run_hist`` and ``run_proj``
+    # respectively. Aliases keep the column names PISM's ISMIP6 module
+    # expects (``surface_input`` = climate, ``frontal_melt`` = ocean).
+    def _forcing_path(forcing: str, gcm: str, epoch_pathway: str, ep_start: int, ep_end: int) -> Path:
         """
-        Build the local path for one (forcing, gcm) merged NetCDF.
+        Build the local path for one (epoch, forcing, gcm) NetCDF.
 
         Parameters
         ----------
         forcing : str
-            ``"climate"`` or ``"ocean"``.
+            ``"climate"``, ``"climate_gradient"``, or ``"ocean"``.
         gcm : str
             GCM name (e.g. ``"CESM2-WACCM"``).
+        epoch_pathway : str
+            ``"historical"`` or the projection pathway (e.g. ``"ssp370"``).
+        ep_start, ep_end : int
+            Inclusive year range embedded in the filename.
 
         Returns
         -------
         pathlib.Path
-            Absolute path to the merged forcing file under ``input_path``.
+            Absolute path to the forcing file under ``input_path``.
         """
-        return input_path / Path(f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}.nc")
+        return input_path / Path(f"ismip7_greenland_{forcing}_{epoch_pathway}_{gcm}_{version}_{ep_start}_{ep_end}.nc")
 
-    forcing_paths: dict[tuple[str, str], Path] = {}
+    forcing_paths: dict[tuple[str, str, str], Path] = {}
     for gcm in gcms:
-        for forcing in ("climate", "climate_gradient", "ocean"):
-            forcing_paths[(gcm, forcing)] = _forcing_path(forcing, gcm)
+        for epoch_pathway, ep_start, ep_end, epoch_key in epoch_specs:
+            for forcing in ("climate", "climate_gradient", "ocean"):
+                forcing_paths[(gcm, epoch_key, forcing)] = _forcing_path(forcing, gcm, epoch_pathway, ep_start, ep_end)
 
     # Processes (not threads): HDF5 isn't reliably thread-safe across all
     # builds (Chinook segfaults), so each worker gets its own interpreter
@@ -257,16 +302,18 @@ def stage(
                 print(f"{p.resolve()} is not valid ✗")
 
     dfs: list[pd.DataFrame] = []
+    epoch_keys = [key for *_, key in epoch_specs]
     for gcm in gcms:
-        climate_file = forcing_paths[(gcm, "climate")]
-        climate_gradient_file = forcing_paths[(gcm, "climate_gradient")]
-        ocean_file = forcing_paths[(gcm, "ocean")]
         row = dict(files_dict)
-        row["climate_file"] = climate_file.resolve()
-        row["climate_gradient_file"] = climate_gradient_file.resolve()
-        row["ocean_file"] = ocean_file.resolve()
-        row["surface_input_file"] = climate_file.resolve()
-        row["frontal_melt_file"] = ocean_file.resolve()
+        for epoch_key in epoch_keys:
+            climate_f = forcing_paths[(gcm, epoch_key, "climate")]
+            climate_grad_f = forcing_paths[(gcm, epoch_key, "climate_gradient")]
+            ocean_f = forcing_paths[(gcm, epoch_key, "ocean")]
+            row[f"climate_{epoch_key}_file"] = climate_f.resolve()
+            row[f"climate_gradient_{epoch_key}_file"] = climate_grad_f.resolve()
+            row[f"ocean_{epoch_key}_file"] = ocean_f.resolve()
+            row[f"surface_input_{epoch_key}_file"] = climate_f.resolve()
+            row[f"frontal_melt_{epoch_key}_file"] = ocean_f.resolve()
         row["sample"] = gcm
         dfs.append(pd.DataFrame.from_dict([row]))
 
@@ -295,6 +342,12 @@ def main():
         default=Path("data/ismip7_greenland"),
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared directory for staged input data (reused across runs). " "Defaults to <output-path>/input.",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -308,6 +361,7 @@ def main():
 
     options, unknown = parser.parse_known_args()
     path = options.output_path
+    data_path = options.data_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
 
@@ -316,8 +370,9 @@ def main():
 
     path.mkdir(parents=True, exist_ok=True)
 
-    is_df = stage(config, path=path, force_overwrite=force_overwrite)
-    is_df.to_csv(path / Path("input") / Path("ismip7_greenland_files.csv"))
+    is_df = stage(config, path=path, force_overwrite=force_overwrite, data_path=data_path)
+    input_dir = Path(data_path) if data_path is not None else path / Path("input")
+    is_df.to_csv(input_dir / Path("ismip7_greenland_files.csv"))
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/ismip7_greenland" if options.bucket_prefix else "ismip7_greenland"

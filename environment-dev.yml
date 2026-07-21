@@ -70,16 +70,14 @@ dependencies:
   - numpydoc
   - pydata-sphinx-theme
   - sphinx
-  - sphinx-autodoc-typehints
+  - sphinx-autodoc-typeints
   - sphinx-book-theme
   - sphinx-design
   - sphinx-gallery
   - sphinx-autobuild
-  - sphinx-autodoc-typehints
   - sphinx-copybutton
   - sphinxcontrib-bibtex
   - myst-parser
-  - numpydoc
   # for notebooks and convenience
   - cdo
   - ncview

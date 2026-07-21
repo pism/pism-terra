@@ -16,10 +16,13 @@
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
 version = "v2"
-start_year = "1978"
+historical_start_year = "1978"
+historical_end_year = "2014"
+projection_start_year = "2015"
+projection_end_year = "2300"
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
+regrid_file = "g900m_id_BAYES-MEDIAN_1980-01-01_1980-07-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -46,26 +49,25 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.file' = "none"
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 13
+'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
 
 [reporting]
 
-'output.format' = "netcdf4_serial"
+'output.format' = "netcdf4_parallel"
 'output.compression_level' = 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "yearly"
-'output.spatial.vars' = "lithk,orog,topg,hfgeoubed,acabf,libmassbfgr,libmassbffl,dlithkdt,velsurf,zvelsurf,velbase,zvelbase,velmean,litemptop,litempbotgr,litempbotfl,strbasemag,licalvf,lifmassbf,sftgif,sftgrf,sftflf"
-'output.scalar.times' = "monthly"
+'output.spatial.vars' = "ismip6"
+'output.scalar.times' = "yearly"
 'output.scalar.file' = "none"
-'output.scalar.variables' = "lim,limnsw,iareagr,iareafl,tendacabf,tendlibmassbf,tendlibmassbffl,tendlicalvf,tendlifmassbf"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
-'output.ISMIP6' = "yes"
-
+'output.ISMIP' = "yes"
+'output.fill_value' = 9.969209968386869e+36
 
 [grid]
 
@@ -73,8 +75,8 @@ resolution = "900m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
-'grid.Mbz' = 101
-'grid.Mz' = 201
+'grid.Mbz' = 51
+'grid.Mz' = 101
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
@@ -99,8 +101,8 @@ model = 'blatter'
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
-'stress_balance.calving_front_stress_bc' = 'yes'
-'stress_balance.sia.max_diffusivity' = 100000.0
+'stress_balance.blatter.use_eta_transform' = "yes"
+'stress_balance.calving_front_stress_bc' = "yes"
 'time_stepping.adaptive_ratio' = 1000
 
 [stress_balance.options.hybrid]
@@ -121,6 +123,7 @@ model = 'blatter'
 'basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min' = 7.193718
 'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_max' = 243.8239
 'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_min' = -369.6359
+'basal_yield_stress.slippery_grounding_lines' = "yes"
 'stress_balance.blatter.enhancement_factor' = 2.608046
 'stress_balance.sia.enhancement_factor' = 2.608046
 'stress_balance.ssa.Glen_exponent' = 3.309718
@@ -143,7 +146,8 @@ model = "ismip7"
 
 [calving]
 
-'calving.methods' = 'vonmises_calving'
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.thickness_calving.threshold' = 100
 'calving.vonmises_calving.sigma_max' = 7.5e5
 
 [atmosphere]
@@ -157,7 +161,43 @@ model = "given"
 
 [ocean]
 
-model = "th"
+model = "picop_sgd"
+
+[ocean.options.pico]
+
+'ocean.models' = "pico"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+
+[ocean.options.picop]
+
+'ocean.models' = "picop"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+
+[ocean.options.picop_sgd]
+
+'ocean.models' = "picop"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+'ocean.picop.add_fresh_water_melt' = "yes"
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
 
 [ocean.options.th]
 
@@ -197,7 +237,7 @@ model = "routing"
 
 [bed_deformation]
 
-model="none"
+model="lc"
 
 [bed_deformation.options.none]
 
@@ -222,6 +262,7 @@ bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
 bp_pc_type = "mg"
+bp_pc_mg_galerkin = "both"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""

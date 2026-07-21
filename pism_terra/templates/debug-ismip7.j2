@@ -1,0 +1,9 @@
+mpirun -np  {{ ntasks | default(8) }} pism {{ run_hist_str }}
+
+{{ ism_checker_str }}
+
+{% if run_proj_str %}
+mpirun -np  {{ ntasks | default(8) }} pism {{ run_proj_str }}
+{% endif %}
+
+{{ post_scalar_str }}

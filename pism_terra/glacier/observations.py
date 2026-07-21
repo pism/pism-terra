@@ -413,6 +413,13 @@ def glacier_velocities_from_grid(
         )
         ds_clipped["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "fixed zeta mask (1=no obs, fix prior)"})
 
+        # Spatially constant basal-yield-stress prior for the inversion.
+        ds_clipped["tauc_prior"] = xr.full_like(ds_clipped["v_observed"], 1.4e5)
+        ds_clipped["tauc_prior"].attrs = {
+            "units": "Pa",
+            "long_name": "prior basal yield stress (constant)",
+        }
+
         # Stamp CF metadata on the projected x/y coords (lost across some
         # rioxarray ops) and suppress the default ``_FillValue=NaN`` netCDF4
         # writes onto coordinate variables.

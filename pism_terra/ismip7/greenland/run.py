@@ -63,6 +63,7 @@ def _render_forward_run(
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
     pism_config_cdl: str | Path | None = None,
+    proj_overrides: Mapping[str, object] | None = None,
 ):
     """
     Configure and generate a PISM forward job script for ISMIP7 Greenland (ensemble-ready).
@@ -114,6 +115,12 @@ def _render_forward_run(
     pism_config_cdl : str or Path or None, optional
         Path to a PISM CDL master config file. If provided, all run options
         are validated against it before generating the command line.
+    proj_overrides : Mapping[str, object] or None, optional
+        Projection-only overrides applied to ``run_proj`` after it is
+        copied from ``run_hist``. Same schema as ``uq`` (dotted PISM
+        flags). Used to point ``atmosphere.given.file`` etc. at the
+        projection-epoch forcing file while ``run_hist`` keeps the
+        historical file. Default is ``None`` (no proj-only overrides).
 
     Raises
     ------
@@ -244,7 +251,7 @@ def _render_forward_run(
     # ``run_info.experiment`` the same way (see run_proj below).
     run_hist.update({"run_info.experiment": '"historical"'})
 
-    # ISMIP7 submission naming (conventions doc section 8): when output.ISMIP6 is
+    # ISMIP7 submission naming (conventions doc section 8): when output.ISMIP is
     # set, write the spatial/scalar outputs into the
     # <domain>/<source>/<ism>/<set>/<set_counter>/ tree with conforming names.
     # PISM expands the {var} placeholder, so the spatial output is already one
@@ -260,19 +267,19 @@ def _render_forward_run(
     # ISMIP7 Core Experiment counter (e.g. "C003"), if this run is counter-driven.
     # It fixes the ISMIP7 ``set_counter`` and selects which of the two forward legs
     # is the submission product (the other leg gets flat filenames). ``None`` keeps
-    # the legacy behavior: both legs use ISMIP7 names when ``output.ISMIP6`` is set.
+    # the legacy behavior: both legs use ISMIP7 names when ``output.ISMIP`` is set.
     counter = cfg.run_info.counter
     product_leg: str | None = None
     if counter:
         product_leg = resolve_counter(counter).product_leg
 
-    use_ismip6 = str(run_hist.get("output.ISMIP6", "no")).strip().strip("\"'").lower() in ("yes", "true", "1")
+    use_ismip = str(run_hist.get("output.ISMIP", "no")).strip().strip("\"'").lower() in ("yes", "true", "1")
     ismip7_ctx: dict | None = None
-    if use_ismip6:
+    if use_ismip:
         ri = cfg.run_info
         missing = [a for a in ("domain", "group", "ism", "set_id", "experiment") if not getattr(ri, a)]
         if missing:
-            raise SystemExit(f"output.ISMIP6 requires run_info fields: {', '.join(f'run_info.{m}' for m in missing)}")
+            raise SystemExit(f"output.ISMIP requires run_info fields: {', '.join(f'run_info.{m}' for m in missing)}")
         gcms = cfg.campaign.as_params().get("gcms") or []
         esm_id = str(sample) if sample is not None else (gcms[0] if gcms else "none")
         member_index = gcms.index(esm_id) if esm_id in gcms else 0
@@ -297,7 +304,7 @@ def _render_forward_run(
         Build the (state, spatial, scalar) file triple for one PISM invocation.
 
         Uses ISMIP7-conforming names under ``<domain>/<source>/…`` when
-        ``output.ISMIP6`` is enabled; falls back to the flat
+        ``output.ISMIP`` is enabled; falls back to the flat
         ``g<res>_<opts>_<start>_<end>`` layout under the usual ``scalar/`` /
         ``spatial/`` / ``state/`` subdirectories otherwise. The state file
         always stays in ``state/`` (not an ISMIP7 product).
@@ -306,7 +313,7 @@ def _render_forward_run(
         ----------
         experiment_id : str
             ISMIP7 experiment identifier (e.g. ``"historical"`` or
-            ``"ssp370"``). Only used when ``output.ISMIP6`` is enabled; feeds
+            ``"ssp370"``). Only used when ``output.ISMIP`` is enabled; feeds
             into both the directory tree and the encoded filename stem.
         start_str : str
             Start of the simulated interval as ``YYYY-MM-DD``. Contributes
@@ -319,7 +326,7 @@ def _render_forward_run(
             inclusive on the source-year side).
         ismip7 : bool
             Whether *this* leg is the ISMIP7 submission product. When ``False``
-            (or ``output.ISMIP6`` is off) the flat ``spatial_``/``scalar_`` layout
+            (or ``output.ISMIP`` is off) the flat ``spatial_``/``scalar_`` layout
             is used even if ``ismip7_ctx`` is populated, so the non-product leg of
             a counter-driven run does not land in the submission tree.
 
@@ -352,11 +359,11 @@ def _render_forward_run(
     # flat names); legacy runs (product_leg is None) keep both legs on ISMIP7 names.
     hist_ismip7 = product_leg in (None, "historical")
     proj_ismip7 = product_leg in (None, "projection")
+    # Historical experiments (C001/C002) are historical-only: skip the projection
+    # continuation (and its forcing) entirely (product_leg == "historical").
+    run_projection = product_leg != "historical"
     state_hist, spatial_hist, scalar_hist = _output_files("historical", start, "2015-01-01", ismip7=hist_ismip7)
     proj_experiment = str(cfg.run_info.experiment) if cfg.run_info.experiment else "none"
-    # Projection end comes from the config (time.end), which the counter resolver
-    # sets from the Core Experiment's proj_end_year (2100 or 2300).
-    state_proj, spatial_proj, scalar_proj = _output_files(proj_experiment, "2015-01-01", end, ismip7=proj_ismip7)
 
     run_hist.update(
         {
@@ -371,32 +378,51 @@ def _render_forward_run(
 
     run_hist_str = dict2str(sort_dict_by_key(run_hist))
 
-    run_proj = run_hist.copy()
-    # Restore run_info.experiment to the projection value (run_hist has it
-    # forced to "historical"); the rest of run_info survives the copy.
-    # ``InfoConfig.as_params()`` deliberately drops the ISMIP7 naming-only
-    # fields (domain / set / ism / experiment) so they don't leak into the
-    # PISM command; we want ``run_info.experiment`` to survive, so bypass
-    # the filter with a direct assignment, quoted the same way as_params()
-    # would if it emitted the field.
-    run_proj.update(cfg.run_info.as_params())
-    if cfg.run_info.experiment:
-        run_proj["run_info.experiment"] = f'"{cfg.run_info.experiment}"'
-    run_proj.update({"input.file": state_hist.resolve()})
-    run_proj.pop("time.start", None)
-    run_proj.update({"time.start": "2015-01-01"})
-    run_proj.pop("time.end", None)
-    run_proj.update({"time.end": end})
-    run_proj.pop("input.bootstrap", None)
-    run_proj.pop("input.regrid.file", None)
-    run_proj.pop("input.regrid.vars", None)
-    run_proj.update(
-        {
-            "output.file": state_proj.resolve(),
-            "output.spatial.file": spatial_proj.resolve(),
-            "output.scalar.file": scalar_proj.resolve(),
-        }
-    )
+    # Projection continuation leg. Skipped entirely for historical-only
+    # experiments (C001/C002), whose projection forcing is neither staged nor run;
+    # ``run_proj_str`` stays empty so the template omits the projection invocation.
+    run_proj_str = ""
+    if run_projection:
+        # Projection end comes from the config (time.end), which the counter
+        # resolver sets from the Core Experiment's proj_end_year (2100 or 2300).
+        state_proj, spatial_proj, scalar_proj = _output_files(proj_experiment, "2015-01-01", end, ismip7=proj_ismip7)
+
+        run_proj = run_hist.copy()
+        # Restore run_info.experiment to the projection value (run_hist has it
+        # forced to "historical"); the rest of run_info survives the copy.
+        # ``InfoConfig.as_params()`` deliberately drops the ISMIP7 naming-only
+        # fields (domain / set / ism / experiment) so they don't leak into the
+        # PISM command; we want ``run_info.experiment`` to survive, so bypass
+        # the filter with a direct assignment, quoted the same way as_params()
+        # would if it emitted the field.
+        run_proj.update(cfg.run_info.as_params())
+        if cfg.run_info.experiment:
+            run_proj["run_info.experiment"] = f'"{cfg.run_info.experiment}"'
+        run_proj.update({"input.file": state_hist.resolve()})
+        run_proj.pop("time.start", None)
+        run_proj.update({"time.start": "2015-01-01"})
+        run_proj.pop("time.end", None)
+        run_proj.update({"time.end": end})
+        run_proj.pop("input.bootstrap", None)
+        run_proj.pop("input.regrid.file", None)
+        run_proj.pop("input.regrid.vars", None)
+        run_proj.update(
+            {
+                "output.file": state_proj.resolve(),
+                "output.spatial.file": spatial_proj.resolve(),
+                "output.scalar.file": scalar_proj.resolve(),
+            }
+        )
+        # Projection-epoch file paths supplied by ``_run()`` (climate / ocean
+        # / gradient) — filtered against ``run_proj`` so a mis-typed key from
+        # the caller doesn't silently vanish.
+        if proj_overrides:
+            proj_clean = {k: v for k, v in dict(proj_overrides).items() if k != "sample"}
+            proj_clean, proj_skipped = filter_overrides_by_config(proj_clean, run_proj.keys())
+            if proj_skipped:
+                print(f"Skipping proj overrides not in config: {proj_skipped}")
+            run_proj.update(proj_clean)
+        run_proj_str = dict2str(sort_dict_by_key(run_proj))
 
     job_opts = JobConfig(**cfg.job.model_dump())
 
@@ -420,8 +446,6 @@ def _render_forward_run(
         params.update(JobConfig(**job_kwargs).as_params())
 
     params.update({"run_hist_str": run_hist_str})
-
-    run_proj_str = dict2str(sort_dict_by_key(run_proj))
     params.update({"run_proj_str": run_proj_str})
 
     # Point the compliance checker at this run's actual ISMIP7 submission
@@ -434,9 +458,24 @@ def _render_forward_run(
             output_path.resolve()
         )
         ism_checker_str = f"ismip7-compliance-checker --source-path {submission_dir}/ --variable-list ismip7"
+        # Split each ISMIP7 product scalar file into per-variable diagnostics via
+        # the packaged post-processing script. The product leg's scalar is used:
+        # scalar_hist for historical experiments (C001/C002), scalar_proj for the
+        # projection experiments; a legacy non-counter run treats both legs as
+        # products (hist_ismip7 and proj_ismip7 both True) and post-processes both.
+        post_script = Path(__file__).resolve().parents[2] / "data" / "postprocess_ismip7_scalar.sh"
+        post_scalars = []
+        if hist_ismip7:
+            post_scalars.append(scalar_hist)
+        if run_projection and proj_ismip7:
+            post_scalars.append(scalar_proj)
+        post_scalar_str = "\n".join(f"bash {post_script} {s.resolve()}" for s in post_scalars)
     else:
         ism_checker_str = ""
+        post_scalar_str = ""
+
     params.update({"ism_checker_str": ism_checker_str})
+    params.update({"post_scalar_str": post_scalar_str})
 
     rendered_script = "" if debug else template.render(params)
 
@@ -462,6 +501,9 @@ def _render_inverse_run(
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
     pism_config_cdl: str | Path | None = None,
+    proj_overrides: (  # pylint: disable=unused-argument
+        Mapping[str, object] | None
+    ) = None,  # accepted for signature parity with _render_forward_run; ignored
 ):
     """
     Configure and generate a PISM inverse job script for ISMIP7 Greenland (ensemble-ready).
@@ -509,6 +551,13 @@ def _render_inverse_run(
         Path to a PISM CDL master config file. If provided, all forward
         run options are validated against it before generating the
         command line.
+    proj_overrides : Mapping[str, object] or None, optional
+        Accepted for signature parity with :func:`_render_forward_run`
+        and **ignored** here — the inverse workflow doesn't split the
+        forward run into hist/proj epochs, so there's no ``run_proj`` to
+        apply projection-only overrides to. ``_run()`` always passes the
+        keyword when it calls a renderer, so the parameter has to exist
+        even though it's a no-op. Default is ``None``.
     """
 
     outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
@@ -575,6 +624,13 @@ def _render_inverse_run(
     # state file). Filter so inv_str stays minimal.
     inv.update({k: v for k, v in cfg.stress_balance.selected().items() if k.startswith("stress_balance.")})
 
+    # pismi runs the (Blatter) stress balance during the inversion, so it needs the
+    # same energy model and flow law as the forward prior. These live in
+    # cfg.energy.selected() (e.g. energy.model and stress_balance.*.flow_law =
+    # gpbld); without them pismi would silently fall back to PISM's default flow
+    # law, making the inversion inconsistent with the forward runs.
+    inv.update(cfg.energy.selected())
+
     template_file = Path(template_file)
     env = Environment(loader=FileSystemLoader(template_file.parent))
     template = env.get_template(template_file.name)
@@ -600,19 +656,31 @@ def _render_inverse_run(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
-    # CLI override for the stress-balance model.
+    # CLI override for the stress-balance model. Apply it to BOTH the forward
+    # prior (``run``) and the pismi inversion (``inv``). ``inv`` was populated
+    # with the config's default stress-balance options above, so without syncing
+    # it here the inversion would keep using that model (e.g. blatter) even when
+    # the CLI selects hybrid. ``inv`` only carried the ``stress_balance.*`` subset
+    # (not the bp_* solver flags), and the ``[iceflow]`` stress_balance.* keys are
+    # not part of ``selected()``, so popping the old model's keys leaves them intact.
     stress_balance = config_cli.get("stress_balance")
     if stress_balance is not None:
-        for old_key in cfg.stress_balance.selected():
+        old_selected = cfg.stress_balance.selected()
+        for old_key in old_selected:
             run.pop(old_key, None)
+            if old_key.startswith("stress_balance."):
+                inv.pop(old_key, None)
         cfg.stress_balance.model = stress_balance
-        run.update(cfg.stress_balance.selected())
+        new_selected = cfg.stress_balance.selected()
+        run.update(new_selected)
+        inv.update({k: v for k, v in new_selected.items() if k.startswith("stress_balance.")})
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
 
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
     surface = cfg.model_dump(by_alias=True)["surface"]["model"]
 
-    experiment = cfg.run_info.as_params()["run_info.experiment"]
+    # Note: the inverse run uses flat output names and is not an ISMIP7 product,
+    # so run_info.experiment is not needed here (unlike the forward render).
     if sample is None:
         name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
     else:
@@ -699,6 +767,8 @@ def _render_inverse_run(
 
     params.update({"run_str": run_str})
     params.update({"inv_str": inv_str})
+    params.update({"post_script": "pism-ismip7-greenland-postprocess"})
+    params.update({"post_file": post_file})
     rendered_script = "" if debug else template.render(params)
 
     run_script_path = path / Path("run_scripts")
@@ -764,6 +834,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         help="Base path to save all files to.",
         type=str,
         default="data",
+    )
+    parser.add_argument(
+        "--data-path",
+        help="Shared directory for staged input data (reused across runs). " "Defaults to <output-path>/input.",
+        type=str,
+        default=None,
     )
     parser.add_argument(
         "--force-overwrite",
@@ -913,8 +989,8 @@ def _run(*, kind: str) -> None:
 
     path = Path(options.output_path)
     path.mkdir(parents=True, exist_ok=True)
-    input_path = path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
+    # Input data location is handled by ``stage`` (``--data-path`` or <path>/input).
+    data_path = options.data_path
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -926,7 +1002,20 @@ def _run(*, kind: str) -> None:
     cfg = load_config(config_file)
     campaign_config = cfg.campaign.as_params()
 
-    df = stage(campaign_config, path=path, force_overwrite=force_overwrite)
+    # Skip staging the (large) projection forcing when it isn't used:
+    #  - inverse runs only use the historical forcing;
+    #  - Historical experiments (C001/C002, product_leg == "historical") are
+    #    historical-only and run no projection continuation.
+    counter = cfg.run_info.counter
+    historical_only = bool(counter and resolve_counter(counter).product_leg == "historical")
+    include_projection = kind == "forward" and not historical_only
+    df = stage(
+        campaign_config,
+        path=path,
+        force_overwrite=force_overwrite,
+        include_projection=include_projection,
+        data_path=data_path,
+    )
 
     if uq_file is not None:
         rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
@@ -965,22 +1054,43 @@ def _run(*, kind: str) -> None:
             uq_overrides = {}
 
         # File paths from the staging table override UQ-supplied paths for the
-        # same flag (matches the glacier behavior).
+        # same flag (matches the glacier behavior). ``uq_overrides`` carries
+        # the *historical*-epoch paths (which populate ``run_hist``); the
+        # projection paths ride on ``proj_overrides`` and only touch
+        # ``run_proj``.
         uq_overrides.update(
             {
                 "input.file": row["boot_file"],
                 "input.regrid.file": row["regrid_file"],
-                "frontal_melt.routing.file": row["frontal_melt_file"],
                 "grid.file": row["grid_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
-                "atmosphere.given.file": row["climate_file"],
-                "surface.given.file": row["climate_file"],
-                "surface.ismip7.file": row["climate_file"],
-                "surface.ismip7.gradient.file": row["climate_gradient_file"],
                 "surface.ismip7.reference.file": row["boot_file"],
-                "ocean.th.file": row["ocean_file"],
+                "atmosphere.given.file": row["climate_hist_file"],
+                "surface.given.file": row["climate_hist_file"],
+                "surface.ismip7.file": row["climate_hist_file"],
+                "surface.ismip7.gradient.file": row["climate_gradient_hist_file"],
+                "ocean.pico.file": row["ocean_hist_file"],
+                "ocean.picop.file": row["ocean_hist_file"],
+                "ocean.th.file": row["ocean_hist_file"],
+                "frontal_melt.routing.file": row["ocean_hist_file"],
             }
         )
+        # Projection-epoch overrides only exist when the projection forcing was
+        # staged. The inverse run and historical-only experiments (C001/C002)
+        # skip it, so the ``*_proj_file`` columns are absent from the row (see
+        # ``include_projection`` above / stage(..., include_projection=...)).
+        proj_overrides = None
+        if include_projection:
+            proj_overrides = {
+                "atmosphere.given.file": row["climate_proj_file"],
+                "surface.given.file": row["climate_proj_file"],
+                "surface.ismip7.file": row["climate_proj_file"],
+                "surface.ismip7.gradient.file": row["climate_gradient_proj_file"],
+                "ocean.pico.file": row["ocean_proj_file"],
+                "ocean.picop.file": row["ocean_proj_file"],
+                "ocean.th.file": row["ocean_proj_file"],
+                "frontal_melt.routing.file": row["ocean_proj_file"],
+            }
         # Wire the inverse observation file only when the stage produced one
         # (campaign config can opt in via an ``obs_file`` key); otherwise
         # rely on whatever ``inverse.file`` the UQ supplied.
@@ -1002,6 +1112,7 @@ def _run(*, kind: str) -> None:
             uq=uq_overrides,
             sample=sample,
             pism_config_cdl=pism_config_cdl,
+            proj_overrides=proj_overrides,
         )
 
 

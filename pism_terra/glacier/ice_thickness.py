@@ -268,7 +268,7 @@ def prepare_ice_thickness_frank(
         reprojected: list[Path] = []
         for fpath in input_files:
             with rasterio.open(fpath) as src:
-                if src.crs == rasterio.crs.CRS.from_user_input(dst_crs):
+                if src.crs == rasterio.CRS.from_user_input(dst_crs):
                     reprojected.append(fpath)
                     continue
                 transform, width, height = calculate_default_transform(
@@ -560,7 +560,7 @@ def prepare_ice_thickness_maffezzoli(
         reprojected: list[Path] = []
         for fpath in input_files:
             with rasterio.open(fpath) as src:
-                if src.crs == rasterio.crs.CRS.from_user_input(dst_crs):
+                if src.crs == rasterio.CRS.from_user_input(dst_crs):
                     reprojected.append(fpath)
                     continue
                 transform, width, height = calculate_default_transform(
