@@ -1,5 +1,5 @@
  # This is the merge of the feature/inverse branch to dev
-ARG PISM_TAG=aaschwanden/ismip7
+ARG PISM_TAG=aaschwanden-ismip7
 FROM ghcr.io/pism/pism:${PISM_TAG} AS runtime
 
 FROM runtime AS build
