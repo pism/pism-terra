@@ -161,7 +161,7 @@ model = "given"
 
 [ocean]
 
-model = "picop"
+model = "picop_sgd"
 
 [ocean.options.pico]
 

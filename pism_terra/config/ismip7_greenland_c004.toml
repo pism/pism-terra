@@ -161,7 +161,7 @@ model = "given"
 
 [ocean]
 
-model = "picop"
+model = "picop_sgd"
 
 [ocean.options.pico]
 
@@ -184,6 +184,20 @@ model = "picop"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
+
+[ocean.options.picop_sgd]
+
+'ocean.models' = "picop"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+'ocean.picop.add_fresh_water_melt' = "yes"
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
 
 [ocean.options.th]
 
