@@ -23,6 +23,11 @@ umask 007
 
 cd $SLURM_SUBMIT_DIR
 
+# conda's udunits2/libz activation hooks export host paths that are invalid
+# inside the apptainer container (=> "ut_read_xml() failed"). Drop them so the
+# container uses its own udunits2.xml. Keeps working even if the env is active.
+unset UDUNITS2_XML_PATH UDUNITS2_XML_DIR LD_PRELOAD
+
 ulimit -l unlimited
 ulimit -s unlimited
 ulimit
