@@ -1296,6 +1296,10 @@ class CampaignConfig(BaseModel):
         Ice thickness data source identifier (e.g., ``"millan2022"``).
     name : str or None
         Human-readable campaign name.
+    ocean_moat : str or None
+        Whether to surround the domain with a 4 km ocean "moat" (bedrock
+        ``-2000`` m, surface ``0`` m, thickness ``0`` m). ``"yes"`` enables it;
+        ``"no"`` (default) leaves the perimeter untouched.
     ocean_file : str or None
         Ocean forcing file name.
     obs_file : str or None
@@ -1344,6 +1348,7 @@ class CampaignConfig(BaseModel):
     ice_thickness: str | None = Field(default=None)
     name: str | None = Field(default=None)
     obs_file: str | None = Field(default=None)
+    ocean_moat: str | None = Field(default="no")
     ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)

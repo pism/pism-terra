@@ -231,6 +231,7 @@ def stage_glacier(
         velocity_dataset=config["velocity"],
         bathymetry_dataset=config["bathymetry"],
         forcing_mask=config["forcing_mask"],
+        ocean_moat=config.get("ocean_moat", "no"),
         path=staging_path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],

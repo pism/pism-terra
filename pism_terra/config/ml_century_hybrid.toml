@@ -7,29 +7,32 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.counter' = "C001"
+'run_info.counter' = ""
 'run_info.domain' = "GrIS"
-'run_info.set' = "CORE"
+'run_info.set' = "ML Training Data"
 
 [campaign]
 
 bucket = "pism-cloud-data"
-prefix = "ismip7/greenland/input"
+prefix = "ml/input"
 version = "v2"
-historical_start_year = "1978"
+historical_start_year = "1900"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
-boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_g450m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
 regrid_file = "g900m_id_BAYES-MEDIAN_HYBRID.nc"
-heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
+heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
-obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
+obs_file = "obs_g450m_GreenlandObsISMIP7-v1.3.nc"
+gcms = "CESM2-WACCM"
+pathway = "historical"
 
 [time]
 
-'time.start' = "1985-01-01"
+'time.start' = "1900-01-01"
+'time.end' = "2015-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -51,7 +54,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk"
 
 [reporting]
 
@@ -61,7 +64,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,bmelt"
+'output.spatial.vars' = "topg,bmelt,climatic_mass_balance,dHdt,flux_divergence,ice_mass,sftgif,usurf,velsurf_mag,velsurf"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -161,7 +164,7 @@ model = "given"
 
 [ocean]
 
-model = "picop_sgd"
+model = "picop"
 
 [ocean.options.pico]
 
@@ -211,7 +214,7 @@ model = "picop_sgd"
 
 [frontal_melt]
 
-model = "routing"
+model = "off"
 
 [frontal_melt.options.off]
 
@@ -228,7 +231,7 @@ model = "routing"
 
 [hydrology]
 
-model = "routing"
+model = "null"
 
 [hydrology.options.null]
 
@@ -242,7 +245,7 @@ model = "routing"
 
 [bed_deformation]
 
-model="lc"
+model="none"
 
 [bed_deformation.options.none]
 
@@ -272,43 +275,3 @@ bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
-
-[solver.inverse]
-
-bp_ksp_rtol = 1e-3
-bp_ksp_type = "fgmres"
-bp_mg_levels_ksp_type = "richardson"
-bp_mg_levels_pc_type = "sor"
-bp_mg_coarse_ksp_type = "gmres"
-bp_mg_coarse_pc_type = "gamg"
-bp_mg_coarse_ksp_rtol = 1e-2
-bp_mg_coarse_ksp_max_it = 50
-bp_pc_mg_levels = 3
-bp_pc_type = "mg"
-bp_pc_mg_galerkin = "both"
-bp_snes_ksp_ew = 0
-bp_snes_ksp_ew_version = 3
-bp_snes_monitor = ""
-bp_snes_rtol = 1e-3
-inv_adj_ksp_type = "gmres"
-inv_adj_pc_type = "jacobi"
-
-[inverse]
-
-'inverse.adjoint.method' =  "approximate"
-'inverse.design.cH1' = 1
-'inverse.design.cL2' = 0
-'inverse.file' = "none"
-'inverse.stress_balance.velocity_scale' = 1e2
-'inverse.stress_balance.length_scale' = 50e3
-'inverse.design.param' = "exp"
-'inverse.huber.delta' =  10e3
-'inverse.max_iterations' = 250
-'inverse.state_func' = "huber"
-'inverse.stress_balance.method' = "tikhonov_blmvm"
-'inverse.stress_balance.tauc_min' = 1e4
-'inverse.stress_balance.tauc_max' = 5e7
-'inverse.tikhonov.penalty_weight' = 10
-'inverse.tikhonov.atol' = 1e-7
-'inverse.use_zeta_fixed_mask' = "yes"
-'inverse.use_design_prior' = "no"

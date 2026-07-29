@@ -272,3 +272,43 @@ bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
+
+[solver.inverse]
+
+bp_ksp_rtol = 1e-3
+bp_ksp_type = "fgmres"
+bp_mg_levels_ksp_type = "richardson"
+bp_mg_levels_pc_type = "sor"
+bp_mg_coarse_ksp_type = "gmres"
+bp_mg_coarse_pc_type = "gamg"
+bp_mg_coarse_ksp_rtol = 1e-2
+bp_mg_coarse_ksp_max_it = 50
+bp_pc_mg_levels = 3
+bp_pc_type = "mg"
+bp_pc_mg_galerkin = "both"
+bp_snes_ksp_ew = 0
+bp_snes_ksp_ew_version = 3
+bp_snes_monitor = ""
+bp_snes_rtol = 1e-3
+inv_adj_ksp_type = "gmres"
+inv_adj_pc_type = "jacobi"
+
+[inverse]
+
+'inverse.adjoint.method' =  "approximate"
+'inverse.design.cH1' = 1
+'inverse.design.cL2' = 0
+'inverse.file' = "none"
+'inverse.stress_balance.velocity_scale' = 1e2
+'inverse.stress_balance.length_scale' = 50e3
+'inverse.design.param' = "exp"
+'inverse.huber.delta' =  10e3
+'inverse.max_iterations' = 250
+'inverse.state_func' = "huber"
+'inverse.stress_balance.method' = "tikhonov_blmvm"
+'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_max' = 5e7
+'inverse.tikhonov.penalty_weight' = 10
+'inverse.tikhonov.atol' = 1e-7
+'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.use_design_prior' = "no"

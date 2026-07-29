@@ -9,7 +9,7 @@
 #SBATCH --output="{{ output_path }}/pism.%j"
 
 module purge
-module load intel-compilers/2023.1.0 iimpi/2023a
+module load intel-compilers/2023.1.0 impi/2021.9.0
 
 export container=$HOME/pism-ismip7.sif
 if [ ! -f "${container}" ]; then
@@ -22,26 +22,23 @@ umask 007
 
 cd $SLURM_SUBMIT_DIR
 
+# conda's udunits2/libz activation hooks export host paths that are invalid
+# inside the apptainer container (=> "ut_read_xml() failed"). Drop them so the
+# container uses its own udunits2.xml. Keeps working even if the env is active.
+unset UDUNITS2_XML_PATH UDUNITS2_XML_DIR LD_PRELOAD
+
 ulimit -l unlimited
 ulimit -s unlimited
 ulimit
-
-conda deactivate
 
 # ###############################################################################
 # FORWARD RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(40) }} apptainer run --cleanenv ${container} pism {{ run_str }}
+mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pism {{ run_str }}
 
 # ###############################################################################
 # INVERSION RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(40) }} apptainer run --cleanenv ${container} pismi {{ inv_str }}
-
-# ###############################################################################
-# Postprocessing
-# ###############################################################################
-
-{{ post_script }} --ntasks  {{ ntasks | default(40) }} {{ post_file }}
+mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pismi {{ inv_str }}

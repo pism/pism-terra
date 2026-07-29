@@ -70,7 +70,7 @@ dependencies:
   - numpydoc
   - pydata-sphinx-theme
   - sphinx
-  - sphinx-autodoc-typeints
+  - sphinx-autodoc-typehints
   - sphinx-book-theme
   - sphinx-design
   - sphinx-gallery
@@ -97,4 +97,4 @@ dependencies:
   - voila
   - pip:
       - pytest-codeblocks>=0.18
-      - git+https://github.com/aaschwanden/ISM_SimulationChecker.git
+      - git+https://github.com/ismip/ISM_SimulationChecker.git

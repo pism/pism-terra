@@ -19,7 +19,7 @@ historical_end_year = "2014"
 gcms =["CESM2-WACCM"]
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g900m_id_BAYES-MEDIAN_1980-01-01_1981-01-01.nc"
+regrid_file = "g900m_id_BAYES-MEDIAN_HO.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -27,7 +27,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "1980-01-01"
-'time.end' = "1985-01-01"
+'time.end' = "1981-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -158,7 +158,47 @@ model = "given"
 
 [ocean]
 
-model = "th"
+model = "picop_sgd"
+
+[ocean.options.pico]
+
+'ocean.models' = "pico"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+
+
+[ocean.options.picop]
+
+'ocean.models' = "picop"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+'ocean.picop.add_fresh_water_melt' = "no"
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
+
+[ocean.options.picop_sgd]
+
+'ocean.models' = "picop"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+'ocean.picop.add_fresh_water_melt' = "yes"
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
 
 [ocean.options.th]
 
