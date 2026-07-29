@@ -302,6 +302,7 @@ def s4f_glacier(
         velocity_dataset=config["velocity"],
         bathymetry_dataset=config["bathymetry"],
         forcing_mask=config["forcing_mask"] if config["forcing_mask"] else None,
+        ocean_moat=config.get("ocean_moat", "no"),
         path=staging_path,
         force_overwrite=force_overwrite,
         bucket=config["bucket"],

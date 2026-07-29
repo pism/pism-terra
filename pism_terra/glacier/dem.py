@@ -229,6 +229,41 @@ def prepare_surface(
     return surface_reprojected
 
 
+def perimeter_mask(da: xr.DataArray, width_m: float) -> xr.DataArray:
+    """
+    Boolean mask marking cells within ``width_m`` of the domain perimeter.
+
+    Parameters
+    ----------
+    da : xarray.DataArray
+        Field on a regular projected grid with ``x``/``y`` coordinates. Used
+        only for its shape and coordinate spacing.
+    width_m : float
+        Width of the perimeter band in metres. Converted to a whole number of
+        cells (rounded) independently for the x and y directions.
+
+    Returns
+    -------
+    xarray.DataArray
+        Boolean DataArray on ``da``'s ``(y, x)`` grid, ``True`` inside the
+        perimeter band and ``False`` in the interior.
+    """
+    dx = float(abs(da["x"].values[1] - da["x"].values[0]))
+    dy = float(abs(da["y"].values[1] - da["y"].values[0]))
+    nx_band = int(round(width_m / dx))
+    ny_band = int(round(width_m / dy))
+    ny = da.sizes["y"]
+    nx = da.sizes["x"]
+    mask = np.zeros((ny, nx), dtype=bool)
+    if ny_band > 0:
+        mask[:ny_band, :] = True
+        mask[ny - ny_band :, :] = True
+    if nx_band > 0:
+        mask[:, :nx_band] = True
+        mask[:, nx - nx_band :] = True
+    return xr.DataArray(mask, dims=("y", "x"), coords={"y": da["y"], "x": da["x"]})
+
+
 def boot_file_from_grid(
     target_grid: xr.Dataset,
     rgi_id: str,
@@ -238,6 +273,7 @@ def boot_file_from_grid(
     bathymetry_dataset: Literal["none", "gebco"] | None,
     velocity_dataset: Literal["none", "its_live"] | None,
     forcing_mask: Literal["none", "all", "glacier"] | None,
+    ocean_moat: Literal["no", "yes"] | bool | None = "no",
     path: str | Path = "input_files",
     **kwargs,
 ) -> xr.Dataset:
@@ -270,6 +306,12 @@ def boot_file_from_grid(
         Source for velocities.
     forcing_mask : {"none", "glacier", "all"} or None
         FTT mask.
+    ocean_moat : {"no", "yes"} or bool or None, default ``"no"``
+        When ``"yes"`` (or ``True``), overwrite a 4 km-wide band around the
+        domain perimeter with open ocean: ``bed = -2000`` m, ``surface = 0`` m,
+        ``thickness = 0`` m. Useful to give marine-terminating glaciers a
+        calving front against ocean at the domain edge. ``"no"`` (default)
+        leaves the perimeter untouched.
     path : str or pathlib.Path, default ``"input_files"``
         Working directory used by helper routines to cache/write intermediate rasters/grids.
     **kwargs
@@ -349,6 +391,15 @@ def boot_file_from_grid(
         bed = bed.where(surface > 0.0, bathymetry)
         bed.name = "bed"
     bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
+
+    if ocean_moat in ("yes", True):
+        print("Ocean moat: 4 km perimeter set to ocean (bed -2000 m, surface 0 m, thickness 0 m)")
+        moat = perimeter_mask(bed, 4000.0)
+        surface = surface.where(~moat, 0.0)
+        ice_thickness = ice_thickness.where(~moat, 0.0)
+        bed = bed.where(~moat, -2000.0)
+        bed.name = "bed"
+        bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
 
     liafr = surface.rio.clip(geometries, drop=False)
     liafr = xr.where(liafr.isnull(), 0, 1)
