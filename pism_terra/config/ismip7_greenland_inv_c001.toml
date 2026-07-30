@@ -7,7 +7,7 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.experiment' = "ssp585"
+'run_info.counter' = "C001"
 'run_info.domain' = "GrIS"
 'run_info.set' = "CORE"
 
@@ -15,14 +15,14 @@
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
-pathway = "ssp585"
 version = "v2"
-start_year = "1978"
-end_year = "2015"
-gcms = ["CESM2-WACCM"]
+historical_start_year = "1978"
+historical_end_year = "2014"
+projection_start_year = "2015"
+projection_end_year = "2300"
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
+regrid_file = "g900m_id_BAYES-MEDIAN_1980-01-01_1981-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -30,7 +30,6 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "1985-01-01"
-'time.end' =  "2300-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -50,7 +49,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.file' = "none"
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 37
+'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
 
@@ -118,13 +117,7 @@ model = 'blatter'
 
 'basal_resistance.pseudo_plastic.enabled' = 'yes'
 'basal_resistance.pseudo_plastic.q' = 0.7508221
-'basal_yield_stress.model' = 'mohr_coulomb'
-'basal_yield_stress.mohr_coulomb.till_effective_fraction_overburden' = 0.01845403
-'basal_yield_stress.mohr_coulomb.topg_to_phi.enabled' = "yes"
-'basal_yield_stress.mohr_coulomb.topg_to_phi.phi_max' = 42.79528
-'basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min' = 7.193718
-'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_max' = 243.8239
-'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_min' = -369.6359
+'basal_yield_stress.model' = 'constant'
 'stress_balance.blatter.enhancement_factor' = 2.608046
 'stress_balance.sia.enhancement_factor' = 2.608046
 'stress_balance.ssa.Glen_exponent' = 3.309718
@@ -201,7 +194,7 @@ model = "routing"
 
 [bed_deformation]
 
-model="none"
+model="lc"
 
 [bed_deformation.options.none]
 
@@ -226,7 +219,27 @@ bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
 bp_pc_type = "mg"
+bp_pc_mg_galerkin = "both"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
+
+[solver.inverse]
+
+bp_ksp_monitor = ""
+bp_ksp_rtol = 1e-3
+bp_ksp_type = "fgmres"
+bp_mg_levels_ksp_type = "richardson"
+bp_mg_levels_pc_type = "sor"
+bp_mg_coarse_ksp_type = "gmres"
+bp_mg_coarse_pc_type = "gamg"
+bp_mg_coarse_ksp_rtol = 1e-2
+bp_mg_coarse_ksp_max_it = 50
+bp_pc_mg_levels = 3
+bp_pc_type = "mg"
+bp_pc_mg_galerkin = "both"
+bp_snes_ksp_ew = 0
+bp_snes_monitor = ""
+bp_snes_rtol = 1e-3
+'inverse.adjoint.method' = "approximate"
