@@ -1000,6 +1000,9 @@ def prepare_observations(
     vel["vel_misfit_weight"] = xr.where(grounded_ice, 1, 0).astype("int8")
     vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
     vel["basins"] = basins
+    # Constant prior for the till yield stress used by the PISM inverse run.
+    vel["tauc_prior"] = xr.full_like(vel["v"], 1.4e5, dtype="float32")
+    vel["tauc_prior"].attrs.update({"units": "Pa", "long_name": "prior till yield stress (tauc)"})
 
     vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
     vel["x"].attrs.update(
