@@ -22,6 +22,7 @@ dependencies:
   - ecmwf-datastores-client
   - geocube
   - geopandas
+  - h5netcdf
   - jinja2
   - joblib
   - libgdal-core
