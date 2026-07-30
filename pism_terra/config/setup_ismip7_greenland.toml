@@ -19,4 +19,4 @@ resolution = "900m"
 [forcing]
 
 climate = {fields = ["acabf", "dacabfdz", "mrro", "ts", "dmrrodz", "dtsdz"], short_hand = "SDBN1-1000m"}
-ocean = {fields = ["tf", "so"], short_hand = "ocean"}
+ocean = {fields = ["tf", "so"], short_hand = "ocean-1000m"}
