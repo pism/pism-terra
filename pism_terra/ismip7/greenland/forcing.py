@@ -843,6 +843,7 @@ def prepare_observations(
     liafr = liafr.astype("bool")
 
     if surface_dem is not None:
+        dem_year = "1985"
         surface_file = Path(input_path) / Path("surface_dem.nc")
         bed = ds_bm_regridded["bed"]
         if (not check_xr_lazy(surface_file)) or force_overwrite:
@@ -870,6 +871,7 @@ def prepare_observations(
         thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
         boot = xr.merge([bed, ftt_mask, surface, thickness, liafr])
     else:
+        dem_year = "2007"
         boot = xr.merge([ds_bm_regridded[["bed", "thickness", "surface"]], ftt_mask, liafr])
 
     # Ellesmere Island sits inside the domain but is not part of the modeled
@@ -936,7 +938,7 @@ def prepare_observations(
         ds[var].encoding.update(comp)
 
     resolution = int(ds.x[1] - ds.x[0])
-    boot_file = output_path / Path(f"boot_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
+    boot_file = output_path / Path(f"boot_{dem_year}_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
 
     ds.to_netcdf(boot_file, engine="h5netcdf")
 
@@ -1034,7 +1036,7 @@ def prepare_observations(
     vel = stamp_grid_mapping(vel, name="mapping")
     vel = vel.drop_vars(["crs", "spatial_ref"], errors="ignore")
 
-    obs_file = output_path / Path(f"obs_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
+    obs_file = output_path / Path(f"obs_{dem_year}_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
     vel_encoding: dict[str, dict[str, Any]] = {
         var: {"_FillValue": None} for var in list(vel.data_vars) + list(vel.coords)
     }

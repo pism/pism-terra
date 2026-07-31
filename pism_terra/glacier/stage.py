@@ -47,6 +47,7 @@ from pism_terra.glacier.climate import (
     carra2,
     create_offset_file,
     create_step_file,
+    elevation_dependent,
     era5,
     era5_mean,
     era5_monthly_mean,
@@ -69,6 +70,7 @@ xr.set_options(keep_attrs=True)
 
 CLIMATE: Mapping[str, Callable] = {
     "carra2": carra2,
+    "elevation-dependent": elevation_dependent,
     "era5": era5,
     "era5-mean": era5_mean,
     "era5-monthly-mean": era5_monthly_mean,
@@ -333,6 +335,11 @@ def stage_glacier(
         "obs_file": obs_file.resolve(),
     }
     dfs: list[pd.DataFrame] = []
+    if not responses:
+        # A parameterized climate (e.g. "elevation-dependent") downloads no data
+        # and writes no forcing file. Still emit one file-less row so a run is
+        # generated; PISM builds the climate from its atmosphere parameterization.
+        dfs.append(pd.DataFrame.from_dict([{**files_dict, "climate_file": None, "sample": 0}]))
     for idx, fpath in enumerate(responses):
         # When the climate source emits period-tagged files (e.g. SNAP's
         # ``snap_1920_1949_<rgi_id>.nc``), use that tag as the sample id so the
@@ -368,6 +375,13 @@ def main():
         default=Path("."),
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared base directory for staged input data (reused across runs). "
+        "Per-glacier input/staging go under <data-path>/<RGI_ID>/. Defaults to <output-path>.",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -386,6 +400,7 @@ def main():
 
     options, unknown = parser.parse_known_args()
     path = options.output_path
+    data_path = options.data_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
     rgi_id = options.RGI_ID[0]
@@ -402,7 +417,11 @@ def main():
     config["years"] = years
 
     path.mkdir(parents=True, exist_ok=True)
-    glacier_path = path / Path(rgi_id)
+    # Staged input data goes to a shared ``data_path`` when given (so several
+    # experiment output dirs can reuse one staged copy), otherwise under the
+    # output path. Output always stays under ``path``.
+    in_base = Path(data_path) if data_path is not None else path
+    glacier_path = in_base / Path(rgi_id)
     glacier_path.mkdir(parents=True, exist_ok=True)
 
     input_path = glacier_path / Path("input")

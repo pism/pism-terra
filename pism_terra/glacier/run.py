@@ -741,6 +741,13 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         default=".",
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared base directory for staged input data (reused across runs). "
+        "Per-glacier input/staging go under <data-path>/<RGI_ID>/. Defaults to <output-path>.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -888,12 +895,18 @@ def _run(*, kind: str) -> None:
     force_overwrite = options.force_overwrite
 
     path = Path(options.output_path)
+    data_path = options.data_path
     rgi_id = options.RGI_ID
     glacier_path = path / rgi_id
 
-    input_path = glacier_path / "input"
+    # Staged input data goes to a shared ``data_path`` when given (so several
+    # experiment output dirs can reuse one staged copy), otherwise under the
+    # output path. Output always stays under ``path``.
+    in_base = Path(data_path) if data_path is not None else path
+    glacier_in_path = in_base / rgi_id
+    input_path = glacier_in_path / "input"
     input_path.mkdir(parents=True, exist_ok=True)
-    staging_path = glacier_path / "staging"
+    staging_path = glacier_in_path / "staging"
     staging_path.mkdir(parents=True, exist_ok=True)
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
