@@ -1084,6 +1084,55 @@ def create_step_file(
     ds.to_netcdf(file_name, encoding=encoding, engine="h5netcdf")
 
 
+def elevation_dependent(
+    target_grid: xr.Dataset,
+    rgi_id: str,
+    years: list[int] | Iterable[int] = range(1980, 2010),
+    path: Path | str = ".",
+    prefix: str = "",
+    **kwargs,
+) -> list[Path]:
+    """
+    No-op climate builder for the parameterized "elevation-dependent" climate.
+
+    Unlike the data-driven builders (ERA5, CARRA2, SNAP, …) this climate is
+    generated entirely by a PISM atmosphere parameterization at run time, so
+    there is nothing to download, clip, or write. This function exists only to
+    satisfy the climate-builder dispatch contract in
+    :data:`pism_terra.glacier.stage.CLIMATE`; it accepts the same arguments as
+    the other builders, ignores them, and returns no forcing files.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        Target grid (unused).
+    rgi_id : str
+        Glacier identifier (unused).
+    years : list of int or Iterable of int, default ``range(1980, 2010)``
+        Unused; accepted to match the dispatch signature.
+    path : str or pathlib.Path, default ``"."``
+        Output directory (unused; no files are written).
+    prefix : str, default ``""``
+        S3 key prefix (unused; nothing is fetched).
+    **kwargs
+        Additional dispatch arguments (e.g. ``bucket``, ``force_overwrite``);
+        accepted and ignored.
+
+    Returns
+    -------
+    list of pathlib.Path
+        Always an empty list — no climate forcing file is produced.
+    """
+
+    _ = (target_grid, rgi_id, years, path, prefix, kwargs)  # parameterized climate; nothing to stage
+
+    print("")
+    print("Elevation-dependent climate: parameterized at run time, nothing to download")
+    print("-" * 120)
+
+    return []
+
+
 def snap(
     target_grid: xr.Dataset,
     rgi_id: str,

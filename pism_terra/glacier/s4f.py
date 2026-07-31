@@ -89,6 +89,14 @@ def main():
         default=Path("data"),
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared base directory for cached intermediate downloads "
+        "(RGI/DEM staging, reused across runs). Per-glacier staging goes under "
+        "<data-path>/<RGI_ID>/staging. Defaults to <output-path>.",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -102,10 +110,15 @@ def main():
 
     options, unknown = parser.parse_known_args()
     path = options.output_path
+    data_path = options.data_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
 
     path.mkdir(parents=True, exist_ok=True)
+    # Cached intermediate downloads (RGI db, DEM tiles) go to a shared
+    # ``data_path`` when given, so re-runs reuse one staged copy. The boot/COG
+    # deliverables always stay under ``path`` (what the s3 sync uploads).
+    staging_base = Path(data_path) if data_path is not None else path
 
     cfg = load_config(config_file)
     config = cfg.campaign.as_params()
@@ -130,7 +143,7 @@ def main():
 
         input_path = glacier_path / Path("input")
         input_path.mkdir(parents=True, exist_ok=True)
-        staging_path = glacier_path / Path("staging")
+        staging_path = staging_base / Path(rgi_id) / Path("staging")
         staging_path.mkdir(parents=True, exist_ok=True)
         glacier_boot_files = s4f_glacier(
             config,

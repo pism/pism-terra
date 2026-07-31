@@ -177,7 +177,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
             if data_path is not None
             else output_path / Path("obs")
         )
-        obs_files = prepare_observations(
+        obs_files_1985 = prepare_observations(
             obs_url,
             obs_input_path,
             output_path,
@@ -186,7 +186,18 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
             target_grid=grid_ds,
             force_overwrite=force_overwrite,
         )
-        for v in obs_files.values():
+        for v in obs_files_1985.values():
+            check_xr_lazy(v)
+
+        obs_files_2007 = prepare_observations(
+            obs_url,
+            obs_input_path,
+            output_path,
+            config,
+            target_grid=grid_ds,
+            force_overwrite=force_overwrite,
+        )
+        for v in obs_files_2007.values():
             check_xr_lazy(v)
 
     # --- Forcings ---
@@ -239,11 +250,13 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     return {
         "config": config,
         "grid_file": grid_file,
-        "boot_file": obs_files.get("boot_file"),
+        "boot_file_1985": obs_files_1985.get("boot_file"),
+        "boot_file_2007": obs_files_2007.get("boot_file"),
         "heatflux_file": obs_files.get("heatflux_file"),
         "forcing_files": forcing_files,
         "retreat_file": retreat_file,
-        "obs_file": obs_files.get("obs_file"),
+        "obs_file_1985": obs_files_1985.get("obs_file"),
+        "obs_file_2007": obs_files_2007.get("obs_file"),
     }
 
 

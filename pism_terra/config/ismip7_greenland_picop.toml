@@ -7,7 +7,7 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.experiment' = "ssp585"
+'run_info.counter' = "C001"
 'run_info.domain' = "GrIS"
 'run_info.set' = "CORE"
 
@@ -15,14 +15,14 @@
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
-pathway = "ssp585"
 version = "v2"
-start_year = "1978"
-end_year = "2015"
-gcms = ["CESM2-WACCM"]
+historical_start_year = "1978"
+historical_end_year = "2014"
+projection_start_year = "2015"
+projection_end_year = "2300"
 boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
+regrid_file = "g900m_id_BAYES-MEDIAN_1980-01-01_1981-01-01.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
@@ -30,7 +30,6 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 [time]
 
 'time.start' = "1985-01-01"
-'time.end' =  "2300-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -50,7 +49,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.file' = "none"
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 37
+'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
 
@@ -61,14 +60,13 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "yearly"
-'output.spatial.vars' = "lithk,orog,topg,hfgeoubed,acabf,libmassbfgr,libmassbffl,dlithkdt,velsurf,zvelsurf,velbase,zvelbase,velmean,litemptop,litempbotgr,litempbotfl,strbasemag,licalvf,lifmassbf,sftgif,sftgrf,sftflf"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass,mass_fluxes,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,subglacial_water_flux_mag,bmelt"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
-'output.scalar.variables' = "lim,limnsw,iareagr,iareafl,tendacabf,tendlibmassbf,tendlibmassbffl,tendlicalvf,tendlifmassbf"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
-'output.ISMIP' = "yes"
+'output.ISMIP' = "no"
 
 
 [grid]
@@ -131,7 +129,7 @@ model = 'blatter'
 
 [surface]
 
-model = "ismip7"
+model = "given"
 
 [surface.options.ismip7]
 
@@ -144,6 +142,11 @@ model = "ismip7"
 
 'surface.models' = "given"
 'surface.given.file' = "none"
+
+[surface.options.pdd]
+
+'surface.models' = "pdd"
+
 
 [calving]
 
@@ -161,7 +164,27 @@ model = "given"
 
 [ocean]
 
-model = "th"
+model = "picop"
+
+[ocean.options.pico]
+
+'ocean.models' = "pico"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 5
+'ocean.pico.overturning_coefficent' = 1e6
+
+[ocean.options.picop]
+
+'ocean.models' = "picop"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 5
+'ocean.pico.overturning_coefficent' = 1e6
 
 [ocean.options.th]
 
@@ -201,7 +224,7 @@ model = "routing"
 
 [bed_deformation]
 
-model="none"
+model="lc"
 
 [bed_deformation.options.none]
 
@@ -226,6 +249,7 @@ bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
 bp_pc_type = "mg"
+bp_pc_mg_galerkin = "both"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""

@@ -64,7 +64,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
-'output.ISMIP6' = "no"
+'output.ISMIP' = "no"
 
 
 [grid]
