@@ -26,6 +26,7 @@ regrid_file = "g900m_id_BAYES-MEDIAN_HO.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
+retreat_file = "frontretreat_g450m_1985-7-1.nc"
 
 [time]
 
@@ -40,6 +41,8 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 ['geometry']
 
+'geometry.front_retreat.prescribed.file' = "none"
+'geometry.front_retreat.prescribed.periodic' = "yes"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
