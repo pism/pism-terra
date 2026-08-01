@@ -157,6 +157,7 @@ def stage(
     boot_file = input_path / Path(config["boot_file"])
     heatflux_file = input_path / Path(config["heatflux_file"])
     regrid_file = input_path / Path(config["regrid_file"])
+    retreat_file = input_path / Path(config["retreat_file"])
     outline_file = input_path / Path(config["outline_file"])
     obs_file = input_path / Path(config["obs_file"])
 
@@ -169,6 +170,7 @@ def stage(
         (config["boot_file"], boot_file),
         (config["heatflux_file"], heatflux_file),
         (config["regrid_file"], regrid_file),
+        (config["retreat_file"], retreat_file),
         (config["outline_file"], outline_file),
         (config["obs_file"], obs_file),
     ]
