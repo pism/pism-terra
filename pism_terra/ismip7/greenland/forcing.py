@@ -577,9 +577,15 @@ def _process_single_forcing(
             fill_op = " -setmisstonn -setrtomiss,-1,1"
         else:
             fill_op = ""
-        mergetime_chain = (
-            f"{tas_replace}{fill_op} -setgrid,{str(grid_file)} -mergetime [ " + " ".join(str(p) for p in paths) + " ]"
-        )
+        # Some per-year ISMIP7 source files carry an extra grid-mapping variable
+        # (``crs``) — and define it inconsistently between years — while others
+        # omit it. ``-mergetime`` then aborts with "Input streams have different
+        # number of variables per timestep" (preceded by a flood of "Inconsistent
+        # variable definition for crs!"). Select only the physical variable from
+        # each input first (``-apply,-selname``) so every stream has an identical,
+        # single-variable structure; the grid is re-attached by ``-setgrid`` below.
+        merge_inputs = f"-apply,-selname,{k} [ " + " ".join(str(p) for p in paths) + " ]"
+        mergetime_chain = f"{tas_replace}{fill_op} -setgrid,{str(grid_file)} -mergetime {merge_inputs}"
         if m_var == "so":
             # CMIP6 sea-water salinity ships with ``units = "psu"`` (practical
             # salinity unit). PISM's ``ocean.th`` requires the numerically
