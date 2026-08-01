@@ -1062,6 +1062,7 @@ def _run(*, kind: str) -> None:
             {
                 "input.file": row["boot_file"],
                 "input.regrid.file": row["regrid_file"],
+                "geometry.front_retreat.prescribed.file": row["retreat_file"],
                 "grid.file": row["grid_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
                 "surface.ismip7.reference.file": row["boot_file"],
@@ -1083,6 +1084,7 @@ def _run(*, kind: str) -> None:
         if include_projection:
             proj_overrides = {
                 "atmosphere.given.file": row["climate_proj_file"],
+                "geometry.front_retreat.prescribed.file": row["retreat_file"],
                 "surface.given.file": row["climate_proj_file"],
                 "surface.ismip7.file": row["climate_proj_file"],
                 "surface.ismip7.gradient.file": row["climate_gradient_proj_file"],

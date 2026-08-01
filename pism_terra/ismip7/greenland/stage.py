@@ -251,6 +251,7 @@ def stage(
         "grid_file": grid_file.resolve(),
         "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
+        "retreat_file": retreat_file.resolve(),
         "outline_file": outline_file.resolve(),
         "obs_file": obs_file.resolve(),
     }
