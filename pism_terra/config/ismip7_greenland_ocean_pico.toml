@@ -234,7 +234,7 @@ model = "routing"
 
 [hydrology]
 
-model = "null"
+model = "routing"
 
 [hydrology.options.null]
 
