@@ -19,20 +19,20 @@ historical_start_year = "1978"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
-boot_file = "boot_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
 regrid_file = "g900m_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
-obs_file = "obs_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
+obs_file = "obs_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
 retreat_file = "frontretreat_g450m_2007-7-1.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
 
 [time]
 
-'time.start' = "2007-01-01"
-'time.end' = "2008-01-01"
+'time.start' = "1985-01-01"
+'time.end' = "1986-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -66,7 +66,7 @@ pathway = "historical"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,bmelt,climatic_mass_balance,dHdt,flux_divergence,ice_mass,sftgif,usurf,velsurf_mag,velsurf,thk,mask"
+'output.spatial.vars' = "bmelt,mask,velsurf_mag,thk"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -166,7 +166,7 @@ model = "given"
 
 [ocean]
 
-model = "th"
+model = "picop"
 
 [ocean.options.pico]
 
@@ -212,7 +212,7 @@ model = "th"
 
 'ocean.models' = "th"
 'ocean.th.file' = "none"
-'ocean.th.clip_salinity' = "no"
+'ocean.th.clip_salinity' = "yes"
 'ocean.th.temperature_as_thermal_forcing' = "yes"
 
 [frontal_melt]

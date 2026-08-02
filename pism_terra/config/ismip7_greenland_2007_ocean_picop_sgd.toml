@@ -8,7 +8,7 @@
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
 'run_info.domain' = "GrIS"
-'run_info.set' = "Ocean Calib TH"
+'run_info.set' = "Ocean Calib PICO"
 
 [campaign]
 
@@ -66,7 +66,7 @@ pathway = "historical"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,bmelt,climatic_mass_balance,dHdt,flux_divergence,ice_mass,sftgif,usurf,velsurf_mag,velsurf,thk,mask"
+'output.spatial.vars' = "bmelt,mask,velsurf_mag,thk"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -166,7 +166,7 @@ model = "given"
 
 [ocean]
 
-model = "th"
+model = "picop_sgd"
 
 [ocean.options.pico]
 
