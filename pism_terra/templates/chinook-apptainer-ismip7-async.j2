@@ -37,7 +37,9 @@ pismtasks=$(( SLURM_NTASKS - 4 ))
 # FORWARD RUN
 # ###############################################################################
 
+{% if run_hist_str %}
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_hist_str }} -output.asynchronous
+{% endif %}
 
 {% if run_proj_str %}
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_proj_str }} -output.asynchronous
