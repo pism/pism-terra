@@ -26,7 +26,7 @@ regrid_file = "g900m_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_g450m_GreenlandObsISMIP7-v1.3.nc"
-retreat_file = "frontretreat_g450m_1985-7-1.nc"
+retreat_file = "frontretreat_g450m_1972-9-1.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
 
@@ -66,8 +66,8 @@ pathway = "historical"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,bmelt,climatic_mass_balance,dHdt,flux_divergence,ice_mass,sftgif,usurf,velsurf_mag,velsurf"
+'output.spatial.times' = "yearly"
+'output.spatial.vars' = "topg,bmelt,climatic_mass_balance,dHdt,flux_divergence,ice_mass,sftgif,usurf,velsurf_mag,velsurf,thk,mask"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -109,7 +109,7 @@ model = 'hybrid'
 'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.blatter.use_eta_transform' = "yes"
 'stress_balance.calving_front_stress_bc' = "yes"
-'time_stepping.adaptive_ratio' = 1000
+'time_stepping.adaptive_ratio' = 250
 
 [stress_balance.options.hybrid]
 
