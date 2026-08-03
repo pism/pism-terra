@@ -23,6 +23,8 @@ Postprocessing.
 
 import json
 import logging
+import os
+import tempfile
 import time
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -140,7 +142,7 @@ def process_file(
     logger.info("Time elapsed for %s: %.0fs", infile_name, time_elapsed)
 
 
-def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
+def postprocess_glacier(config_file: str | Path, n_workers: int = 4, local_directory: str | Path | None = None):
     """
     Postprocess KITP output by clipping spatial output to basin geometries.
 
@@ -154,6 +156,12 @@ def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
         ``[basin].outline`` and ``[output].spatial`` keys.
     n_workers : int, optional
         Number of Dask workers, by default 4.
+    local_directory : str or Path or None, optional
+        Directory where Dask workers write scratch data. On network file
+        systems (e.g. Lustre on Chinook) the default scratch location is slow
+        and Dask warns about it; point this at node-local disk instead. When
+        ``None`` (default), fall back to :func:`tempfile.gettempdir`, which
+        honours ``$TMPDIR`` (SLURM sets it to node-local storage).
     """
 
     config_toml = toml.load(config_file)
@@ -162,7 +170,12 @@ def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
     start = time.time()
     outline_file = config["basin"]["outline"]
 
-    client = Client(n_workers=n_workers, threads_per_worker=1)
+    # Keep Dask worker scratch off the (slow, networked) Lustre home/cwd.
+    scratch_dir = str(local_directory) if local_directory is not None else tempfile.gettempdir()
+    os.makedirs(scratch_dir, exist_ok=True)
+    logger.info("Dask worker scratch directory: %s", scratch_dir)
+
+    client = Client(n_workers=n_workers, threads_per_worker=1, local_directory=scratch_dir)
     logger.info("Dask dashboard: %s", client.dashboard_link)
 
     for o in ["spatial"]:
@@ -191,6 +204,14 @@ def main():
         default=4,
     )
     parser.add_argument(
+        "--local-directory",
+        help="Directory for Dask worker scratch data. On network file systems "
+        "(e.g. Lustre) point this at node-local disk to avoid slow scratch I/O. "
+        "Defaults to $TMPDIR (or the system temp dir).",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "RUN_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -199,11 +220,12 @@ def main():
     options, unknown = parser.parse_known_args()
     config_file = options.RUN_FILE[0]
     ntasks = options.ntasks
+    local_directory = options.local_directory
 
     config_path = Path(config_file).resolve().parent
     setup_logging(config_path / "postprocess.log")
 
-    postprocess_glacier(config_file, n_workers=ntasks)
+    postprocess_glacier(config_file, n_workers=ntasks, local_directory=local_directory)
 
 
 if __name__ == "__main__":
