@@ -119,7 +119,7 @@ def process_file(
     dss = []
     for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
         ds_clipped = ds.rio.clip([row.geometry], drop=False)
-        ds_clipped["ice_mass_glacierized"] = ds_clipped["ice_mass_glacierized"].where(ds_clipped["thk"] > 10)
+        ds_clipped["ice_mass_glacierized"] = ds_clipped["ice_mass"].where(ds_clipped["thk"] > 10)
         ds_sum = ds_clipped.sum(dim=["y", "x"]).compute()
         ds_sum["area"] = row.geometry.area
         ds_sum["area"].attrs.update({"units": "m^2"})
