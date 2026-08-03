@@ -5,7 +5,7 @@
 
 [campaign]
 
-boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
 bucket = "pism-cloud-data"
 climatology = "HIRHAM5-ERA5_YMM_1990_2019"
 grid_file = "ismip7_greenland_grid.nc"
@@ -13,8 +13,8 @@ heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 ocean_file = "ocean_forcing_228.0_10.0_69.0_80.0.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 prefix = "kitp/input"
-regrid_file = "g900m_id_BAYES-MEDIAN_2007-01-01_2010-01-01.nc"
-retreat_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+regrid_file = "g900m_2007_id_BAYES-MEDIAN_HYBRID.nc"
+retreat_file = "frontretreat_g450m_2007-7-1.nc"
 version = "v4"
 
 [campaign.gcms]
@@ -69,12 +69,12 @@ version = "v4"
 'output.scalar.times' = "monthly"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
-'output.ISMIP6' = "no"
+'output.ISMIP' = "no"
 'output.experiment_id_max_length' = 100
 
 [grid]
 
-resolution = "900m"
+resolution = "1200m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
@@ -162,7 +162,7 @@ model = "debm"
 [calving]
 
 'calving.methods' = 'vonmises_calving,thickness_calving'
-'calving.vonmises_calving.sigma_max' = 4.0e5
+'calving.vonmises_calving.sigma_max' = 5.0e5
 'calving.thickness_calving.threshold' = 100.0
 
 [atmosphere]
