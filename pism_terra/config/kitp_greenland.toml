@@ -208,6 +208,13 @@ model = "null"
 'hydrology.routing.include_floating_ice' = "yes"
 'hydrology.surface_input.file' = "none"
 
+[bed_deformation]
+
+model="none"
+
+[bed_deformation.options.none]
+
+'bed_deformation.model' = "none"
 
 [frontal_melt]
 
