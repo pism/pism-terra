@@ -359,6 +359,13 @@ def run_single():
         default="data",
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared directory for staged input data (reused across runs). "
+        "Defaults to <output-path>/<prefix>/<version>.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--queue",
         help="Overrides queue in config file.",
         type=str,
@@ -438,6 +445,7 @@ def run_single():
     options, _ = parser.parse_known_args()
     force_overwrite = options.force_overwrite
     path = options.output_path
+    data_path = options.data_path
     config_file = options.CONFIG_FILE[0]
     template_file = options.TEMPLATE_FILE[0]
     resolution = options.resolution
@@ -476,10 +484,10 @@ def run_single():
     version: str = campaign_config["version"] if "version" in campaign_config else "v2"
     s3_path = f"""{s3_prefix}/{version}"""
 
-    input_path = path / Path(s3_path)
+    input_path = Path(data_path) if data_path is not None else path / Path(s3_path)
     input_path.mkdir(parents=True, exist_ok=True)
 
-    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite)
+    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite, data_path=data_path)
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -529,6 +537,13 @@ def run_ensemble():
         help="Base path to save all files to. Files will be saved in `f'{out_path}/{RGI_ID}/output/'`.",
         type=str,
         default="data",
+    )
+    parser.add_argument(
+        "--data-path",
+        help="Shared directory for staged input data (reused across runs). "
+        "Defaults to <output-path>/<prefix>/<version>.",
+        type=str,
+        default=None,
     )
     parser.add_argument(
         "--queue",
@@ -627,6 +642,7 @@ def run_ensemble():
     options, _ = parser.parse_known_args()
     force_overwrite = options.force_overwrite
     path = options.output_path
+    data_path = options.data_path
     config_file = options.CONFIG_FILE[0]
     template_file = options.TEMPLATE_FILE[0]
     uq_file = options.UQ_FILE[0]
@@ -656,8 +672,6 @@ def run_ensemble():
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    input_path = path / Path("input")
-    input_path.mkdir(parents=True, exist_ok=True)
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -668,7 +682,9 @@ def run_ensemble():
     s3_prefix: str = campaign_config.get("prefix", "kitp/input")
     version: str = campaign_config.get("version", "v2")
     s3_path = f"""{s3_prefix}/{version}"""
-    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite)
+    input_path = Path(data_path) if data_path is not None else path / Path(s3_path)
+    input_path.mkdir(parents=True, exist_ok=True)
+    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite, data_path=data_path)
 
     seed = 42
     rng = np.random.default_rng(seed=seed)
