@@ -723,11 +723,16 @@ def add_basins_to_ocean_files(ocean_files: list[Path]) -> None:
     """
     Add the GrIS basin mask to each ocean forcing file, in place.
 
-    Opens each ocean file, rasterizes the packaged basin polygons onto that file's
-    grid via :func:`basin_mask`, and writes the result back as an ``int8``
-    ``basins`` variable. Files are rewritten atomically via a sibling ``*.tmp``
-    file. A file whose grid cannot be matched is logged and skipped rather than
-    aborting the whole batch.
+    Reads only each file's ``x``/``y`` coordinates, rasterizes the packaged basin
+    polygons onto that grid via :func:`basin_mask`, and appends the result as an
+    ``int8`` ``basins`` variable **in place** (``mode="a"``). A file whose grid
+    cannot be matched is logged and skipped rather than aborting the whole batch.
+
+    The forcing payload is never read. A projection ocean file spans 2015-2300 at
+    monthly cadence (3432 timesteps x ``tf`` + ``so``); loading it to rewrite the
+    whole dataset needs tens of GB and gets the process OOM-killed on a shared
+    node. Appending one 2-D mask touches only the new variable, so cost is
+    independent of the record length.
 
     Parameters
     ----------
@@ -736,22 +741,33 @@ def add_basins_to_ocean_files(ocean_files: list[Path]) -> None:
     """
     for ocean_file in ocean_files:
         try:
-            with xr.open_dataset(ocean_file) as ds:
-                ds = ds.load()
-            basins = basin_mask(ds)
-            ds["basins"] = basins
-            # Georeference basins like the file's other data variables (match
-            # their ``grid_mapping``, e.g. ``crs``, rather than the source field's).
-            grid_mapping = next(
-                (ds[v].attrs["grid_mapping"] for v in ds.data_vars if v != "basins" and "grid_mapping" in ds[v].attrs),
-                None,
-            )
+            # ``decode_times=False``: the time axis is irrelevant here and
+            # projections run past the datetime64[ns] ceiling (year 2262), which
+            # would otherwise trigger a cftime fallback warning.
+            with xr.open_dataset(ocean_file, decode_times=False, decode_timedelta=False) as ds:
+                grid = xr.Dataset(coords={"x": ds["x"].to_numpy(), "y": ds["y"].to_numpy()})
+                # Georeference basins like the file's other data variables (match
+                # their ``grid_mapping``, e.g. ``crs``, rather than the source field's).
+                grid_mapping = next(
+                    (
+                        ds[v].attrs["grid_mapping"]
+                        for v in ds.data_vars
+                        if v != "basins" and "grid_mapping" in ds[v].attrs
+                    ),
+                    None,
+                )
+                already_present = "basins" in ds.variables
+            basins = basin_mask(grid)
             if grid_mapping:
-                ds["basins"].attrs["grid_mapping"] = grid_mapping
-            encoding = {"basins": {"zlib": True, "complevel": 2, "_FillValue": None}}
-            tmp = ocean_file.with_name(ocean_file.name + ".tmp")
-            ds.to_netcdf(tmp, encoding=encoding, engine="h5netcdf")
-            os.replace(tmp, ocean_file)
+                basins.attrs["grid_mapping"] = grid_mapping
+            # ``basin_mask`` builds its reference field through rioxarray, which
+            # attaches a ``spatial_ref`` coordinate. The real grid-mapping
+            # variable is already in the file, so don't append a second one.
+            basins = basins.drop_vars("spatial_ref", errors="ignore")
+            # Encoding may only be set when the variable is created; on a rerun
+            # the existing (already compressed) variable is overwritten in place.
+            encoding = {} if already_present else {"basins": {"zlib": True, "complevel": 2, "_FillValue": None}}
+            xr.Dataset({"basins": basins}).to_netcdf(ocean_file, mode="a", engine="h5netcdf", encoding=encoding)
             logger.info("Added basin mask to %s", ocean_file.name)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Could not add basin mask to %s: %s", ocean_file, exc)
