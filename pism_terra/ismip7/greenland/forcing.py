@@ -865,7 +865,7 @@ def prepare_observations(
         # surface is floating freeboard, not bed-referenced elevation, so recover
         # the thickness from flotation: freeboard = alpha * H  =>  H = surface / alpha.
         mask = ds_bm_regridded["mask"]
-        thickness_from_flotation = surface / alpha
+        thickness_from_flotation = surface / alpha * 0.7
         # Only recover floating thickness inside the GrIS basin polygons
         # (basin > 0); outside them, mask 0/3 cells are spurious ocean/shelf
         # that would otherwise pick up bogus thicknesses.
