@@ -31,7 +31,7 @@ pathway = "historical"
 
 [time]
 
-'time.start' = "1985-01-01"
+'time.start' = "1990-01-01"
 'time.end' = "2015-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
@@ -56,7 +56,7 @@ pathway = "historical"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,u_ssa,v_ssavelsurf"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat"
 
 [reporting]
 
@@ -76,7 +76,7 @@ pathway = "historical"
 
 [grid]
 
-resolution = "1200m"
+resolution = "900m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
