@@ -24,6 +24,7 @@ Postprocessing.
 import json
 import logging
 import os
+import resource
 import tempfile
 import time
 import warnings
@@ -46,6 +47,30 @@ warnings.filterwarnings("ignore", message="invalid value encountered in cast", c
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_fd_limit() -> None:
+    """
+    Raise the soft open-file limit toward the hard limit.
+
+    Each Dask worker (nanny + process) needs several file descriptors for its
+    pipes and sockets, so starting a handful of workers under a low soft
+    ``RLIMIT_NOFILE`` (1024 on many clusters) fails with
+    ``OSError: [Errno 24] Too many open files`` before any work begins. The
+    hard limit is usually far higher, and raising the soft limit up to it needs
+    no privileges. Failures are logged and ignored — the caller can still run
+    with fewer workers.
+    """
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        # An "unlimited" hard limit cannot be applied verbatim on every platform
+        # (macOS rejects it for NOFILE), so aim for a large finite target.
+        target = 65536 if hard == resource.RLIM_INFINITY else hard
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            logger.info("Raised open-file limit from %s to %s", soft, target)
+    except (ValueError, OSError) as exc:  # pragma: no cover - platform dependent
+        logger.warning("Could not raise open-file limit: %s", exc)
 
 
 def process_file(
@@ -167,6 +192,10 @@ def postprocess_glacier(
     """
 
     start = time.time()
+
+    # Each worker costs several file descriptors; make sure the soft limit is
+    # high enough that the nannies can actually spawn.
+    _raise_fd_limit()
 
     # Keep Dask worker scratch off the (slow, networked) Lustre home/cwd.
     scratch_dir = str(local_directory) if local_directory is not None else tempfile.gettempdir()

@@ -50,6 +50,39 @@ from pism_terra.workflow import (
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
+# Upper bound on Dask workers for the per-basin post-processing step. The run's
+# ``ntasks`` sizes the PISM *MPI* decomposition (40+ on Chinook); handing that
+# straight to Dask spawns one worker process per task, and each nanny needs
+# several file descriptors, so a large run dies with
+# ``OSError: [Errno 24] Too many open files`` before any work starts. The
+# post-processing is a per-basin clip + field sum, so a handful of workers is
+# plenty regardless of how wide the PISM run was.
+_POSTPROCESS_MAX_WORKERS = 8
+
+
+def _postprocess_ntasks(config_cli: dict) -> str:
+    """
+    Build the ``--ntasks`` flag for the post-processing command.
+
+    Clamps the run's MPI task count to :data:`_POSTPROCESS_MAX_WORKERS` so a
+    wide PISM decomposition does not translate into an unusable number of Dask
+    worker processes.
+
+    Parameters
+    ----------
+    config_cli : dict
+        CLI overrides; only ``"ntasks"`` is consulted.
+
+    Returns
+    -------
+    str
+        ``" --ntasks N"`` when a task count is set, else an empty string.
+    """
+    ntasks = config_cli.get("ntasks")
+    if not ntasks:
+        return ""
+    return f" --ntasks {min(int(ntasks), _POSTPROCESS_MAX_WORKERS)}"
+
 
 def _render_forward_run(
     config_file: str | Path,
@@ -423,7 +456,7 @@ def _render_forward_run(
         # Clip the (combined) spatial output to basins and write per-basin
         # scalar sums. Needs a real outline; skip if none was supplied.
         if outline_file != "none":
-            _nt = f" --ntasks {config_cli['ntasks']}" if config_cli.get("ntasks") else ""
+            _nt = _postprocess_ntasks(config_cli)
             post_process_str = (
                 f"pism-ismip7-greenland-postprocess "
                 f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file}{_nt}"
@@ -837,7 +870,7 @@ def _render_inverse_run(
     # scalar sums. Needs a real outline; skip if none was supplied.
     post_process_str = ""
     if outline_file != "none":
-        _nt = f" --ntasks {config_cli['ntasks']}" if config_cli.get("ntasks") else ""
+        _nt = _postprocess_ntasks(config_cli)
         post_process_str = (
             f"pism-ismip7-greenland-postprocess " f"{spatial_file.resolve()} {basin_file.resolve()} {outline_file}{_nt}"
         )
