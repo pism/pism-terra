@@ -873,12 +873,17 @@ def prepare_observations(
         is_floating = (surface > 0) & ((mask == 0) | (mask == 3)) & in_basin
         thickness = xr.where(is_floating, thickness_from_flotation, thickness)
         thickness = thickness.where(thickness > 10, 0)
+        thickness = thickness.where(in_basin, 0)
         thickness.name = "thickness"
         thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
         boot = xr.merge([bed, ftt_mask, surface, thickness, liafr])
     else:
         dem_year = "2007"
-        boot = xr.merge([ds_bm_regridded[["bed", "thickness", "surface"]], ftt_mask, liafr])
+        thickness = ds_bm_regridded["thickness"]
+        thickness = thickness.where(thickness > 10, 0)
+        thickness.name = "thickness"
+        thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
+        boot = xr.merge([ds_bm_regridded[["bed", "surface"]], thickness, ftt_mask, liafr])
 
     # Ellesmere Island sits inside the domain but is not part of the modeled
     # Greenland ice sheet; force it to deep ocean so no ice can grow there.
@@ -967,13 +972,6 @@ def prepare_observations(
         if grid_mapping:
             geo_encoding[var]["grid_mapping"] = grid_mapping
     geo.to_netcdf(geo_file, encoding=geo_encoding, engine="h5netcdf")
-
-    # Velocity observations: collapse the ISMIP7 vx/vy time series with the
-    # inverse-distance-weighting recipe used in pism-ragis
-    # (data/05_prepare_itslive.py), then mirror the post-processing in
-    # pism_terra.glacier.observations.glacier_velocities_from_grid — fillna
-    # for u/v_observed and emit zeta_fixed_mask / vel_misfit_weight so the
-    # downstream PISM inverse run knows which cells carry trustable obs.
 
     ice_mask = ds_bm["icemask_promice"]
     vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
