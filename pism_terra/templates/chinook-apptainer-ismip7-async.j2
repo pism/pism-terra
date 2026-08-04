@@ -44,3 +44,5 @@ mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} app
 {% if run_proj_str %}
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_proj_str }} -output.asynchronous
 {% endif %}
+
+{{ post_process_str }}

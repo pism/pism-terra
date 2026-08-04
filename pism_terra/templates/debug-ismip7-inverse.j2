@@ -1,0 +1,5 @@
+mpirun -np  {{ ntasks | default(8) }} pism {{ run_hist_str }}
+
+{{ post_process_str }}
+
+mpirun -np  {{ ntasks | default(8) }} pismi {{ inv_str }}

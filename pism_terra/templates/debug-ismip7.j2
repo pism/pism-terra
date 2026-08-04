@@ -10,3 +10,5 @@ mpirun -np  {{ ntasks | default(8) }} pism {{ run_proj_str }}
 {{ ism_checker_str }}
 
 {{ post_scalar_str }}
+
+{{ post_process_str }}

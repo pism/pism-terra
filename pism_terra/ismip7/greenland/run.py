@@ -30,7 +30,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
@@ -313,9 +312,11 @@ def _render_forward_run(
             "set_counter": set_counter,
         }
 
-    def _output_files(experiment_id: str, start_str: str, end_str: str, *, ismip7: bool) -> tuple[Path, Path, Path]:
+    def _output_files(
+        experiment_id: str, start_str: str, end_str: str, *, ismip7: bool
+    ) -> tuple[Path, Path, Path, Path]:
         """
-        Build the (state, spatial, scalar) file triple for one PISM invocation.
+        Build the (state, spatial, scalar, basin) file tuple for one PISM invocation.
 
         Uses ISMIP7-conforming names under ``<domain>/<source>/…`` when
         ``output.ISMIP`` is enabled; falls back to the flat
@@ -347,17 +348,21 @@ def _render_forward_run(
         Returns
         -------
         tuple of pathlib.Path
-            ``(state, spatial, scalar)`` — absolute paths for PISM's
-            ``output.file``, ``output.spatial.file`` (with an unexpanded
-            ``{var}`` placeholder that PISM fills in per variable), and
-            ``output.scalar.file``.
+            ``(state, spatial, scalar, basin)`` — absolute paths for PISM's
+            ``output.file``, ``output.spatial.file``, ``output.scalar.file``,
+            and the per-basin scalar file written by the post-processing step.
+            The ISMIP7-tree ``spatial`` carries a ``{var}`` placeholder that
+            PISM fills in per variable (one conforming file per variable); the
+            flat ``spatial`` is a single combined file so it can be fed to
+            ``pism-ismip7-greenland-postprocess`` as one input.
         """
         tag = f"g{resolution}_{name_options}_{start_str}_{end_str}"
         state = state_path / Path(f"state_{tag}.nc")
         if ismip7_ctx is None or not ismip7:
-            spatial = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{{var}}_{start_str}_{end_str}.nc")
+            spatial = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
             scalar = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
-            return state, spatial, scalar
+            basin = scalar_path / Path(f"basin_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
+            return state, spatial, scalar, basin
         end_ts = pd.Timestamp(end_str)
         last_year = end_ts.year - 1 if (end_ts.month == 1 and end_ts.day == 1) else end_ts.year
         time_range = f"{pd.Timestamp(start_str).year}-{last_year}"
@@ -366,13 +371,18 @@ def _render_forward_run(
         ismip7_dir.mkdir(parents=True, exist_ok=True)
         spatial = ismip7_dir / names.filename("{var}")
         scalar = ismip7_dir / f"scalar_{names.stem()}.nc"
-        return state, spatial, scalar
+        basin = ismip7_dir / f"basin_{names.stem()}.nc"
+        return state, spatial, scalar, basin
 
     # Which leg is the ISMIP7 submission product: for a counter-driven run only the
     # designated leg gets ISMIP7 names (the other is an internal continuation with
     # flat names); legacy runs (product_leg is None) keep both legs on ISMIP7 names.
     hist_ismip7 = product_leg in (None, "historical")
     proj_ismip7 = product_leg in (None, "projection")
+
+    # Per-basin post-processing command, populated only for the single-leg run
+    # (counter-driven product runs use the ISMIP7 scalar splitter instead).
+    post_process_str = ""
 
     if single_leg:
         # --- Single-pathway run (no ISMIP7 counter) ---
@@ -383,7 +393,7 @@ def _render_forward_run(
         experiment_id = "historical" if single_is_historical else pathway
         proj_experiment = experiment_id
         run_projection = False
-        state_one, spatial_one, scalar_one = _output_files(experiment_id, start, end, ismip7=True)
+        state_one, spatial_one, scalar_one, basin_one = _output_files(experiment_id, start, end, ismip7=True)
         run_one = run_hist
         run_one.update(
             {
@@ -410,12 +420,20 @@ def _render_forward_run(
         # post-processing block below expects (scalar_hist, gated by hist_ismip7).
         scalar_hist = scalar_one
         scalar_proj = None
+        # Clip the (combined) spatial output to basins and write per-basin
+        # scalar sums. Needs a real outline; skip if none was supplied.
+        if outline_file != "none":
+            _nt = f" --ntasks {config_cli['ntasks']}" if config_cli.get("ntasks") else ""
+            post_process_str = (
+                f"pism-ismip7-greenland-postprocess "
+                f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file}{_nt}"
+            )
     else:
         # --- Counter-driven ISMIP7 two-leg run (historical -> projection) ---
         # Historical experiments (C001/C002) are historical-only: skip the projection
         # continuation (and its forcing) entirely (product_leg == "historical").
         run_projection = product_leg != "historical"
-        state_hist, spatial_hist, scalar_hist = _output_files("historical", start, "2015-01-01", ismip7=hist_ismip7)
+        state_hist, spatial_hist, scalar_hist, _ = _output_files("historical", start, "2015-01-01", ismip7=hist_ismip7)
         proj_experiment = str(cfg.run_info.experiment) if cfg.run_info.experiment else "none"
 
         run_hist.update(
@@ -439,7 +457,7 @@ def _render_forward_run(
         if run_projection:
             # Projection end comes from the config (time.end), which the counter
             # resolver sets from the Core Experiment's proj_end_year (2100 or 2300).
-            state_proj, spatial_proj, scalar_proj = _output_files(
+            state_proj, spatial_proj, scalar_proj, _ = _output_files(
                 proj_experiment, "2015-01-01", end, ismip7=proj_ismip7
             )
 
@@ -503,6 +521,7 @@ def _render_forward_run(
 
     params.update({"run_hist_str": run_hist_str})
     params.update({"run_proj_str": run_proj_str})
+    params.update({"post_process_str": post_process_str})
 
     # Point the compliance checker at this run's actual ISMIP7 submission
     # directory (output/<domain>/<source>/<ism>/<set>/<set_counter>/) rather than a
@@ -764,8 +783,10 @@ def _render_inverse_run(
     inv.update(inv_overrides)
 
     scalar_file = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
+    basin_file = scalar_path / Path(f"basin_g{resolution}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
+
     run.update(
         {
             "output.file": state_file.resolve(),
@@ -806,25 +827,22 @@ def _render_inverse_run(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
-    run_toml = {
-        "basin": {"basin": "Mouginot/Rignot", "outline": outline_file},
-        "output": {
-            "spatial": str(spatial_file.resolve()),
-            "state": str(state_file.resolve()),
-        },
-        "config": run,
-    }
-    post_path = output_path / Path("post_processing")
-    post_path.mkdir(parents=True, exist_ok=True)
-
-    post_file = post_path / Path(f"g{resolution}_{name_options}_{start}_{end}.toml")
-    with open(post_file, "w", encoding="utf-8") as toml_file:
-        toml.dump(run_toml, toml_file)
-
     params.update({"run_str": run_str})
+    # The inverse template names the forward-prior pism slot ``run_hist_str``
+    # (shared with the forward template); expose ``run_str`` under both.
+    params.update({"run_hist_str": run_str})
     params.update({"inv_str": inv_str})
-    params.update({"post_script": "pism-ismip7-greenland-postprocess"})
-    params.update({"post_file": post_file})
+
+    # Post-process the forward prior's (combined) spatial output into per-basin
+    # scalar sums. Needs a real outline; skip if none was supplied.
+    post_process_str = ""
+    if outline_file != "none":
+        _nt = f" --ntasks {config_cli['ntasks']}" if config_cli.get("ntasks") else ""
+        post_process_str = (
+            f"pism-ismip7-greenland-postprocess " f"{spatial_file.resolve()} {basin_file.resolve()} {outline_file}{_nt}"
+        )
+    params.update({"post_process_str": post_process_str})
+
     rendered_script = "" if debug else template.render(params)
 
     run_script_path = path / Path("run_scripts")
@@ -835,7 +853,8 @@ def _render_inverse_run(
     run_script.write_text(rendered_script)
 
     print(f"\nJob script written to {run_script.resolve()}\n")
-    print(f"Postprocessing script written to {post_file.resolve()}\n")
+    if post_process_str:
+        print(f"Per-basin post-processing will write {basin_file.resolve()}\n")
 
 
 def _nullable_string(argument_string: str) -> str | None:

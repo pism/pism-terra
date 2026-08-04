@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=unused-import,unused-variable
+# pylint: disable=unused-import,unused-variable,too-many-positional-arguments
 
 """
 Postprocessing.
@@ -23,6 +23,8 @@ Postprocessing.
 
 import json
 import logging
+import os
+import tempfile
 import time
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -47,20 +49,27 @@ logger = logging.getLogger(__name__)
 
 
 def process_file(
-    infile: str | Path, basin_file: str | Path, client: Client, column: str = "SUBREGION1", crs: str = "EPSG:3413"
+    infile: str | Path,
+    outfile: str | Path,
+    outlinefile: str | Path,
+    client: Client,
+    column: str = "SUBREGION1",
+    crs: str = "EPSG:3413",
 ):
     """
-    Clip a NetCDF dataset to the glacier geometry defined in an BASIN file.
+    Clip a NetCDF dataset to basin geometries and write per-basin scalar sums.
 
-    This function reads a NetCDF file containing geospatial data and clips it to the
-    geometry defined in a glacier outline file (e.g., BASIN shapefile). The clipped dataset
-    is saved to a new NetCDF file prefixed with "clipped_".
+    Reads ``infile``, clips it to each geometry in ``outlinefile``, field-sums
+    the clipped result over x/y per basin, and writes the resulting per-basin
+    scalar dataset to ``outfile``. No spatial (clipped) file is written.
 
     Parameters
     ----------
     infile : str or Path
         Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
-    basin_file : str or Path
+    outfile : str or Path
+        Path to the output netCDF.
+    outlinefile : str or Path
         Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
         the geometry to clip the dataset to.
     client : dask.Client
@@ -72,13 +81,8 @@ def process_file(
         CRS code applied to the input dataset before clipping.
     """
 
-    infile = Path(infile)
-    infile_name = infile.name
-    infile_path = infile.parent
-    clipped_file = infile_path / Path("clipped_" + infile_name)
-    scalar_file = infile_path / Path("fldsum_" + infile_name)
-
-    basin = gpd.read_file(basin_file)
+    infile_name = Path(infile).name
+    basin = gpd.read_file(outlinefile)
 
     start = time.time()
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
@@ -91,6 +95,11 @@ def process_file(
         engine="h5netcdf",
     )
 
+    # Bounds/mapping vars (``x_bnds``/``y_bnds``/``mapping``) carry only one of
+    # the x/y dims; keeping them would inject a dangling x/y dimension back into
+    # the per-basin scalar output on merge. Drop them up front.
+    ds = ds.drop_vars(["x_bnds", "x_bounds", "y_bnds", "y_bounds", "mapping"], errors="ignore")
+
     # Separate variables that lack spatial (x, y) dimensions, as rio.clip cannot handle them
     non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
     ds_non_spatial = ds[non_spatial_vars]
@@ -98,68 +107,76 @@ def process_file(
     ds = client.persist(ds)
     progress(ds)
 
-    gis_clipped = ds.rio.clip(basin[basin[column] == "GIS"].geometry, drop=False)
-    gis_clipped = xr.merge([gis_clipped, ds_non_spatial])
-
-    logger.info("Writing %s", clipped_file)
-    comp = {"zlib": True, "complevel": 2}
-    encoding = {var: comp for var in gis_clipped.data_vars}
-    # Note: h5netcdf write garbles dim names on PISM state files (mixed
-    # 3D z_sigma vars + 0-D string pism_config). Stay on the default netcdf4
-    # engine here even though that's slower.
-    write_clipped = gis_clipped.to_netcdf(clipped_file, encoding=encoding, compute=False)
-    future_clipped = client.compute(write_clipped)
-    progress(future_clipped)
-
     dss = []
     for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
         ds_clipped = ds.rio.clip([row.geometry], drop=False)
+        # ``ice_mass_glacierized`` needs both ice_mass and thk in the spatial
+        # file; some configs write a reduced var set, so only compute it when
+        # both are present.
+        if "ice_mass" in ds_clipped.data_vars and "thk" in ds_clipped.data_vars:
+            ds_clipped["ice_mass_glacierized"] = ds_clipped["ice_mass"].where(ds_clipped["thk"] > 10)
         ds_sum = ds_clipped.sum(dim=["y", "x"]).compute()
         dss.append(ds_sum.expand_dims({"basin": [row[column]]}))
 
     scalar = xr.concat(dss, dim="basin")
 
-    logger.info("Writing %s", scalar_file)
+    logger.info("Writing %s", outfile)
     # Keep non-spatial vars (e.g. pism_config)
     extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims]
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
+    comp = {"zlib": True, "complevel": 2}
     encoding_scalar = {var: comp for var in scalar.data_vars}
-    scalar.to_netcdf(scalar_file, encoding=encoding_scalar)
+    scalar.to_netcdf(outfile, encoding=encoding_scalar)
 
     end = time.time()
     time_elapsed = end - start
     logger.info("Time elapsed for %s: %.0fs", infile_name, time_elapsed)
 
 
-def postprocess_glacier(config_file: str | Path, n_workers: int = 4):
+def postprocess_glacier(
+    infile: str | Path,
+    outfile: str | Path,
+    outlinefile: str | Path,
+    n_workers: int = 4,
+    local_directory: str | Path | None = None,
+):
     """
     Postprocess ISMIP7 Greenland output by clipping to basin geometries.
 
-    Reads a TOML run-configuration, opens the configured ``spatial`` output
-    NetCDF, and clips it to the basin outline using a Dask client.
+    Opens ``infile`` and clips it to the basin outline using a Dask client,
+    writing per-basin scalar sums to ``outfile``.
 
     Parameters
     ----------
-    config_file : str or Path
-        Path to a TOML file containing PISM run configuration with at least
-        ``[basin].outline`` and ``[output].spatial`` keys.
+    infile : str or Path
+        Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
+    outfile : str or Path
+        Path to the output netCDF.
+    outlinefile : str or Path
+        Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
+        the geometry to clip the dataset to.
     n_workers : int, optional
         Number of Dask workers, by default 4.
+    local_directory : str or Path or None, optional
+        Directory where Dask workers write scratch data. On network file
+        systems (e.g. Lustre on Chinook) the default scratch location is slow
+        and Dask warns about it; point this at node-local disk instead. When
+        ``None`` (default), fall back to :func:`tempfile.gettempdir`, which
+        honours ``$TMPDIR`` (SLURM sets it to node-local storage).
     """
 
-    config_toml = toml.load(config_file)
-    config = json.loads(json.dumps(config_toml))
-
     start = time.time()
-    outline_file = config["basin"]["outline"]
 
-    client = Client(n_workers=n_workers, threads_per_worker=1)
+    # Keep Dask worker scratch off the (slow, networked) Lustre home/cwd.
+    scratch_dir = str(local_directory) if local_directory is not None else tempfile.gettempdir()
+    os.makedirs(scratch_dir, exist_ok=True)
+    logger.info("Dask worker scratch directory: %s", scratch_dir)
+
+    client = Client(n_workers=n_workers, threads_per_worker=1, local_directory=scratch_dir)
     logger.info("Dask dashboard: %s", client.dashboard_link)
 
-    for o in ["spatial"]:
-        s_file = Path(config["output"][o])
-        process_file(s_file, outline_file, client)
+    process_file(infile, outfile, outlinefile, client)
 
     client.close()
 
@@ -175,7 +192,7 @@ def main():
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Postprocess KITP Greenland."
+    parser.description = "Postprocess ISMIP7 Greenland."
     parser.add_argument(
         "--ntasks",
         help="Sets number of tasks.",
@@ -183,19 +200,40 @@ def main():
         default=4,
     )
     parser.add_argument(
-        "RUN_FILE",
-        help="CONFIG TOML.",
+        "--local-directory",
+        help="Directory for Dask worker scratch data. On network file systems "
+        "(e.g. Lustre) point this at node-local disk to avoid slow scratch I/O. "
+        "Defaults to $TMPDIR (or the system temp dir).",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "INFILE",
+        help="input file.",
+        nargs=1,
+    )
+    parser.add_argument(
+        "OUTFILE",
+        help="output file.",
+        nargs=1,
+    )
+    parser.add_argument(
+        "OUTLINEFILE",
+        help="basin outline file (GeoPackage/shapefile).",
         nargs=1,
     )
 
     options, unknown = parser.parse_known_args()
-    config_file = options.RUN_FILE[0]
+    infile = options.INFILE[0]
+    outfile = options.OUTFILE[0]
+    outlinefile = options.OUTLINEFILE[0]
     ntasks = options.ntasks
+    local_directory = options.local_directory
 
-    config_path = Path(config_file).resolve().parent
+    config_path = Path(outfile).resolve().parent
     setup_logging(config_path / "postprocess.log")
 
-    postprocess_glacier(config_file, n_workers=ntasks)
+    postprocess_glacier(infile, outfile, outlinefile, n_workers=ntasks, local_directory=local_directory)
 
 
 if __name__ == "__main__":
