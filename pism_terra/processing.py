@@ -30,7 +30,159 @@ from collections.abc import Hashable, Mapping
 from typing import Any
 
 import numpy as np
+import pint_xarray  # pylint: disable=unused-import
 import xarray as xr
+
+
+def integrate_rate(
+    da: xr.DataArray,
+    dim: str = "time",
+    method: str = "left",
+    widths: xr.DataArray | None = None,
+    to: str | None = None,
+    skipna: bool = True,
+) -> xr.DataArray:
+    """
+    Cumulatively integrate a rate over a possibly irregular datetime axis.
+
+    Values carrying a ``[time]`` dimension (Gt/yr, m^2/day, kg/s, W) are weighted by the
+    duration of the interval each one represents before accumulating, so unequal spacing
+    is handled correctly. The time unit is never parsed out of the unit string: interval
+    widths are built in nanoseconds and pint reconciles them against whatever denominator
+    the rate carries, which also works for derived units such as W where no explicit time
+    unit appears.
+
+    Integration runs along `dim` only; any other dimensions (``uq_id``, ``exp_id``, ``x``,
+    ``y``, ...) are carried through independently, so the result keeps the input's shape,
+    dimension order and coordinates. `dim` need not be the leading axis.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        The rate to integrate. Either pint-quantified or carrying ``attrs["units"]``.
+        May have any number of dimensions in addition to `dim`.
+    dim : str, optional
+        The name of the time dimension, by default "time".
+    method : str, optional
+        Quadrature rule used when `widths` is None, by default "left".
+        "left" holds each rate constant until the next sample, which is exact when the
+        values are interval means. "trapezoid" interpolates linearly between samples,
+        which suits instantaneous rates. Both produce ``n - 1`` increments, so the result
+        starts at zero on the first timestamp and the final sample contributes nothing.
+    widths : xr.DataArray or None, optional
+        Explicit per-sample interval widths, by default None. One-dimensional along `dim`,
+        and broadcast against the other dimensions. Either ``timedelta64`` or a
+        pint-quantified duration; unquantified numeric widths are assumed to be days, which
+        matches ``time.dt.days_in_month``. When given, every sample contributes and `method`
+        is ignored.
+    to : str or None, optional
+        Target unit for the result, by default None. When None the reduced form chosen by
+        pint is used, which collapses cleanly only when the time powers cancel -- pass an
+        explicit unit for cases such as W (``to="J"``).
+    skipna : bool, optional
+        If True, treat NaN increments as zero so gaps contribute no mass, by default True.
+
+    Returns
+    -------
+    xr.DataArray
+        Pint-quantified cumulative integral along `dim`.
+
+    Raises
+    ------
+    ValueError
+        If `da` has no ``[time]`` dimension, if `dim` is not a dimension of `da`, if
+        `method` is not recognized, or if `widths` is not one-dimensional.
+
+    Notes
+    -----
+    Conversions involving ``year`` use pint's Julian year of 365.25 days. Pass `widths`
+    explicitly if the rate is defined against calendar years.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> import xarray as xr
+    >>> time = pd.to_datetime(["2020-01-01", "2020-01-02"])
+    >>> rate = xr.DataArray([2.0, 2.0], coords={"time": time}, dims="time").pint.quantify("kg/s")
+    >>> integrate_rate(rate).pint.magnitude
+    array([     0., 172800.])
+    """
+    if da.pint.units is None:
+        da = da.pint.quantify()
+    units = da.pint.units
+    ureg = units._REGISTRY  # pylint: disable=protected-access
+
+    if units.dimensionality.get("[time]", 0) == 0:
+        raise ValueError(f"{units} has no [time] dimension -- not a rate")
+    if dim not in da.dims:
+        raise ValueError(f"{dim!r} is not a dimension of the input, got {tuple(da.dims)}")
+
+    magnitude = da.pint.magnitude
+    axis = da.get_axis_num(dim)
+
+    def along(arr, window):
+        """
+        Slice `arr` with `window` on the integration axis, taking every other axis whole.
+
+        Parameters
+        ----------
+        arr : array_like
+            Array to slice, with the same rank as the input rate.
+        window : slice
+            Slice applied to the integration axis.
+
+        Returns
+        -------
+        array_like
+            View of `arr` restricted to `window` along the integration axis.
+        """
+        index: list = [slice(None)] * arr.ndim
+        index[axis] = window
+        return arr[tuple(index)]
+
+    # Interval widths are 1-D along `dim`; reshape so they broadcast over the other dims.
+    shape: list[int] = [1] * da.ndim
+    shape[axis] = -1
+
+    if widths is not None:
+        if widths.ndim != 1:
+            raise ValueError(f"widths must be one-dimensional along {dim!r}, got {widths.ndim} dims")
+        width_values = np.asarray(widths.pint.magnitude if widths.pint.units else widths)
+        if np.issubdtype(width_values.dtype, np.timedelta64):
+            delta = ureg.Quantity(width_values / np.timedelta64(1, "ns"), "ns")
+        else:
+            delta = ureg.Quantity(
+                width_values.astype("float64"),
+                str(widths.pint.units) if widths.pint.units else "day",
+            )
+        increments = magnitude * delta.reshape(shape)
+    else:
+        delta = ureg.Quantity(da[dim].diff(dim).values / np.timedelta64(1, "ns"), "ns").reshape(shape)
+        if method == "trapezoid":
+            increments = 0.5 * (along(magnitude, slice(None, -1)) + along(magnitude, slice(1, None))) * delta
+        elif method == "left":
+            increments = along(magnitude, slice(None, -1)) * delta
+        else:
+            raise ValueError(f"unknown method {method!r}, expected 'left' or 'trapezoid'")
+
+    increments = (increments * units).to(to) if to else (increments * units).to_reduced_units()
+    values = np.nan_to_num(increments.magnitude) if skipna else increments.magnitude
+    cumulative = np.cumsum(values, axis=axis)
+    if widths is None:
+        # The diff-based rules yield n - 1 increments; the series starts at zero.
+        leading = list(values.shape)
+        leading[axis] = 1
+        cumulative = np.concatenate([np.zeros(leading, dtype=cumulative.dtype), cumulative], axis=axis)
+
+    out = xr.DataArray(
+        ureg.Quantity(cumulative, increments.units),
+        coords=da.coords,
+        dims=da.dims,
+        name=f"cumulative_{da.name}" if da.name else "cumulative",
+    )
+    if "long_name" in da.attrs:
+        out.attrs["long_name"] = f"Cumulative {da.attrs['long_name']}"
+    return out
 
 
 def preprocess_netcdf(
