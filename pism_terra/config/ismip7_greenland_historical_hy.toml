@@ -25,7 +25,7 @@ regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
 obs_file = "obs_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
-retreat_file = "frontretreat_g450m_1985-7-1.nc"
+retreat_file = "pism_g900m_frontretreat_calfin_1980.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
 

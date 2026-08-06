@@ -164,7 +164,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         )
 
     # --- Observations (boot, heatflux, velocity) ---
-    obs_files: dict[str, Any] = {}
+    obs_files_1985: dict[str, Any] = {}
+    obs_files_2007: dict[str, Any] = {}
     if "observations" in selected:
         logger.info("-" * 120)
         logger.info("Boot File")
@@ -232,7 +233,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     input_files: list = []
     if "grid" in selected:
         input_files.append(grid_file)
-    input_files += list(obs_files.values())
+    # Both calls return the same key set; the heat-flux file is not year-tagged and
+    # is therefore identical between them, so de-duplicate while keeping order.
+    input_files += list(dict.fromkeys(list(obs_files_1985.values()) + list(obs_files_2007.values())))
     if retreat_file is not None:
         input_files.append(retreat_file)
     input_files += list(forcing_files)
@@ -252,7 +255,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         "grid_file": grid_file,
         "boot_file_1985": obs_files_1985.get("boot_file"),
         "boot_file_2007": obs_files_2007.get("boot_file"),
-        "heatflux_file": obs_files.get("heatflux_file"),
+        "heatflux_file": obs_files_1985.get("heatflux_file") or obs_files_2007.get("heatflux_file"),
         "forcing_files": forcing_files,
         "retreat_file": retreat_file,
         "obs_file_1985": obs_files_1985.get("obs_file"),

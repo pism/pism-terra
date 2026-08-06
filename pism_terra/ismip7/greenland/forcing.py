@@ -1078,7 +1078,7 @@ def prepare_calfin(
     resolution: int,
     x_bnds: list | np.ndarray,
     y_bnds: list | np.ndarray,
-    freq: str = "ME",
+    freq: str = "MS",
     force_overwrite: bool = False,
     n_workers: int = 4,
 ) -> str | Path:
