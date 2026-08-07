@@ -842,15 +842,37 @@ def prepare_observations(
     )
 
     if target_grid is not None:
-        ds_bm_regridded = ds_bm[["bed", "thickness", "surface", "mask"]].regrid.conservative(target_grid)
+        ds_bm_regridded = ds_bm[["bed", "thickness", "surface"]].regrid.conservative(target_grid)
+        # ``mask`` is a categorical class label (0 = ocean, 1 = ice-free land,
+        # 2 = grounded ice, 3 = floating ice, 4 = non-Greenland land), so it must
+        # not be area-averaged. Conservative regridding blends classes across
+        # every coastline and shelf edge — over Petermann it turns 4 classes into
+        # 41 distinct values, 4.4% of cells non-integer — which makes the exact
+        # ``== 0`` / ``== 3`` tests below miss precisely the mixed cells they need
+        # to catch. Majority resampling keeps the field categorical. Ties are
+        # broken by ``idxmax`` (lowest class wins), so the result is reproducible.
+        # ``sortby("y")``: BedMachine's y axis descends, and unlike the
+        # conservative regridder the flox-based majority reduction needs
+        # ascending coordinates (it otherwise reduces over an empty bin and
+        # raises "zero-size array to reduction operation maximum").
+        ds_bm_regridded["mask"] = (
+            ds_bm["mask"].sortby("y").regrid.most_common(target_grid, values=np.array([0, 1, 2, 3, 4]), time_dim=None)
+        )
         gebco_p = download_gebco(target_dir=input_path)
         gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
         gebco_bm_regridded = gebco.rio.reproject_match(
             ds_bm_regridded.rio.write_crs("EPSG:3413"), resampling=Resampling.bilinear
         ).compute()
-        # Use GEBCO bathymetry over ocean (mask == 0), and also to fill any gaps in
-        # BedMachine's bed; keep BedMachine's bed everywhere else.
-        use_gebco = (ds_bm_regridded["mask"] == 0) | ds_bm_regridded["bed"].isnull()
+        # GEBCO fills only what lies outside BedMachine's domain (where the target
+        # grid extends past its coverage, leaving NaN after regridding). It must
+        # NOT replace BedMachine over ocean: BedMachine resolves Greenland's fjord
+        # bathymetry, where GEBCO is far too shallow — in Ilulissat Icefjord a
+        # median -209 m against BedMachine's -558 m. Substituting it there both
+        # publishes a bed that grounds ice which should float and, via the
+        # flotation cap below, carves the coarse bathymetry into the ice
+        # thickness. BedMachine has no NaN bed inside its own domain, so this
+        # keeps its bed everywhere it exists.
+        use_gebco = ds_bm_regridded["bed"].isnull()
         ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(~use_gebco, gebco_bm_regridded["elevation"])
         ds_bm_regridded = ds_bm_regridded.fillna(0)
     else:
@@ -876,12 +898,23 @@ def prepare_observations(
         surface = ds["surface"].regrid.conservative(target_grid)
         surface = surface.where(surface > 0, 0)
         surface.name = "surface"
-        thickness = xr.where(surface > 0, surface - bed, 0)
+        mask = ds_bm_regridded["mask"]
+        # Bed-referenced thickness only where the ice is actually grounded. The
+        # surface DEM and BedMachine's mask are different products on different
+        # grids, so their coastlines disagree; applying ``surface - bed`` to a
+        # cell whose surface is a valley wall but whose bed is the fjord floor
+        # produced >1500 m of phantom ice along Petermann's margins.
+        thickness = xr.where((surface > 0) & (mask == 2), surface - bed, 0)
         # In the ocean (mask == 0) and on ice shelves (mask == 3) a positive
         # surface is floating freeboard, not bed-referenced elevation, so recover
         # the thickness from flotation: freeboard = alpha * H  =>  H = surface / alpha.
-        mask = ds_bm_regridded["mask"]
-        thickness_from_flotation = surface / alpha * 0.7
+        # Cap that by the local water depth: a floating column of thickness H
+        # draws (rho_ice / rho_sea_water) * H of water and cannot float in less,
+        # so H <= depth * rho_sea_water / rho_ice. Without the cap the 1/alpha
+        # (~8.7x) amplification turns a single DEM cell contaminated by the fjord
+        # wall into hundreds of metres of ice right at the calving front.
+        max_floating_thickness = (-bed * rho_sea_water / rho_ice).clip(min=0)
+        thickness_from_flotation = np.minimum(surface / alpha, max_floating_thickness)
         # Only recover floating thickness inside the GrIS basin polygons
         # (basin > 0); outside them, mask 0/3 cells are spurious ocean/shelf
         # that would otherwise pick up bogus thicknesses.
