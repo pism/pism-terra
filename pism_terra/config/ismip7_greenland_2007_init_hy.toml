@@ -9,6 +9,7 @@
 'run_info.ism' = "PISM"
 'run_info.domain' = "GrIS"
 'run_info.set' = "Init"
+'run_info.experiment' = "inverse"
 
 [campaign]
 
@@ -19,13 +20,13 @@ historical_start_year = "1978"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
-boot_file = "boot_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_2007_g450m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
 regrid_file = "g900m_2007_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
-obs_file = "obs_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
-retreat_file = "frontretreat_g450m_2007-7-1.nc"
+obs_file = "obs_2007_g45m_GreenlandObsISMIP7-v1.3.nc"
+retreat_file = "pism_g450m_frontretreat_calfin_2007.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
 
@@ -114,7 +115,7 @@ model = 'hybrid'
 
 'stress_balance.model' = "ssa+sia"
 'stress_balance.ssa.method' = "fd"
-'stress_balance.calving_front_stress_bc' = 'no'
+'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.sia.max_diffusivity' = 100000.0
 
 [iceflow]
@@ -294,10 +295,10 @@ bp_snes_rtol = 1e-3
 'inverse.stress_balance.method' = "tikhonov_blmvm"
 'inverse.stress_balance.tauc_min' = 1e4
 'inverse.stress_balance.tauc_max' = 5e7
-'inverse.tikhonov.penalty_weight' = 100
+'inverse.tikhonov.penalty_weight' = 1e5
 'inverse.tikhonov.atol' = 1e-7
 'inverse.use_zeta_fixed_mask' = "yes"
-'inverse.use_design_prior' = "yes"
+'inverse.use_design_prior' = "no"
 'remove_sia' = "yes"
 ssafem_ksp_type = "gmres"
 ssafem_pc_type = "asm"
