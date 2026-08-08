@@ -21,7 +21,7 @@ boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
 regrid_file = "g900m_id_BAYES-MEDIAN_HO.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+outline_file = "mouginot_basins_w_shelves.gpkg"
 obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 [time]

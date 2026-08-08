@@ -32,13 +32,15 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
 import cf_xarray
+import dask.array as dask_array
 import geopandas as gpd
+import numpy as np
 import rioxarray
 import toml
 import xarray as xr
 from dask.distributed import Client, progress
 from pyfiglet import Figlet
-from tqdm import tqdm
+from rasterio.features import geometry_mask
 
 from pism_terra.log import setup_logging
 
@@ -73,6 +75,68 @@ def _raise_fd_limit() -> None:
         logger.warning("Could not raise open-file limit: %s", exc)
 
 
+def basin_masks(
+    ds: xr.Dataset,
+    basin: gpd.GeoDataFrame,
+    column: str = "SUBREGION1",
+    all_touched: bool = False,
+) -> list[tuple[str, xr.DataArray]]:
+    """
+    Rasterize each basin polygon onto the dataset grid, once.
+
+    Returns one boolean mask per basin, wrapped as a Dask-backed
+    :class:`xarray.DataArray` chunked to match ``ds`` so that masking does not
+    force a rechunk. The rasterization matches ``rio.clip(..., drop=False)``
+    exactly: :func:`rasterio.features.geometry_mask` with the same transform and
+    ``all_touched``, so a cell belongs to a basin under the same rule.
+
+    Separate per-basin masks are used rather than a single integer label array
+    because nothing guarantees the outlines partition the grid. Older basin
+    files bundle a whole-ice-sheet ``GIS`` polygon that overlaps every regional
+    basin, and even ``mouginot_basins_w_shelves.gpkg`` leaves one cell claimed
+    by both ``NO`` and ``NW``; a label array can hold only one basin per cell
+    and would silently drop the rest.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with a CRS and spatial dims set (see ``rio.write_crs`` /
+        ``rio.set_spatial_dims``). Only its grid is used.
+    basin : geopandas.GeoDataFrame
+        Basin outlines, already in the dataset CRS.
+    column : str, default "SUBREGION1"
+        Column holding the basin name.
+    all_touched : bool, default False
+        Passed to :func:`rasterio.features.geometry_mask`. ``False`` selects
+        cells whose center falls inside the polygon.
+
+    Returns
+    -------
+    list of (str, xarray.DataArray)
+        ``(basin name, boolean mask)`` pairs, in ``basin`` row order.
+    """
+    transform = ds.rio.transform(recalc=True)
+    shape = (int(ds.rio.height), int(ds.rio.width))
+    # Match the dataset's own y/x chunking so ``ds.where(mask)`` stays blockwise.
+    chunks = (ds.chunksizes.get("y", shape[0]), ds.chunksizes.get("x", shape[1]))
+
+    masks = []
+    for _, row in basin.iterrows():
+        mask = geometry_mask(
+            [row.geometry],
+            out_shape=shape,
+            transform=transform,
+            invert=True,
+            all_touched=all_touched,
+        )
+        name = row[column]
+        if not mask.any():
+            logger.warning("Basin %s covers no grid cells; its sums will be zero", name)
+        masks.append((name, xr.DataArray(dask_array.from_array(mask, chunks=chunks), dims=("y", "x"))))
+
+    return masks
+
+
 def process_file(
     infile: str | Path,
     outfile: str | Path,
@@ -80,30 +144,41 @@ def process_file(
     client: Client,
     column: str = "SUBREGION1",
     crs: str = "EPSG:3413",
+    total_name: str | None = "GIS",
 ):
     """
-    Clip a NetCDF dataset to basin geometries and write per-basin scalar sums.
+    Reduce a NetCDF dataset to per-basin scalar sums and write them to ``outfile``.
 
-    Reads ``infile``, clips it to each geometry in ``outlinefile``, field-sums
-    the clipped result over x/y per basin, and writes the resulting per-basin
-    scalar dataset to ``outfile``. No spatial (clipped) file is written.
+    The basin outlines are rasterized onto the dataset grid once, then every
+    basin sum is assembled into a single Dask graph and evaluated in one pass:
+    each chunk of ``infile`` is read and decompressed exactly once and feeds all
+    the per-basin reductions. Peak memory is a chunk, not the dataset, so this
+    does not depend on the cluster being able to hold the file.
+
+    No spatial (clipped) file is written.
 
     Parameters
     ----------
     infile : str or Path
-        Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
+        Path to the NetCDF file to reduce. Must contain x/y spatial dimensions.
     outfile : str or Path
         Path to the output netCDF.
     outlinefile : str or Path
         Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
-        the geometry to clip the dataset to.
+        the basins to reduce over.
     client : dask.Client
         Dask client.
     column : str, default "SUBREGION1"
-        Name of the column in ``basin_file`` used to identify basins (e.g.
-        ``"GIS"`` is selected for the merged-basin clip).
+        Name of the column in ``basin_file`` used to identify basins.
     crs : str, default "EPSG:3413"
-        CRS code applied to the input dataset before clipping.
+        CRS code applied to the input dataset before rasterizing the outlines.
+    total_name : str or None, default "GIS"
+        Name of an extra whole-domain basin appended as the sum over the basins
+        in ``outlinefile``. Skipped when the outlines already contain a basin of
+        this name (older files carry their own ``GIS`` polygon), or when
+        ``None``. Note that this total covers only what the outlines cover: with
+        ``mouginot_basins_w_shelves.gpkg`` about 0.2% of icy cells — peripheral
+        glaciers and ice caps — fall outside every basin and are not counted.
     """
 
     infile_name = Path(infile).name
@@ -125,25 +200,49 @@ def process_file(
     # the per-basin scalar output on merge. Drop them up front.
     ds = ds.drop_vars(["x_bnds", "x_bounds", "y_bnds", "y_bounds", "mapping"], errors="ignore")
 
-    # Separate variables that lack spatial (x, y) dimensions, as rio.clip cannot handle them
+    # Separate variables that lack spatial (x, y) dimensions, as they cannot be
+    # reduced over x/y
     non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
     ds_non_spatial = ds[non_spatial_vars]
     ds = ds.drop_vars(non_spatial_vars).rio.write_crs(crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
-    ds = client.persist(ds)
-    progress(ds)
 
-    dss = []
-    for _, row in tqdm(basin.iterrows(), total=len(basin), desc="Clipping basins"):
-        ds_clipped = ds.rio.clip([row.geometry], drop=False)
-        # ``ice_mass_glacierized`` needs both ice_mass and thk in the spatial
-        # file; some configs write a reduced var set, so only compute it when
-        # both are present.
-        if "ice_mass" in ds_clipped.data_vars and "thk" in ds_clipped.data_vars:
-            ds_clipped["ice_mass_glacierized"] = ds_clipped["ice_mass"].where(ds_clipped["thk"] > 10)
-        ds_sum = ds_clipped.sum(dim=["y", "x"]).compute()
-        dss.append(ds_sum.expand_dims({"basin": [row[column]]}))
+    # ``ice_mass_glacierized`` needs both ice_mass and thk in the spatial file;
+    # some configs write a reduced var set, so only compute it when both are
+    # present. Masking is elementwise, so deriving it before the basin masks are
+    # applied gives the same per-basin sums as deriving it after.
+    if "ice_mass" in ds.data_vars and "thk" in ds.data_vars:
+        ds["ice_mass_glacierized"] = ds["ice_mass"].where(ds["thk"] > 10)
 
-    scalar = xr.concat(dss, dim="basin")
+    if "grounding_line_flux" in ds.data_vars:
+        ds["grounding_line_flux_nonneg"] = ds["grounding_line_flux"].where(ds["grounding_line_flux"] < 0)
+
+    # ``where`` promotes integer variables to float so it can write NaN outside
+    # the basin. Remember them and restore the dtype after summing, so the output
+    # schema does not depend on how the masking is done. (Sums of small integers
+    # over a Greenland grid stay far inside float64's exact-integer range.)
+    integer_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.integer)]
+
+    masks = basin_masks(ds, basin, column=column)
+    logger.info("Reducing over %d basins in a single pass", len(masks))
+
+    # One graph for every basin. The per-basin branches share the same source
+    # chunk tasks, so Dask reads each chunk once and fans it out to all of them.
+    lazy = xr.concat(
+        [ds.where(mask).sum(dim=["y", "x"]).expand_dims({"basin": [name]}) for name, mask in masks],
+        dim="basin",
+    )
+
+    future = client.compute(lazy)
+    progress(future)
+    scalar = future.result()
+
+    for var in integer_vars:
+        scalar[var] = scalar[var].round().astype(np.int64)
+
+    if total_name is not None and total_name not in set(scalar["basin"].values):
+        total = scalar.sum(dim="basin").expand_dims({"basin": [total_name]})
+        scalar = xr.concat([scalar, total], dim="basin")
+        logger.info("Added %s as the sum over %d basins", total_name, len(masks))
 
     logger.info("Writing %s", outfile)
     # Keep non-spatial vars (e.g. pism_config)

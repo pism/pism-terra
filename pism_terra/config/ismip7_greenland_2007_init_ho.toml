@@ -7,9 +7,8 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.counter' = "C001"
 'run_info.domain' = "GrIS"
-'run_info.set' = "CORE"
+'run_info.set' = "Init"
 
 [campaign]
 
@@ -20,17 +19,20 @@ historical_start_year = "1978"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
-boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g900m_id_BAYES-MEDIAN_HO.nc"
+regrid_file = "g900m_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "mouginot_basins_w_shelves.gpkg"
-obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
-retreat_file = "frontretreat_g450m_1985-7-1.nc"
+obs_file = "obs_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
+retreat_file = "frontretreat_g450m_2007-7-1.nc"
+gcms = "CESM2-WACCM"
+pathway = "historical"
 
 [time]
 
-'time.start' = "1985-01-01"
+'time.start' = "2007-01-01"
+'time.end' = "2008-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -54,17 +56,17 @@ retreat_file = "frontretreat_g450m_1985-7-1.nc"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,u_ssa,v_ssavelsurf"
 
 [reporting]
 
 'output.format' = "netcdf4_parallel"
 'output.compression_level' = 2
 'output.size' = "medium"
-'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
+'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,u_ssa,v_ssa,velsurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,bmelt"
+'output.spatial.vars' = "topg,bmelt,climatic_mass_balance,dHdt,flux_divergence,ice_mass,sftgif,usurf,velsurf_mag,velsurf,thk,mask"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -74,7 +76,7 @@ retreat_file = "frontretreat_g450m_1985-7-1.nc"
 
 [grid]
 
-resolution = "900m"
+resolution = "1200m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
@@ -106,7 +108,7 @@ model = 'blatter'
 'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.blatter.use_eta_transform' = "yes"
 'stress_balance.calving_front_stress_bc' = "yes"
-'time_stepping.adaptive_ratio' = 1000
+'time_stepping.adaptive_ratio' = 250
 
 [stress_balance.options.hybrid]
 
@@ -211,6 +213,7 @@ model = "picop_sgd"
 'ocean.models' = "th"
 'ocean.th.file' = "none"
 'ocean.th.clip_salinity' = "yes"
+'ocean.th.temperature_as_thermal_forcing' = "yes"
 
 [frontal_melt]
 
@@ -245,7 +248,7 @@ model = "routing"
 
 [bed_deformation]
 
-model="lc"
+model="none"
 
 [bed_deformation.options.none]
 
@@ -276,26 +279,6 @@ bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
 
-[solver.inverse]
-
-bp_ksp_rtol = 1e-3
-bp_ksp_type = "fgmres"
-bp_mg_levels_ksp_type = "richardson"
-bp_mg_levels_pc_type = "sor"
-bp_mg_coarse_ksp_type = "gmres"
-bp_mg_coarse_pc_type = "gamg"
-bp_mg_coarse_ksp_rtol = 1e-2
-bp_mg_coarse_ksp_max_it = 50
-bp_pc_mg_levels = 3
-bp_pc_type = "mg"
-bp_pc_mg_galerkin = "both"
-bp_snes_ksp_ew = 0
-bp_snes_ksp_ew_version = 3
-bp_snes_monitor = ""
-bp_snes_rtol = 1e-3
-inv_adj_ksp_type = "gmres"
-inv_adj_pc_type = "jacobi"
-
 [inverse]
 
 'inverse.adjoint.method' =  "approximate"
@@ -314,4 +297,5 @@ inv_adj_pc_type = "jacobi"
 'inverse.tikhonov.penalty_weight' = 10
 'inverse.tikhonov.atol' = 1e-7
 'inverse.use_zeta_fixed_mask' = "yes"
-'inverse.use_design_prior' = "no"
+'inverse.use_design_prior' = "yes"
+'remove_sia' = "yes"

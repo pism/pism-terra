@@ -7,9 +7,7 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.counter' = "C001"
-'run_info.domain' = "GrIS"
-'run_info.set' = "CORE"
+'run_info.experiment' = "CALIB"
 
 [campaign]
 
@@ -18,19 +16,18 @@ prefix = "ismip7/greenland/input"
 version = "v2"
 historical_start_year = "1978"
 historical_end_year = "2014"
-projection_start_year = "2015"
-projection_end_year = "2300"
-boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+gcms =["CESM2-WACCM"]
+boot_file = "boot_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
 regrid_file = "g900m_id_BAYES-MEDIAN_HO.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "mouginot_basins_w_shelves.gpkg"
-obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
-retreat_file = "frontretreat_g450m_1985-7-1.nc"
+obs_file = "obs_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 [time]
 
-'time.start' = "1985-01-01"
+'time.start' = "1980-01-01"
+'time.end' = "1981-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -41,8 +38,6 @@ retreat_file = "frontretreat_g450m_1985-7-1.nc"
 
 ['geometry']
 
-'geometry.front_retreat.prescribed.file' = "none"
-'geometry.front_retreat.prescribed.periodic' = "yes"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
@@ -63,14 +58,14 @@ retreat_file = "frontretreat_g450m_1985-7-1.nc"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,bmelt"
+'output.spatial.times' = "yearly"
+'output.spatial.vars' = "climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,subglacial_water_flux"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
-'output.ISMIP' = "no"
-'output.fill_value' = 9.969209968386869e+36
+'output.ISMIP6' = "no"
+
 
 [grid]
 
@@ -78,8 +73,8 @@ resolution = "900m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
-'grid.Mbz' = 51
-'grid.Mz' = 101
+'grid.Mbz' = 101
+'grid.Mz' = 201
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
@@ -104,8 +99,8 @@ model = 'blatter'
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
-'stress_balance.blatter.use_eta_transform' = "yes"
-'stress_balance.calving_front_stress_bc' = "yes"
+'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.sia.max_diffusivity' = 100000.0
 'time_stepping.adaptive_ratio' = 1000
 
 [stress_balance.options.hybrid]
@@ -149,9 +144,8 @@ model = "ismip7"
 
 [calving]
 
-'calving.methods' = 'vonmises_calving,thickness_calving'
-'calving.thickness_calving.threshold' = 50
-'calving.vonmises_calving.sigma_max' = 5e5
+'calving.methods' = 'vonmises_calving'
+'calving.vonmises_calving.sigma_max' = 7.5e5
 
 [atmosphere]
 
@@ -227,7 +221,6 @@ model = "routing"
 'frontal_melt.routing.file' = "none"
 'frontal_melt.routing.parameter_a' = 4.89e-4
 'frontal_melt.routing.parameter_b' = 0.25
-'frontal_melt.include_floating_ice' = "no"
 
 [hydrology]
 
