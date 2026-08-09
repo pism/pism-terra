@@ -9,7 +9,7 @@
 'run_info.ism' = "PISM"
 'run_info.domain' = "GrIS"
 'run_info.set' = "Init"
-'run_info.experiment' = "picop_sgd_isotropic"
+'run_info.experiment' = "historical_free"
 
 [campaign]
 
@@ -20,20 +20,22 @@ historical_start_year = "1978"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
-boot_file = "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_2007_g450m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
+regrid_file = "g900m_2007_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "mouginot_basins_w_shelves.gpkg"
-obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
+outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+obs_file = "obs_2007_g450m_GreenlandObsISMIP7-v1.3.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1980.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
+init_start = "2006-01-01"
+init_end = "2007-01-01"
 
 [time]
 
-'time.start' = "1985-01-01"
-'time.end' = "1988-01-01"
+'time.start' = "2007-01-01"
+'time.end' = "2015-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -67,7 +69,7 @@ pathway = "historical"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,u_ssa,v_ssa,velsurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt,picop_fresh_water_melt_rate,picop_basal_melt_rate"
+'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -186,6 +188,7 @@ model = "picop_sgd"
 'ocean.models' = "picop"
 'ocean.pico.file' = "none"
 'ocean.pico.continental_shelf_depth' = -280
+'ocean.picop.discharge_method' = "isotropic"
 'ocean.pico.heat_exchange_coefficent' = 2e-5
 'ocean.pico.maximum_ice_rise_area' = 10000.0
 'ocean.pico.number_of_boxes' = 3
@@ -200,7 +203,6 @@ model = "picop_sgd"
 'ocean.models' = "picop"
 'ocean.pico.file' = "none"
 'ocean.pico.continental_shelf_depth' = -280
-'ocean.picop.discharge_method' = "isotropic"
 'ocean.pico.heat_exchange_coefficent' = 2e-5
 'ocean.pico.maximum_ice_rise_area' = 10000.0
 'ocean.pico.number_of_boxes' = 3

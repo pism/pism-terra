@@ -8,7 +8,8 @@
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
 'run_info.domain' = "GrIS"
-'run_info.set' = "Ocean Calib PICO"
+'run_info.set' = "Init"
+'run_info.experiment' = "historical_free"
 
 [campaign]
 
@@ -19,20 +20,22 @@ historical_start_year = "1978"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
-boot_file = "boot_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_2007_g450m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
-heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "mouginot_basins_w_shelves.gpkg"
-obs_file = "obs_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
-retreat_file = "frontretreat_g450m_1985-7-1.nc"
+regrid_file = "g900m_2007_id_BAYES-MEDIAN_HYBRID.nc"
+heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
+outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+obs_file = "obs_2007_g450m_GreenlandObsISMIP7-v1.3.nc"
+retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
+init_start = "2006-01-01"
+init_end = "2007-01-01"
 
 [time]
 
-'time.start' = "1985-01-01"
-'time.end' = "1986-01-01"
+'time.start' = "2007-01-01"
+'time.end' = "2015-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 
@@ -56,17 +59,17 @@ pathway = "historical"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat"
 
 [reporting]
 
 'output.format' = "netcdf4_parallel"
 'output.compression_level' = 2
 'output.size' = "medium"
-'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
+'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,u_ssa,v_ssa,velsurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "bmelt,mask,velsurf_mag,thk"
+'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -76,7 +79,7 @@ pathway = "historical"
 
 [grid]
 
-resolution = "1200m"
+resolution = "900m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
@@ -114,7 +117,7 @@ model = 'hybrid'
 
 'stress_balance.model' = "ssa+sia"
 'stress_balance.ssa.method' = "fd"
-'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.calving_front_stress_bc' = "yes"
 'stress_balance.sia.max_diffusivity' = 100000.0
 
 [iceflow]
@@ -166,7 +169,7 @@ model = "given"
 
 [ocean]
 
-model = "pico"
+model = "picop_sgd"
 
 [ocean.options.pico]
 
@@ -185,6 +188,7 @@ model = "pico"
 'ocean.models' = "picop"
 'ocean.pico.file' = "none"
 'ocean.pico.continental_shelf_depth' = -280
+'ocean.picop.discharge_method' = "isotropic"
 'ocean.pico.heat_exchange_coefficent' = 2e-5
 'ocean.pico.maximum_ice_rise_area' = 10000.0
 'ocean.pico.number_of_boxes' = 3
@@ -278,3 +282,31 @@ bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
+
+[inverse]
+
+'inverse.adjoint.method' =  "approximate"
+'inverse.design.cH1' = 1
+'inverse.design.cL2' = 0
+'inverse.file' = "none"
+'inverse.stress_balance.velocity_scale' = 1e2
+'inverse.stress_balance.length_scale' = 50e3
+'inverse.design.param' = "exp"
+'inverse.huber.delta' =  10e3
+'inverse.max_iterations' = 250
+'inverse.state_func' = "huber"
+'inverse.stress_balance.method' = "tikhonov_blmvm"
+'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_max' = 5e7
+'inverse.tikhonov.penalty_weight' = 100
+'inverse.tikhonov.atol' = 1e-7
+'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.use_design_prior' = "yes"
+'remove_sia' = "yes"
+ssafem_ksp_type = "gmres"
+ssafem_pc_type = "asm"
+ssafem_pc_asm_overlap = 2
+ssafem_sub_pc_type = "ilu"
+ssafem_sub_pc_factor_levels = 1
+ssafem_sub_pc_factor_shift_type = "nonzero"
+ssafem_snes_converged_reason = ""
