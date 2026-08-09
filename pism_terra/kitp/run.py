@@ -49,6 +49,34 @@ from pism_terra.workflow import (
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
+# Dask worker processes for post-processing. A wide PISM decomposition (hundreds
+# of MPI ranks) must not translate into that many worker processes.
+_POSTPROCESS_MAX_WORKERS = 8
+
+
+def _postprocess_ntasks(config_cli: dict) -> str:
+    """
+    Build the ``--ntasks`` flag for the post-processing command.
+
+    Clamps the run's MPI task count to :data:`_POSTPROCESS_MAX_WORKERS` so a
+    wide PISM decomposition does not translate into an unusable number of Dask
+    worker processes.
+
+    Parameters
+    ----------
+    config_cli : dict
+        CLI overrides; only ``"ntasks"`` is consulted.
+
+    Returns
+    -------
+    str
+        ``" --ntasks N"`` when a task count is set, else an empty string.
+    """
+    ntasks = config_cli.get("ntasks")
+    if not ntasks:
+        return ""
+    return f" --ntasks {min(int(ntasks), _POSTPROCESS_MAX_WORKERS)}"
+
 
 def run_kitp(
     config_file: str | Path,
@@ -264,6 +292,9 @@ def run_kitp(
     scalar_file = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{name_options}_{start}_{end}.nc")
+    # Per-basin scalar sums written by ``pism-kitp-postprocess`` from the
+    # spatial file; PISM itself never writes this one.
+    basin_file = scalar_path / Path(f"basin_g{resolution}_{name_options}_{start}_{end}.nc")
     run.update(
         {
             "output.file": state_file.resolve(),
@@ -304,6 +335,7 @@ def run_kitp(
         "output": {
             "spatial": str(spatial_file.resolve()),
             "state": str(state_file.resolve()),
+            "basin": str(basin_file.resolve()),
         },
         "config": run,
     }
@@ -314,17 +346,31 @@ def run_kitp(
     with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
+    # Reduce the spatial output to per-basin scalar sums. ``pism-kitp-postprocess``
+    # takes the files positionally (it no longer reads the run TOML above, which
+    # is kept as a record of the run), and needs a real outline to rasterize.
+    post_process_str = ""
+    if outline_file != "none":
+        post_process_str = (
+            f"pism-kitp-postprocess "
+            f"{spatial_file.resolve()} {basin_file.resolve()} {outline_file}{_postprocess_ntasks(config_cli)}"
+        )
+
     params.update({"run_str": run_str})
     params.update({"geometry_file": outline_file})
-
-    post_path = output_path / Path("post_processing")
-    post_path.mkdir(parents=True, exist_ok=True)
-
-    post_file = post_path / Path(f"g{resolution}_{name_options}_{start}_{end}.toml")
-    with open(post_file, "w", encoding="utf-8") as toml_file:
-        toml.dump(run_toml, toml_file)
-
-    postfix = f"pism-kitp-postprocess {post_file}"
+    # Templates in the ISMIP7 family split the run across named legs instead of
+    # the single ``run_str`` the KITP templates use. A KITP run is one forward
+    # leg, so it goes in the historical slot and the rest stay empty — Jinja
+    # then omits their blocks.
+    params.update(
+        {
+            "run_init_str": "",
+            "inv_str": "",
+            "run_hist_str": run_str,
+            "run_proj_str": "",
+            "post_process_str": post_process_str,
+        }
+    )
     rendered_script = "" if debug else template.render(params)
 
     run_script_path = path / Path("run_scripts")
