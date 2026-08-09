@@ -45,7 +45,7 @@ mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pism {{ run_init_str }}
 # INVERSION RUN
 # ###############################################################################
 
-{% if run_inv_str %}
+{% if inv_str %}
 mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pismi {{ inv_str }}
 {% endif %}
 
