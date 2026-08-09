@@ -39,7 +39,7 @@ REPO = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO / "pism_terra" / "config"
 TEMPLATE_DIR = REPO / "pism_terra" / "templates"
 
-FREE_HY = CONFIG_DIR / "ismip7_greenland_2007_historical_free_hy.toml"
+FREE_HY = CONFIG_DIR / "ismip7_greenland_2007_historical_free.toml"
 C003 = CONFIG_DIR / "ismip7_greenland_c003.toml"
 
 

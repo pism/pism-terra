@@ -281,7 +281,7 @@ def test_truncnorm_with_lower_upper_ok():
 def test_campaign_init_fields():
     """Campaign init_start/init_end are parsed and exported by as_params()."""
     config_file = (
-        Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_2007_historical_free_hy.toml"
+        Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_2007_historical_free.toml"
     )
     cfg = load_config(config_file)
     assert cfg.campaign.init_start == "2006-01-01"
