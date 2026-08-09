@@ -166,6 +166,80 @@ def _base_run_dict(cfg, *, bed_deformation: bool = True) -> dict:
     return run
 
 
+def _build_init_leg(
+    cfg,
+    *,
+    init_start: str,
+    init_end: str,
+    resolution: str,
+    name_options_init: str,
+    overrides: Mapping[str, object],
+    state_path: Path,
+    scalar_path: Path,
+    spatial_path: Path,
+    pism_config_cdl: str | Path | None,
+) -> tuple[str, Path, str]:
+    """
+    Build the short init/prior leg shared by the forward and inverse chains.
+
+    A bootstrap run (staged regrid of ``litho_temp,enthalpy,age,tillwat``)
+    spanning ``campaign.init_start``..``campaign.init_end`` with flat output
+    names carrying the init range. The follow-on legs restart from the
+    returned state file.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded configuration (CLI mutations such as ``--stress-balance``
+        must already be applied).
+    init_start, init_end : str
+        Time bounds of the init leg as ``YYYY-MM-DD``.
+    resolution : str
+        Grid resolution tag (e.g. ``"900m"``), for filenames.
+    name_options_init : str
+        Filename stem chunk for the init products (``id_<sample>`` or the
+        descriptive fallback; no experiment id — the init leg is never an
+        ISMIP7 product).
+    overrides : Mapping[str, object]
+        UQ / staged-file overrides (dotted PISM flags). Filtered against
+        the init dict's keys before being applied.
+    state_path, scalar_path, spatial_path : pathlib.Path
+        Output directories (see :func:`_make_output_paths`).
+    pism_config_cdl : str or pathlib.Path or None
+        Optional PISM CDL master config for option validation.
+
+    Returns
+    -------
+    tuple of (str, pathlib.Path, str)
+        ``(run_init_str, state_init, init_tag)`` — the rendered command
+        line, the absolute state-file path the next leg restarts from, and
+        the ``g<res>_<opts>_<start>_<end>`` filename tag (used e.g. for the
+        inversion output).
+    """
+    run_init = _base_run_dict(cfg, bed_deformation=False)
+    run_init.pop("time.start", None)
+    run_init.pop("time.end", None)
+    run_init.update({"time.start": init_start, "time.end": init_end})
+
+    init_overrides, _ = filter_overrides_by_config(dict(overrides), run_init.keys())
+    run_init.update(init_overrides)
+
+    init_tag = f"g{resolution}_{name_options_init}_{init_start}_{init_end}"
+    state_init = state_path / Path(f"state_{init_tag}.nc")
+    run_init.update(
+        {
+            "output.file": state_init.resolve(),
+            "output.scalar.file": (scalar_path / Path(f"scalar_{init_tag}.nc")).resolve(),
+            "output.spatial.file": (spatial_path / Path(f"spatial_{init_tag}.nc")).resolve(),
+        }
+    )
+
+    if pism_config_cdl is not None:
+        validate_pism_options(run_init, pism_config_cdl)
+
+    return dict2str(sort_dict_by_key(run_init)), state_init, init_tag
+
+
 def _build_forward_legs(
     cfg,
     run_hist: dict,
@@ -542,6 +616,12 @@ def _render_forward_run(
     emits a command-line string of PISM flags derived from the config and
     overrides.
 
+    When the campaign config defines ``init_start``/``init_end``, a short
+    init/prior leg (``run_init_str``) is rendered first — the same leg 1 the
+    inverse workflow uses — and the forward leg(s) restart from its state
+    file instead of bootstrapping. Without those fields the forward leg
+    bootstraps directly, as before.
+
     Parameters
     ----------
     config_file : str or pathlib.Path
@@ -685,6 +765,33 @@ def _render_forward_run(
     # Apply to runtime dict (these should be dotted PISM flags)
     run_hist.update(overrides)
 
+    # Optional init/prior leg: when the campaign config carries
+    # init_start/init_end, render the short bootstrap leg first (mirroring
+    # the inverse workflow's leg 1, minus the inversion) and restart the
+    # forward leg(s) from its state instead of bootstrapping them directly.
+    # Without the campaign fields the forward leg bootstraps as before.
+    init_start = cfg.campaign.init_start
+    init_end = cfg.campaign.init_end
+    run_init_str = ""
+    if init_start and init_end:
+        name_options_init = f"id_{sample}" if sample is not None else name_options
+        run_init_str, state_init, _ = _build_init_leg(
+            cfg,
+            init_start=init_start,
+            init_end=init_end,
+            resolution=resolution,
+            name_options_init=name_options_init,
+            overrides=overrides,
+            state_path=state_path,
+            scalar_path=scalar_path,
+            spatial_path=spatial_path,
+            pism_config_cdl=pism_config_cdl,
+        )
+        run_hist.update({"input.file": state_init.resolve()})
+        run_hist.pop("input.bootstrap", None)
+        run_hist.pop("input.regrid.file", None)
+        run_hist.pop("input.regrid.vars", None)
+
     # Single-leg vs counter-driven two-leg split, ISMIP7 naming, and the
     # post-processing command strings all live in the shared helper.
     leg_params = _build_forward_legs(
@@ -726,6 +833,9 @@ def _render_forward_run(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
+    # Empty when the campaign config has no init bounds; the templates guard
+    # the slot so the script shape is unchanged in that case.
+    params.update({"run_init_str": run_init_str})
     params.update(leg_params)
 
     rendered_script = "" if debug else template.render(params)
@@ -888,14 +998,6 @@ def _render_inverse_run(
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
 
-    # Leg 1 (init/prior): bootstrap + staged regrid, spanning
-    # init_start..init_end. bed_deformation is omitted to match the
-    # historical inverse-prior behavior.
-    run_init = _base_run_dict(cfg, bed_deformation=False)
-    run_init.pop("time.start", None)
-    run_init.pop("time.end", None)
-    run_init.update({"time.start": init_start, "time.end": init_end})
-
     # Leg 2 (inversion): pismi flags.
     inv: dict = {}
     inv.update(getattr(cfg, "iceflow"))
@@ -947,35 +1049,33 @@ def _render_inverse_run(
         name_options_init = f"id_{sample}"
         name_options_fwd = f"id_{sample}_{experiment}"
 
-    # Route each uq key to whichever dict(s) own it: init leg, pismi call,
-    # and/or forward legs. A key is "skipped" only if none of the three know
-    # it (e.g. surface.debm_simple.std_dev.file when surface.model == "pdd").
+    # Route each uq key to whichever dict(s) own it: pismi call and/or the
+    # forward legs (the init leg filters the same overrides internally, and
+    # its keys are a subset of ``run_fwd``'s). A key is "skipped" only if
+    # nobody knows it (e.g. surface.debm_simple.std_dev.file when
+    # surface.model == "pdd").
     all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
-    init_overrides, _ = filter_overrides_by_config(all_overrides, run_init.keys())
     inv_overrides, _ = filter_overrides_by_config(all_overrides, inv.keys())
     fwd_overrides, _ = filter_overrides_by_config(all_overrides, run_fwd.keys())
-    skipped = [k for k in all_overrides if k not in run_init and k not in inv and k not in run_fwd]
+    skipped = [k for k in all_overrides if k not in inv and k not in run_fwd]
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
-    run_init.update(init_overrides)
     inv.update(inv_overrides)
     run_fwd.update(fwd_overrides)
 
-    # Leg-1 outputs: flat names carrying the init range.
-    init_tag = f"g{resolution}_{name_options_init}_{init_start}_{init_end}"
-    state_init = state_path / Path(f"state_{init_tag}.nc")
-    run_init.update(
-        {
-            "output.file": state_init.resolve(),
-            "output.scalar.file": (scalar_path / Path(f"scalar_{init_tag}.nc")).resolve(),
-            "output.spatial.file": (spatial_path / Path(f"spatial_{init_tag}.nc")).resolve(),
-        }
+    # Leg 1 (init/prior): bootstrap + staged regrid over init_start..init_end.
+    run_init_str, state_init, init_tag = _build_init_leg(
+        cfg,
+        init_start=init_start,
+        init_end=init_end,
+        resolution=resolution,
+        name_options_init=name_options_init,
+        overrides=all_overrides,
+        state_path=state_path,
+        scalar_path=scalar_path,
+        spatial_path=spatial_path,
+        pism_config_cdl=pism_config_cdl,
     )
-
-    if pism_config_cdl is not None:
-        validate_pism_options(run_init, pism_config_cdl)
-
-    run_init_str = dict2str(sort_dict_by_key(run_init))
 
     inv_file = inv_path / Path(f"inv_{init_tag}.nc")
     # Feed the init leg's state file into pismi as its input.
@@ -1402,6 +1502,11 @@ def _run(*, kind: str) -> None:
 def run_forward() -> None:
     """
     CLI entry point for ISMIP7 Greenland forward runs (single or ensemble).
+
+    When the campaign config defines ``init_start``/``init_end``, a short
+    init/prior leg runs first and the forward leg(s) restart from its state
+    (see :func:`_render_forward_run`); otherwise the forward leg bootstraps
+    directly.
 
     Behaves as a single run when no ``UQ_FILE`` positional is supplied, and
     as a UQ ensemble when one is. The argument schema and output layout are

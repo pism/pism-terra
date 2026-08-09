@@ -1,3 +1,7 @@
+{% if run_init_str %}
+mpirun -np  {{ ntasks | default(8) }} pism {{ run_init_str }}
+{% endif %}
+
 {% if run_hist_str %}
 mpirun -np  {{ ntasks | default(8) }} pism {{ run_hist_str }}
 {% endif %}
