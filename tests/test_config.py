@@ -30,6 +30,8 @@ This suite checks:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -38,6 +40,7 @@ from pydantic import ValidationError
 from pism_terra.config import (  # noqa: F401  (ensure DistSpec is imported)
     DistSpec,
     UQConfig,
+    load_config,
 )
 
 
@@ -273,3 +276,16 @@ def test_truncnorm_with_lower_upper_ok():
     # If DistSpec preserves these keys, assert them; otherwise adjust the test.
     assert spec["lower"] == 8
     assert spec["upper"] == 12
+
+
+def test_campaign_init_fields():
+    """Campaign init_start/init_end are parsed and exported by as_params()."""
+    config_file = (
+        Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_2007_historical_free_hy.toml"
+    )
+    cfg = load_config(config_file)
+    assert cfg.campaign.init_start == "2006-01-01"
+    assert cfg.campaign.init_end == "2007-01-01"
+    params = cfg.campaign.as_params()
+    assert params["init_start"] == "2006-01-01"
+    assert params["init_end"] == "2007-01-01"

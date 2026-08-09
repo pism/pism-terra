@@ -97,9 +97,9 @@ def stage(
     include_projection : bool, default ``True``
         If ``True``, stage both the historical and the projection (pathway) forcing
         epochs. If ``False``, stage only the historical epoch and omit the ``*_proj_*``
-        columns from the returned index. The inverse run passes ``False`` because it
-        only uses the historical forcing, so the (large) projection files never need
-        to be downloaded.
+        columns from the returned index. Historical(-only) runs pass ``False`` because
+        they never run a projection continuation, so the (large) projection files
+        never need to be downloaded.
     data_path : str or pathlib.Path or None, default ``None``
         Directory where the staged input data is written. When given, all inputs go
         here (a shared location that multiple experiment output directories can

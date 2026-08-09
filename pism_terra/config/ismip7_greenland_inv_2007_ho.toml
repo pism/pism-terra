@@ -23,6 +23,8 @@ regrid_file = "g900m_id_BAYES-MEDIAN_HO.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "mouginot_basins_w_shelves.gpkg"
 obs_file = "obs_2007_g900m_GreenlandObsISMIP7-v1.3.nc"
+init_start = "1980-01-01"
+init_end = "1981-01-01"
 
 [time]
 

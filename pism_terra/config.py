@@ -1318,6 +1318,14 @@ class CampaignConfig(BaseModel):
         Filename of the RGI glacier-complex ("-C") outlines in the bucket.
     rgi_glacier_file : str or None
         Filename of the RGI glacier ("-G") outlines in the bucket.
+    init_start : str or None
+        Start of the inverse-workflow init (prior) leg as ``YYYY-MM-DD``
+        (e.g. ``"2006-01-01"``); required by
+        ``pism-ismip7-greenland-run-inverse``.
+    init_end : str or None
+        End of the inverse-workflow init (prior) leg as ``YYYY-MM-DD``
+        (e.g. ``"2007-01-01"``); required by
+        ``pism-ismip7-greenland-run-inverse``.
     historical_start_year : str, float, or None
         First year of the historical forcing file.
     historical_end_year : str, float, or None
@@ -1357,6 +1365,8 @@ class CampaignConfig(BaseModel):
     retreat_file: str | None = Field(default=None)
     rgi_complex_file: str | None = Field(default=None)
     rgi_glacier_file: str | None = Field(default=None)
+    init_start: str | None = Field(default=None)
+    init_end: str | None = Field(default=None)
     historical_start_year: str | float | None = Field(default=None)
     historical_end_year: str | float | None = Field(default=None)
     projection_start_year: str | float | None = Field(default=None)
