@@ -29,14 +29,14 @@ obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
-init_start = "1984-01-01"
+init_start = "1980-01-01"
 init_end = "1985-01-01"
 
 [time]
 
 'time.start' = "1985-01-01"
 'time.end' = "2015-01-01"
-'time.calendar' =  "365_day"
+'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
 
 [time_stepping]

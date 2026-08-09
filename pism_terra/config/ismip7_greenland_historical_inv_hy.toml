@@ -35,7 +35,7 @@ pathway = "historical"
 
 'time.start' = "1985-01-01"
 'time.end' = "1986-01-01"
-'time.calendar' =  "365_day"
+'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
 
 [time_stepping]

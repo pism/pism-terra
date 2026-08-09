@@ -36,7 +36,7 @@ init_end = "2007-01-01"
 
 'time.start' = "2007-01-01"
 'time.end' = "2015-01-01"
-'time.calendar' =  "365_day"
+'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
 
 [time_stepping]
