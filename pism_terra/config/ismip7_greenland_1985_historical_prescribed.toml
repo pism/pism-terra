@@ -9,7 +9,7 @@
 'run_info.ism' = "PISM"
 'run_info.domain' = "GrIS"
 'run_info.set' = "Init"
-'run_info.experiment' = "historical_free"
+'run_info.experiment' = "historical_prescribed"
 
 [campaign]
 
