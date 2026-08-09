@@ -29,6 +29,7 @@ import tempfile
 import time
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from collections import Counter
 from pathlib import Path
 
 import cf_xarray
@@ -75,6 +76,39 @@ def _raise_fd_limit() -> None:
         logger.warning("Could not raise open-file limit: %s", exc)
 
 
+def _dim_chunks(ds: xr.Dataset, dim: str, fallback: int) -> tuple[int, ...] | int:
+    """
+    Chunk sizes along ``dim``, ignoring disagreement along the other dimensions.
+
+    ``Dataset.chunksizes`` raises ``ValueError`` as soon as *any* dimension is
+    chunked differently across variables, and ``chunks="auto"`` routinely does
+    that along ``time`` because the chunking it picks depends on each
+    variable's dtype and rank. Only the y/x chunking is wanted here, so read it
+    off the variables directly and take the most common chunking of ``dim``.
+    Any leftover mismatch is harmless — Dask rechunks the mask to match its
+    operand; matching up front only avoids that extra work.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset to inspect. Variables not backed by Dask are ignored.
+    dim : str
+        Dimension name, e.g. ``"y"``.
+    fallback : int
+        Returned when no Dask-backed variable carries ``dim`` (a single chunk
+        spanning the dimension).
+
+    Returns
+    -------
+    tuple of int, or int
+        Chunk sizes along ``dim``, or ``fallback``.
+    """
+    counts = Counter(var.chunksizes[dim] for var in ds.variables.values() if dim in var.dims and var.chunks is not None)
+    if not counts:
+        return fallback
+    return counts.most_common(1)[0][0]
+
+
 def basin_masks(
     ds: xr.Dataset,
     basin: gpd.GeoDataFrame,
@@ -118,7 +152,7 @@ def basin_masks(
     transform = ds.rio.transform(recalc=True)
     shape = (int(ds.rio.height), int(ds.rio.width))
     # Match the dataset's own y/x chunking so ``ds.where(mask)`` stays blockwise.
-    chunks = (ds.chunksizes.get("y", shape[0]), ds.chunksizes.get("x", shape[1]))
+    chunks = (_dim_chunks(ds, "y", shape[0]), _dim_chunks(ds, "x", shape[1]))
 
     masks = []
     for _, row in basin.iterrows():
@@ -198,7 +232,17 @@ def process_file(
     # Bounds/mapping vars (``x_bnds``/``y_bnds``/``mapping``) carry only one of
     # the x/y dims; keeping them would inject a dangling x/y dimension back into
     # the per-basin scalar output on merge. Drop them up front.
-    ds = ds.drop_vars(["x_bnds", "x_bounds", "y_bnds", "y_bounds", "mapping"], errors="ignore")
+    #
+    # ``spatial_ref`` is dropped for a different reason: it is the CF grid-mapping
+    # variable rioxarray writes, so any file that has round-tripped through
+    # rioxarray carries one as a scalar data variable. ``rio.write_crs`` below
+    # recreates it as a *coordinate*, and merging a dataset that has it as a
+    # coordinate with one that has it as a data variable fails with "unable to
+    # determine if these variables should be coordinates or not".
+    ds = ds.drop_vars(
+        ["x_bnds", "x_bounds", "y_bnds", "y_bounds", "mapping", "spatial_ref", "crs", "polar_stereographic"],
+        errors="ignore",
+    )
 
     # Separate variables that lack spatial (x, y) dimensions, as they cannot be
     # reduced over x/y
