@@ -23,15 +23,17 @@ boot_file = "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
 regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
+outline_file = "mouginot_basins_w_shelves.gpkg"
 obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
-retreat_file = "frontretreat_g450m_1972-9-1.nc"
+retreat_file = "none"
 gcms = "CESM2-WACCM"
 pathway = "historical"
+init_start = "1914-01-01"
+init_end = "1915-01-01"
 
 [time]
 
-'time.start' = "1900-01-01"
+'time.start' = "1915-01-01"
 'time.end' = "2015-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
@@ -43,9 +45,6 @@ pathway = "historical"
 
 ['geometry']
 
-'geometry.front_retreat.prescribed.file' = "none"
-'geometry.front_retreat.prescribed.periodic' = "yes"
-'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
 
