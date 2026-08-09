@@ -33,6 +33,7 @@ from collections import Counter
 from pathlib import Path
 
 import cf_xarray
+import dask
 import dask.array as dask_array
 import geopandas as gpd
 import numpy as np
@@ -114,6 +115,7 @@ def basin_masks(
     basin: gpd.GeoDataFrame,
     column: str = "SUBREGION1",
     all_touched: bool = False,
+    client: Client | None = None,
 ) -> list[tuple[str, xr.DataArray]]:
     """
     Rasterize each basin polygon onto the dataset grid, once.
@@ -143,6 +145,10 @@ def basin_masks(
     all_touched : bool, default False
         Passed to :func:`rasterio.features.geometry_mask`. ``False`` selects
         cells whose center falls inside the polygon.
+    client : dask.distributed.Client or None, default None
+        When given, the rasters are scattered to the workers instead of being
+        embedded in the task graph (see below). Without a client the masks ride
+        along in the graph, which is fine for small grids.
 
     Returns
     -------
@@ -154,7 +160,7 @@ def basin_masks(
     # Match the dataset's own y/x chunking so ``ds.where(mask)`` stays blockwise.
     chunks = (_dim_chunks(ds, "y", shape[0]), _dim_chunks(ds, "x", shape[1]))
 
-    masks = []
+    names, rasters = [], []
     for _, row in basin.iterrows():
         mask = geometry_mask(
             [row.geometry],
@@ -166,9 +172,24 @@ def basin_masks(
         name = row[column]
         if not mask.any():
             logger.warning("Basin %s covers no grid cells; its sums will be zero", name)
-        masks.append((name, xr.DataArray(dask_array.from_array(mask, chunks=chunks), dims=("y", "x"))))
+        names.append(name)
+        rasters.append(mask)
 
-    return masks
+    if client is None:
+        arrays = [dask_array.from_array(raster, chunks=chunks) for raster in rasters]
+    else:
+        # ``from_array`` puts the raster itself into the task graph, so the graph
+        # the client ships to the scheduler grows with the grid: one bool per
+        # cell per basin, which on the 1500 m Greenland grid is ~1.6 MB x 7
+        # basins and trips Dask's "Sending large graph" warning. Scattering
+        # instead moves them once, as data, and leaves only future references in
+        # the graph.
+        arrays = [
+            dask_array.from_delayed(dask.delayed(future), shape=shape, dtype=bool).rechunk(chunks)
+            for future in client.scatter(rasters)
+        ]
+
+    return [(name, xr.DataArray(array, dims=("y", "x"))) for name, array in zip(names, arrays)]
 
 
 def process_file(
@@ -266,7 +287,7 @@ def process_file(
     # over a Greenland grid stay far inside float64's exact-integer range.)
     integer_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.integer)]
 
-    masks = basin_masks(ds, basin, column=column)
+    masks = basin_masks(ds, basin, column=column, client=client)
     logger.info("Reducing over %d basins in a single pass", len(masks))
 
     # One graph for every basin. The per-basin branches share the same source

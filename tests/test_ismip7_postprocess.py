@@ -35,6 +35,7 @@ Covers:
 
 from __future__ import annotations
 
+import pickle
 from importlib.resources import files
 from pathlib import Path
 
@@ -116,6 +117,7 @@ def synthetic_greenland(
     basins: gpd.GeoDataFrame,
     n_time: int = 4,
     time_chunks: dict[str, int] | None = None,
+    resolution: float = GRID_RESOLUTION,
 ) -> xr.Dataset:
     """
     Synthetic PISM-like output on a coarse Greenland grid.
@@ -134,6 +136,8 @@ def synthetic_greenland(
     time_chunks : dict of str to int, optional
         Per-variable ``time`` chunk size. Variables named here are Dask-backed
         with that chunking; when ``None`` the dataset stays NumPy-backed.
+    resolution : float, default 20000.0
+        Grid spacing in metres.
 
     Returns
     -------
@@ -141,7 +145,7 @@ def synthetic_greenland(
         Dataset with ``thk``, ``ice_mass``, ``mask`` and a non-spatial
         ``pism_config``, CRS and spatial dims already set.
     """
-    y, x = greenland_grid(basins)
+    y, x = greenland_grid(basins, resolution=resolution)
     shape = (n_time, y.size, x.size)
     rng = np.random.default_rng(42)
 
@@ -262,6 +266,61 @@ def test_basin_masks_match_rio_clip(basins):
         clipped = ds[["thk"]].rio.clip([row.geometry], basins.crs, drop=False)
         expected = clipped["thk"].isel(time=0).notnull().values
         np.testing.assert_array_equal(np.asarray(masks[row["SUBREGION1"]]), expected)
+
+
+@pytest.mark.integration
+def test_basin_masks_scatter_keeps_graph_small(basins):
+    """
+    Passing a client scatters the rasters instead of embedding them.
+
+    ``from_array`` puts the raster bytes straight into the task graph, so on a
+    real grid the graph the client ships to the scheduler grows to tens of MB
+    and Dask warns "Sending large graph". Scattering leaves only future
+    references behind, and must not change a single cell.
+
+    Parameters
+    ----------
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    def graph_bytes(masks):
+        """
+        Serialized size of the task graphs behind ``masks``.
+
+        Parameters
+        ----------
+        masks : list of (str, xarray.DataArray)
+            Output of :func:`basin_masks`.
+
+        Returns
+        -------
+        int
+            Total pickled graph size in bytes.
+        """
+        return sum(len(pickle.dumps(dict(mask.data.__dask_graph__()))) for _, mask in masks)
+
+    # 5 km with production-sized chunks: fine enough that the rasters dominate
+    # an embedded graph, coarse enough to stay a fast test.
+    ds = synthetic_greenland(basins, n_time=1, resolution=5_000.0).chunk({"time": 1, "y": 256, "x": 256})
+
+    with Client(processes=False, n_workers=1, dashboard_address=None) as client:
+        embedded = basin_masks(ds, basins)
+        scattered = basin_masks(ds, basins, client=client)
+
+        raw_bytes = sum(np.asarray(mask).nbytes for _, mask in embedded)
+        # Embedding carries the rasters themselves; scattering carries future
+        # references plus one small task per chunk. Thresholds are loose on
+        # purpose — the mechanism is the point, not a serialization size.
+        assert graph_bytes(embedded) > raw_bytes
+        assert graph_bytes(scattered) < graph_bytes(embedded) / 10
+
+        # And not a single cell changes.
+        assert [name for name, _ in scattered] == [name for name, _ in embedded]
+        for (_, want), (_, got) in zip(embedded, scattered):
+            assert got.chunksizes == want.chunksizes
+            np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
 
 
 @pytest.mark.integration
