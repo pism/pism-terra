@@ -278,6 +278,67 @@ def test_truncnorm_with_lower_upper_ok():
     assert spec["upper"] == 12
 
 
+def test_choices_spec_ok():
+    """
+    Validate a categorical spec and its round-trip through `to_flat()`.
+
+    Notes
+    -----
+    The `choices` list (and an optional `weights` list) ride along in
+    `model_extra`, so they must survive `DistSpec.model_dump()`.
+    """
+    raw = {
+        "samples": 4,
+        "inverse.state_func": {"distribution": "choices", "choices": ["meansquare", "huber"]},
+        "calving.eigen_calving.K": {"distribution": "categorical", "choices": [1e15, 1e17], "weights": [3, 1]},
+    }
+    uq = UQConfig.model_validate(raw)
+    flat = _specs_dict(uq)
+    assert flat["inverse.state_func"]["distribution"] == "choices"
+    assert flat["inverse.state_func"]["choices"] == ["meansquare", "huber"]
+    assert flat["calving.eigen_calving.K"]["weights"] == [3, 1]
+
+
+def test_choices_requires_non_empty_list():
+    """
+    Fail when a categorical spec has a missing or empty `choices` list.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If `choices` is absent or empty.
+    """
+    variants: tuple[dict, ...] = ({}, {"choices": []})
+    for choices in variants:
+        raw = {"inverse.state_func": {"distribution": "choices", **choices}}
+        with pytest.raises(ValidationError) as excinfo:
+            UQConfig.model_validate(raw)
+        assert "choices" in str(excinfo.value)
+
+
+def test_choices_weights_must_match():
+    """
+    Fail when categorical `weights` do not line up with `choices`.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If `weights` has the wrong length, is negative, or sums to zero.
+    """
+    bad_weights = ([1.0], [1.0, -1.0], [0.0, 0.0])
+    for weights in bad_weights:
+        raw = {
+            "inverse.state_func": {
+                "distribution": "choices",
+                "choices": ["meansquare", "huber"],
+                "weights": weights,
+            }
+        }
+        with pytest.raises(ValidationError) as excinfo:
+            UQConfig.model_validate(raw)
+        assert "weights" in str(excinfo.value)
+
+
 def test_campaign_init_fields():
     """Campaign init_start/init_end are parsed and exported by as_params()."""
     config_file = (

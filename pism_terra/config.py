@@ -23,6 +23,7 @@ Config.
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Any, ClassVar, Iterator
@@ -44,6 +45,11 @@ from pism_terra.ismip7.experiments import resolve_counter
 
 # one Jinja environment for all renders
 _JINJA = Environment(autoescape=False)
+
+# Pseudo-distributions that draw from an explicit list of values instead of a
+# SciPy random variable. Shared with :mod:`pism_terra.sampling`, which turns the
+# unit-cube quantiles into category picks.
+CHOICE_DISTS = frozenset({"choices", "choice", "categorical"})
 
 
 def load_config(path: str | Path) -> PismConfig:
@@ -112,23 +118,47 @@ class DistSpec(BaseModel):
     (e.g., ``randint``, ``truncnorm``), required parameters differ and are
     validated accordingly.
 
+    In addition to the SciPy distributions, ``distribution`` may name a
+    **categorical** pseudo-distribution (``"choices"``, ``"choice"`` or
+    ``"categorical"``; see :data:`CHOICE_DISTS`), which draws from an explicit
+    list of values given by ``choices``.
+
     Attributes
     ----------
     distribution : str
         Name of the SciPy distribution in ``scipy.stats`` (case-insensitive),
-        e.g., ``"norm"``, ``"uniform"``, ``"truncnorm"``, ``"randint"``.
+        e.g., ``"norm"``, ``"uniform"``, ``"truncnorm"``, ``"randint"``, or one
+        of the categorical aliases in :data:`CHOICE_DISTS`.
     loc : float or None, default: 0.0
         Location parameter for continuous distributions. Optional to allow
-        discrete distributions that do not use it.
+        discrete distributions that do not use it. Ignored by categoricals.
     scale : float or None, default: 1.0
         Scale parameter for continuous distributions. Must be ``> 0`` when
         applicable; optional for discrete distributions that do not use it.
+        Ignored by categoricals.
 
     Notes
     -----
     This model validates *specification* only. Construction of a frozen SciPy
     RV (e.g., via ``stats.<dist>(...).ppf``) should be done by a helper such as
-    ``_make_frozen`` that interprets ``model_extra`` as needed.
+    ``_make_frozen`` that interprets ``model_extra`` as needed. Categorical
+    specs never produce a frozen RV; they are resolved by
+    ``pism_terra.sampling._transform_quantiles``.
+
+    Categorical specs carry two extra keys (both in ``model_extra``):
+
+    - ``choices``: non-empty list of values to draw from. Values are used
+      verbatim, so strings stay strings and numbers stay numbers.
+    - ``weights``: optional list of non-negative relative probabilities, one per
+      choice. Omitted means a uniform draw.
+
+    Examples
+    --------
+    .. code-block:: toml
+
+        ['inverse.state_func']
+        distribution = "choices"
+        choices = ["meansquare", "huber"]
     """
 
     model_config = ConfigDict(extra="allow")
@@ -165,6 +195,9 @@ class DistSpec(BaseModel):
         Ensures that the distribution exists in ``scipy.stats`` and that the
         required parameters are present:
 
+        - categoricals (:data:`CHOICE_DISTS`): must provide a non-empty
+          ``choices`` list and, if given, ``weights`` of matching length with
+          non-negative entries summing to more than zero.
         - ``randint``: must provide ``low`` and ``high`` in ``model_extra``.
         - ``truncnorm``: must provide either standardized bounds ``a``, ``b`` or
           raw bounds ``lower``, ``upper`` and must have ``scale > 0``.
@@ -185,6 +218,31 @@ class DistSpec(BaseModel):
         """
 
         name = self.distribution
+
+        # Categoricals are not SciPy distributions; validate and return before
+        # the scipy.stats lookup below would reject the name.
+        if name in CHOICE_DISTS:
+            extra = dict(getattr(self, "model_extra", {}) or {})
+            choices = extra.get("choices")
+            if not isinstance(choices, (list, tuple)) or len(choices) == 0:
+                raise ValueError(f"distribution '{name}' requires a non-empty 'choices' list")
+            weights = extra.get("weights")
+            if weights is not None:
+                if not isinstance(weights, (list, tuple)) or len(weights) != len(choices):
+                    raise ValueError(
+                        f"distribution '{name}' requires 'weights' to be a list of "
+                        f"{len(choices)} value(s), one per choice"
+                    )
+                try:
+                    w = [float(x) for x in weights]
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"distribution '{name}' requires numeric 'weights'") from exc
+                if any(x < 0 or not math.isfinite(x) for x in w):
+                    raise ValueError(f"distribution '{name}' requires non-negative, finite 'weights'")
+                if sum(w) <= 0:
+                    raise ValueError(f"distribution '{name}' requires 'weights' summing to > 0")
+            return self
+
         dist = getattr(st, name, None)
         if dist is None or not hasattr(dist, "rvs"):
             raise ValueError(f"unknown SciPy distribution: '{name}'")
@@ -284,6 +342,14 @@ class UQConfig(BaseModel):
         scale = 4
         a = -1
         b =  1
+
+    Categorical parameters draw from an explicit list instead:
+
+    .. code-block:: toml
+
+        ['inverse.state_func']
+        distribution = "choices"
+        choices = ["meansquare", "huber"]
 
     After parsing:
 

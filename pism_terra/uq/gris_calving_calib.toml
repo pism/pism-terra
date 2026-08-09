@@ -1,5 +1,10 @@
 samples = 10
 
+['inverse.state_func']
+
+choices = ["meansquare", "huber"]
+distribution = "choices"
+
 ['calving.vonmises_calving.sigma_max']
 
 loc = 300000
