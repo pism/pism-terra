@@ -230,3 +230,31 @@ bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
+
+[inverse]
+
+'inverse.adjoint.method' =  "approximate"
+'inverse.design.cH1' = 1
+'inverse.design.cL2' = 0
+'inverse.file' = "none"
+'inverse.stress_balance.velocity_scale' = 1e2
+'inverse.stress_balance.length_scale' = 50e3
+'inverse.design.param' = "exp"
+'inverse.huber.delta' =  10e3
+'inverse.max_iterations' = 250
+'inverse.state_func' = "huber"
+'inverse.stress_balance.method' = "tikhonov_blmvm"
+'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_max' = 5e7
+'inverse.tikhonov.penalty_weight' = 1e3
+'inverse.tikhonov.atol' = 1e-7
+'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.use_design_prior' = "no"
+'remove_sia' = "yes"
+ssafem_ksp_type = "gmres"
+ssafem_pc_type = "asm"
+ssafem_pc_asm_overlap = 2
+ssafem_sub_pc_type = "ilu"
+ssafem_sub_pc_factor_levels = 1
+ssafem_sub_pc_factor_shift_type = "nonzero"
+ssafem_snes_converged_reason = ""
