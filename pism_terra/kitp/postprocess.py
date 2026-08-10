@@ -331,7 +331,7 @@ def postprocess_glacier(
     local_directory: str | Path | None = None,
 ):
     """
-    Postprocess KITP Greenland output by clipping to basin geometries.
+    Postprocess ISMIP7 Greenland output by clipping to basin geometries.
 
     Opens ``infile`` and clips it to the basin outline using a Dask client,
     writing per-basin scalar sums to ``outfile``.
@@ -385,7 +385,7 @@ def main():
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Postprocess KITP Greenland."
+    parser.description = "Postprocess ISMIP7 Greenland."
     parser.add_argument(
         "--ntasks",
         help="Sets number of tasks.",
