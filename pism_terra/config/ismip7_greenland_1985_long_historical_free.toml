@@ -197,6 +197,7 @@ model = "picop_sgd"
 'ocean.picop.add_fresh_water_melt' = "no"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
+'ocean.picop.drag_coefficient' = 0.0015
 
 [ocean.options.picop_sgd]
 
@@ -211,6 +212,7 @@ model = "picop_sgd"
 'ocean.picop.add_fresh_water_melt' = "yes"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
+'ocean.picop.drag_coefficient' = 0.0015
 
 [ocean.options.th]
 
