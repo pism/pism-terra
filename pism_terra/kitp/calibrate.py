@@ -177,7 +177,7 @@ debm_uq_vars = {
 
 pdd_uq_vars = {"surface.pdd.factor_ice": "fice", "surface.pdd.factor_snow": "fsnow", "surface.pdd.refreeze": "refreeze"}
 
-m_vars = ["surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]
+m_vars = ["surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]
 
 obs = xr.open_dataset(
     f"{data_dir}/2026_06_kitp_debm_calib/kitp/input/v4/HIRHAM5-ERA5_YMM_1990_2019_v4.nc",
@@ -188,10 +188,12 @@ obs = xr.open_dataset(
 ).drop_dims("nv", errors="ignore")
 
 obs = obs.pint.quantify()
-for v in ["surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
+obs["surface_accumulation_flux"] = obs["climatic_mass_balance"] - obs["surface_melt_flux"]
+
+for v in ["surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
     obs[v] = obs[v].pint.to("kg m^-2 yr^-1")
 obs = obs.pint.dequantify()
-for v in ["surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
+for v in ["surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
     obs[f"{v}_error"] = xr.where(obs[v] != 0, 0.10 * obs[v], 1e-8)
 
 for (
@@ -229,7 +231,7 @@ for (
     _obs[m_vars] = _obs[m_vars].where(melt_mask)
     _ds = ds[m_vars].where(melt_mask)
 
-    for v in ["climatic_mass_balance"]:
+    for v in ["climatic_mass_balance", "surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux"]:
 
         for fudge_factor in [1, 10, 100, 1000, 10_000, 100_000]:
             with ProgressBar():
