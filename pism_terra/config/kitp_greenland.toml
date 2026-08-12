@@ -173,7 +173,7 @@ model = "debm"
 
 [atmosphere]
 
-model = "given_elevation"
+model = "given"
 
 [atmosphere.options.given]
 
