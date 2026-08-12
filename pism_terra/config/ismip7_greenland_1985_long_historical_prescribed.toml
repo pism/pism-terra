@@ -9,14 +9,14 @@
 'run_info.ism' = "PISM"
 'run_info.domain' = "GrIS"
 'run_info.set' = "Init"
-'run_info.experiment' = "historical_prescribed"
+'run_info.experiment' = "historical_free"
 
 [campaign]
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
 version = "v2"
-historical_start_year = "1978"
+historical_start_year = "1972"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
@@ -29,7 +29,7 @@ obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
-init_start = "1980-01-01"
+init_start = "1972-01-01"
 init_end = "1985-01-01"
 
 [time]
@@ -197,7 +197,6 @@ model = "picop_sgd"
 'ocean.picop.add_fresh_water_melt' = "no"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
-'ocean.picop.drag_coefficient' = 0.0015
 
 [ocean.options.picop_sgd]
 
@@ -212,7 +211,6 @@ model = "picop_sgd"
 'ocean.picop.add_fresh_water_melt' = "yes"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
-'ocean.picop.drag_coefficient' = 0.0015
 
 [ocean.options.th]
 
