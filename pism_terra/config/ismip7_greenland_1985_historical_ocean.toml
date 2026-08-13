@@ -35,7 +35,7 @@ init_end = "1985-01-01"
 [time]
 
 'time.start' = "1985-01-01"
-'time.end' = "1986-01-01"
+'time.end' = "1988-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
 
@@ -69,7 +69,7 @@ init_end = "1985-01-01"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,u_ssa,v_ssa,velsurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt,picop_basal_melt_rate,picop_fresh_water_melt_rate,picop_discharge_flux"
+'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt,picop_basal_melt_rate,picop_fresh_water_melt_rate,picop_discharge_flux,limnsw,subglacial_water_flux_mag"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -204,6 +204,7 @@ model = "picop_sgd"
 'ocean.models' = "picop"
 'ocean.pico.file' = "none"
 'ocean.pico.continental_shelf_depth' = -280
+'ocean.picop.discharge_method' = "isotropic"
 'ocean.pico.heat_exchange_coefficent' = 2e-5
 'ocean.pico.maximum_ice_rise_area' = 10000.0
 'ocean.pico.number_of_boxes' = 3
