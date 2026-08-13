@@ -1,7 +1,6 @@
-samples = 10
+samples = 2
 
 ['calving.vonmises_calving.sigma_max']
 
-loc = 300000
-scale = 450000
-distribution = "uniform"
+choices = [5e5, 7.5e5]
+distribution = "choices"
