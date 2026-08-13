@@ -353,7 +353,11 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
     scalar = xr.open_dataset(outfile)
     try:
         names = basins["SUBREGION1"].tolist()
-        assert scalar["basin"].values.tolist() == names + ["GIS"]
+        # ``basin`` is a positional index for CDO's benefit; the labels live in
+        # ``basin_name``. Restore label indexing for the assertions below.
+        assert scalar["basin"].dtype == np.int32
+        assert scalar["basin_name"].values.tolist() == names + ["GIS"]
+        scalar = scalar.set_index(basin="basin_name")
 
         masks = {name: np.asarray(mask) for name, mask in basin_masks(ds, basins)}
         for name in names:
@@ -391,5 +395,9 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
         assert "spatial_ref" not in scalar.data_vars
         # And no dangling spatial dimension survived the reduction.
         assert set(scalar["ice_mass"].dims) == {"basin", "time"}
+        # Time must lead: CDO reads the first dimension as the record dimension
+        # and skips every variable that does not put time there.
+        for var in ("thk", "ice_mass", "mask", "ice_mass_glacierized"):
+            assert scalar[var].dims == ("time", "basin"), f"{var} has {scalar[var].dims}"
     finally:
         scalar.close()

@@ -1004,3 +1004,68 @@ def tqdm_joblib(tqdm_object):
     finally:
         joblib.parallel.BatchCompletionCallBack = old_batch_callback
         tqdm_object.close()
+
+
+def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = None) -> xr.Dataset:
+    """
+    Rewrite a per-region scalar dataset into a form CDO can open.
+
+    The per-region scalar files this package writes are built by stacking
+    ``expand_dims``-ed reductions, which leaves them unreadable by CDO for two
+    separate reasons:
+
+    1. ``expand_dims`` puts the new dimension first, giving ``(region, time)``.
+       CDO reads the leading dimension as the record dimension and skips every
+       variable that does not lead with time::
+
+           Time must be the first dimension! ... skipped variable ice_mass!
+
+    2. The region coordinate holds strings (basin names, RGI IDs). CDO reads the
+       trailing dimension as an x-axis and cannot represent a character
+       coordinate, so it drops every variable and then fails to open the file::
+
+           Unsupported x-coordinate type (char/string), skipped variable ice_mass!
+           No data arrays found!
+
+    So move time to the front and replace the string coordinate with a plain
+    integer index, keeping the labels alongside in ``name_var``. Label-based
+    selection is one call away for xarray users::
+
+        ds.set_index(basin="basin_name").sel(basin="GIS")
+
+    Both steps are skipped when they do not apply, so calling this on an
+    already-numeric or time-less dataset is a no-op.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset carrying ``label_dim`` and, usually, ``time``.
+    label_dim : str
+        Name of the region dimension, e.g. ``"basin"`` or ``"RGIid"``.
+    name_var : str or None, optional
+        Name for the companion label coordinate. Defaults to
+        ``f"{label_dim}_name"``.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with time leading and ``label_dim`` as an integer index.
+    """
+    if label_dim in ds.dims and label_dim in ds.coords:
+        labels = ds[label_dim].values
+        if labels.dtype.kind in {"U", "S", "O"}:
+            name_var = name_var or f"{label_dim}_name"
+            attrs = dict(ds[label_dim].attrs)
+            ds = ds.assign_coords({label_dim: np.arange(ds.sizes[label_dim], dtype="int32")})
+            ds[label_dim].attrs = {
+                **attrs,
+                "long_name": f"{label_dim} index",
+                "description": f"positional index; labels are in '{name_var}'",
+            }
+            ds = ds.assign_coords({name_var: (label_dim, labels.astype(str))})
+            ds[name_var].attrs = {"long_name": f"{label_dim} name"}
+
+    if "time" in ds.dims:
+        ds = ds.transpose("time", ...)
+
+    return ds
