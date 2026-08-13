@@ -1,6 +1,6 @@
-samples = 2
+samples = 3
 
 ['ocean.picop.discharge_method']
 
-choices = ['along_flow', 'isotropic']
+choices = ['along_flow', 'isotropic', 'downstream_gate']
 distribution = "choices"
