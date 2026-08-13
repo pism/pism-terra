@@ -155,7 +155,20 @@ def basin_masks(
     -------
     list of (str, xarray.DataArray)
         ``(basin name, boolean mask)`` pairs, in ``basin`` row order.
+
+    Raises
+    ------
+    ValueError
+        If ``basin`` has no features (e.g. a truncated or freshly-created
+        outline file) or lacks ``column``. Without the check an empty
+        outline surfaces as ``client.scatter([])`` blowing up deep inside
+        distributed ("not enough values to unpack").
     """
+    if basin.empty:
+        raise ValueError("outline file contains no features; check the file (e.g. `ogrinfo -so`) and re-copy it")
+    if column not in basin.columns:
+        raise ValueError(f"outline file has no column {column!r}; available: {list(basin.columns)}")
+
     transform = ds.rio.transform(recalc=True)
     shape = (int(ds.rio.height), int(ds.rio.width))
     # Match the dataset's own y/x chunking so ``ds.where(mask)`` stays blockwise.

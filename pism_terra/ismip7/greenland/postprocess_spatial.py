@@ -277,7 +277,13 @@ def _write_zarr(sub: xr.Dataset, path: Path, scratch: Path) -> None:
         staged = staged.set_coords([c for c in sub.coords if c in staged.data_vars])
         for var in non_numeric:
             staged[var] = sub[var].compute()
-        staged.to_netcdf(path, engine="h5netcdf", encoding=_encoding(staged), unlimited_dims=_unlimited(staged))
+        # The conversion must not run on the live distributed client: with an
+        # active client xarray routes the netCDF write lock through
+        # ``distributed.Lock``, which can deadlock an in-process cluster (see
+        # ``_write_shards``). The store is on local scratch, so a synchronous
+        # chunk-by-chunk copy is cheap and needs no cluster.
+        with dask.config.set(scheduler="synchronous"):
+            staged.to_netcdf(path, engine="h5netcdf", encoding=_encoding(staged), unlimited_dims=_unlimited(staged))
         staged.close()
     finally:
         shutil.rmtree(store, ignore_errors=True)
@@ -321,17 +327,24 @@ def _write_shards(sub: xr.Dataset, path: Path, scratch: Path, time_batch: int) -
                 var.encoding = {}
             batch.to_netcdf(shard, engine="h5netcdf")
             shard_paths.append(shard)
-        stitched = xr.concat(
-            [xr.open_dataset(p, chunks={}, decode_times=False, decode_timedelta=False) for p in shard_paths],
-            dim="time",
-        )
+        shards = [xr.open_dataset(p, chunks={}, decode_times=False, decode_timedelta=False) for p in shard_paths]
+        stitched = xr.concat(shards, dim="time")
         stitched = stitched.set_coords([c for c in sub.coords if c in stitched.data_vars])
         for var in timeless:
             stitched[var] = sub[var].compute()
         stitched = stitched[list(sub.data_vars)]
         stitched.attrs = sub.attrs
-        stitched.to_netcdf(path, engine="h5netcdf", encoding=_encoding(stitched), unlimited_dims=["time"])
-        stitched.close()
+        # Reading the shards (h5netcdf) while writing the final file
+        # (h5netcdf) in one compute must not run on the live distributed
+        # client: xarray then takes the write lock via ``distributed.Lock``,
+        # which intermittently deadlocks an in-process cluster (observed as a
+        # hung test with the shard files still open). The synchronous
+        # scheduler serializes read and write in this thread with a plain
+        # lock; memory stays one chunk.
+        with dask.config.set(scheduler="synchronous"):
+            stitched.to_netcdf(path, engine="h5netcdf", encoding=_encoding(stitched), unlimited_dims=["time"])
+        for shard in shards:
+            shard.close()
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)
 

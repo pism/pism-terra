@@ -414,3 +414,25 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
             assert scalar[var].dims == ("time", "basin"), f"{var} has {scalar[var].dims}"
     finally:
         scalar.close()
+
+
+def test_basin_masks_rejects_empty_and_mislabeled_outlines(basins):
+    """
+    Empty outlines and missing name columns fail with clear messages.
+
+    An empty GeoDataFrame used to surface as ``client.scatter([])`` dying
+    deep inside distributed with "not enough values to unpack" — the
+    signature of a truncated outline file copied to the cluster.
+
+    Parameters
+    ----------
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    """
+    ds = synthetic_greenland(basins, n_time=1)
+
+    with pytest.raises(ValueError, match="no features"):
+        basin_masks(ds, basins.iloc[0:0])
+
+    with pytest.raises(ValueError, match=r"no column 'nope'.*SUBREGION1"):
+        basin_masks(ds, basins, column="nope")
