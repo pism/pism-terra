@@ -19,7 +19,6 @@ import xarray as xr
 import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from dask.diagnostics import ProgressBar
 
-from pism_terra.filtering import importance_sampling
 from pism_terra.processing import preprocess_netcdf as preprocess
 
 debm_uq_vars = {
@@ -189,7 +188,6 @@ obs = xr.open_dataset(
 
 obs = obs.pint.quantify()
 obs["surface_accumulation_flux"] = obs["climatic_mass_balance"] - obs["surface_melt_flux"]
-
 for v in ["surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
     obs[v] = obs[v].pint.to("kg m^-2 yr^-1")
 obs = obs.pint.dequantify()
@@ -217,7 +215,7 @@ for (
         .pint.quantify()
     )
     ds["exp_id"] = ds["exp_id"].astype("int")
-    for v in ["surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
+    for v in ["surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
         ds[v] = ds[v].pint.to("kg m^-2 yr^-1")
     ds = ds.pint.dequantify()
 
@@ -232,47 +230,6 @@ for (
     _ds = ds[m_vars].where(melt_mask)
 
     for v in ["climatic_mass_balance", "surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux"]:
-
-        for fudge_factor in [1, 10, 100, 1000, 10_000, 100_000]:
-            with ProgressBar():
-                ebm_filtered = importance_sampling(
-                    _ds,
-                    _obs,
-                    sim_var=v,
-                    obs_mean_var=v,
-                    obs_std_var=f"{v}_error",
-                    sum_dims=["time", "x", "y"],
-                    n_samples=ds.exp_id.size,
-                    fudge_factor=fudge_factor,
-                )
-
-                ebm_sampled_ids = ebm_filtered.exp_id_sampled.values
-                ebm_counts = pd.Series(ebm_sampled_ids).value_counts()
-
-                # Reindex config_df to the sampled IDs and plot histograms
-                ds_sampled_configs = ebm_uq_df.loc[ebm_counts.index].reindex(ebm_counts.index)
-                most_sampled_id = ebm_counts.idxmax()
-                most_sampled_params = ebm_uq_df.loc[most_sampled_id]
-                print(f"\n{ebm} / {v} — {fudge_factor} — most sampled id={most_sampled_id} (count={ebm_counts.max()})")
-                for k, short in ebm_uq_vars.items():
-                    print(f"  {short}: {most_sampled_params[k]:.6g}")
-
-                fig, axes = plt.subplots(1, len(ebm_uq_vars), sharey=True, figsize=(6.4, 1.8))
-                for ax, (key, value) in zip(axes.flat, ebm_uq_vars.items()):
-                    # Repeat each parameter value by its sample count
-                    values = np.repeat(
-                        ebm_uq_df[key].values, ebm_counts.reindex(ebm_uq_df.index, fill_value=0).values.astype(int)
-                    )
-                    print(key, np.median(values))
-                    ax.hist(values, bins=15)
-                    ax.set_xlabel(value)
-                    ax.set_xlim(ebm_uq_df[key].min(), ebm_uq_df[key].max())
-                    # ax.set_ylabel("Count")
-
-                fig.tight_layout()
-                fig.savefig(f"{ebm}_{v}_ff_{fudge_factor}.png", dpi=300)
-                plt.close()
-                del fig
 
         with ProgressBar():
 
