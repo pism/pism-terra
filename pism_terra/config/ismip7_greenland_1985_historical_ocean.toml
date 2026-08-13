@@ -59,7 +59,7 @@ init_end = "1985-01-01"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,average_water_column_pressure,bwat"
 
 [reporting]
 
