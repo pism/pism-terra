@@ -118,6 +118,7 @@ def synthetic_greenland(
     n_time: int = 4,
     time_chunks: dict[str, int] | None = None,
     resolution: float = GRID_RESOLUTION,
+    z_levels: int | None = None,
 ) -> xr.Dataset:
     """
     Synthetic PISM-like output on a coarse Greenland grid.
@@ -138,6 +139,11 @@ def synthetic_greenland(
         with that chunking; when ``None`` the dataset stays NumPy-backed.
     resolution : float, default 20000.0
         Grid spacing in metres.
+    z_levels : int or None, optional
+        When set, add a 3D ``enthalpy`` variable with dims
+        ``(time, y, x, z)`` and this many vertical levels, as real PISM
+        spatial files carry. ``None`` (default) keeps the dataset 2D-only,
+        so existing tests are unaffected.
 
     Returns
     -------
@@ -159,6 +165,13 @@ def synthetic_greenland(
         {name: (("time", "y", "x"), values, {"units": "1"}) for name, values in data.items()},
         coords={"time": np.arange(n_time, dtype="float64"), "y": y, "x": x},
     )
+    if z_levels is not None:
+        ds["enthalpy"] = xr.DataArray(
+            rng.uniform(0.0, 1e5, (*shape, z_levels)).astype(np.float32),
+            dims=("time", "y", "x", "z"),
+            coords={"z": np.linspace(0.0, 4000.0, z_levels)},
+            attrs={"units": "J kg-1"},
+        )
     # A non-spatial, time-less variable: process_file carries these through to
     # the output untouched.
     ds["pism_config"] = xr.DataArray(np.int8(0), attrs={"note": "synthetic"})
