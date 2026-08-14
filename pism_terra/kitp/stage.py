@@ -50,6 +50,7 @@ def stage(
     prefix: str,
     output_path: str | Path,
     force_overwrite: bool = False,
+    data_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """
     Stage KITP Greenland inputs and return a file index.
@@ -90,6 +91,12 @@ def stage(
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
+    data_path : str or pathlib.Path or None, default ``None``
+        Directory where the staged input data is written. When given, all inputs go
+        here (a shared location that multiple experiment output directories can
+        reuse to save disk); when ``None``, they go to ``<output-path>/<prefix>`` as
+        before. Files already present are not re-downloaded, so pointing several
+        runs at the same ``data_path`` stages the data once.
 
     Returns
     -------
@@ -113,7 +120,10 @@ def stage(
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    input_path = output_path / Path(prefix)
+    # Staged input data goes to a shared ``data_path`` when given (so several
+    # experiment output dirs can reuse one staged copy), otherwise under the
+    # output path at ``<output-path>/<prefix>``.
+    input_path = Path(data_path) if data_path is not None else output_path / Path(prefix)
 
     if force_overwrite:
         input_path.unlink(missing_ok=True)
@@ -229,6 +239,13 @@ def main():
         default=Path("data/ismip7_greenland"),
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared directory for staged input data (reused across runs). "
+        "Defaults to <output-path>/<prefix>/<version>.",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -244,6 +261,7 @@ def main():
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
     output_path = options.output_path
+    data_path = options.data_path
     output_path.mkdir(parents=True, exist_ok=True)
 
     cfg = load_config(config_file)
@@ -254,8 +272,9 @@ def main():
     version: str = config.pop("version", "v2")
     s3_path = f"""{s3_prefix}/{version}"""
 
-    is_df = stage(config, s3_bucket, s3_path, output_path, force_overwrite=force_overwrite)
-    is_df.to_csv(output_path / Path(s3_path) / Path("ismip7_greenland_files.csv"))
+    is_df = stage(config, s3_bucket, s3_path, output_path, force_overwrite=force_overwrite, data_path=data_path)
+    input_dir = Path(data_path) if data_path is not None else output_path / Path(s3_path)
+    is_df.to_csv(input_dir / Path("ismip7_greenland_files.csv"))
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/kitp_greenland" if options.bucket_prefix else "kitp_greenland"

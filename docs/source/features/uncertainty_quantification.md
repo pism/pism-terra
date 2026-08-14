@@ -18,6 +18,31 @@ a = -2
 b = 2
 ```
 
+### Categorical parameters
+
+A parameter that takes one of a fixed set of values (a model name, a cost
+function, …) uses the `choices` pseudo-distribution instead of a SciPy one:
+
+```toml
+['inverse.state_func']
+distribution = "choices"
+choices = ["meansquare", "huber"]
+```
+
+Values are passed to PISM verbatim, so strings stay strings and numbers stay
+numbers. `weights` (one non-negative number per choice) makes the draw
+non-uniform; omitting it means uniform. `"choice"` and `"categorical"` are
+accepted spellings of the same thing.
+
+Categories are laid out on the unit interval in declaration order, so Latin
+Hypercube sampling draws them (near-)equally often when `samples` is a multiple
+of the number of choices, and `method = "factorial"` sweeps them
+deterministically.
+
+This is distinct from the `mapping` block, which stays the way to point a flag
+at *staged* files: there, an integer `randint` draw indexes a column of the
+staging table (see {py:func}`pism_terra.workflow.apply_choice_mapping`).
+
 ## Sampling
 
 {py:func}`pism_terra.sampling.lhs_sample` performs Latin Hypercube sampling and

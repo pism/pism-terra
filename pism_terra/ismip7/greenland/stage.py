@@ -97,9 +97,9 @@ def stage(
     include_projection : bool, default ``True``
         If ``True``, stage both the historical and the projection (pathway) forcing
         epochs. If ``False``, stage only the historical epoch and omit the ``*_proj_*``
-        columns from the returned index. The inverse run passes ``False`` because it
-        only uses the historical forcing, so the (large) projection files never need
-        to be downloaded.
+        columns from the returned index. Historical(-only) runs pass ``False`` because
+        they never run a projection continuation, so the (large) projection files
+        never need to be downloaded.
     data_path : str or pathlib.Path or None, default ``None``
         Directory where the staged input data is written. When given, all inputs go
         here (a shared location that multiple experiment output directories can
@@ -157,6 +157,7 @@ def stage(
     boot_file = input_path / Path(config["boot_file"])
     heatflux_file = input_path / Path(config["heatflux_file"])
     regrid_file = input_path / Path(config["regrid_file"])
+    retreat_file = input_path / Path(config["retreat_file"])
     outline_file = input_path / Path(config["outline_file"])
     obs_file = input_path / Path(config["obs_file"])
 
@@ -169,6 +170,7 @@ def stage(
         (config["boot_file"], boot_file),
         (config["heatflux_file"], heatflux_file),
         (config["regrid_file"], regrid_file),
+        (config["retreat_file"], retreat_file),
         (config["outline_file"], outline_file),
         (config["obs_file"], obs_file),
     ]
@@ -249,6 +251,7 @@ def stage(
         "grid_file": grid_file.resolve(),
         "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
+        "retreat_file": retreat_file.resolve(),
         "outline_file": outline_file.resolve(),
         "obs_file": obs_file.resolve(),
     }

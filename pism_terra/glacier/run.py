@@ -42,6 +42,7 @@ from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
+    add_provenance,
     apply_choice_mapping,
     dict2str,
     filter_overrides_by_config,
@@ -371,7 +372,7 @@ def _render_inverse_run(
     params.update({"inv_str": inv_str})
     params.update({"post_script": "pism-glacier-postprocess"})
     params.update({"post_file": post_file})
-    rendered_script = "" if debug else template.render(params)
+    rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)
@@ -666,7 +667,7 @@ def _render_forward_run(
     params.update({"run_str": run_str})
     params.update({"post_script": "pism-glacier-postprocess"})
     params.update({"post_file": post_file})
-    rendered_script = "" if debug else template.render(params)
+    rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
     run_script_path.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,6 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.counter' = ""
 'run_info.domain' = "GrIS"
 'run_info.set' = "ML Training Data"
 
@@ -20,18 +19,21 @@ historical_start_year = "1900"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
-boot_file = "boot_g450m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g900m_id_BAYES-MEDIAN_HYBRID.nc"
+regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
-obs_file = "obs_g450m_GreenlandObsISMIP7-v1.3.nc"
+outline_file = "mouginot_basins_w_shelves.gpkg"
+obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
+retreat_file = "none"
 gcms = "CESM2-WACCM"
 pathway = "historical"
+init_start = "1914-01-01"
+init_end = "1915-01-01"
 
 [time]
 
-'time.start' = "1900-01-01"
+'time.start' = "1915-01-01"
 'time.end' = "2015-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
@@ -43,7 +45,6 @@ pathway = "historical"
 
 ['geometry']
 
-'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
 
@@ -54,7 +55,7 @@ pathway = "historical"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt"
 
 [reporting]
 
@@ -63,8 +64,8 @@ pathway = "historical"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,bmelt,climatic_mass_balance,dHdt,flux_divergence,ice_mass,sftgif,usurf,velsurf_mag,velsurf"
+'output.spatial.times' = "yearly"
+'output.spatial.vars' = "topg,bmelt,climatic_mass_balance,dHdt,flux_divergence,ice_mass,sftgif,usurf,velsurf_mag,velsurf,thk,mask,mass_fluxes,limnsw"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
 'output.checkpoint.interval' = 24
@@ -106,7 +107,7 @@ model = 'hybrid'
 'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.blatter.use_eta_transform' = "yes"
 'stress_balance.calving_front_stress_bc' = "yes"
-'time_stepping.adaptive_ratio' = 1000
+'time_stepping.adaptive_ratio' = 250
 
 [stress_balance.options.hybrid]
 
@@ -164,7 +165,7 @@ model = "given"
 
 [ocean]
 
-model = "picop"
+model = "th"
 
 [ocean.options.pico]
 
@@ -211,6 +212,7 @@ model = "picop"
 'ocean.models' = "th"
 'ocean.th.file' = "none"
 'ocean.th.clip_salinity' = "yes"
+'ocean.th.temperature_as_thermal_forcing' = "yes"
 
 [frontal_melt]
 

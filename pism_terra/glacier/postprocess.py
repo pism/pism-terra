@@ -40,6 +40,7 @@ from pyfiglet import Figlet
 from tqdm import tqdm
 
 from pism_terra.log import setup_logging
+from pism_terra.workflow import make_cdo_readable
 
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
@@ -139,6 +140,9 @@ def process_file(
     extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims]
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
+    # Put time first and swap the string RGI IDs for an integer index, so CDO
+    # can open the result at all. See ``make_cdo_readable``.
+    scalar = make_cdo_readable(scalar, "RGIid")
     encoding_scalar = {var: comp for var in scalar.data_vars}
     scalar.to_netcdf(scalar_file, encoding=encoding_scalar, engine="netcdf4")
 

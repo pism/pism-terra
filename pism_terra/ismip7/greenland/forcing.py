@@ -577,9 +577,15 @@ def _process_single_forcing(
             fill_op = " -setmisstonn -setrtomiss,-1,1"
         else:
             fill_op = ""
-        mergetime_chain = (
-            f"{tas_replace}{fill_op} -setgrid,{str(grid_file)} -mergetime [ " + " ".join(str(p) for p in paths) + " ]"
-        )
+        # Some per-year ISMIP7 source files carry an extra grid-mapping variable
+        # (``crs``) — and define it inconsistently between years — while others
+        # omit it. ``-mergetime`` then aborts with "Input streams have different
+        # number of variables per timestep" (preceded by a flood of "Inconsistent
+        # variable definition for crs!"). Select only the physical variable from
+        # each input first (``-apply,-selname``) so every stream has an identical,
+        # single-variable structure; the grid is re-attached by ``-setgrid`` below.
+        merge_inputs = f"-apply,-selname,{k} [ " + " ".join(str(p) for p in paths) + " ]"
+        mergetime_chain = f"{tas_replace}{fill_op} -setgrid,{str(grid_file)} -mergetime {merge_inputs}"
         if m_var == "so":
             # CMIP6 sea-water salinity ships with ``units = "psu"`` (practical
             # salinity unit). PISM's ``ocean.th`` requires the numerically
@@ -717,11 +723,16 @@ def add_basins_to_ocean_files(ocean_files: list[Path]) -> None:
     """
     Add the GrIS basin mask to each ocean forcing file, in place.
 
-    Opens each ocean file, rasterizes the packaged basin polygons onto that file's
-    grid via :func:`basin_mask`, and writes the result back as an ``int8``
-    ``basins`` variable. Files are rewritten atomically via a sibling ``*.tmp``
-    file. A file whose grid cannot be matched is logged and skipped rather than
-    aborting the whole batch.
+    Reads only each file's ``x``/``y`` coordinates, rasterizes the packaged basin
+    polygons onto that grid via :func:`basin_mask`, and appends the result as an
+    ``int8`` ``basins`` variable **in place** (``mode="a"``). A file whose grid
+    cannot be matched is logged and skipped rather than aborting the whole batch.
+
+    The forcing payload is never read. A projection ocean file spans 2015-2300 at
+    monthly cadence (3432 timesteps x ``tf`` + ``so``); loading it to rewrite the
+    whole dataset needs tens of GB and gets the process OOM-killed on a shared
+    node. Appending one 2-D mask touches only the new variable, so cost is
+    independent of the record length.
 
     Parameters
     ----------
@@ -730,22 +741,33 @@ def add_basins_to_ocean_files(ocean_files: list[Path]) -> None:
     """
     for ocean_file in ocean_files:
         try:
-            with xr.open_dataset(ocean_file) as ds:
-                ds = ds.load()
-            basins = basin_mask(ds)
-            ds["basins"] = basins
-            # Georeference basins like the file's other data variables (match
-            # their ``grid_mapping``, e.g. ``crs``, rather than the source field's).
-            grid_mapping = next(
-                (ds[v].attrs["grid_mapping"] for v in ds.data_vars if v != "basins" and "grid_mapping" in ds[v].attrs),
-                None,
-            )
+            # ``decode_times=False``: the time axis is irrelevant here and
+            # projections run past the datetime64[ns] ceiling (year 2262), which
+            # would otherwise trigger a cftime fallback warning.
+            with xr.open_dataset(ocean_file, decode_times=False, decode_timedelta=False) as ds:
+                grid = xr.Dataset(coords={"x": ds["x"].to_numpy(), "y": ds["y"].to_numpy()})
+                # Georeference basins like the file's other data variables (match
+                # their ``grid_mapping``, e.g. ``crs``, rather than the source field's).
+                grid_mapping = next(
+                    (
+                        ds[v].attrs["grid_mapping"]
+                        for v in ds.data_vars
+                        if v != "basins" and "grid_mapping" in ds[v].attrs
+                    ),
+                    None,
+                )
+                already_present = "basins" in ds.variables
+            basins = basin_mask(grid)
             if grid_mapping:
-                ds["basins"].attrs["grid_mapping"] = grid_mapping
-            encoding = {"basins": {"zlib": True, "complevel": 2, "_FillValue": None}}
-            tmp = ocean_file.with_name(ocean_file.name + ".tmp")
-            ds.to_netcdf(tmp, encoding=encoding, engine="h5netcdf")
-            os.replace(tmp, ocean_file)
+                basins.attrs["grid_mapping"] = grid_mapping
+            # ``basin_mask`` builds its reference field through rioxarray, which
+            # attaches a ``spatial_ref`` coordinate. The real grid-mapping
+            # variable is already in the file, so don't append a second one.
+            basins = basins.drop_vars("spatial_ref", errors="ignore")
+            # Encoding may only be set when the variable is created; on a rerun
+            # the existing (already compressed) variable is overwritten in place.
+            encoding = {} if already_present else {"basins": {"zlib": True, "complevel": 2, "_FillValue": None}}
+            xr.Dataset({"basins": basins}).to_netcdf(ocean_file, mode="a", engine="h5netcdf", encoding=encoding)
             logger.info("Added basin mask to %s", ocean_file.name)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Could not add basin mask to %s: %s", ocean_file, exc)
@@ -820,15 +842,37 @@ def prepare_observations(
     )
 
     if target_grid is not None:
-        ds_bm_regridded = ds_bm[["bed", "thickness", "surface", "mask"]].regrid.conservative(target_grid)
+        ds_bm_regridded = ds_bm[["bed", "thickness", "surface"]].regrid.conservative(target_grid)
+        # ``mask`` is a categorical class label (0 = ocean, 1 = ice-free land,
+        # 2 = grounded ice, 3 = floating ice, 4 = non-Greenland land), so it must
+        # not be area-averaged. Conservative regridding blends classes across
+        # every coastline and shelf edge — over Petermann it turns 4 classes into
+        # 41 distinct values, 4.4% of cells non-integer — which makes the exact
+        # ``== 0`` / ``== 3`` tests below miss precisely the mixed cells they need
+        # to catch. Majority resampling keeps the field categorical. Ties are
+        # broken by ``idxmax`` (lowest class wins), so the result is reproducible.
+        # ``sortby("y")``: BedMachine's y axis descends, and unlike the
+        # conservative regridder the flox-based majority reduction needs
+        # ascending coordinates (it otherwise reduces over an empty bin and
+        # raises "zero-size array to reduction operation maximum").
+        ds_bm_regridded["mask"] = (
+            ds_bm["mask"].sortby("y").regrid.most_common(target_grid, values=np.array([0, 1, 2, 3, 4]), time_dim=None)
+        )
         gebco_p = download_gebco(target_dir=input_path)
         gebco = xr.open_dataset(gebco_p, chunks="auto").rio.write_crs("EPSG:4326")
         gebco_bm_regridded = gebco.rio.reproject_match(
             ds_bm_regridded.rio.write_crs("EPSG:3413"), resampling=Resampling.bilinear
         ).compute()
-        # Use GEBCO bathymetry over ocean (mask == 0), and also to fill any gaps in
-        # BedMachine's bed; keep BedMachine's bed everywhere else.
-        use_gebco = (ds_bm_regridded["mask"] == 0) | ds_bm_regridded["bed"].isnull()
+        # GEBCO fills only what lies outside BedMachine's domain (where the target
+        # grid extends past its coverage, leaving NaN after regridding). It must
+        # NOT replace BedMachine over ocean: BedMachine resolves Greenland's fjord
+        # bathymetry, where GEBCO is far too shallow — in Ilulissat Icefjord a
+        # median -209 m against BedMachine's -558 m. Substituting it there both
+        # publishes a bed that grounds ice which should float and, via the
+        # flotation cap below, carves the coarse bathymetry into the ice
+        # thickness. BedMachine has no NaN bed inside its own domain, so this
+        # keeps its bed everywhere it exists.
+        use_gebco = ds_bm_regridded["bed"].isnull()
         ds_bm_regridded["bed"] = ds_bm_regridded["bed"].where(~use_gebco, gebco_bm_regridded["elevation"])
         ds_bm_regridded = ds_bm_regridded.fillna(0)
     else:
@@ -854,12 +898,23 @@ def prepare_observations(
         surface = ds["surface"].regrid.conservative(target_grid)
         surface = surface.where(surface > 0, 0)
         surface.name = "surface"
-        thickness = xr.where(surface > 0, surface - bed, 0)
+        mask = ds_bm_regridded["mask"]
+        # Bed-referenced thickness only where the ice is actually grounded. The
+        # surface DEM and BedMachine's mask are different products on different
+        # grids, so their coastlines disagree; applying ``surface - bed`` to a
+        # cell whose surface is a valley wall but whose bed is the fjord floor
+        # produced >1500 m of phantom ice along Petermann's margins.
+        thickness = xr.where((surface > 0) & (mask == 2), surface - bed, 0)
         # In the ocean (mask == 0) and on ice shelves (mask == 3) a positive
         # surface is floating freeboard, not bed-referenced elevation, so recover
         # the thickness from flotation: freeboard = alpha * H  =>  H = surface / alpha.
-        mask = ds_bm_regridded["mask"]
-        thickness_from_flotation = surface / alpha
+        # Cap that by the local water depth: a floating column of thickness H
+        # draws (rho_ice / rho_sea_water) * H of water and cannot float in less,
+        # so H <= depth * rho_sea_water / rho_ice. Without the cap the 1/alpha
+        # (~8.7x) amplification turns a single DEM cell contaminated by the fjord
+        # wall into hundreds of metres of ice right at the calving front.
+        max_floating_thickness = (-bed * rho_sea_water / rho_ice).clip(min=0)
+        thickness_from_flotation = np.minimum(surface / alpha, max_floating_thickness)
         # Only recover floating thickness inside the GrIS basin polygons
         # (basin > 0); outside them, mask 0/3 cells are spurious ocean/shelf
         # that would otherwise pick up bogus thicknesses.
@@ -867,12 +922,17 @@ def prepare_observations(
         is_floating = (surface > 0) & ((mask == 0) | (mask == 3)) & in_basin
         thickness = xr.where(is_floating, thickness_from_flotation, thickness)
         thickness = thickness.where(thickness > 10, 0)
+        thickness = thickness.where(in_basin, 0)
         thickness.name = "thickness"
         thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
         boot = xr.merge([bed, ftt_mask, surface, thickness, liafr])
     else:
         dem_year = "2007"
-        boot = xr.merge([ds_bm_regridded[["bed", "thickness", "surface"]], ftt_mask, liafr])
+        thickness = ds_bm_regridded["thickness"]
+        thickness = thickness.where(thickness > 10, 0)
+        thickness.name = "thickness"
+        thickness.attrs.update(ds_bm_regridded["thickness"].attrs)
+        boot = xr.merge([ds_bm_regridded[["bed", "surface"]], thickness, ftt_mask, liafr])
 
     # Ellesmere Island sits inside the domain but is not part of the modeled
     # Greenland ice sheet; force it to deep ocean so no ice can grow there.
@@ -961,13 +1021,6 @@ def prepare_observations(
         if grid_mapping:
             geo_encoding[var]["grid_mapping"] = grid_mapping
     geo.to_netcdf(geo_file, encoding=geo_encoding, engine="h5netcdf")
-
-    # Velocity observations: collapse the ISMIP7 vx/vy time series with the
-    # inverse-distance-weighting recipe used in pism-ragis
-    # (data/05_prepare_itslive.py), then mirror the post-processing in
-    # pism_terra.glacier.observations.glacier_velocities_from_grid — fillna
-    # for u/v_observed and emit zeta_fixed_mask / vel_misfit_weight so the
-    # downstream PISM inverse run knows which cells carry trustable obs.
 
     ice_mask = ds_bm["icemask_promice"]
     vel = ds_bm[["vx_mosaic", "vy_mosaic"]].rename_vars({"vx_mosaic": "vx", "vy_mosaic": "vy"})
@@ -1058,7 +1111,7 @@ def prepare_calfin(
     resolution: int,
     x_bnds: list | np.ndarray,
     y_bnds: list | np.ndarray,
-    freq: str = "ME",
+    freq: str = "MS",
     force_overwrite: bool = False,
     n_workers: int = 4,
 ) -> str | Path:

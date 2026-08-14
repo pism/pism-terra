@@ -1,7 +1,7 @@
 ismip7_to_pism = {"acabf" = "climatic_mass_balance", "dacabfdz" = "climatic_mass_balance_gradient", "mrro" = "runoff_rate", "dmrrodz" = "runoff_rate_gradient", "ts" = "ice_surface_temp", "dtsdz" = "ice_surface_temp_gradient", "tf" = "theta_ocean", "so" = "salinity_ocean", "geothermal_heat_flux1" = "bheatflx"}
 version = "v2"
 bucket = "pism-cloud-data"
-prefix = "ismip7/greenland/input"
+prefix = "ml/input"
 ice_sheet = "GrIS"
 
 [domain]
@@ -13,8 +13,7 @@ resolution = "450m"
 
 [gcms]
 
-'CESM2-WACCM' = {historical = {start = 1978, end = 2014, version = 2}, ssp126 = {start = 2015, end = 2300, version = 2 }, ssp370 = {start = 2015, end = 2100, version = 2 }, ssp585 = {start = 2015, end = 2300, version = 2 } }
-'MRI-ESM2-0' = {historical = {start = 1978, end = 2014, version = 1}, ssp126 = {start = 2015, end = 2300, version = 1 }, ssp370 = {start = 2015, end = 2100, version = 1 }, ssp585 = {start = 2015, end = 2300, version = 1 } }
+'CESM2-WACCM' = {historical = {start = 1900, end = 2014, version = 2}}
 
 [forcing]
 

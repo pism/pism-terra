@@ -20,17 +20,18 @@ historical_start_year = "1978"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"
-boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+boot_file = "boot_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g900m_id_BAYES-MEDIAN_1980-01-01_1980-07-01.nc"
+regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
-obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
+outline_file = "mouginot_basins_w_shelves.gpkg"
+obs_file = "obs_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
+retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
 
 [time]
 
 'time.start' = "1985-01-01"
-'time.calendar' =  "365_day"
+'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
 
 [time_stepping]
@@ -40,6 +41,8 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 ['geometry']
 
+'geometry.front_retreat.prescribed.file' = "none"
+'geometry.front_retreat.prescribed.periodic' = "yes"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
@@ -51,7 +54,7 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat"
 
 [reporting]
 
@@ -94,7 +97,7 @@ model = "enthalpy"
 
 [stress_balance]
 
-model = 'blatter'
+model = 'hybrid'
 
 [stress_balance.options.blatter]
 
@@ -184,6 +187,7 @@ model = "picop_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
+'ocean.picop.drag_coefficient' = 0.0015
 
 [ocean.options.picop_sgd]
 
@@ -198,6 +202,7 @@ model = "picop_sgd"
 'ocean.picop.add_fresh_water_melt' = "yes"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
+'ocean.picop.drag_coefficient' = 0.0015
 
 [ocean.options.th]
 
@@ -267,3 +272,31 @@ bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
+
+[inverse]
+
+'inverse.adjoint.method' =  "approximate"
+'inverse.design.cH1' = 1
+'inverse.design.cL2' = 0
+'inverse.file' = "none"
+'inverse.stress_balance.velocity_scale' = 1e2
+'inverse.stress_balance.length_scale' = 50e3
+'inverse.design.param' = "exp"
+'inverse.huber.delta' =  10e3
+'inverse.max_iterations' = 250
+'inverse.state_func' = "huber"
+'inverse.stress_balance.method' = "tikhonov_blmvm"
+'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_max' = 5e7
+'inverse.tikhonov.penalty_weight' = 1e3
+'inverse.tikhonov.atol' = 1e-7
+'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.use_design_prior' = "no"
+'remove_sia' = "yes"
+ssafem_ksp_type = "gmres"
+ssafem_pc_type = "asm"
+ssafem_pc_asm_overlap = 2
+ssafem_sub_pc_type = "ilu"
+ssafem_sub_pc_factor_levels = 1
+ssafem_sub_pc_factor_shift_type = "nonzero"
+ssafem_snes_converged_reason = ""

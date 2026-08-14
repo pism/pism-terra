@@ -305,8 +305,9 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
         for basin_name in baseline.basin.values:
             basin_gcm = gcm_sub_baseline.sel(basin=basin_name)
             basin_glf = (
-                gcm.sel(basin=basin_name)["grounding_line_flux"] * xr.DataArray(900**2).pint.quantify("m2")
+                gcm.sel(basin=basin_name)["grounding_line_flux_nonneg"] * xr.DataArray(900).pint.quantify("m") ** 2
             ).pint.to("Gt/yr")
+            basin_smb = (gcm.sel(basin=basin_name)["tendency_of_ice_mass_due_to_surface_mass_flux"]).pint.to("Gt/yr")
             basin_slc = (basin_gcm["ice_mass"] * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
 
@@ -320,6 +321,8 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             for exp_name, exp in EXPS_OPTS.items():
                 _gcm_slc = basin_slc.sel({"exp_id": exp_name})
                 _ = _gcm_slc.plot(ax=axs[0], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
+                _gcm_smb = basin_smb.sel({"exp_id": exp_name})
+                _ = _gcm_smb.plot(ax=axs[1], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
                 _gcm_glf = basin_glf.sel({"exp_id": exp_name})
                 _ = _gcm_glf.plot(ax=axs[1], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
                 _l = _gcm_slc.isel({"gcm_id": 0}).plot(

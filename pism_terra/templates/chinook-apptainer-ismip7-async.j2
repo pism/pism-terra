@@ -34,11 +34,31 @@ ulimit
 pismtasks=$(( SLURM_NTASKS - 4 ))
 
 # ###############################################################################
+# INIT RUN
+# ###############################################################################
+
+{% if run_init_str %}
+mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pism {{ run_init_str }}
+{% endif %}
+
+# ###############################################################################
+# INVERSION RUN
+# ###############################################################################
+
+{% if inv_str %}
+mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pismi {{ inv_str }}
+{% endif %}
+
+# ###############################################################################
 # FORWARD RUN
 # ###############################################################################
 
+{% if run_hist_str %}
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_hist_str }} -output.asynchronous
+{% endif %}
 
 {% if run_proj_str %}
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_proj_str }} -output.asynchronous
 {% endif %}
+
+{{ post_process_str }}

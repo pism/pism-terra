@@ -26,6 +26,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable, TypeVar
 
@@ -1004,3 +1007,230 @@ def tqdm_joblib(tqdm_object):
     finally:
         joblib.parallel.BatchCompletionCallBack = old_batch_callback
         tqdm_object.close()
+
+
+def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = None) -> xr.Dataset:
+    """
+    Rewrite a per-region scalar dataset into a form CDO can open.
+
+    The per-region scalar files this package writes are built by stacking
+    ``expand_dims``-ed reductions, which leaves them unreadable by CDO for two
+    separate reasons:
+
+    1. ``expand_dims`` puts the new dimension first, giving ``(region, time)``.
+       CDO reads the leading dimension as the record dimension and skips every
+       variable that does not lead with time::
+
+           Time must be the first dimension! ... skipped variable ice_mass!
+
+    2. The region coordinate holds strings (basin names, RGI IDs). CDO reads the
+       trailing dimension as an x-axis and cannot represent a character
+       coordinate, so it drops every variable and then fails to open the file::
+
+           Unsupported x-coordinate type (char/string), skipped variable ice_mass!
+           No data arrays found!
+
+    So move time to the front and replace the string coordinate with a plain
+    integer index, keeping the labels alongside in ``name_var``. Label-based
+    selection is one call away for xarray users::
+
+        ds.set_index(basin="basin_name").sel(basin="GIS")
+
+    Both steps are skipped when they do not apply, so calling this on an
+    already-numeric or time-less dataset is a no-op.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset carrying ``label_dim`` and, usually, ``time``.
+    label_dim : str
+        Name of the region dimension, e.g. ``"basin"`` or ``"RGIid"``.
+    name_var : str or None, optional
+        Name for the companion label coordinate. Defaults to
+        ``f"{label_dim}_name"``.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with time leading and ``label_dim`` as an integer index.
+    """
+    if label_dim in ds.dims and label_dim in ds.coords:
+        labels = ds[label_dim].values
+        if labels.dtype.kind in {"U", "S", "O"}:
+            name_var = name_var or f"{label_dim}_name"
+            attrs = dict(ds[label_dim].attrs)
+            ds = ds.assign_coords({label_dim: np.arange(ds.sizes[label_dim], dtype="int32")})
+            ds[label_dim].attrs = {
+                **attrs,
+                "long_name": f"{label_dim} index",
+                "description": f"positional index; labels are in '{name_var}'",
+            }
+            ds = ds.assign_coords({name_var: (label_dim, labels.astype(str))})
+            ds[name_var].attrs = {"long_name": f"{label_dim} name"}
+
+    if "time" in ds.dims:
+        ds = ds.transpose("time", ...)
+
+    return ds
+
+
+def git_provenance(repo: Path | str | None = None) -> str:
+    """
+    Describe the git checkout that provides ``pism_terra``.
+
+    Parameters
+    ----------
+    repo : str or pathlib.Path or None, optional
+        Directory inside the repository to interrogate. Defaults to the
+        directory holding this module, so the answer reflects the code that
+        is actually running rather than the current working directory.
+
+    Returns
+    -------
+    str
+        The ``commit``/``Author``/``Date`` header of the most recent commit,
+        followed by a ``Tree`` line stating whether tracked files had
+        uncommitted edits. Empty when git is unavailable or the code was
+        installed outside a checkout.
+    """
+    root = Path(repo) if repo is not None else Path(__file__).resolve().parent
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "log",
+                "-1",
+                "--decorate",
+                "--pretty=format:commit %H%d%nAuthor: %an <%ae>%nDate:   %ad",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    lines = [completed.stdout.strip()]
+    tree = git_tree_state(root)
+    if tree:
+        lines.append(f"Tree:   {tree}")
+    return "\n".join(lines)
+
+
+def git_tree_state(repo: Path | str | None = None) -> str:
+    """
+    Report whether tracked files differ from the checked-out commit.
+
+    Untracked files are ignored: a working directory full of model output
+    says nothing about which code ran, whereas an edited tracked file means
+    the recorded commit does not fully describe it.
+
+    Parameters
+    ----------
+    repo : str or pathlib.Path or None, optional
+        Directory inside the repository to interrogate. Defaults to the
+        directory holding this module.
+
+    Returns
+    -------
+    str
+        ``"clean"``, or ``"dirty (N tracked file(s) modified)"``. Empty when
+        the state could not be determined, so an unknown state is never
+        reported as clean.
+    """
+    root = Path(repo) if repo is not None else Path(__file__).resolve().parent
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    modified = [line for line in completed.stdout.splitlines() if line.strip()]
+    if not modified:
+        return "clean"
+    plural = "" if len(modified) == 1 else "s"
+    return f"dirty ({len(modified)} tracked file{plural} modified)"
+
+
+def provenance_comment(command: Iterable[str] | None = None, repo: Path | str | None = None) -> str:
+    """
+    Build the shell-comment block recording how a run script was generated.
+
+    Parameters
+    ----------
+    command : iterable of str or None, optional
+        Argument vector to record. Defaults to :data:`sys.argv`; only the
+        base name of the program is kept, so the block does not depend on
+        where the console script happens to live.
+    repo : str or pathlib.Path or None, optional
+        Passed through to :func:`git_provenance`.
+
+    Returns
+    -------
+    str
+        Comment block, ending in a newline.
+    """
+    argv = list(sys.argv) if command is None else list(command)
+    lines: list[str] = []
+
+    git = git_provenance(repo)
+    if git:
+        lines.append("# Git")
+        lines.extend(f"# {line}" for line in git.splitlines())
+        lines.append("")
+
+    lines.append("# Command")
+    lines.append(f"# {shlex.join([Path(argv[0]).name, *argv[1:]])}" if argv else "# unknown")
+
+    return "\n".join(lines) + "\n"
+
+
+def add_provenance(script: str, command: Iterable[str] | None = None, repo: Path | str | None = None) -> str:
+    """
+    Insert the provenance block into a rendered submission script.
+
+    The block goes directly below the batch-scheduler header (shebang and
+    ``#SBATCH``/``#PBS``/``#BSUB`` directives) so that the directives stay
+    contiguous at the top of the file, where schedulers expect them.
+
+    Parameters
+    ----------
+    script : str
+        Rendered submission script. An empty script (debug mode) is returned
+        unchanged.
+    command : iterable of str or None, optional
+        Passed through to :func:`provenance_comment`.
+    repo : str or pathlib.Path or None, optional
+        Passed through to :func:`git_provenance`.
+
+    Returns
+    -------
+    str
+        The script with the provenance comment inserted.
+    """
+    if not script.strip():
+        return script
+
+    lines = script.splitlines()
+    insert_at = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#!") or stripped.startswith(("#SBATCH", "#PBS", "#BSUB")):
+            insert_at = idx + 1
+        elif stripped and not stripped.startswith("#"):
+            break
+
+    block = provenance_comment(command=command, repo=repo).splitlines()
+    tail = lines[insert_at:]
+    if tail and tail[0].strip():
+        block.append("")
+    merged = [*lines[:insert_at], "", *block, *tail]
+    return "\n".join(merged) + ("\n" if script.endswith("\n") else "")

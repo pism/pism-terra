@@ -1,0 +1,6 @@
+samples = 6
+
+['inverse.tikhonov.penalty_weight']
+
+choices = [1, 10, 100, 1000, 10000, 100000]
+distribution = "choices"

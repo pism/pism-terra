@@ -9,8 +9,11 @@ overlaps the leader's are reported as the "tied" calibration set.
 """
 
 import json
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from functools import partial
+from pathlib import Path
 
+import dask
 import matplotlib.pylab as plt
 import numpy as np
 import pandas as pd
@@ -19,7 +22,6 @@ import xarray as xr
 import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from dask.diagnostics import ProgressBar
 
-from pism_terra.filtering import importance_sampling
 from pism_terra.processing import preprocess_netcdf as preprocess
 
 debm_uq_vars = {
@@ -118,28 +120,79 @@ def block_bootstrap_rmse(sim, obs, block_size, n_boot=500, seed=0):
         ``.mean(dim="boot")`` for the central RMSE and
         ``.quantile([0.05, 0.95], dim="boot")`` for confidence bands.
     """
-    sim_v = np.asarray(sim.values, dtype=float)
-    obs_v = np.asarray(obs.values, dtype=float)
-    sq_err = (sim_v - obs_v[None, :, :]) ** 2
-    valid = np.isfinite(sq_err).all(axis=0)
-    ny, nx = obs_v.shape
-    by = max(1, ny // block_size)
-    bx = max(1, nx // block_size)
-    block_sums = np.zeros((sim_v.shape[0], by, bx))
-    block_counts = np.zeros((by, bx), dtype=int)
-    for i in range(by):
-        for j in range(bx):
-            ys = slice(i * block_size, (i + 1) * block_size)
-            xs = slice(j * block_size, (j + 1) * block_size)
-            v = valid[ys, xs]
-            block_counts[i, j] = int(v.sum())
-            chunk = np.where(v, sq_err[:, ys, xs], 0.0)
-            block_sums[:, i, j] = chunk.sum(axis=(1, 2))
-    block_sums = block_sums.reshape(sim_v.shape[0], -1)
-    block_counts = block_counts.reshape(-1)
+    block_sums, block_counts = squared_error_blocks(sim, obs, block_size)
+    return bootstrap_rmse_from_blocks(block_sums, block_counts, sim.exp_id, n_boot=n_boot, seed=seed)
+
+
+def squared_error_blocks(sim, obs, block_size):
+    """
+    Sum the squared simulation error over non-overlapping square blocks.
+
+    The reduction is expressed with :meth:`xarray.DataArray.coarsen`, so a
+    lazy (dask-backed) ``sim`` is streamed block by block: only the
+    per-block sums are materialised, never the full ``(exp_id, y, x)``
+    error field. Blocks that do not fit a whole ``block_size`` at the top
+    or right edge are trimmed, matching a plain tiling of the domain.
+
+    Parameters
+    ----------
+    sim : xarray.DataArray
+        Per-experiment simulated field with dims ``(exp_id, y, x)``. May be
+        dask-backed; it is computed exactly once.
+    obs : xarray.DataArray
+        Observed field with dims ``(y, x)`` aligned with ``sim``.
+    block_size : int
+        Block side in pixels; clamped to the domain so that at least one
+        block is produced.
+
+    Returns
+    -------
+    block_sums : numpy.ndarray
+        Summed squared error, shape ``(n_exp, n_blocks)``. Cells that are
+        non-finite in any experiment contribute zero.
+    block_counts : numpy.ndarray
+        Number of contributing cells per block, shape ``(n_blocks,)``.
+    """
+    block_y = max(1, min(block_size, sim.sizes["y"]))
+    block_x = max(1, min(block_size, sim.sizes["x"]))
+    sq_err = (sim - obs) ** 2
+    valid = np.isfinite(sq_err).all(dim="exp_id")
+    windows = {"y": block_y, "x": block_x, "boundary": "trim"}
+    sums = sq_err.where(valid, 0.0).coarsen(**windows).sum().stack(block=("y", "x"))
+    counts = valid.astype("int64").coarsen(**windows).sum().stack(block=("y", "x"))
+    # One compute: `sums` and `counts` share the `sq_err` sub-graph, so the
+    # inputs are read from disk a single time.
+    sums, counts = dask.compute(sums, counts)
+    return np.asarray(sums.transpose("exp_id", "block").values, dtype=float), np.asarray(counts.values, dtype=int)
+
+
+def bootstrap_rmse_from_blocks(block_sums, block_counts, exp_id, n_boot=500, seed=0):
+    """
+    Bootstrap RMSE from pre-computed per-block squared-error sums.
+
+    Parameters
+    ----------
+    block_sums : numpy.ndarray
+        Summed squared error per experiment and block, shape
+        ``(n_exp, n_blocks)``, as returned by :func:`squared_error_blocks`.
+    block_counts : numpy.ndarray
+        Contributing cells per block, shape ``(n_blocks,)``.
+    exp_id : array-like
+        Experiment labels used as the ``exp_id`` coordinate of the result.
+    n_boot : int, default ``500``
+        Number of bootstrap resamples.
+    seed : int, default ``0``
+        Seed for :class:`numpy.random.Generator`. Use a fixed value to
+        make the bootstrap deterministic.
+
+    Returns
+    -------
+    xarray.DataArray
+        RMSE distribution with dims ``(exp_id, boot)``.
+    """
     valid_blocks = np.where(block_counts > 0)[0]
     rng = np.random.default_rng(seed)
-    rmses = np.empty((sim_v.shape[0], n_boot))
+    rmses = np.empty((block_sums.shape[0], n_boot))
     for b in range(n_boot):
         idx = rng.choice(valid_blocks, size=valid_blocks.size, replace=True)
         s = block_sums[:, idx].sum(axis=1)
@@ -148,11 +201,11 @@ def block_bootstrap_rmse(sim, obs, block_size, n_boot=500, seed=0):
     return xr.DataArray(
         rmses,
         dims=["exp_id", "boot"],
-        coords={"exp_id": sim.exp_id, "boot": np.arange(n_boot)},
+        coords={"exp_id": exp_id, "boot": np.arange(n_boot)},
     )
 
 
-data_dir = "~/base/pism-terra"
+DEFAULT_DATA_DIR = "~/base/pism-terra"
 
 pctls = [0.05, 0.95]
 fontsize = 6
@@ -177,186 +230,213 @@ debm_uq_vars = {
 
 pdd_uq_vars = {"surface.pdd.factor_ice": "fice", "surface.pdd.factor_snow": "fsnow", "surface.pdd.refreeze": "refreeze"}
 
-m_vars = ["surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]
+m_vars = ["surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]
 
-obs = xr.open_dataset(
-    f"{data_dir}/2026_06_kitp_debm_calib/kitp/input/v4/HIRHAM5-ERA5_YMM_1990_2019_v4.nc",
-    engine="netcdf4",
-    decode_times=False,
-    decode_timedelta=False,
-    chunks=None,
-).drop_dims("nv", errors="ignore")
 
-obs = obs.pint.quantify()
-for v in ["surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
-    obs[v] = obs[v].pint.to("kg m^-2 yr^-1")
-obs = obs.pint.dequantify()
-for v in ["surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
-    obs[f"{v}_error"] = xr.where(obs[v] != 0, 0.10 * obs[v], 1e-8)
+def calibrate(data_dir):
+    """
+    Rank KITP UQ ensemble members against observed surface mass balance.
 
-for (
-    ebm,
-    ebm_uq_vars,
-) in zip(["debm"], [debm_uq_vars]):
+    Parameters
+    ----------
+    data_dir : str or pathlib.Path
+        Root directory holding the KITP calibration inputs and outputs (the
+        ``2026_08_kitp_*_calib`` trees). ``~`` is expanded.
+    """
+    data_dir = Path(data_dir).expanduser()
 
-    ds = (
-        xr.open_mfdataset(
-            f"{data_dir}/2026_06_kitp_{ebm}_calib/output/processed_spatial/clipped_spatial_g4800m_id_HIRHAM5-ERA5_YMM_1990_2019_uq_*.nc",
-            preprocess=partial(preprocess, uq_regexp=None, exp_regexp="uq_(.+?)_"),
-            engine="netcdf4",
-            join="outer",
-            compat="no_conflicts",
-            parallel=True,
-            chunks="auto",
-            decode_times=False,
-            decode_timedelta=False,
+    obs = xr.open_dataset(
+        f"{data_dir}/2026_08_kitp_debm_calib/kitp/input/v4/spatial_GIS_HIRHAM5-ERA5_YMM_1990_2019_v4.nc",
+        engine="netcdf4",
+        decode_times=False,
+        decode_timedelta=False,
+        chunks=None,
+    ).drop_dims("nv", errors="ignore")
+
+    # Keep only what the metric needs: everything else (air_temp, albedo,
+    # precipitation, ...) would otherwise be carried through the conservative
+    # regridding below, which is the second-most expensive step here.
+    obs = obs[["climatic_mass_balance", "surface_melt_flux", "surface_runoff_flux"]].pint.quantify()
+    obs["surface_accumulation_flux"] = obs["climatic_mass_balance"] - obs["surface_melt_flux"]
+    for v in m_vars:
+        obs[v] = obs[v].pint.to("kg m^-2 yr^-1")
+    obs = obs[m_vars].pint.dequantify()
+
+    for (
+        ebm,
+        ebm_uq_vars,
+    ) in zip(["debm"], [debm_uq_vars]):
+
+        ds = (
+            xr.open_mfdataset(
+                f"{data_dir}/2026_08_kitp_{ebm}_calib/output/basin/"
+                "spatial_GIS_g1200m_id_HIRHAM5-ERA5_YMM_1990_2019_uq_*_0001-01-01_0002-01-01.nc",
+                preprocess=partial(preprocess, uq_regexp=None, exp_regexp="uq_(.+?)_"),
+                engine="netcdf4",
+                join="outer",
+                compat="no_conflicts",
+                parallel=True,
+                chunks="auto",
+                decode_times=False,
+                decode_timedelta=False,
+            )
+            .drop_dims("nv", errors="ignore")
+            .pint.quantify()
         )
-        .drop_dims("nv", errors="ignore")
-        .pint.quantify()
-    )
-    ds["exp_id"] = ds["exp_id"].astype("int")
-    for v in ["surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]:
-        ds[v] = ds[v].pint.to("kg m^-2 yr^-1")
-    ds = ds.pint.dequantify()
+        ds["exp_id"] = ds["exp_id"].astype("int")
+        for v in m_vars:
+            ds[v] = ds[v].pint.to("kg m^-2 yr^-1")
+        ds = ds.pint.dequantify()
 
-    ebm_uq_df = ds.pism_config.to_series().apply(json.loads).apply(pd.Series)[ebm_uq_vars.keys()]
-    ds["time"] = obs["time"]
+        ebm_uq_df = ds.pism_config.to_series().apply(json.loads).apply(pd.Series)[ebm_uq_vars.keys()]
+        ds["time"] = obs["time"]
 
-    _obs = obs.regrid.conservative(ds.drop_vars("pism_config")).squeeze()
-    mask = ds[m_vars].isel(exp_id=0).notnull()
-    _obs[m_vars] = _obs[m_vars].where(mask)
-    melt_mask = _obs["climatic_mass_balance"].mean(dim="time") < 1e36
-    _obs[m_vars] = _obs[m_vars].where(melt_mask)
-    _ds = ds[m_vars].where(melt_mask)
+        # Regrid onto the simulation grid. Only the grid of the target
+        # matters, so hand the regridder bare coordinates instead of the
+        # ensemble itself.
+        target_grid = xr.Dataset(coords={"y": ds["y"], "x": ds["x"]}).reset_coords(drop=True)
+        _obs = obs.regrid.conservative(target_grid).squeeze()
+        _ds = ds[m_vars]
 
-    for v in ["climatic_mass_balance"]:
+        cmb_obs = (
+            (_obs["climatic_mass_balance"].pint.quantify() * xr.DataArray(1200).pint.quantify("m") ** 2)
+            .pint.to("Gt/yr")
+            .mean(dim="time")
+            .sum()
+            .pint.dequantify()
+            .compute()
+            .values
+        )
 
-        for fudge_factor in [1, 10, 100, 1000, 10_000, 100_000]:
+        for v in ["climatic_mass_balance", "surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux"]:
+
             with ProgressBar():
-                ebm_filtered = importance_sampling(
-                    _ds,
-                    _obs,
-                    sim_var=v,
-                    obs_mean_var=v,
-                    obs_std_var=f"{v}_error",
-                    sum_dims=["time", "x", "y"],
-                    n_samples=ds.exp_id.size,
-                    fudge_factor=fudge_factor,
+
+                # 1) Decorrelation length from the observed time-mean field.
+                sim_mean_all = _ds[v].mean(dim="time")
+                obs_mean = _obs[v].mean(dim="time").squeeze().compute()
+                pixel_size = float(abs(_obs.x.diff("x").mean()))
+                L = decorrelation_length(obs_mean.values, pixel_size)
+                block_size = max(1, int(np.ceil(L / pixel_size)))
+                print(f"{ebm}/{v}: decorrelation length ≈ {L:.0f} m, block_size = {block_size} px")
+
+                # 2) Block-bootstrap RMSE per exp_id (honors spatial correlation).
+                # ``sim_mean_all`` stays lazy: the ensemble is reduced to
+                # per-block sums as it streams off disk, so peak memory does
+                # not grow with the number of experiments.
+                rmse_boot = block_bootstrap_rmse(sim_mean_all, obs_mean, block_size, n_boot=500)
+                rmse_mean = rmse_boot.mean(dim="boot")
+                rmse_lo = rmse_boot.quantile(0.05, dim="boot")
+                rmse_hi = rmse_boot.quantile(0.95, dim="boot")
+
+                # 3) Rank by bootstrap-mean RMSE; treat exp_ids whose CI overlaps
+                # the leader's upper bound as statistically tied with the best.
+                best_id = rmse_mean.idxmin(dim="exp_id").values
+                best_hi = float(rmse_hi.sel(exp_id=best_id))
+                tied_mask = rmse_lo <= best_hi
+                tied_ids = list(rmse_mean.exp_id.where(tied_mask, drop=True).values)
+                print(f"{ebm}/{v}: best exp_id = {best_id}, n tied within 5-95% CI = {len(tied_ids)}")
+
+                # Per-experiment weight for the parameter histograms: 1 if the
+                # exp_id is in the statistically-tied set, 0 otherwise. This is
+                # what ``np.repeat`` consumes below so each parameter value
+                # contributes to the histogram only if its experiment passed the
+                # bootstrap tie test.
+                ebm_counts = pd.Series(
+                    tied_mask.values.astype(int),
+                    index=pd.Index(rmse_mean.exp_id.values, name="exp_id"),
                 )
-
-                ebm_sampled_ids = ebm_filtered.exp_id_sampled.values
-                ebm_counts = pd.Series(ebm_sampled_ids).value_counts()
-
-                # Reindex config_df to the sampled IDs and plot histograms
-                ds_sampled_configs = ebm_uq_df.loc[ebm_counts.index].reindex(ebm_counts.index)
-                most_sampled_id = ebm_counts.idxmax()
-                most_sampled_params = ebm_uq_df.loc[most_sampled_id]
-                print(f"\n{ebm} / {v} — {fudge_factor} — most sampled id={most_sampled_id} (count={ebm_counts.max()})")
-                for k, short in ebm_uq_vars.items():
-                    print(f"  {short}: {most_sampled_params[k]:.6g}")
 
                 fig, axes = plt.subplots(1, len(ebm_uq_vars), sharey=True, figsize=(6.4, 1.8))
                 for ax, (key, value) in zip(axes.flat, ebm_uq_vars.items()):
-                    # Repeat each parameter value by its sample count
+                    # Repeat each parameter value by its sample count (= 1 if
+                    # the experiment tied with the best, 0 otherwise).
                     values = np.repeat(
                         ebm_uq_df[key].values, ebm_counts.reindex(ebm_uq_df.index, fill_value=0).values.astype(int)
                     )
-                    print(key, np.median(values))
                     ax.hist(values, bins=15)
                     ax.set_xlabel(value)
                     ax.set_xlim(ebm_uq_df[key].min(), ebm_uq_df[key].max())
                     # ax.set_ylabel("Count")
-
                 fig.tight_layout()
-                fig.savefig(f"{ebm}_{v}_ff_{fudge_factor}.png", dpi=300)
+                fig.savefig(f"{ebm}_{v}.png", dpi=300)
                 plt.close()
                 del fig
 
-        with ProgressBar():
-
-            # 1) Decorrelation length from the observed time-mean field.
-            sim_mean_all = _ds[v].mean(dim="time").compute()
-            obs_mean = _obs[v].mean(dim="time").squeeze().compute()
-            pixel_size = float(abs(_obs.x.diff("x").mean()))
-            L = decorrelation_length(obs_mean.values, pixel_size)
-            block_size = max(1, int(np.ceil(L / pixel_size)))
-            print(f"{ebm}/{v}: decorrelation length ≈ {L:.0f} m, block_size = {block_size} px")
-
-            # 2) Block-bootstrap RMSE per exp_id (honors spatial correlation).
-            rmse_boot = block_bootstrap_rmse(sim_mean_all, obs_mean, block_size, n_boot=500)
-            rmse_mean = rmse_boot.mean(dim="boot")
-            rmse_lo = rmse_boot.quantile(0.05, dim="boot")
-            rmse_hi = rmse_boot.quantile(0.95, dim="boot")
-
-            # 3) Rank by bootstrap-mean RMSE; treat exp_ids whose CI overlaps
-            # the leader's upper bound as statistically tied with the best.
-            best_id = rmse_mean.idxmin(dim="exp_id").values
-            best_hi = float(rmse_hi.sel(exp_id=best_id))
-            tied_mask = rmse_lo <= best_hi
-            tied_ids = list(rmse_mean.exp_id.where(tied_mask, drop=True).values)
-            print(f"{ebm}/{v}: best exp_id = {best_id}, n tied within 5-95% CI = {len(tied_ids)}")
-
-            # Per-experiment weight for the parameter histograms: 1 if the
-            # exp_id is in the statistically-tied set, 0 otherwise. This is
-            # what ``np.repeat`` consumes below so each parameter value
-            # contributes to the histogram only if its experiment passed the
-            # bootstrap tie test.
-            ebm_counts = pd.Series(
-                tied_mask.values.astype(int),
-                index=pd.Index(rmse_mean.exp_id.values, name="exp_id"),
-            )
-
-            fig, axes = plt.subplots(1, len(ebm_uq_vars), sharey=True, figsize=(6.4, 1.8))
-            for ax, (key, value) in zip(axes.flat, ebm_uq_vars.items()):
-                # Repeat each parameter value by its sample count (= 1 if
-                # the experiment tied with the best, 0 otherwise).
-                values = np.repeat(
-                    ebm_uq_df[key].values, ebm_counts.reindex(ebm_uq_df.index, fill_value=0).values.astype(int)
+                # Write per-experiment stats to CSV so the user can inspect ties.
+                rmse_df = (
+                    pd.DataFrame(
+                        {
+                            "rmse_mean": rmse_mean.values,
+                            "rmse_lo": rmse_lo.values,
+                            "rmse_hi": rmse_hi.values,
+                            "tied_with_best": tied_mask.values,
+                        },
+                        index=pd.Index(rmse_mean.exp_id.values, name="exp_id"),
+                    )
+                    .join(ebm_uq_df, how="left")
+                    .sort_values("rmse_mean")
                 )
-                ax.hist(values, bins=15)
-                ax.set_xlabel(value)
-                ax.set_xlim(ebm_uq_df[key].min(), ebm_uq_df[key].max())
-                # ax.set_ylabel("Count")
-            fig.tight_layout()
-            fig.savefig(f"{ebm}_{v}.png", dpi=300)
-            plt.close()
-            del fig
+                rmse_df.to_csv(f"{ebm}_{v}_rmse.csv")
 
-            # Write per-experiment stats to CSV so the user can inspect ties.
-            rmse_df = (
-                pd.DataFrame(
-                    {
-                        "rmse_mean": rmse_mean.values,
-                        "rmse_lo": rmse_lo.values,
-                        "rmse_hi": rmse_hi.values,
-                        "tied_with_best": tied_mask.values,
-                    },
-                    index=pd.Index(rmse_mean.exp_id.values, name="exp_id"),
+                # Read the winner once; it is plotted three times below.
+                sim_best = _ds[v].sel(exp_id=best_id).mean(dim="time").squeeze().compute()
+                vmin = min(float(obs_mean.min()), float(sim_best.min()))
+                vmax = max(float(obs_mean.max()), float(sim_best.max()))
+                best_params = ebm_uq_df.loc[best_id]
+                fig, axes = plt.subplots(1, 3, sharey=True, figsize=(12, 4))
+                obs_mean.plot(ax=axes[0], vmin=vmin, vmax=vmax)
+                axes[0].set_title("Observed")
+                sim_best.plot(ax=axes[1], vmin=vmin, vmax=vmax)
+                param_str = ", ".join(f"{name}={best_params[k]:.4g}" for k, name in ebm_uq_vars.items())
+                rmse_best_mean = float(rmse_mean.sel(exp_id=best_id))
+                rmse_best_lo = float(rmse_lo.sel(exp_id=best_id))
+                rmse_best_hi = float(rmse_hi.sel(exp_id=best_id))
+                axes[1].set_title(
+                    f"Best (id={best_id}, RMSE={rmse_best_mean:.1f} "
+                    f"[{rmse_best_lo:.1f}-{rmse_best_hi:.1f}], n_tied={len(tied_ids)})\n{param_str}"
                 )
-                .join(ebm_uq_df, how="left")
-                .sort_values("rmse_mean")
-            )
-            rmse_df.to_csv(f"{ebm}_{v}_rmse.csv")
+                (sim_best - obs_mean).plot(ax=axes[2], cmap="RdBu", vmin=-1000, vmax=1000)
+                axes[2].set_title("Difference")
+                fig.tight_layout()
+                fig.savefig(f"{ebm}_{v}_best_rmse.png", dpi=300)
+                plt.close()
+                del fig
 
-            sim_best = _ds[v].sel(exp_id=best_id).mean(dim="time").squeeze()
-            vmin = min(float(obs_mean.min()), float(sim_best.min()))
-            vmax = max(float(obs_mean.max()), float(sim_best.max()))
-            best_params = ebm_uq_df.loc[best_id]
-            fig, axes = plt.subplots(1, 3, sharey=True, figsize=(12, 4))
-            obs_mean.plot(ax=axes[0], vmin=vmin, vmax=vmax)
-            axes[0].set_title("Observed")
-            sim_best.plot(ax=axes[1], vmin=vmin, vmax=vmax)
-            param_str = ", ".join(f"{v}={best_params[k]:.4g}" for k, v in ebm_uq_vars.items())
-            rmse_best_mean = float(rmse_mean.sel(exp_id=best_id))
-            rmse_best_lo = float(rmse_lo.sel(exp_id=best_id))
-            rmse_best_hi = float(rmse_hi.sel(exp_id=best_id))
-            axes[1].set_title(
-                f"Best (id={best_id}, RMSE={rmse_best_mean:.1f} "
-                f"[{rmse_best_lo:.1f}-{rmse_best_hi:.1f}], n_tied={len(tied_ids)})\n{param_str}"
+            cmb_sim = (
+                (
+                    _ds.sel(exp_id=best_id)["climatic_mass_balance"].pint.quantify()
+                    * xr.DataArray(1200).pint.quantify("m") ** 2
+                )
+                .pint.to("Gt/yr")
+                .mean(dim="time")
+                .sum()
+                .pint.dequantify()
+                .compute()
+                .values
             )
-            (sim_best - obs_mean).plot(ax=axes[2], cmap="RdBu", vmin=-1000, vmax=1000)
-            axes[2].set_title("Difference")
-            fig.tight_layout()
-            fig.savefig(f"{ebm}_{v}_best_rmse.png", dpi=300)
-            plt.close()
-            del fig
+            print(f"Obs: {cmb_obs} Gt/yr, Sim: {cmb_sim} Gt/yr")
+
+
+def main():
+    """
+    Run main script.
+    """
+
+    # set up the option parser
+    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
+    parser.description = "Calibrate KITP surface mass balance ensembles."
+    parser.add_argument(
+        "--data-dir",
+        help="Root directory holding the KITP calibration inputs and outputs.",
+        type=str,
+        default=DEFAULT_DATA_DIR,
+    )
+
+    options = parser.parse_args()
+
+    calibrate(options.data_dir)
+
+
+if __name__ == "__main__":
+    main()

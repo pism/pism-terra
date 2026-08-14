@@ -7,31 +7,36 @@
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.model' = "PISM"
 'run_info.ism' = "PISM"
-'run_info.experiment' = "ssp585"
 'run_info.domain' = "GrIS"
-'run_info.set' = "CORE"
+'run_info.set' = "Init"
+'run_info.experiment' = "historical_prescribed"
 
 [campaign]
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
-pathway = "ssp585"
 version = "v2"
-start_year = "1978"
-end_year = "2015"
-gcms = ["CESM2-WACCM"]
-boot_file = "boot_g900m_GreenlandObsISMIP7-v1.3.nc"
+historical_start_year = "1978"
+historical_end_year = "2014"
+projection_start_year = "2015"
+projection_end_year = "2300"
+boot_file = "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g2400m_id_BAYES-MEDIAN_1980-1-1_1985-01-01.nc"
-heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "Greenland_Basins_PS_v1.4.2_w_shelves.gpkg"
-obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
+regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
+heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
+outline_file = "mouginot_basins_w_shelves.gpkg"
+obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
+retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
+gcms = "CESM2-WACCM"
+pathway = "historical"
+init_start = "1980-01-01"
+init_end = "1985-01-01"
 
 [time]
 
 'time.start' = "1985-01-01"
-'time.end' =  "2300-01-01"
-'time.calendar' =  "365_day"
+'time.end' = "2015-01-01"
+'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
 
 [time_stepping]
@@ -41,6 +46,8 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 
 ['geometry']
 
+'geometry.front_retreat.prescribed.file' = "none"
+'geometry.front_retreat.prescribed.periodic' = "no"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
@@ -50,26 +57,25 @@ obs_file = "obs_g900m_GreenlandObsISMIP7-v1.3.nc"
 'input.file' = "none"
 'input.bootstrap' = "yes"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 37
+'input.forcing.buffer_size' = 24
 'input.regrid.file' =  "none"
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat,bmelt,ice_area_specific_volume,thk,uvel_sigma,vvel_sigma"
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat"
 
 [reporting]
 
 'output.format' = "netcdf4_parallel"
 'output.compression_level' = 2
 'output.size' = "medium"
-'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
+'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf,u_ssa,v_ssa,velsurf"
 'output.spatial.file' = "none"
-'output.spatial.times' = "yearly"
-'output.spatial.vars' = "lithk,orog,topg,hfgeoubed,acabf,libmassbfgr,libmassbffl,dlithkdt,velsurf,zvelsurf,velbase,zvelbase,velmean,litemptop,litempbotgr,litempbotfl,strbasemag,licalvf,lifmassbf,sftgif,sftgrf,sftflf"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt,limnsw,frontal_melt_rate,frontal_melt_retreat_rate"
 'output.scalar.times' = "monthly"
 'output.scalar.file' = "none"
-'output.scalar.variables' = "lim,limnsw,iareagr,iareafl,tendacabf,tendlibmassbf,tendlibmassbffl,tendlicalvf,tendlifmassbf"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
-'output.ISMIP' = "yes"
-
+'output.ISMIP' = "no"
+'output.fill_value' = 9.969209968386869e+36
 
 [grid]
 
@@ -77,8 +83,8 @@ resolution = "900m"
 'grid.file' = "none"
 'grid.Lbz' = 2000
 'grid.Lz' = 4000
-'grid.Mbz' = 101
-'grid.Mz' = 201
+'grid.Mbz' = 51
+'grid.Mz' = 101
 'grid.registration' = "center"
 'grid.allow_extrapolation' = "yes"
 
@@ -96,22 +102,22 @@ model = "enthalpy"
 
 [stress_balance]
 
-model = 'blatter'
+model = 'hybrid'
 
 [stress_balance.options.blatter]
 
 'stress_balance.model' = "blatter"
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
-'stress_balance.calving_front_stress_bc' = 'yes'
-'stress_balance.sia.max_diffusivity' = 100000.0
-'time_stepping.adaptive_ratio' = 1000
+'stress_balance.blatter.use_eta_transform' = "yes"
+'stress_balance.calving_front_stress_bc' = "yes"
+'time_stepping.adaptive_ratio' = 250
 
 [stress_balance.options.hybrid]
 
 'stress_balance.model' = "ssa+sia"
 'stress_balance.ssa.method' = "fd"
-'stress_balance.calving_front_stress_bc' = 'yes'
+'stress_balance.calving_front_stress_bc' = "yes"
 'stress_balance.sia.max_diffusivity' = 100000.0
 
 [iceflow]
@@ -125,6 +131,7 @@ model = 'blatter'
 'basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min' = 7.193718
 'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_max' = 243.8239
 'basal_yield_stress.mohr_coulomb.topg_to_phi.topg_min' = -369.6359
+'basal_yield_stress.slippery_grounding_lines' = "yes"
 'stress_balance.blatter.enhancement_factor' = 2.608046
 'stress_balance.sia.enhancement_factor' = 2.608046
 'stress_balance.ssa.Glen_exponent' = 3.309718
@@ -147,8 +154,9 @@ model = "ismip7"
 
 [calving]
 
-'calving.methods' = 'vonmises_calving'
-'calving.vonmises_calving.sigma_max' = 7.5e5
+'calving.methods' = 'vonmises_calving,thickness_calving'
+'calving.thickness_calving.threshold' = 50
+'calving.vonmises_calving.sigma_max' = 5e5
 
 [atmosphere]
 
@@ -161,13 +169,58 @@ model = "given"
 
 [ocean]
 
-model = "th"
+model = "picop_sgd"
+
+[ocean.options.pico]
+
+'ocean.models' = "pico"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+
+
+[ocean.options.picop]
+
+'ocean.models' = "picop"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.picop.discharge_method' = "along_flow"
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+'ocean.picop.add_fresh_water_melt' = "no"
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
+'ocean.picop.drag_coefficient' = 0.0015
+
+[ocean.options.picop_sgd]
+
+'ocean.models' = "picop"
+'ocean.pico.file' = "none"
+'ocean.pico.continental_shelf_depth' = -280
+'ocean.picop.discharge_method' = "along_flow"
+'ocean.pico.heat_exchange_coefficent' = 2e-5
+'ocean.pico.maximum_ice_rise_area' = 10000.0
+'ocean.pico.number_of_boxes' = 3
+'ocean.pico.overturning_coefficent' = 1e6
+'ocean.pico.temperature_as_thermal_forcing' = "yes"
+'ocean.picop.add_fresh_water_melt' = "yes"
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
+'ocean.picop.drag_coefficient' = 0.0015
 
 [ocean.options.th]
 
 'ocean.models' = "th"
 'ocean.th.file' = "none"
 'ocean.th.clip_salinity' = "yes"
+'ocean.th.temperature_as_thermal_forcing' = "yes"
 
 [frontal_melt]
 
@@ -184,6 +237,7 @@ model = "routing"
 'frontal_melt.routing.file' = "none"
 'frontal_melt.routing.parameter_a' = 4.89e-4
 'frontal_melt.routing.parameter_b' = 0.25
+'frontal_melt.include_floating_ice' = "no"
 
 [hydrology]
 
@@ -226,7 +280,36 @@ bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
 bp_pc_type = "mg"
+bp_pc_mg_galerkin = "both"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_monitor = ""
 bp_snes_rtol = 1e-3
+
+[inverse]
+
+'inverse.adjoint.method' =  "approximate"
+'inverse.design.cH1' = 1
+'inverse.design.cL2' = 0
+'inverse.file' = "none"
+'inverse.stress_balance.velocity_scale' = 1e2
+'inverse.stress_balance.length_scale' = 50e3
+'inverse.design.param' = "exp"
+'inverse.huber.delta' =  10e3
+'inverse.max_iterations' = 250
+'inverse.state_func' = "huber"
+'inverse.stress_balance.method' = "tikhonov_blmvm"
+'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_max' = 5e7
+'inverse.tikhonov.penalty_weight' = 1e3
+'inverse.tikhonov.atol' = 1e-7
+'inverse.use_zeta_fixed_mask' = "yes"
+'inverse.use_design_prior' = "no"
+'remove_sia' = "yes"
+ssafem_ksp_type = "gmres"
+ssafem_pc_type = "asm"
+ssafem_pc_asm_overlap = 2
+ssafem_sub_pc_type = "ilu"
+ssafem_sub_pc_factor_levels = 1
+ssafem_sub_pc_factor_shift_type = "nonzero"
+ssafem_snes_converged_reason = ""
