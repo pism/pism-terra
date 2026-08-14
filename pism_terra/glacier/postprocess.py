@@ -40,7 +40,7 @@ from pyfiglet import Figlet
 from tqdm import tqdm
 
 from pism_terra.log import setup_logging
-from pism_terra.workflow import make_cdo_readable
+from pism_terra.workflow import make_cdo_readable, pism_config_value
 
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
@@ -62,7 +62,10 @@ def process_file(
     Reads ``infile``, reprojects the geometries in ``outline_file`` to the
     dataset's CRS, and clips the dataset to each outline. For every outline the
     spatial variables are summed over ``x``/``y`` (with the outline ``area``
-    attached) and stacked along an ``rgi_id`` dimension. The result is written
+    attached) and stacked along an ``rgi_id`` dimension. When the input carries
+    both ``ice_mass`` and ``thk``, a derived ``ice_mass_glacierized`` is summed
+    alongside them, counting only cells thicker than the run's
+    ``output.ice_free_thickness_standard``. The result is written
     to ``<output_root>/processed_scalar/fldsum_<rgi_type>_<name>.nc``, where
     ``output_root`` is the grandparent of ``infile`` (``infile.parent.parent``)
     and ``<name>`` is the input filename.
@@ -114,12 +117,29 @@ def process_file(
     # them before splitting; PISM doesn't require them on the clipped output.
     ds = ds.drop_vars(["x_bnds", "x_bounds", "y_bnds", "y_bounds", "mapping", "spatial_ref"], errors="ignore")
 
+    # Read before the ``pism_config`` variable is split off below.
+    ice_free_thickness = float(pism_config_value(ds, "output.ice_free_thickness_standard", 10.0))
+
     # Separate variables that lack BOTH spatial (x, y) dimensions, as
     # rio.clip cannot handle them. Use ``and`` so that vars carrying only
     # one spatial dim (rare, but possible) still go down the spatial path.
     non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims and "y" not in ds[var].dims]
     ds_non_spatial = ds[non_spatial_vars]
     ds = ds.drop_vars(non_spatial_vars).rio.write_crs(dst_crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
+
+    # ``ice_mass_glacierized`` needs both ice_mass and thk in the spatial file;
+    # some configs write a reduced var set, so only compute it when both are
+    # present. Deriving it here means it is persisted once and reused for every
+    # outline, and clipping is elementwise, so the per-outline sums match what
+    # deriving it after the clip would give.
+    #
+    # The threshold is PISM's own reporting standard, taken from the run's
+    # configuration rather than restated here, so a config that overrides it
+    # stays consistent between the simulation and this diagnostic.
+    if "ice_mass" in ds.data_vars and "thk" in ds.data_vars:
+        logger.info("Ice-free thickness standard: %.4g m", ice_free_thickness)
+        ds["ice_mass_glacierized"] = ds["ice_mass"].where(ds["thk"] > ice_free_thickness)
+
     ds = client.persist(ds)
     progress(ds)
 
