@@ -239,11 +239,7 @@ def calibrate(data_dir):
         ds["time"] = obs["time"]
 
         _obs = obs.regrid.conservative(ds.drop_vars("pism_config")).squeeze()
-        mask = ds[m_vars].isel(exp_id=0).notnull()
-        _obs[m_vars] = _obs[m_vars].where(mask)
-        melt_mask = _obs["climatic_mass_balance"].mean(dim="time") < 1e36
-        _obs[m_vars] = _obs[m_vars].where(melt_mask)
-        _ds = ds[m_vars].where(melt_mask)
+        _ds = ds[m_vars]
 
         cmb_obs = (
             (_obs["climatic_mass_balance"].pint.quantify() * xr.DataArray(1200).pint.quantify("m") ** 2)
