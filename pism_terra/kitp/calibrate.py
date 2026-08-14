@@ -229,6 +229,16 @@ for (
     _obs[m_vars] = _obs[m_vars].where(melt_mask)
     _ds = ds[m_vars].where(melt_mask)
 
+    cmb_obs = (
+        (_obs["climatic_mass_balance"].pint.quantify() * xr.DataArray(4800).pint.quantify("m") ** 2)
+        .pint.to("Gt/yr")
+        .mean(dim="time")
+        .sum()
+        .pint.dequantify()
+        .compute()
+        .values
+    )
+
     for v in ["climatic_mass_balance", "surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux"]:
 
         with ProgressBar():
@@ -319,3 +329,17 @@ for (
             fig.savefig(f"{ebm}_{v}_best_rmse.png", dpi=300)
             plt.close()
             del fig
+
+        cmb_sim = (
+            (
+                _ds.sel(exp_id=best_id)["climatic_mass_balance"].pint.quantify()
+                * xr.DataArray(4800).pint.quantify("m") ** 2
+            )
+            .pint.to("Gt/yr")
+            .mean(dim="time")
+            .sum()
+            .pint.dequantify()
+            .compute()
+            .values
+        )
+        print(f"Obs: {cmb_obs} Gt/yr, Sim: {cmb_sim} Gt/yr")
