@@ -29,7 +29,7 @@ obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1980.nc"
 gcms = "CESM2-WACCM"
 pathway = "historical"
-init_start = "1980-01-01"
+init_start = "1984-01-01"
 init_end = "1985-01-01"
 
 [time]
@@ -169,7 +169,7 @@ model = "given"
 
 [ocean]
 
-model = "picop_sgd"
+model = "th"
 
 [ocean.options.pico]
 
