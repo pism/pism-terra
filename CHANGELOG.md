@@ -14,6 +14,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `ice_mass_glacierized` (ISMIP7 Greenland and KITP basin post-processing) now takes its ice-free threshold from the run's own `output.ice_free_thickness_standard` instead of a hard-wired 10 m, so a config that overrides the standard is summarised with the value the simulation used. Falls back to 10 m — PISM's default — when the file carries no `pism_config`.
 - `pism-kitp-calibrate` no longer materialises the whole ensemble to rank it. The block-bootstrap RMSE is now a streaming `coarsen` reduction (`squared_error_blocks`), so peak memory is set by the dask chunk size rather than by `n_exp × ny × nx`, and only the metric's four variables are carried through the conservative regridding. Measured on an 8-member ensemble: 68 s → 27 s, with bit-identical RMSE.
 - basin post-processing no longer fails with `Object has inconsistent chunks along dimension time` on files whose spatial variables differ in dtype
 - basin rasters are scattered to the Dask workers instead of being embedded in the task graph, removing the `Sending large graph of size ...` warning on fine grids

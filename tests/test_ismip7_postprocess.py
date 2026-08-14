@@ -118,7 +118,9 @@ def synthetic_greenland(
     n_time: int = 4,
     time_chunks: dict[str, int] | None = None,
     resolution: float = GRID_RESOLUTION,
+    *,
     z_levels: int | None = None,
+    ice_free_thickness: float | None = None,
 ) -> xr.Dataset:
     """
     Synthetic PISM-like output on a coarse Greenland grid.
@@ -144,6 +146,10 @@ def synthetic_greenland(
         ``(time, y, x, z)`` and this many vertical levels, as real PISM
         spatial files carry. ``None`` (default) keeps the dataset 2D-only,
         so existing tests are unaffected.
+    ice_free_thickness : float or None, optional
+        When set, record it as ``output.ice_free_thickness_standard`` on the
+        ``pism_config`` variable, as PISM does. ``None`` (default) omits the
+        parameter, which exercises the post-processing fallback.
 
     Returns
     -------
@@ -174,7 +180,10 @@ def synthetic_greenland(
         )
     # A non-spatial, time-less variable: process_file carries these through to
     # the output untouched.
-    ds["pism_config"] = xr.DataArray(np.int8(0), attrs={"note": "synthetic"})
+    config_attrs: dict = {"note": "synthetic"}
+    if ice_free_thickness is not None:
+        config_attrs["output.ice_free_thickness_standard"] = np.float64(ice_free_thickness)
+    ds["pism_config"] = xr.DataArray(np.int8(0), attrs=config_attrs)
     # PISM's own CF grid-mapping variable, which process_file drops up front.
     # ``write_crs`` below adds rioxarray's ``spatial_ref`` alongside it, so the
     # written file carries both flavours — as real regridded input files do.
@@ -384,7 +393,9 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
                     err_msg=f"{var} over basin {name}",
                 )
 
-            # Derived in process_file, not present in the input.
+            # Derived in process_file, not present in the input. This dataset
+            # carries no ``output.ice_free_thickness_standard``, so the 10 m
+            # fallback applies.
             glacierized = np.where(ds["thk"].values > 10, ds["ice_mass"].values, np.nan)
             np.testing.assert_allclose(
                 scalar["ice_mass_glacierized"].sel(basin=name).values,
@@ -412,6 +423,54 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
         # and skips every variable that does not put time there.
         for var in ("thk", "ice_mass", "mask", "ice_mass_glacierized"):
             assert scalar[var].dims == ("time", "basin"), f"{var} has {scalar[var].dims}"
+    finally:
+        scalar.close()
+
+
+def test_glacierized_mass_uses_the_configured_ice_free_thickness(tmp_path, basins, outlinefile):
+    """
+    ``ice_mass_glacierized`` follows the run's own reporting threshold.
+
+    The threshold lives in ``pism_config`` as
+    ``output.ice_free_thickness_standard``; a run that overrides PISM's 10 m
+    default must be summarised with the value it actually used.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file``.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    threshold = 750.0
+    ds = synthetic_greenland(basins, n_time=2, ice_free_thickness=threshold)
+    infile = tmp_path / "spatial.nc"
+    outfile = tmp_path / "basin.nc"
+    ds.to_netcdf(infile, engine="h5netcdf")
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        process_file(infile, outfile, outlinefile, client)
+
+    scalar = xr.open_dataset(outfile).set_index(basin="basin_name")
+    try:
+        masks = {name: np.asarray(mask) for name, mask in basin_masks(ds, basins)}
+        for name in basins["SUBREGION1"].tolist():
+            mask = masks[name]
+            glacierized = np.where(ds["thk"].values > threshold, ds["ice_mass"].values, np.nan)
+            np.testing.assert_allclose(
+                scalar["ice_mass_glacierized"].sel(basin=name).values,
+                np.nansum(glacierized[:, mask], axis=1),
+                rtol=1e-6,
+                err_msg=f"basin {name}",
+            )
+            # The 10 m default would have kept almost every cell, so the two
+            # thresholds are distinguishable rather than coincidentally equal.
+            at_default = np.where(ds["thk"].values > 10, ds["ice_mass"].values, np.nan)
+            assert np.nansum(at_default[:, mask]) > np.nansum(glacierized[:, mask])
     finally:
         scalar.close()
 

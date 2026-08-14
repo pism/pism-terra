@@ -45,7 +45,7 @@ from pyfiglet import Figlet
 from rasterio.features import geometry_mask
 
 from pism_terra.log import setup_logging
-from pism_terra.workflow import make_cdo_readable
+from pism_terra.workflow import make_cdo_readable, pism_config_value
 
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
@@ -279,6 +279,9 @@ def process_file(
         errors="ignore",
     )
 
+    # Read before the ``pism_config`` variable is split off below.
+    ice_free_thickness = float(pism_config_value(ds, "output.ice_free_thickness_standard", 10.0))
+
     # Separate variables that lack spatial (x, y) dimensions, as they cannot be
     # reduced over x/y
     non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
@@ -289,8 +292,13 @@ def process_file(
     # some configs write a reduced var set, so only compute it when both are
     # present. Masking is elementwise, so deriving it before the basin masks are
     # applied gives the same per-basin sums as deriving it after.
+    #
+    # The threshold is PISM's own reporting standard, taken from the run's
+    # configuration rather than restated here, so a config that overrides it
+    # stays consistent between the simulation and this diagnostic.
     if "ice_mass" in ds.data_vars and "thk" in ds.data_vars:
-        ds["ice_mass_glacierized"] = ds["ice_mass"].where(ds["thk"] > 10)
+        logger.info("Ice-free thickness standard: %.4g m", ice_free_thickness)
+        ds["ice_mass_glacierized"] = ds["ice_mass"].where(ds["thk"] > ice_free_thickness)
 
     if "grounding_line_flux" in ds.data_vars:
         ds["grounding_line_flux_nonneg"] = ds["grounding_line_flux"].where(ds["grounding_line_flux"] < 0)

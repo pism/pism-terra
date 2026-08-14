@@ -1234,3 +1234,39 @@ def add_provenance(script: str, command: Iterable[str] | None = None, repo: Path
         block.append("")
     merged = [*lines[:insert_at], "", *block, *tail]
     return "\n".join(merged) + ("\n" if script.endswith("\n") else "")
+
+
+def pism_config_value(ds: xr.Dataset, key: str, default: Any = None) -> Any:
+    """
+    Read one PISM configuration parameter from a model output file.
+
+    PISM writes its full configuration as attributes on a scalar
+    ``pism_config`` variable, which is the authoritative record of what the
+    run actually used. Reading a threshold from there keeps post-processing
+    consistent with the simulation instead of restating a default that the
+    config may have overridden.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset opened from PISM output. A missing ``pism_config`` variable
+        is not an error; ``default`` is returned.
+    key : str
+        Configuration parameter name, e.g.
+        ``"output.ice_free_thickness_standard"``.
+    default : any, optional
+        Value to return when the variable or the parameter is absent.
+
+    Returns
+    -------
+    any
+        The parameter value, converted from NumPy to a plain Python scalar,
+        or ``default``.
+    """
+    if "pism_config" not in ds.variables:
+        return default
+
+    value = ds["pism_config"].attrs.get(key, default)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
