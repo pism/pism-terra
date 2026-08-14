@@ -32,7 +32,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Generated `submit_*.sh` scripts now carry their own provenance: every `run.py` (glacier, KITP, ISMIP7 Greenland) stamps the git commit of the running code and the command line that produced the script as a comment block below the scheduler directives.
+- Generated `submit_*.sh` scripts now carry their own provenance: every `run.py` (glacier, KITP, ISMIP7 Greenland) stamps the git commit of the running code, whether its working tree was clean, and the command line that produced the script as a comment block below the scheduler directives. Untracked files (model output, scratch data) do not count as dirty, and a state that cannot be determined is left blank rather than reported as clean.
 - `pism-kitp-calibrate`: the KITP surface-mass-balance calibration driver is now a CLI. Its data root is the `--data-dir` option (default `~/base/pism-terra`, `~` expanded) instead of a hard-coded module-level constant, and the analysis runs from `main()` rather than at import time.
 - `pism-ismip7-greenland-postprocess-spatial`: per-basin **spatial** extraction (masked fields, no summing over x/y) writing one NetCDF per basin. Streams end-to-end, so >50 GB inputs never materialize; `--crop bbox|full` chooses bounding-box-cropped (default) or full-grid output, `--vars` restricts variables (default: all, including 3D), and `--method netcdf|zarr|shards` selects the write strategy — the default was picked by `benchmarks/bench_postprocess_spatial.py`, which stays in the repo.
 - no-ops `elevation-dependent` climate for glaciers

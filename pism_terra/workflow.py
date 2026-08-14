@@ -1089,8 +1089,9 @@ def git_provenance(repo: Path | str | None = None) -> str:
     -------
     str
         The ``commit``/``Author``/``Date`` header of the most recent commit,
-        or an empty string when git is unavailable or the code was installed
-        outside a checkout.
+        followed by a ``Tree`` line stating whether tracked files had
+        uncommitted edits. Empty when git is unavailable or the code was
+        installed outside a checkout.
     """
     root = Path(repo) if repo is not None else Path(__file__).resolve().parent
     try:
@@ -1111,7 +1112,52 @@ def git_provenance(repo: Path | str | None = None) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return completed.stdout.strip()
+
+    lines = [completed.stdout.strip()]
+    tree = git_tree_state(root)
+    if tree:
+        lines.append(f"Tree:   {tree}")
+    return "\n".join(lines)
+
+
+def git_tree_state(repo: Path | str | None = None) -> str:
+    """
+    Report whether tracked files differ from the checked-out commit.
+
+    Untracked files are ignored: a working directory full of model output
+    says nothing about which code ran, whereas an edited tracked file means
+    the recorded commit does not fully describe it.
+
+    Parameters
+    ----------
+    repo : str or pathlib.Path or None, optional
+        Directory inside the repository to interrogate. Defaults to the
+        directory holding this module.
+
+    Returns
+    -------
+    str
+        ``"clean"``, or ``"dirty (N tracked file(s) modified)"``. Empty when
+        the state could not be determined, so an unknown state is never
+        reported as clean.
+    """
+    root = Path(repo) if repo is not None else Path(__file__).resolve().parent
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    modified = [line for line in completed.stdout.splitlines() if line.strip()]
+    if not modified:
+        return "clean"
+    plural = "" if len(modified) == 1 else "s"
+    return f"dirty ({len(modified)} tracked file{plural} modified)"
 
 
 def provenance_comment(command: Iterable[str] | None = None, repo: Path | str | None = None) -> str:
