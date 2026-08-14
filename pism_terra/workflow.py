@@ -26,6 +26,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable, TypeVar
 
@@ -1069,3 +1072,119 @@ def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = Non
         ds = ds.transpose("time", ...)
 
     return ds
+
+
+def git_provenance(repo: Path | str | None = None) -> str:
+    """
+    Describe the git checkout that provides ``pism_terra``.
+
+    Parameters
+    ----------
+    repo : str or pathlib.Path or None, optional
+        Directory inside the repository to interrogate. Defaults to the
+        directory holding this module, so the answer reflects the code that
+        is actually running rather than the current working directory.
+
+    Returns
+    -------
+    str
+        The ``commit``/``Author``/``Date`` header of the most recent commit,
+        or an empty string when git is unavailable or the code was installed
+        outside a checkout.
+    """
+    root = Path(repo) if repo is not None else Path(__file__).resolve().parent
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "log",
+                "-1",
+                "--decorate",
+                "--pretty=format:commit %H%d%nAuthor: %an <%ae>%nDate:   %ad",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return completed.stdout.strip()
+
+
+def provenance_comment(command: Iterable[str] | None = None, repo: Path | str | None = None) -> str:
+    """
+    Build the shell-comment block recording how a run script was generated.
+
+    Parameters
+    ----------
+    command : iterable of str or None, optional
+        Argument vector to record. Defaults to :data:`sys.argv`; only the
+        base name of the program is kept, so the block does not depend on
+        where the console script happens to live.
+    repo : str or pathlib.Path or None, optional
+        Passed through to :func:`git_provenance`.
+
+    Returns
+    -------
+    str
+        Comment block, ending in a newline.
+    """
+    argv = list(sys.argv) if command is None else list(command)
+    lines: list[str] = []
+
+    git = git_provenance(repo)
+    if git:
+        lines.append("# Git")
+        lines.extend(f"# {line}" for line in git.splitlines())
+        lines.append("")
+
+    lines.append("# Command")
+    lines.append(f"# {shlex.join([Path(argv[0]).name, *argv[1:]])}" if argv else "# unknown")
+
+    return "\n".join(lines) + "\n"
+
+
+def add_provenance(script: str, command: Iterable[str] | None = None, repo: Path | str | None = None) -> str:
+    """
+    Insert the provenance block into a rendered submission script.
+
+    The block goes directly below the batch-scheduler header (shebang and
+    ``#SBATCH``/``#PBS``/``#BSUB`` directives) so that the directives stay
+    contiguous at the top of the file, where schedulers expect them.
+
+    Parameters
+    ----------
+    script : str
+        Rendered submission script. An empty script (debug mode) is returned
+        unchanged.
+    command : iterable of str or None, optional
+        Passed through to :func:`provenance_comment`.
+    repo : str or pathlib.Path or None, optional
+        Passed through to :func:`git_provenance`.
+
+    Returns
+    -------
+    str
+        The script with the provenance comment inserted.
+    """
+    if not script.strip():
+        return script
+
+    lines = script.splitlines()
+    insert_at = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#!") or stripped.startswith(("#SBATCH", "#PBS", "#BSUB")):
+            insert_at = idx + 1
+        elif stripped and not stripped.startswith("#"):
+            break
+
+    block = provenance_comment(command=command, repo=repo).splitlines()
+    tail = lines[insert_at:]
+    if tail and tail[0].strip():
+        block.append("")
+    merged = [*lines[:insert_at], "", *block, *tail]
+    return "\n".join(merged) + ("\n" if script.endswith("\n") else "")
