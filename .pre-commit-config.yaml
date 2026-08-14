@@ -20,7 +20,7 @@ repos:
 
   # Can run individually with `pre-commit run isort --all-files`
   - repo: https://github.com/timothycrosley/isort
-    rev: 9.0.0a3
+    rev: 9.0.0b2
     hooks:
       - id: isort
         args:
@@ -30,14 +30,14 @@ repos:
 
   # Numpydoc
   - repo: https://github.com/numpy/numpydoc
-    rev: v1.10.0
+    rev: v1.11.0rc0
     hooks:
       - id: numpydoc-validation
         exclude: ^(pism_terra/kitp/writer\.py|docs/source/conf\.py)$
 
   # Can run individually with `pre-commit run mypy --all-files`
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.1.0
+    rev: v2.3.0
     hooks:
       - id: mypy
         args: ["--config-file", "pyproject.toml", "--ignore-missing-imports"]
