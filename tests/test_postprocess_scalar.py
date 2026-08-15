@@ -16,7 +16,7 @@
 # along with PISM; if not, write to the Free Software
 
 """
-Tests for :mod:`pism_terra.ismip7.greenland.postprocess`.
+Tests for :mod:`pism_terra.postprocess_scalar`.
 
 Uses synthetic PISM-like fields on a coarse EPSG:3413 Greenland grid together
 with the real basin outlines shipped in ``pism_terra/data``, so the
@@ -44,11 +44,14 @@ import numpy as np
 import pytest
 import rioxarray  # pylint: disable=unused-import
 import xarray as xr
+from pyproj import CRS as ProjCRS
 
-from pism_terra.ismip7.greenland.postprocess import (
+from pism_terra.postprocess_scalar import (
     _dim_chunks,
     basin_masks,
+    dataset_crs,
     process_file,
+    resolve_column,
     resolve_outfile,
 )
 
@@ -263,7 +266,7 @@ def test_basin_masks_survives_inconsistent_time_chunks(basins):
 
     masks = basin_masks(ds, basins)
 
-    assert [name for name, _ in masks] == basins["SUBREGION1"].tolist()
+    assert [name for name, _ in masks] == basins[resolve_column(basins)].tolist()
     for _, mask in masks:
         assert mask.dims == ("y", "x")
         assert mask.shape == (ds.sizes["y"], ds.sizes["x"])
@@ -288,7 +291,7 @@ def test_basin_masks_match_rio_clip(basins):
     for _, row in basins.iterrows():
         clipped = ds[["thk"]].rio.clip([row.geometry], basins.crs, drop=False)
         expected = clipped["thk"].isel(time=0).notnull().values
-        np.testing.assert_array_equal(np.asarray(masks[row["SUBREGION1"]]), expected)
+        np.testing.assert_array_equal(np.asarray(masks[row[resolve_column(basins)]]), expected)
 
 
 @pytest.mark.integration
@@ -371,16 +374,16 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
     ds.to_netcdf(infile, engine="h5netcdf")
 
     with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
-        process_file(infile, outfile, outlinefile, client)
+        process_file(infile, outfile, outlinefile, client, total_name="GIS")
 
     scalar = xr.open_dataset(outfile)
     try:
-        names = basins["SUBREGION1"].tolist()
-        # ``basin`` is a positional index for CDO's benefit; the labels live in
-        # ``basin_name``. Restore label indexing for the assertions below.
-        assert scalar["basin"].dtype == np.int32
-        assert scalar["basin_name"].values.tolist() == names + ["GIS"]
-        scalar = scalar.set_index(basin="basin_name")
+        names = basins[resolve_column(basins)].tolist()
+        # ``glacier_id`` is a positional index for CDO's benefit; the labels live
+        # in ``glacier_id_name``. Restore label indexing for the assertions below.
+        assert scalar["glacier_id"].dtype == np.int32
+        assert scalar["glacier_id_name"].values.tolist() == names + ["GIS"]
+        scalar = scalar.set_index(glacier_id="glacier_id_name")
 
         masks = {name: np.asarray(mask) for name, mask in basin_masks(ds, basins)}
         for name in names:
@@ -388,7 +391,7 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
             for var in ("thk", "ice_mass", "mask"):
                 expected = ds[var].values[:, mask].sum(axis=1)
                 np.testing.assert_allclose(
-                    scalar[var].sel(basin=name).values,
+                    scalar[var].sel(glacier_id=name).values,
                     expected,
                     rtol=1e-6,
                     err_msg=f"{var} over basin {name}",
@@ -399,15 +402,15 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
             # fallback applies.
             glacierized = np.where(ds["thk"].values > 10, ds["ice_mass"].values, np.nan)
             np.testing.assert_allclose(
-                scalar["ice_mass_glacierized"].sel(basin=name).values,
+                scalar["ice_mass_glacierized"].sel(glacier_id=name).values,
                 np.nansum(glacierized[:, mask], axis=1),
                 rtol=1e-6,
             )
 
         # GIS is the sum over the basins, not an independent reduction.
         np.testing.assert_allclose(
-            scalar["ice_mass"].sel(basin="GIS").values,
-            scalar["ice_mass"].sel(basin=names).sum(dim="basin").values,
+            scalar["ice_mass"].sel(glacier_id="GIS").values,
+            scalar["ice_mass"].sel(glacier_id=names).sum(dim="glacier_id").values,
             rtol=1e-6,
         )
 
@@ -419,11 +422,11 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
         assert "mapping" not in scalar.variables
         assert "spatial_ref" not in scalar.data_vars
         # And no dangling spatial dimension survived the reduction.
-        assert set(scalar["ice_mass"].dims) == {"basin", "time"}
+        assert set(scalar["ice_mass"].dims) == {"glacier_id", "time"}
         # Time must lead: CDO reads the first dimension as the record dimension
         # and skips every variable that does not put time there.
         for var in ("thk", "ice_mass", "mask", "ice_mass_glacierized"):
-            assert scalar[var].dims == ("time", "basin"), f"{var} has {scalar[var].dims}"
+            assert scalar[var].dims == ("time", "glacier_id"), f"{var} has {scalar[var].dims}"
     finally:
         scalar.close()
 
@@ -456,14 +459,14 @@ def test_glacierized_mass_uses_the_configured_ice_free_thickness(tmp_path, basin
     with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
         process_file(infile, outfile, outlinefile, client)
 
-    scalar = xr.open_dataset(outfile).set_index(basin="basin_name")
+    scalar = xr.open_dataset(outfile).set_index(glacier_id="glacier_id_name")
     try:
         masks = {name: np.asarray(mask) for name, mask in basin_masks(ds, basins)}
-        for name in basins["SUBREGION1"].tolist():
+        for name in basins[resolve_column(basins)].tolist():
             mask = masks[name]
             glacierized = np.where(ds["thk"].values > threshold, ds["ice_mass"].values, np.nan)
             np.testing.assert_allclose(
-                scalar["ice_mass_glacierized"].sel(basin=name).values,
+                scalar["ice_mass_glacierized"].sel(glacier_id=name).values,
                 np.nansum(glacierized[:, mask], axis=1),
                 rtol=1e-6,
                 err_msg=f"basin {name}",
@@ -564,6 +567,168 @@ def test_process_file_accepts_a_directory_destination(tmp_path, basins, outlinef
         assert "ice_mass" in scalar.data_vars
     finally:
         scalar.close()
+
+
+def test_dataset_crs_is_read_from_the_grid_mapping(tmp_path, basins):
+    """
+    The projection comes from the file, so campaigns need not declare it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    """
+    infile = tmp_path / "spatial.nc"
+    synthetic_greenland(basins, n_time=1).to_netcdf(infile, engine="h5netcdf")
+
+    with xr.open_dataset(infile) as ds:
+        detected = dataset_crs(ds)
+        assert ProjCRS.from_user_input(detected) == ProjCRS.from_user_input(CRS)
+        # An explicit CRS always wins over what the file says.
+        assert dataset_crs(ds, "EPSG:32607") == "EPSG:32607"
+
+    # A file with no usable grid mapping must say so rather than guess.
+    bare = xr.Dataset({"thk": (("y", "x"), np.zeros((2, 2)))}, coords={"y": [1.0, 0.0], "x": [0.0, 1.0]})
+    with pytest.raises(ValueError, match="no grid-mapping variable"):
+        dataset_crs(bare)
+
+
+def test_process_file_reprojects_outlines(tmp_path, basins, outlinefile):
+    """
+    Bring outlines stored in another CRS onto the model grid.
+
+    RGI outlines ship in EPSG:4326 while the grid is projected; rasterizing
+    without reprojecting would put every region outside the domain and sum
+    nothing.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage in the dataset's own CRS.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    ds = synthetic_greenland(basins, n_time=1)
+    infile = tmp_path / "spatial.nc"
+    ds.to_netcdf(infile, engine="h5netcdf")
+
+    lonlat_outlines = tmp_path / "outlines_4326.gpkg"
+    basins.to_crs("EPSG:4326").to_file(lonlat_outlines)
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        process_file(infile, tmp_path / "native.nc", outlinefile, client)
+        process_file(infile, tmp_path / "lonlat.nc", lonlat_outlines, client)
+
+    native = xr.open_dataset(tmp_path / "native.nc")
+    lonlat = xr.open_dataset(tmp_path / "lonlat.nc")
+    try:
+        # Reprojection is not bit-exact, but must land on the same cells.
+        np.testing.assert_allclose(lonlat["ice_mass"].values, native["ice_mass"].values, rtol=1e-6)
+        assert float(native["ice_mass"].sum()) > 0.0
+    finally:
+        native.close()
+        lonlat.close()
+
+
+def test_process_file_dim_name_and_total_are_configurable(tmp_path, basins, outlinefile):
+    """
+    ``dim_name`` names the region dimension; the total row is opt-in.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file``.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    ds = synthetic_greenland(basins, n_time=1)
+    infile = tmp_path / "spatial.nc"
+    ds.to_netcdf(infile, engine="h5netcdf")
+    n_regions = len(basins)
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        process_file(infile, tmp_path / "default.nc", outlinefile, client)
+        process_file(infile, tmp_path / "basin.nc", outlinefile, client, dim_name="basin", total_name="GIS")
+
+    default = xr.open_dataset(tmp_path / "default.nc")
+    named = xr.open_dataset(tmp_path / "basin.nc")
+    try:
+        # Neutral default, no total appended.
+        assert "glacier_id" in default.dims
+        assert "glacier_id_name" in default.coords
+        assert default.sizes["glacier_id"] == n_regions
+
+        # Greenland campaigns keep their own dimension name and GIS total.
+        assert "basin" in named.dims
+        assert named.sizes["basin"] == n_regions + 1
+        assert named["basin_name"].values.tolist()[-1] == "GIS"
+    finally:
+        default.close()
+        named.close()
+
+
+def test_process_file_reports_outline_area(tmp_path, basins, outlinefile):
+    """
+    Each region carries its outline area, independent of the grid.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file``.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    ds = synthetic_greenland(basins, n_time=1)
+    infile = tmp_path / "spatial.nc"
+    outfile = tmp_path / "basin.nc"
+    ds.to_netcdf(infile, engine="h5netcdf")
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        process_file(infile, outfile, outlinefile, client)
+
+    scalar = xr.open_dataset(outfile)
+    try:
+        assert scalar["area"].attrs["units"] == "m^2"
+        np.testing.assert_allclose(
+            scalar["area"].values,
+            basins.geometry.area.values,
+            rtol=1e-9,
+        )
+    finally:
+        scalar.close()
+
+
+def test_resolve_column_prefers_glacier_id_then_rgi_id(basins):
+    """
+    Outline files may name the label column in any of three ways.
+
+    Parameters
+    ----------
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    """
+    assert resolve_column(basins.rename(columns={"glacier_id": "rgi_id"})) == "rgi_id"
+    assert resolve_column(basins.assign(rgi_id=basins[resolve_column(basins)])) == "glacier_id"
+    assert resolve_column(basins[["SUBREGION1", "geometry"]]) == "SUBREGION1"
+
+    with pytest.raises(ValueError, match="has none of"):
+        resolve_column(basins[["geometry"]])
+    with pytest.raises(ValueError, match="no column 'nope'"):
+        resolve_column(basins, "nope")
 
 
 def test_basin_masks_rejects_empty_and_mislabeled_outlines(basins):

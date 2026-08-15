@@ -141,6 +141,18 @@ that's resolved.
     main
 ```
 
+## Post-processing (all campaigns)
+
+```{eval-rst}
+.. currentmodule:: pism_terra
+
+.. autosummary::
+    :toctree: generated/
+
+    postprocess_scalar
+    postprocess_spatial
+```
+
 ## ISMIP7 Greenland
 
 ```{eval-rst}
@@ -153,7 +165,6 @@ that's resolved.
     prepare
     stage
     run
-    postprocess
 ```
 
 ## KITP
@@ -167,7 +178,6 @@ that's resolved.
     prepare
     stage
     run
-    postprocess
     analyze
     forcing
 ```

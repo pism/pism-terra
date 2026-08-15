@@ -18,9 +18,9 @@
 # pylint: disable=too-many-positional-arguments,too-many-locals,too-many-arguments
 
 """
-Per-basin spatial postprocessing.
+Per-region spatial postprocessing.
 
-Unlike :mod:`pism_terra.ismip7.greenland.postprocess`, which reduces PISM
+Unlike :mod:`pism_terra.postprocess_scalar`, which reduces PISM
 spatial output to per-basin scalar sums, this module extracts the masked
 spatial fields themselves — one NetCDF file per basin, no summing. Output can
 approach the input in size (>50 GB in production), so every step here is
@@ -66,8 +66,13 @@ import rioxarray  # noqa: F401  pylint: disable=unused-import
 import xarray as xr
 from dask.distributed import Client, progress
 
-from pism_terra.ismip7.greenland.postprocess import _raise_fd_limit, basin_masks
 from pism_terra.log import setup_logging
+from pism_terra.postprocess_scalar import (
+    DEFAULT_COLUMNS,
+    _raise_fd_limit,
+    basin_masks,
+    dataset_crs,
+)
 
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
@@ -354,8 +359,8 @@ def process_file_spatial(
     outdir: str | Path,
     outlinefile: str | Path,
     client: Client,
-    column: str = "SUBREGION1",
-    crs: str = "EPSG:3413",
+    column: str | None = None,
+    crs: str | None = None,
     crop: bool = True,
     variables: list[str] | None = None,
     method: str = DEFAULT_METHOD,
@@ -368,7 +373,7 @@ def process_file_spatial(
     Extract per-basin spatial fields from ``infile`` into one file per basin.
 
     The counterpart of
-    :func:`pism_terra.ismip7.greenland.postprocess.process_file` that keeps
+    :func:`pism_terra.postprocess_scalar.process_file` that keeps
     the spatial dimensions instead of summing over them. Every step is lazy;
     peak memory is bounded by (workers × chunk) for the ``netcdf``/``zarr``
     methods and by one time slab for ``shards``, independent of file size.
@@ -386,10 +391,14 @@ def process_file_spatial(
         Basin outline file (GeoPackage/shapefile) defining the basins.
     client : dask.distributed.Client
         Dask client.
-    column : str, default "SUBREGION1"
-        Column in ``outlinefile`` holding the basin names.
-    crs : str, default "EPSG:3413"
-        CRS applied to the input before rasterizing the outlines.
+    column : str or None, optional
+        Column in ``outlinefile`` holding the region names. ``None``
+        (default) picks the first of
+        :data:`~pism_terra.postprocess_scalar.DEFAULT_COLUMNS` present.
+    crs : str or None, optional
+        CRS applied to the input before rasterizing the outlines. ``None``
+        (default) reads it from the file; see
+        :func:`~pism_terra.postprocess_scalar.dataset_crs`.
     crop : bool, default True
         Crop each basin file to its bounding box. ``False`` keeps every file
         on the full input grid, NaN-masked outside the basin.
@@ -440,6 +449,11 @@ def process_file_spatial(
         chunks="auto",
         engine="h5netcdf",
     )
+    # Read the projection off the grid mapping before DROP_VARS removes it,
+    # then bring the outlines onto it (RGI outlines ship in EPSG:4326).
+    dst_crs = dataset_crs(ds, crs)
+    basin = basin.to_crs(dst_crs)
+
     ds = ds.drop_vars(DROP_VARS, errors="ignore")
 
     # Split off variables that lack spatial dims; the time-less ones (e.g.
@@ -460,7 +474,7 @@ def process_file_spatial(
     if extra_dims:
         ds = ds.chunk(extra_dims)
 
-    ds = ds.rio.write_crs(crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
+    ds = ds.rio.write_crs(dst_crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
 
     masks = basin_masks(ds, basin, column=column, client=client)
     if total and total_name not in {name for name, _ in masks}:
@@ -620,9 +634,9 @@ def main():
     )
     parser.add_argument(
         "--column",
-        help="Column in OUTLINEFILE holding the basin names.",
+        help="Column in OUTLINEFILE holding the region names. " f"Tried in order {list(DEFAULT_COLUMNS)} when unset.",
         type=str,
-        default="SUBREGION1",
+        default=None,
     )
     parser.add_argument(
         "INFILE",

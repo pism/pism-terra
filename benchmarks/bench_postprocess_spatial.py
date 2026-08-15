@@ -182,7 +182,7 @@ def run_method(method: str, infile: Path, outdir: Path, outline: str, workers: i
     scratch = outdir / "scratch"
     scratch.mkdir(parents=True, exist_ok=True)
     code = (
-        "from pism_terra.ismip7.greenland.postprocess_spatial import postprocess_glacier_spatial; "
+        "from pism_terra.postprocess_spatial import postprocess_glacier_spatial; "
         f"postprocess_glacier_spatial({str(infile)!r}, {str(outdir)!r}, {outline!r}, "
         f"n_workers={workers}, local_directory={str(scratch)!r}, method={method!r})"
     )

@@ -18,7 +18,17 @@
 # pylint: disable=unused-import,unused-variable,too-many-positional-arguments
 
 """
-Postprocessing.
+Per-region scalar post-processing.
+
+Reduces a PISM spatial output file to per-region sums over ``x``/``y`` — one
+row per outline in a GeoPackage/shapefile. The same code serves Greenland
+drainage basins and RGI glaciers: the outlines are rasterized onto the model
+grid once, and every region's reduction goes into a single Dask graph, so each
+chunk of the input is read and decompressed exactly once and peak memory is a
+chunk rather than the whole dataset.
+
+See :mod:`pism_terra.postprocess_spatial` for the variant that keeps the
+spatial dimensions instead of summing over them.
 """
 
 import json
@@ -52,6 +62,11 @@ warnings.filterwarnings("ignore", message="invalid value encountered in cast", c
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
 
 logger = logging.getLogger(__name__)
+
+# Outline column holding the region name, tried in this order when the caller
+# does not name one: the packaged Mouginot basins carry ``glacier_id``, RGI
+# files ``rgi_id``, and older Greenland outlines only ``SUBREGION1``.
+DEFAULT_COLUMNS = ("glacier_id", "rgi_id", "SUBREGION1")
 
 
 def _raise_fd_limit() -> None:
@@ -111,10 +126,100 @@ def _dim_chunks(ds: xr.Dataset, dim: str, fallback: int) -> tuple[int, ...] | in
     return counts.most_common(1)[0][0]
 
 
+def dataset_crs(ds: xr.Dataset, crs: str | None = None) -> str:
+    """
+    Determine the CRS of a PISM output file.
+
+    PISM writes a CF grid-mapping variable (``mapping``, or ``spatial_ref``
+    once a file has round-tripped through rioxarray) carrying ``crs_wkt``,
+    so the projection can be read from the file itself. That matters because
+    the projection is campaign-specific — polar stereographic for Greenland,
+    a UTM zone for an Alaskan glacier — and a hard-coded default would
+    silently misplace one of them.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset as opened from disk, before the grid-mapping variable is
+        dropped.
+    crs : str or None, optional
+        Explicit override (e.g. ``"EPSG:3413"``). When given it wins, which
+        is the escape hatch for files that carry no usable grid mapping.
+
+    Returns
+    -------
+    str
+        CRS as WKT or as the given override string.
+
+    Raises
+    ------
+    ValueError
+        If no override was given and the file has no grid-mapping variable
+        with ``crs_wkt``.
+    """
+    if crs is not None:
+        return crs
+
+    grid_mapping = ds.rio.grid_mapping
+    if grid_mapping in ds.variables:
+        crs_wkt = ds[grid_mapping].attrs.get("crs_wkt")
+        if crs_wkt:
+            logger.info("Using CRS from '%s'", grid_mapping)
+            return str(crs_wkt)
+
+    raise ValueError(
+        "input file carries no grid-mapping variable with 'crs_wkt'; pass --crs explicitly (e.g. --crs EPSG:3413)"
+    )
+
+
+def resolve_column(outline: gpd.GeoDataFrame, column: str | None = None) -> str:
+    """
+    Pick the outline column that holds the region names.
+
+    Outline files disagree on what the name column is called: the packaged
+    Mouginot basins use ``glacier_id``, RGI files use ``rgi_id``, and older
+    Greenland files only have ``SUBREGION1``. Rather than force every file to
+    be re-saved, try them in order of preference.
+
+    Parameters
+    ----------
+    outline : geopandas.GeoDataFrame
+        The outlines being reduced over.
+    column : str or None, optional
+        Explicit column name. When given it must exist — no fallback, so a
+        typo is an error rather than a silently different labelling.
+
+    Returns
+    -------
+    str
+        Name of the column to label regions with.
+
+    Raises
+    ------
+    ValueError
+        If ``column`` is given but absent, or if none of
+        :data:`DEFAULT_COLUMNS` is present.
+    """
+    if column is not None:
+        if column not in outline.columns:
+            raise ValueError(f"outline file has no column {column!r}; available: {list(outline.columns)}")
+        return column
+
+    for candidate in DEFAULT_COLUMNS:
+        if candidate in outline.columns:
+            logger.info("Labelling regions by '%s'", candidate)
+            return candidate
+
+    raise ValueError(
+        f"outline file has none of {list(DEFAULT_COLUMNS)}; "
+        f"available: {list(outline.columns)}. Pass --column to choose one."
+    )
+
+
 def basin_masks(
     ds: xr.Dataset,
     basin: gpd.GeoDataFrame,
-    column: str = "SUBREGION1",
+    column: str | None = None,
     all_touched: bool = False,
     client: Client | None = None,
 ) -> list[tuple[str, xr.DataArray]]:
@@ -141,8 +246,9 @@ def basin_masks(
         ``rio.set_spatial_dims``). Only its grid is used.
     basin : geopandas.GeoDataFrame
         Basin outlines, already in the dataset CRS.
-    column : str, default "SUBREGION1"
-        Column holding the basin name.
+    column : str or None, optional
+        Column holding the region name. ``None`` (default) resolves it with
+        :func:`resolve_column`.
     all_touched : bool, default False
         Passed to :func:`rasterio.features.geometry_mask`. ``False`` selects
         cells whose center falls inside the polygon.
@@ -166,8 +272,7 @@ def basin_masks(
     """
     if basin.empty:
         raise ValueError("outline file contains no features; check the file (e.g. `ogrinfo -so`) and re-copy it")
-    if column not in basin.columns:
-        raise ValueError(f"outline file has no column {column!r}; available: {list(basin.columns)}")
+    column = resolve_column(basin, column)
 
     transform = ds.rio.transform(recalc=True)
     shape = (int(ds.rio.height), int(ds.rio.width))
@@ -255,20 +360,23 @@ def process_file(
     outfile: str | Path,
     outlinefile: str | Path,
     client: Client,
-    column: str = "SUBREGION1",
-    crs: str = "EPSG:3413",
-    total_name: str | None = "GIS",
+    column: str | None = None,
+    crs: str | None = None,
+    dim_name: str = "glacier_id",
+    total_name: str | None = None,
+    all_touched: bool = False,
 ):
     """
-    Reduce a NetCDF dataset to per-basin scalar sums and write them to ``outfile``.
+    Reduce a NetCDF dataset to per-region scalar sums and write them to ``outfile``.
 
-    The basin outlines are rasterized onto the dataset grid once, then every
-    basin sum is assembled into a single Dask graph and evaluated in one pass:
-    each chunk of ``infile`` is read and decompressed exactly once and feeds all
-    the per-basin reductions. Peak memory is a chunk, not the dataset, so this
-    does not depend on the cluster being able to hold the file.
+    The outlines are rasterized onto the dataset grid once, then every region's
+    sum is assembled into a single Dask graph and evaluated in one pass: each
+    chunk of ``infile`` is read and decompressed exactly once and feeds all the
+    per-region reductions. Peak memory is a chunk, not the dataset, so this does
+    not depend on the cluster being able to hold the file.
 
-    No spatial (clipped) file is written.
+    No spatial (clipped) file is written; see
+    :mod:`pism_terra.postprocess_spatial` for that.
 
     Parameters
     ----------
@@ -279,26 +387,38 @@ def process_file(
         directory is named following the run scripts' convention: the
         input's ``spatial_`` prefix becomes ``basin_``.
     outlinefile : str or Path
-        Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
-        the basins to reduce over.
+        Outline file (GeoPackage/shapefile) defining the regions to reduce
+        over — Greenland drainage basins, RGI glaciers or complexes. It is
+        reprojected to the dataset's CRS, so it may be stored in any.
     client : dask.Client
         Dask client.
-    column : str, default "SUBREGION1"
-        Name of the column in ``basin_file`` used to identify basins.
-    crs : str, default "EPSG:3413"
-        CRS code applied to the input dataset before rasterizing the outlines.
-    total_name : str or None, default "GIS"
-        Name of an extra whole-domain basin appended as the sum over the basins
-        in ``outlinefile``. Skipped when the outlines already contain a basin of
-        this name (older files carry their own ``GIS`` polygon), or when
-        ``None``. Note that this total covers only what the outlines cover: with
+    column : str or None, optional
+        Name of the column in ``outlinefile`` used to label each region.
+        ``None`` (default) picks the first of :data:`DEFAULT_COLUMNS` that
+        the file has.
+    crs : str or None, optional
+        CRS applied to the input before rasterizing. ``None`` (default) reads
+        it from the file; see :func:`dataset_crs`.
+    dim_name : str, default "glacier_id"
+        Name of the region dimension in the output. Greenland campaigns pass
+        ``"basin"`` to stay compatible with existing analysis code.
+    total_name : str or None, optional
+        Name of an extra whole-domain region appended as the sum over all the
+        outlines. ``None`` (default) writes no total, which is what per-glacier
+        runs want. Skipped when the outlines already contain a region of this
+        name (older Greenland files carry their own ``GIS`` polygon). Note that
+        such a total covers only what the outlines cover: with
         ``mouginot_basins_w_shelves.gpkg`` about 0.2% of icy cells — peripheral
         glaciers and ice caps — fall outside every basin and are not counted.
+    all_touched : bool, default False
+        Count a cell as part of a region when the outline touches it at all,
+        rather than only when the cell center falls inside. Useful for
+        glaciers small relative to the grid spacing.
     """
 
     infile_name = Path(infile).name
     outfile = resolve_outfile(infile, outfile)
-    basin = gpd.read_file(outlinefile)
+    outline = gpd.read_file(outlinefile)
 
     start = time.time()
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
@@ -310,6 +430,13 @@ def process_file(
         chunks="auto",
         engine="h5netcdf",
     )
+
+    # Read the projection off the grid-mapping variable before it is dropped
+    # below, then bring the outlines onto it. The outlines are commonly stored
+    # in EPSG:4326 (the RGI ones are) while the model grid is projected, so
+    # rasterizing without this would place every region outside the domain.
+    dst_crs = dataset_crs(ds, crs)
+    outline = outline.to_crs(dst_crs)
 
     # Bounds/mapping vars (``x_bnds``/``y_bnds``/``mapping``) carry only one of
     # the x/y dims; keeping them would inject a dangling x/y dimension back into
@@ -333,7 +460,7 @@ def process_file(
     # reduced over x/y
     non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
     ds_non_spatial = ds[non_spatial_vars]
-    ds = ds.drop_vars(non_spatial_vars).rio.write_crs(crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
+    ds = ds.drop_vars(non_spatial_vars).rio.write_crs(dst_crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
 
     # ``ice_mass_glacierized`` needs both ice_mass and thk in the spatial file;
     # some configs write a reduced var set, so only compute it when both are
@@ -356,14 +483,14 @@ def process_file(
     # over a Greenland grid stay far inside float64's exact-integer range.)
     integer_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.integer)]
 
-    masks = basin_masks(ds, basin, column=column, client=client)
-    logger.info("Reducing over %d basins in a single pass", len(masks))
+    masks = basin_masks(ds, outline, column=column, all_touched=all_touched, client=client)
+    logger.info("Reducing over %d regions in a single pass", len(masks))
 
-    # One graph for every basin. The per-basin branches share the same source
+    # One graph for every region. The per-region branches share the same source
     # chunk tasks, so Dask reads each chunk once and fans it out to all of them.
     lazy = xr.concat(
-        [ds.where(mask).sum(dim=["y", "x"]).expand_dims({"basin": [name]}) for name, mask in masks],
-        dim="basin",
+        [ds.where(mask).sum(dim=["y", "x"]).expand_dims({dim_name: [name]}) for name, mask in masks],
+        dim=dim_name,
     )
 
     future = client.compute(lazy)
@@ -373,19 +500,29 @@ def process_file(
     for var in integer_vars:
         scalar[var] = scalar[var].round().astype(np.int64)
 
-    if total_name is not None and total_name not in set(scalar["basin"].values):
-        total = scalar.sum(dim="basin").expand_dims({"basin": [total_name]})
-        scalar = xr.concat([scalar, total], dim="basin")
-        logger.info("Added %s as the sum over %d basins", total_name, len(masks))
+    # Outline area, in the same row order as the reduction. This is the
+    # polygon's own area, not the area of the cells that were summed, so it is
+    # independent of the grid resolution.
+    scalar["area"] = xr.DataArray(
+        np.asarray([geom.area for geom in outline.geometry], dtype="float64"),
+        dims=(dim_name,),
+        coords={dim_name: scalar[dim_name]},
+        attrs={"units": "m^2", "long_name": "outline area"},
+    )
+
+    if total_name is not None and total_name not in set(scalar[dim_name].values):
+        total = scalar.sum(dim=dim_name).expand_dims({dim_name: [total_name]})
+        scalar = xr.concat([scalar, total], dim=dim_name)
+        logger.info("Added %s as the sum over %d regions", total_name, len(masks))
 
     logger.info("Writing %s", outfile)
     # Keep non-spatial vars (e.g. pism_config)
     extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims]
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
-    # Put time first and swap the string basin labels for an integer index, so
+    # Put time first and swap the string region labels for an integer index, so
     # CDO can open the result at all. See ``make_cdo_readable``.
-    scalar = make_cdo_readable(scalar, "basin")
+    scalar = make_cdo_readable(scalar, dim_name)
     comp = {"zlib": True, "complevel": 2}
     encoding_scalar = {var: comp for var in scalar.data_vars}
     scalar.to_netcdf(outfile, encoding=encoding_scalar)
@@ -395,30 +532,31 @@ def process_file(
     logger.info("Time elapsed for %s: %.0fs", infile_name, time_elapsed)
 
 
-def postprocess_glacier(
+def postprocess_scalar(
     infile: str | Path,
     outfile: str | Path,
     outlinefile: str | Path,
     n_workers: int = 4,
     local_directory: str | Path | None = None,
+    **kwargs,
 ):
     """
-    Postprocess KITP Greenland output by clipping to basin geometries.
+    Reduce a PISM spatial file to per-region sums, managing the Dask cluster.
 
-    Opens ``infile`` and clips it to the basin outline using a Dask client,
-    writing per-basin scalar sums to ``outfile``.
+    Thin wrapper around :func:`process_file`: raises the open-file limit,
+    starts a local Dask cluster with sensible scratch, runs the reduction and
+    shuts the cluster down again.
 
     Parameters
     ----------
     infile : str or Path
-        Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
+        Path to the NetCDF file to be reduced. Must contain x/y spatial dimensions.
     outfile : str or Path
         Path to the output netCDF, or a directory to write it into. A
         directory is named following the run scripts' convention: the
         input's ``spatial_`` prefix becomes ``basin_``.
     outlinefile : str or Path
-        Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
-        the geometry to clip the dataset to.
+        Outline file (GeoPackage/shapefile) defining the regions to reduce over.
     n_workers : int, optional
         Number of Dask workers, by default 4.
     local_directory : str or Path or None, optional
@@ -427,6 +565,9 @@ def postprocess_glacier(
         and Dask warns about it; point this at node-local disk instead. When
         ``None`` (default), fall back to :func:`tempfile.gettempdir`, which
         honours ``$TMPDIR`` (SLURM sets it to node-local storage).
+    **kwargs
+        Forwarded to :func:`process_file` (``column``, ``crs``, ``dim_name``,
+        ``total_name``, ``all_touched``).
     """
 
     start = time.time()
@@ -443,9 +584,10 @@ def postprocess_glacier(
     client = Client(n_workers=n_workers, threads_per_worker=1, local_directory=scratch_dir)
     logger.info("Dask dashboard: %s", client.dashboard_link)
 
-    process_file(infile, outfile, outlinefile, client)
-
-    client.close()
+    try:
+        process_file(infile, outfile, outlinefile, client, **kwargs)
+    finally:
+        client.close()
 
     end = time.time()
     time_elapsed = end - start
@@ -459,7 +601,7 @@ def main():
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Postprocess KITP Greenland."
+    parser.description = "Reduce a PISM spatial file to per-region scalar sums."
     parser.add_argument(
         "--ntasks",
         help="Sets number of tasks.",
@@ -475,6 +617,36 @@ def main():
         default=None,
     )
     parser.add_argument(
+        "--column",
+        help="Column in OUTLINEFILE holding the region name. " f"Tried in order {list(DEFAULT_COLUMNS)} when unset.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--crs",
+        help="CRS of the input grid. Read from the file's grid mapping when unset.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--dim-name",
+        help="Name of the region dimension in the output.",
+        type=str,
+        default="glacier_id",
+    )
+    parser.add_argument(
+        "--total-name",
+        help="Append a whole-domain region summing all outlines under this name. Off when unset.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--all-touched",
+        help="Count every cell the outline touches, not only those whose center it contains.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "INFILE",
         help="input file.",
         nargs=1,
@@ -486,7 +658,7 @@ def main():
     )
     parser.add_argument(
         "OUTLINEFILE",
-        help="basin outline file (GeoPackage/shapefile).",
+        help="region outline file (GeoPackage/shapefile).",
         nargs=1,
     )
 
@@ -502,7 +674,18 @@ def main():
     outfile = resolve_outfile(infile, outfile)
     setup_logging(outfile.resolve().parent / "postprocess.log")
 
-    postprocess_glacier(infile, outfile, outlinefile, n_workers=ntasks, local_directory=local_directory)
+    postprocess_scalar(
+        infile,
+        outfile,
+        outlinefile,
+        n_workers=ntasks,
+        local_directory=local_directory,
+        column=options.column,
+        crs=options.crs,
+        dim_name=options.dim_name,
+        total_name=options.total_name,
+        all_touched=options.all_touched,
+    )
 
 
 if __name__ == "__main__":

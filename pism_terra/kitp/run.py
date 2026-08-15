@@ -353,8 +353,9 @@ def run_kitp(
     post_process_str = ""
     if outline_file != "none":
         post_process_str = (
-            f"pism-kitp-postprocess "
-            f"{spatial_file.resolve()} {basin_file.resolve()} {outline_file}{_postprocess_ntasks(config_cli)}"
+            f"pism-postprocess-scalar "
+            f"{spatial_file.resolve()} {basin_file.resolve()} {outline_file} "
+            f"--column SUBREGION1 --dim-name basin --total-name GIS{_postprocess_ntasks(config_cli)}"
         )
 
     params.update({"run_str": run_str})

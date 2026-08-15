@@ -16,10 +16,10 @@
 # along with PISM; if not, write to the Free Software
 
 """
-Tests for :mod:`pism_terra.ismip7.greenland.postprocess_spatial`.
+Tests for :mod:`pism_terra.postprocess_spatial`.
 
 Reuses the synthetic PISM-like Greenland datasets and the real Mouginot
-outlines from ``test_ismip7_postprocess``.
+outlines from ``test_postprocess_scalar``.
 
 Covers:
 - ``_bbox_slices`` spanning exactly the ``True`` extent, empty-mask error.
@@ -39,10 +39,10 @@ import numpy as np
 import pytest
 import rioxarray  # pylint: disable=unused-import
 import xarray as xr
-from test_ismip7_postprocess import synthetic_greenland
+from test_postprocess_scalar import synthetic_greenland
 
-from pism_terra.ismip7.greenland.postprocess import basin_masks
-from pism_terra.ismip7.greenland.postprocess_spatial import (
+from pism_terra.postprocess_scalar import basin_masks, resolve_column
+from pism_terra.postprocess_spatial import (
     _bbox_slices,
     _write_zarr,
     extract_basin,
@@ -235,7 +235,7 @@ def test_process_file_spatial_end_to_end(tmp_path, basins, outlinefile, method):
             scratch=tmp_path / "scratch",
         )
 
-    names = basins["SUBREGION1"].tolist()
+    names = basins[resolve_column(basins)].tolist()
     assert [p.name for p in written] == [f"spatial_{n}_g20000m_test.nc" for n in names]
     masks = dict(basin_masks(ds, basins))
 
