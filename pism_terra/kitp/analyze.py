@@ -114,6 +114,51 @@ EXPS_OPTS: dict[str, dict[str, Any]] = {
 }
 
 
+REGION_DIM = "glacier_id"
+# Region dimensions this module has produced over time, newest first. Files
+# written before the post-processing modules were unified use ``basin`` (or
+# ``RGIid`` for glacier runs) with string labels; newer ones use an integer
+# ``glacier_id`` index whose labels live in ``glacier_id_name``.
+REGION_DIMS = (REGION_DIM, "basin", "RGIid")
+
+
+def with_region_labels(ds: xr.Dataset, default: str = "GIS") -> xr.Dataset:
+    """
+    Put string region labels back on the region dimension.
+
+    Post-processing writes the region dimension as a positional integer index
+    so that CDO can read the file, keeping the labels in a companion
+    ``<dim>_name`` coordinate. Selecting by name means restoring that
+    coordinate as the index. Older files that already carry string labels, and
+    single-region files with no region dimension at all, are brought to the
+    same shape.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset as read from a scalar post-processing file.
+    default : str, default "GIS"
+        Label given to a dataset that has no region dimension.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset whose :data:`REGION_DIM` dimension is indexed by region name.
+    """
+    dim = next((d for d in REGION_DIMS if d in ds.dims), None)
+    if dim is None:
+        return ds.expand_dims({REGION_DIM: [default]})
+
+    name_var = f"{dim}_name"
+    if name_var in ds.coords:
+        # Swap the positional index for the labels; ``set_index`` consumes the
+        # name coordinate, leaving one region coordinate rather than two.
+        ds = ds.set_index({dim: name_var})
+    if dim != REGION_DIM:
+        ds = ds.rename({dim: REGION_DIM})
+    return ds
+
+
 def load_dataset(filename_or_obj: Sequence[str | Path], join: str | None = "outer", **kwargs) -> xr.Dataset:
     """
     Load and preprocess multiple NetCDF files into a single dataset.
@@ -177,9 +222,13 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     baseline_file = next(f for f in infiles if "HIRHAM5" in Path(f).name)
     baseline = xr.open_dataset(baseline_file, chunks=None, decode_times=time_coder, decode_timedelta=delta_coder)
     pism_config = baseline.pism_config
-    res = f"""{int(pism_config.attrs["grid.dx"])}m"""
-    if "basin" not in baseline.dims:
-        baseline = baseline.expand_dims({"basin": ["GIS"]})
+    dx = float(pism_config.attrs["grid.dx"])
+    res = f"{int(dx)}m"
+    # Per-cell area of *this* run, used to turn summed per-area fluxes into
+    # mass fluxes. It was hard-coded to 900 m, which silently rescaled every
+    # run at another resolution by (dx / 900)**2.
+    cell_area = xr.DataArray(dx).pint.quantify("m") ** 2
+    baseline = with_region_labels(baseline)
     baseline = baseline.resample({"time": "YE"}).mean()
     baseline = baseline.assign_coords(time=[t.replace(year=t.year - 1) for t in baseline.time.values])
     baseline = baseline.pint.quantify()
@@ -214,7 +263,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
 
     def _prepare(ds: xr.Dataset) -> xr.Dataset:
         """
-        Drop object-dtype vars, ensure ``basin`` dim, resample to yearly means, and quantify.
+        Drop object-dtype vars, restore region labels, resample to yearly means, and quantify.
 
         Parameters
         ----------
@@ -228,8 +277,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
         """
         obj_vars = [v for v in ds.data_vars if ds[v].dtype == object]
         ds = ds.drop_vars(obj_vars)
-        if "basin" not in ds.dims:
-            ds = ds.expand_dims({"basin": ["GIS"]})
+        ds = with_region_labels(ds)
         ds = ds.resample({"time": "YE"}).mean()
         # Shift time coordinate by -1 year so the series starts at year 0
         ds = ds.assign_coords(time=[t.replace(year=t.year - 1) for t in ds.time.values])
@@ -252,11 +300,11 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     gcm_sub_baseline = gcm_computed - baseline_computed
 
     with mpl.rc_context(rc=rc_params):
-        for basin_name in baseline.basin.values:
-            basin_gcm = gcm_computed.sel(basin=basin_name)
+        for region_name in baseline[REGION_DIM].values:
+            basin_gcm = gcm_computed.sel({REGION_DIM: region_name})
             basin_slc = ((basin_gcm["ice_mass"] - basin_gcm["ice_mass"].isel({"time": 0})) * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
-            basin_baseline = baseline_computed.sel(basin=basin_name)
+            basin_baseline = baseline_computed.sel({REGION_DIM: region_name})
             basin_baseline_slc = (
                 (basin_baseline["ice_mass"] - basin_baseline["ice_mass"].isel({"time": 0})) * gt2mmsle
             ).pint.dequantify()
@@ -281,7 +329,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             ax.axhline(y=0, color="k", ls="dotted", lw=0.5)
             ax.set_ylabel("Contribution to sea-level (mm)")
             ax.set_xlabel("Time")
-            ax.set_title(basin_name)
+            ax.set_title(region_name)
             ax.set_xlim(time_vals[0], time_vals[-1])
             year_ticks = [t for t in time_vals if t.year % 50 == 0]
             ax.set_xticks(year_ticks)
@@ -297,17 +345,24 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             leg_line.get_frame().set_alpha(0.0)
 
             fig.tight_layout()
-            fig.savefig(f"pism_kitp_gcm_{basin_name}_{res}.png", dpi=300)
-            fig.savefig(f"pism_kitp_gcm_{basin_name}_{res}.pdf")
+            fig.savefig(f"pism_kitp_gcm_{region_name}_{res}.png", dpi=300)
+            fig.savefig(f"pism_kitp_gcm_{region_name}_{res}.pdf")
             plt.close(fig)
 
     with mpl.rc_context(rc=rc_params):
-        for basin_name in baseline.basin.values:
-            basin_gcm = gcm_sub_baseline.sel(basin=basin_name)
-            basin_glf = (
-                gcm.sel(basin=basin_name)["grounding_line_flux_nonneg"] * xr.DataArray(900).pint.quantify("m") ** 2
-            ).pint.to("Gt/yr")
-            basin_smb = (gcm.sel(basin=basin_name)["tendency_of_ice_mass_due_to_surface_mass_flux"]).pint.to("Gt/yr")
+        for region_name in baseline[REGION_DIM].values:
+            basin_gcm = gcm_sub_baseline.sel({REGION_DIM: region_name})
+            # ``grounding_line_flux_nonneg`` is derived by the scalar
+            # post-processing, which masks the *spatial* field before summing.
+            # Raw PISM scalar files only carry the total, from which it cannot
+            # be recovered, so the curve is dropped rather than approximated.
+            region_gcm = gcm.sel({REGION_DIM: region_name})
+            basin_glf = None
+            if "grounding_line_flux_nonneg" in region_gcm:
+                basin_glf = (region_gcm["grounding_line_flux_nonneg"] * cell_area).pint.to("Gt/yr")
+            else:
+                logger.info("No grounding_line_flux_nonneg in the inputs; omitting it from the flux panel")
+            basin_smb = (region_gcm["tendency_of_ice_mass_due_to_surface_mass_flux"]).pint.to("Gt/yr")
             basin_slc = (basin_gcm["ice_mass"] * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
 
@@ -323,8 +378,11 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
                 _ = _gcm_slc.plot(ax=axs[0], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
                 _gcm_smb = basin_smb.sel({"exp_id": exp_name})
                 _ = _gcm_smb.plot(ax=axs[1], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
-                _gcm_glf = basin_glf.sel({"exp_id": exp_name})
-                _ = _gcm_glf.plot(ax=axs[1], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False)
+                if basin_glf is not None:
+                    _gcm_glf = basin_glf.sel({"exp_id": exp_name})
+                    _ = _gcm_glf.plot(
+                        ax=axs[1], hue="gcm_id", color=exp["color"], ls=exp["ls"], lw=0.75, add_legend=False
+                    )
                 _l = _gcm_slc.isel({"gcm_id": 0}).plot(
                     ax=axs[0], color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75, add_legend=False
                 )
@@ -333,7 +391,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             axs[0].axhline(y=0, color="k", ls="dotted", lw=0.5)
             axs[0].set_ylabel("Contribution to sea-level (mm)")
             axs[1].set_xlabel("Time")
-            axs[0].set_title(basin_name)
+            axs[0].set_title(region_name)
             axs[0].set_xlim(time_vals[0], time_vals[-1])
             year_ticks = [t for t in time_vals if t.year % 50 == 0]
             axs[1].set_xticks(year_ticks)
@@ -349,13 +407,13 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             leg_line.get_frame().set_alpha(0.0)
 
             fig.tight_layout()
-            fig.savefig(f"pism_kitp_norm_gcm_with_flux_{basin_name}_{res}.png", dpi=300)
-            fig.savefig(f"pism_kitp_norm_gcm_with_flux_{basin_name}_{res}.pdf")
+            fig.savefig(f"pism_kitp_norm_gcm_with_flux_{region_name}_{res}.png", dpi=300)
+            fig.savefig(f"pism_kitp_norm_gcm_with_flux_{region_name}_{res}.pdf")
             plt.close(fig)
 
     with mpl.rc_context(rc=rc_params):
-        for basin_name in baseline.basin.values:
-            basin_gcm = gcm_sub_baseline.sel(basin=basin_name)
+        for region_name in baseline[REGION_DIM].values:
+            basin_gcm = gcm_sub_baseline.sel({REGION_DIM: region_name})
             basin_slc = (basin_gcm["ice_mass"] * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
             basin_slice = (
@@ -383,8 +441,8 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             g.despine(left=True)
             g.set_axis_labels("Sea-level contribution (mm)", "")
             g.legend.set_title("")
-            g.fig.savefig(f"pism_kitp_slice_yx_gcm_{basin_name}_{res}.png", dpi=300)
-            g.fig.savefig(f"pism_kitp_slice_yx_gcm_{basin_name}_{res}.pdf")
+            g.fig.savefig(f"pism_kitp_slice_yx_gcm_{region_name}_{res}.png", dpi=300)
+            g.fig.savefig(f"pism_kitp_slice_yx_gcm_{region_name}_{res}.pdf")
 
             g = sns.catplot(
                 data=_slice_df,
@@ -400,8 +458,8 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             g.despine(left=True)
             g.set_axis_labels("Sea-level contribution (mm)", "")
             g.legend.set_title("")
-            g.fig.savefig(f"pism_kitp_slice_xy_gcm_{basin_name}_{res}.png", dpi=300)
-            g.fig.savefig(f"pism_kitp_slice_xy_gcm_{basin_name}_{res}.pdf")
+            g.fig.savefig(f"pism_kitp_slice_xy_gcm_{region_name}_{res}.png", dpi=300)
+            g.fig.savefig(f"pism_kitp_slice_xy_gcm_{region_name}_{res}.pdf")
 
             fig, ax = plt.subplots(1, 1, figsize=(6.4, 3.6))
 
@@ -418,7 +476,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             ax.axhline(y=0, color="k", ls="dotted", lw=0.5)
             ax.set_ylabel("Contribution to sea-level (mm)")
             ax.set_xlabel("Time")
-            ax.set_title(basin_name)
+            ax.set_title(region_name)
             ax.set_xlim(time_vals[0], time_vals[-1])
             year_ticks = [t for t in time_vals if t.year % 50 == 0]
             ax.set_xticks(year_ticks)
@@ -434,14 +492,14 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
             leg_line.get_frame().set_alpha(0.0)
 
             fig.tight_layout()
-            fig.savefig(f"pism_kitp_norm_gcm_{basin_name}_{res}.png", dpi=300)
-            fig.savefig(f"pism_kitp_norm_gcm_{basin_name}_{res}.pdf")
+            fig.savefig(f"pism_kitp_norm_gcm_{region_name}_{res}.png", dpi=300)
+            fig.savefig(f"pism_kitp_norm_gcm_{region_name}_{res}.pdf")
             plt.close(fig)
 
     # with mpl.rc_context(rc=rc_params):
-    #     for basin_name in baseline.basin.values:
-    #         basin_baseline = baseline_computed.sel(basin=basin_name)
-    #         basin_gcm = gcm_computed.sel(basin=basin_name)
+    #     for region_name in baseline[REGION_DIM].values:
+    #         basin_baseline = baseline_computed.sel({REGION_DIM: region_name})
+    #         basin_gcm = gcm_computed.sel({REGION_DIM: region_name})
 
     #         fig, ax = plt.subplots(1, 1, figsize=(6.4, 3.6))
 
@@ -470,7 +528,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     #         ax.axhline(y=0, color="k", ls="dotted", lw=0.5)
     #         ax.set_ylabel("Contribution to sea-level (mm)")
     #         ax.set_xlabel("Time")
-    #         ax.set_title(basin_name)
+    #         ax.set_title(region_name)
     #         time_vals = baseline_slc.time.values
     #         ax.set_xlim(time_vals[0], time_vals[-1])
     #         year_ticks = [t for t in time_vals if t.year % 50 == 0]
@@ -487,8 +545,8 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     #         leg_line.get_frame().set_alpha(0.0)
 
     #         fig.tight_layout()
-    #         fig.savefig(f"pism_kitp_base_gcm_{basin_name}_{res}.png", dpi=300)
-    #         fig.savefig(f"pism_kitp_base_gcm_{basin_name}_{res}.pdf")
+    #         fig.savefig(f"pism_kitp_base_gcm_{region_name}_{res}.png", dpi=300)
+    #         fig.savefig(f"pism_kitp_base_gcm_{region_name}_{res}.pdf")
     #         plt.close(fig)
     #     fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[1.618, 1])
 
@@ -569,7 +627,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     #     axs[0].set_ylabel("Contribution to sea-level (mm)")
     #     axs[1].set_ylabel("Surface mass balance (Gt/yr)")
     #     axs[0].set_xlabel(None)
-    #     axs[0].set_title(basin_name)
+    #     axs[0].set_title(region_name)
     #     axs[1].set_title(None)
     #     axs[1].axhline(y=0, color="k", ls="dotted", lw=0.5)
     #     axs[-1].set_xlim(multi_time_vals[0], multi_time_vals[-1])
@@ -600,8 +658,8 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     #     leg_line.get_frame().set_alpha(0.0)
 
     #     fig.tight_layout()
-    #     fig.savefig(f"pism_kitp_multi_gcm_{basin_name}_{res}.png", dpi=300)
-    #     fig.savefig(f"pism_kitp_multi_gcm_{basin_name}_{res}.pdf")
+    #     fig.savefig(f"pism_kitp_multi_gcm_{region_name}_{res}.png", dpi=300)
+    #     fig.savefig(f"pism_kitp_multi_gcm_{region_name}_{res}.pdf")
     #     plt.close(fig)
 
     #     fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6.4, 3.6), height_ratios=[1.618, 1])
@@ -640,7 +698,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     #     axs[0].set_ylabel("Contribution to sea-level (mm)")
     #     axs[1].set_ylabel("Surface mass balance (Gt/yr)")
     #     axs[0].set_xlabel(None)
-    #     axs[0].set_title(basin_name)
+    #     axs[0].set_title(region_name)
     #     axs[1].set_title(None)
     #     axs[1].axhline(y=0, color="k", ls="dotted", lw=0.5)
     #     axs[-1].set_xlim(multi_time_vals[0], multi_time_vals[-1])
@@ -650,15 +708,15 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
     #     axs[-1].set_xticklabels([f"{int(t.year)}" for t in year_ticks])
     #     # Legend 1: multi-GCM confidence intervals
     #     fig.tight_layout()
-    #     fig.savefig(f"pism_kitp_cesm1_gcm_{basin_name}_{res}.png", dpi=300)
-    #     fig.savefig(f"pism_kitp_cesm1_gcm_{basin_name}_{res}.pdf")
+    #     fig.savefig(f"pism_kitp_cesm1_gcm_{region_name}_{res}.png", dpi=300)
+    #     fig.savefig(f"pism_kitp_cesm1_gcm_{region_name}_{res}.pdf")
     #     plt.close(fig)
 
     # fig, axs = plt.subplots(4, 2, sharex=True, sharey=False, figsize=(6.4, 4.8))
 
     # for k, basin_name in enumerate(baseline.basin):
     #     ax = axs.flatten()[k]
-    #     ice_mass_bl = baseline.sel(basin=basin_name)["ice_mass"].pint.to("Gt").pint.dequantify()
+    #     ice_mass_bl = baseline.sel({REGION_DIM: region_name})["ice_mass"].pint.to("Gt").pint.dequantify()
     #     ice_mass_bl -= ice_mass_bl.isel(time=0)
     #     ice_mass_bl.plot(
     #         ax=ax, color=BASELINE_OPTS["color"], ls=BASELINE_OPTS["ls"], label=BASELINE_OPTS["title"], lw=1
@@ -666,7 +724,7 @@ def plot_scalar_timeseries(infiles: list[str | Path]):
 
     #     for exp_name, exp in EXPS_OPTS.items():
     #         ice_mass_exp = (
-    #             single_gcm.sel(basin=basin_name).sel(exp_id=exp_name)["ice_mass"].pint.to("Gt").pint.dequantify()
+    #             single_gcm.sel({REGION_DIM: region_name}).sel(exp_id=exp_name)["ice_mass"].pint.to("Gt").pint.dequantify()
     #         )
     #         ice_mass_exp -= ice_mass_exp.isel(time=0)
     #         ice_mass_exp.plot(ax=ax, color=exp["color"], ls=exp["ls"], label=exp["title"], lw=0.75)
