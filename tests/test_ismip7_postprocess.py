@@ -49,6 +49,7 @@ from pism_terra.ismip7.greenland.postprocess import (
     _dim_chunks,
     basin_masks,
     process_file,
+    resolve_outfile,
 )
 
 # Coarse enough that the whole grid is a few hundred kB, fine enough that every
@@ -471,6 +472,96 @@ def test_glacierized_mass_uses_the_configured_ice_free_thickness(tmp_path, basin
             # thresholds are distinguishable rather than coincidentally equal.
             at_default = np.where(ds["thk"].values > 10, ds["ice_mass"].values, np.nan)
             assert np.nansum(at_default[:, mask]) > np.nansum(glacierized[:, mask])
+    finally:
+        scalar.close()
+
+
+def test_resolve_outfile_names_a_file_inside_a_directory(tmp_path):
+    """
+    A directory destination is named after the input, ``spatial_`` → ``basin_``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    outdir = tmp_path / "basins"
+    outdir.mkdir()
+    infile = tmp_path / "spatial" / "spatial_g1200m_id_HIRHAM5_1990_2019.nc"
+
+    assert resolve_outfile(infile, outdir).name == "basin_g1200m_id_HIRHAM5_1990_2019.nc"
+    # A trailing separator means "directory" even before it exists.
+    assert resolve_outfile(infile, f"{tmp_path}/new_dir/").name == "basin_g1200m_id_HIRHAM5_1990_2019.nc"
+    assert (tmp_path / "new_dir").is_dir()
+    # Inputs that do not follow the naming convention are still handled.
+    assert resolve_outfile(tmp_path / "odd.nc", outdir).name == "basin_odd.nc"
+
+
+def test_resolve_outfile_passes_file_paths_through(tmp_path):
+    """
+    An explicit file name is used as given, and its parent is created.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    target = tmp_path / "deep" / "nested" / "basin.nc"
+
+    assert resolve_outfile(tmp_path / "spatial_x.nc", target) == target
+    assert target.parent.is_dir()
+
+
+def test_resolve_outfile_reports_unwritable_destinations(tmp_path):
+    """
+    An unwritable destination fails before the reduction, not after it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0o500)
+    try:
+        with pytest.raises(PermissionError, match="cannot write to"):
+            resolve_outfile(tmp_path / "spatial_x.nc", locked)
+    finally:
+        locked.chmod(0o700)
+
+
+def test_process_file_accepts_a_directory_destination(tmp_path, basins, outlinefile):
+    """
+    Pointing the CLI at an output directory writes the file, not an error.
+
+    Passing a directory used to run the entire reduction and only then die
+    in ``to_netcdf`` with ``PermissionError: ... /output/basins``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file``.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    ds = synthetic_greenland(basins, n_time=1)
+    infile = tmp_path / "spatial_g1200m_test.nc"
+    outdir = tmp_path / "basins"
+    outdir.mkdir()
+    ds.to_netcdf(infile, engine="h5netcdf")
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        process_file(infile, outdir, outlinefile, client)
+
+    (written,) = outdir.glob("*.nc")
+    assert written.name == "basin_g1200m_test.nc"
+    scalar = xr.open_dataset(written)
+    try:
+        assert "ice_mass" in scalar.data_vars
     finally:
         scalar.close()
 

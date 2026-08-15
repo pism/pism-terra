@@ -206,6 +206,50 @@ def basin_masks(
     return [(name, xr.DataArray(array, dims=("y", "x"))) for name, array in zip(names, arrays)]
 
 
+def resolve_outfile(infile: str | Path, outfile: str | Path) -> Path:
+    """
+    Turn a directory destination into a concrete per-basin output file.
+
+    ``pism-*-postprocess`` takes an output *file*, but pointing it at an
+    output *directory* is a natural thing to try — and used to surface only
+    at the very end, as a ``PermissionError`` from ``to_netcdf`` after the
+    whole reduction had already been computed. A directory is now accepted
+    and named following the run scripts' convention: the input's
+    ``spatial_`` prefix becomes ``basin_``.
+
+    Parameters
+    ----------
+    infile : str or pathlib.Path
+        The spatial file being reduced; supplies the name.
+    outfile : str or pathlib.Path
+        Destination file, or a directory to put the file in.
+
+    Returns
+    -------
+    pathlib.Path
+        Path of the file to write. Its parent directory is created.
+
+    Raises
+    ------
+    PermissionError
+        If the destination directory cannot be written to. Raised up front,
+        rather than after the reduction has run.
+    """
+    # Check the raw argument: Path() strips a trailing separator, which is
+    # how a shell tab-completes a directory that does not exist yet.
+    looks_like_dir = os.fspath(outfile).endswith((os.sep, "/"))
+    outfile = Path(outfile)
+    if outfile.is_dir() or looks_like_dir:
+        name = Path(infile).name
+        stem = name[len("spatial_") :] if name.startswith("spatial_") else name
+        outfile = outfile / f"basin_{stem}"
+
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+    if not os.access(outfile.parent, os.W_OK):
+        raise PermissionError(f"cannot write to {outfile.parent}: check permissions before re-running")
+    return outfile
+
+
 def process_file(
     infile: str | Path,
     outfile: str | Path,
@@ -231,7 +275,9 @@ def process_file(
     infile : str or Path
         Path to the NetCDF file to reduce. Must contain x/y spatial dimensions.
     outfile : str or Path
-        Path to the output netCDF.
+        Path to the output netCDF, or a directory to write it into. A
+        directory is named following the run scripts' convention: the
+        input's ``spatial_`` prefix becomes ``basin_``.
     outlinefile : str or Path
         Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
         the basins to reduce over.
@@ -251,6 +297,7 @@ def process_file(
     """
 
     infile_name = Path(infile).name
+    outfile = resolve_outfile(infile, outfile)
     basin = gpd.read_file(outlinefile)
 
     start = time.time()
@@ -366,7 +413,9 @@ def postprocess_glacier(
     infile : str or Path
         Path to the NetCDF file to be clipped. Must contain x/y spatial dimensions.
     outfile : str or Path
-        Path to the output netCDF.
+        Path to the output netCDF, or a directory to write it into. A
+        directory is named following the run scripts' convention: the
+        input's ``spatial_`` prefix becomes ``basin_``.
     outlinefile : str or Path
         Path to the BASIN glacier outline file (e.g., GeoPackage or shapefile) that defines
         the geometry to clip the dataset to.
@@ -432,7 +481,7 @@ def main():
     )
     parser.add_argument(
         "OUTFILE",
-        help="output file.",
+        help="output file, or a directory to write basin_<input>.nc into.",
         nargs=1,
     )
     parser.add_argument(
@@ -448,8 +497,10 @@ def main():
     ntasks = options.ntasks
     local_directory = options.local_directory
 
-    config_path = Path(outfile).resolve().parent
-    setup_logging(config_path / "postprocess.log")
+    # Resolve first, so a directory destination puts the log next to the
+    # output file rather than one level up.
+    outfile = resolve_outfile(infile, outfile)
+    setup_logging(outfile.resolve().parent / "postprocess.log")
 
     postprocess_glacier(infile, outfile, outlinefile, n_workers=ntasks, local_directory=local_directory)
 
