@@ -14,7 +14,7 @@ ocean_file = "ocean_forcing_228.0_10.0_69.0_80.0.nc"
 outline_file = "mouginot_basins_w_shelves.gpkg"
 prefix = "kitp/input"
 regrid_file = "g900m_2007_id_BAYES-MEDIAN_HYBRID.nc"
-retreat_file = "frontretreat_g450m_2007-7-1.nc"
+retreat_file = "pism_g450m_frontretreat_calfin_2007_0001-01-01-1001-01-01.nc"
 version = "v4"
 
 [campaign.gcms]
@@ -64,10 +64,10 @@ version = "v4"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.times' = "yearly"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,mass_fluxes,grounding_line_flux,pdd_fluxes,limnsw"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,mass_fluxes,grounding_line_flux,pdd_fluxes,limnsw"
 'output.scalar.file' = "none"
 'output.scalar.times' = "monthly"
-'output.checkpoint.interval' = 24
+'output.checkpoint.interval' = 72
 'output.spatial.stop_missing' = 'no'
 'output.ISMIP' = "no"
 'output.experiment_id_max_length' = 100
