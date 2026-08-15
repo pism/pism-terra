@@ -489,7 +489,7 @@ def _build_forward_legs(
             post_process_str = (
                 f"pism-postprocess-scalar "
                 f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file} "
-                f"--column SUBREGION1 --dim-name basin --total-name GIS{_nt}"
+                f"--total-name GIS{_nt}"
             )
     else:
         # --- Counter-driven ISMIP7 two-leg run (historical -> projection) ---

@@ -35,14 +35,16 @@ explicit file path.
 
 - `--column` — outline column holding the region name. Tried in order
   `glacier_id`, `rgi_id`, `SUBREGION1` when unset.
-- `--dim-name` — name of the region dimension, `glacier_id` by default. The
-  Greenland campaigns pass `basin`.
+- `--dim-name` — name of the region dimension, `glacier_id` by default. Every
+  campaign uses that default; pass something else only for one-off output.
 - `--total-name` — append a whole-domain region summing every outline (the
   Greenland campaigns pass `GIS`). Off by default.
 - `--crs` — override the CRS when a file carries no usable grid mapping.
 
 Region labels live in a companion `<dim>_name` coordinate, so select by name
 with `ds.set_index(glacier_id="glacier_id_name").sel(glacier_id="GIS_CE")`.
+With the packaged Mouginot outlines the Greenland basins are labelled
+`GIS_CE`, `GIS_CW`, … and the appended total is `GIS`.
 
 See {py:func}`pism_terra.postprocess_scalar.process_file` for the details.
 
