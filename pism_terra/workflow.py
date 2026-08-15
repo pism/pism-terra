@@ -1067,6 +1067,14 @@ def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = Non
             }
             ds = ds.assign_coords({name_var: (label_dim, labels.astype(str))})
             ds[name_var].attrs = {"long_name": f"{label_dim} name"}
+            # Write the labels as a NetCDF char array rather than the
+            # variable-length NC_STRING xarray would choose by default.
+            # NC_STRING is netCDF-4 only and tools that read every variable
+            # numerically choke on it — ncview reports "netcdf_fi_get_data:
+            # error on nc_get_vara_float call ... Not a valid data type".
+            # A char array is what NetCDF-3 always used for text, and it
+            # round-trips back to strings unchanged.
+            ds[name_var].encoding["dtype"] = "S1"
 
     if "time" in ds.dims:
         ds = ds.transpose("time", ...)

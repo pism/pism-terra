@@ -16,6 +16,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Region labels (`glacier_id_name`, and `basin_name` / `RGIid_name` when those dimension names are used) are written as a NetCDF char array instead of the netCDF-4-only variable-length `NC_STRING`. ncview rejected the whole file with `netcdf_fi_get_data: error on nc_get_vara_float call ... NetCDF: Not a valid data type or _FillValue type mismatch`. The labels still read back as strings, so label-based selection is unchanged; re-run post-processing on files that need to open in ncview.
 - `pism-ismip7-greenland-postprocess` / `pism-kitp-postprocess` accept a directory as `OUTFILE` and name the file `basin_<input>.nc`, following the run scripts' convention. Passing a directory previously ran the whole reduction and then died in `to_netcdf` with `PermissionError: ... /output/basins`, losing the work. An unwritable destination is now reported before the reduction starts, and the log is written next to the output file.
 - glacier post-processing now derives `ice_mass_glacierized` too, so the per-RGI scalar output carries the same diagnostic as the basin post-processors (only when the input has both `ice_mass` and `thk`).
 - `ice_mass_glacierized` (ISMIP7 Greenland and KITP basin post-processing) now takes its ice-free threshold from the run's own `output.ice_free_thickness_standard` instead of a hard-wired 10 m, so a config that overrides the standard is summarised with the value the simulation used. Falls back to 10 m — PISM's default — when the file carries no `pism_config`.
