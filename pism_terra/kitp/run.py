@@ -774,7 +774,7 @@ def run_ensemble():
             "input.file": row["boot_file"],
             "input.regrid.file": row["regrid_file"],
             "energy.bedrock_thermal.file": row["heatflux_file"],
-            "geometry.front_retreat.prescribed.file": row["boot_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
             "grid.file": row["grid_file"],
             "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.given.file": row["climate_file"],
