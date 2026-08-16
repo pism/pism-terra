@@ -29,6 +29,7 @@ from collections import OrderedDict
 from collections.abc import Hashable, Mapping
 from typing import Any
 
+import cftime
 import numpy as np
 import pint_xarray  # pylint: disable=unused-import
 import xarray as xr
@@ -372,13 +373,11 @@ def preprocess_config_rgi(
     return ds.drop_vars(drop_vars, errors="ignore").drop_dims(drop_dims, errors="ignore")
 
 
-def normalize_cumulative_variables(
-    ds: xr.Dataset,
-    variables: str | list[str] | None = None,
-    reference_date: str = "1992-01-01",
+def normalize_timeseries(
+    ds: xr.Dataset, variables: str | list[str], reference_date: str | cftime.datetime
 ) -> xr.Dataset:
     """
-    Normalize cumulative variables in an xarray Dataset by subtracting their values at a reference year.
+    Normalize variables in an xarray Dataset by subtracting their values at a reference year.
 
     Parameters
     ----------
@@ -386,13 +385,13 @@ def normalize_cumulative_variables(
         The xarray Dataset containing the cumulative variables to be normalized.
     variables : str or list of str
         The name(s) of the cumulative variables to be normalized.
-    reference_date : str, optional
-        The reference date to use for normalization. Default is "1992-01-01".
+    reference_date : str or date-like
+        The reference date to use for normalization.
 
     Returns
     -------
     xr.Dataset
-        The xarray Dataset with normalized cumulative variables.
+        The xarray Dataset with normalized variables.
 
     Examples
     --------
@@ -411,10 +410,7 @@ def normalize_cumulative_variables(
         cumulative_var  (time) int64 0 10 20 30 40 50
     """
 
-    if variables is not None:
-        ds[variables] -= ds[variables].sel(time=reference_date, method="nearest")
-    else:
-        pass
+    ds[variables] -= ds[variables].sel(time=reference_date, method="nearest")
     return ds
 
 
