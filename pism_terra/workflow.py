@@ -1278,3 +1278,38 @@ def pism_config_value(ds: xr.Dataset, key: str, default: Any = None) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+# CF grid-mapping variables written by PISM, CDO and rioxarray.
+GRID_MAPPING_VARS = ("mapping", "spatial_ref", "crs", "polar_stereographic")
+
+
+def drop_grid_mapping(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Strip the CF grid mapping from a dataset that no longer has a grid.
+
+    Reducing over ``x``/``y`` leaves per-region scalars, but the grid-mapping
+    variable is dimensionless and survives the reduction, so it rides along
+    into the output and every variable keeps pointing at it through its
+    ``coordinates`` attribute. A projection describes a grid, and a summed
+    timeseries has none, so it is dropped along with the references to it.
+
+    Dropping the variable before the reduction is not enough: ``rio.write_crs``
+    recreates it from the dataset's own grid-mapping name, which is how it
+    reappears as ``mapping`` on PISM output.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset whose spatial dimensions have already been reduced away.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset without grid-mapping variables or references to them.
+    """
+    ds = ds.drop_vars([name for name in GRID_MAPPING_VARS if name in ds.variables], errors="ignore")
+    for var in ds.variables.values():
+        var.attrs.pop("grid_mapping", None)
+        var.encoding.pop("grid_mapping", None)
+    return ds

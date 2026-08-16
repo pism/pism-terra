@@ -418,9 +418,13 @@ def test_process_file_basin_sums(tmp_path, basins, outlinefile):
         assert np.issubdtype(scalar["mask"].dtype, np.integer)
         # Non-spatial, time-less variables ride along.
         assert "pism_config" in scalar
-        # Grid-mapping variables are dropped, not carried into the scalar output.
-        assert "mapping" not in scalar.variables
-        assert "spatial_ref" not in scalar.data_vars
+        # Grid-mapping variables are dropped, not carried into the scalar
+        # output — including as coordinates, which is how ``rio.write_crs``
+        # used to sneak one back in and leave every variable pointing at it
+        # through ``coordinates = "... mapping"``.
+        for name in ("mapping", "spatial_ref", "crs", "polar_stereographic"):
+            assert name not in scalar.variables, f"{name} survived the reduction"
+        assert not [v for v in scalar.variables.values() if "grid_mapping" in v.attrs]
         # And no dangling spatial dimension survived the reduction.
         assert set(scalar["ice_mass"].dims) == {"glacier_id", "time"}
         # Time must lead: CDO reads the first dimension as the record dimension

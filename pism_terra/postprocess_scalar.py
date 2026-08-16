@@ -55,7 +55,7 @@ from pyfiglet import Figlet
 from rasterio.features import geometry_mask
 
 from pism_terra.log import setup_logging
-from pism_terra.workflow import make_cdo_readable, pism_config_value
+from pism_terra.workflow import drop_grid_mapping, make_cdo_readable, pism_config_value
 
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
@@ -520,6 +520,8 @@ def process_file(
     extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims]
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
+    # The grid mapping describes a grid this output no longer has.
+    scalar = drop_grid_mapping(scalar)
     # Put time first and swap the string region labels for an integer index, so
     # CDO can open the result at all. See ``make_cdo_readable``.
     scalar = make_cdo_readable(scalar, dim_name)
