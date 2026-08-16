@@ -410,7 +410,15 @@ def normalize_timeseries(
         cumulative_var  (time) int64 0 10 20 30 40 50
     """
 
-    ds[variables] -= ds[variables].sel(time=reference_date, method="nearest")
+    # Assign one variable at a time. ``ds[["a"]] -= ...`` takes a different
+    # ``__setitem__`` branch for a single-element list than for a longer one
+    # and fails with "cannot directly convert an xarray.Dataset into a numpy
+    # array", so a one-variable list used to be an error while both a bare
+    # string and a two-variable list worked.
+    names = [variables] if isinstance(variables, str) else list(variables)
+    reference = ds[names].sel(time=reference_date, method="nearest")
+    for name in names:
+        ds[name] = ds[name] - reference[name]
     return ds
 
 
