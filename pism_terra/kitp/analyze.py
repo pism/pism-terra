@@ -380,7 +380,11 @@ def plot_scalar_timeseries(infiles: list[str | Path], output_dir: str | Path):
             else:
                 logger.info("No grounding_line_flux_nonneg in the inputs; omitting it from the flux panel")
             basin_smb = (region_gcm["tendency_of_ice_mass_due_to_surface_mass_flux"]).pint.to("Gt/yr")
-            basin_slc = (basin_gcm["ice_mass"] * gt2mmsle).pint.dequantify()
+            # Anchored at year 1: the runs have already diverged by the end
+            # of the discarded spin-up, so the raw difference starts a few mm
+            # off zero. Subtracting the first year plots the response
+            # accumulated over the window actually shown.
+            basin_slc = ((basin_gcm["ice_mass"] - basin_gcm["ice_mass"].isel({"time": 0})) * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
 
             exps_palette = {k: v["color"] for k, v in EXPS_OPTS.items()}
@@ -436,7 +440,11 @@ def plot_scalar_timeseries(infiles: list[str | Path], output_dir: str | Path):
     with mpl.rc_context(rc=rc_params):
         for region_name in baseline[REGION_DIM].values:
             basin_gcm = gcm_sub_baseline.sel({REGION_DIM: region_name})
-            basin_slc = (basin_gcm["ice_mass"] * gt2mmsle).pint.dequantify()
+            # Anchored at year 1: the runs have already diverged by the end
+            # of the discarded spin-up, so the raw difference starts a few mm
+            # off zero. Subtracting the first year plots the response
+            # accumulated over the window actually shown.
+            basin_slc = ((basin_gcm["ice_mass"] - basin_gcm["ice_mass"].isel({"time": 0})) * gt2mmsle).pint.dequantify()
             time_vals = basin_slc.time.values
 
             _slices = []
