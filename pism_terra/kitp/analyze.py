@@ -45,7 +45,7 @@ from dask.diagnostics import ProgressBar
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from pism_terra.kitp.adjust_kitp_timeseries import SPINUP_END_YEAR, trim_spinup
+from pism_terra.kitp.adjust_kitp_timeseries import WINDOW_END_YEAR, trim_spinup
 from pism_terra.processing import preprocess_netcdf as preprocess
 
 cm = Colormap("tol:bright").to_matplotlib()
@@ -181,7 +181,9 @@ def load_dataset(filename_or_obj: Sequence[str | Path], join: str | None = "oute
     Returns
     -------
     xr.Dataset
-        The merged dataset.
+        The merged dataset, with the spin-up years dropped and the time axis
+        restarted at year 1. Every series the analysis plots goes through
+        here, so they are all trimmed the same way.
     """
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
     delta_coder = xr.coders.CFTimedeltaCoder()
@@ -200,8 +202,7 @@ def load_dataset(filename_or_obj: Sequence[str | Path], join: str | None = "oute
                 _ds = preprocess(_ds, **kwargs)
                 _dss.append(_ds)
         ds = xr.concat(_dss, dim="time", join=join).sortby("time")
-        ds = ds.sel({"time": slice(cftime.DatetimeNoLeap(11, 1, 1), cftime.DatetimeNoLeap(311, 1, 1))})
-    return ds
+    return trim_spinup(ds, window_end_year=WINDOW_END_YEAR)
 
 
 def plot_scalar_timeseries(infiles: list[str | Path], output_dir: str | Path):
@@ -240,10 +241,9 @@ def plot_scalar_timeseries(infiles: list[str | Path], output_dir: str | Path):
     # run at another resolution by (dx / 900)**2.
     cell_area = xr.DataArray(dx).pint.quantify("m") ** 2
     baseline = with_region_labels(baseline)
-    # Discard the settling years and renumber from year 1, so every run on the
-    # figure starts from a comparable state at the same place on the axis.
-    baseline = trim_spinup(baseline, window_end_year=None)
-    baseline = baseline.pint.quantify()
+    # The same trim ``load_dataset`` applies to the experiments, so the
+    # baseline and the runs it is differenced against share one time axis.
+    baseline = trim_spinup(baseline, window_end_year=WINDOW_END_YEAR).pint.quantify()
 
     exp_files = [Path(f) for f in infiles if "HIRHAM5" not in Path(f).name]
 
@@ -275,7 +275,10 @@ def plot_scalar_timeseries(infiles: list[str | Path], output_dir: str | Path):
 
     def _prepare(ds: xr.Dataset) -> xr.Dataset:
         """
-        Drop object-dtype vars, restore region labels, trim spin-up, and quantify.
+        Drop object-dtype vars, restore region labels, and quantify.
+
+        The spin-up trim and the yearly means already happened in
+        :func:`load_dataset`.
 
         Parameters
         ----------
@@ -290,8 +293,6 @@ def plot_scalar_timeseries(infiles: list[str | Path], output_dir: str | Path):
         obj_vars = [v for v in ds.data_vars if ds[v].dtype == object]
         ds = ds.drop_vars(obj_vars)
         ds = with_region_labels(ds)
-        # Runs differ in length, so keep everything after the spin-up.
-        ds = trim_spinup(ds, window_end_year=None)
         return ds.pint.quantify()
 
     model_files = single_model_files + multi_model_files
