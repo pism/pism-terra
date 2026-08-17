@@ -15,6 +15,7 @@ import xarray as xr
 from pism_terra.kitp.adjust_kitp_timeseries import (
     DEFAULT_VARIABLES,
     adjust_kitp_timeseries,
+    trim_spinup,
     write_outputs,
 )
 
@@ -136,3 +137,17 @@ def test_write_outputs_writes_both_forms(tmp_path):
     with xr.open_dataset(netcdf, decode_times=xr.coders.CFDatetimeCoder(use_cftime=True)) as back:
         np.testing.assert_allclose(back["ice_mass"].values, out["ice_mass"].values)
         assert back.sizes["time"] == out.sizes["time"]
+
+
+def test_trim_spinup_keeps_everything_after_the_spinup():
+    """
+    An open-ended window keeps runs of different lengths in full.
+    """
+    short = trim_spinup(monthly_run(last_year=150), window_end_year=None)
+    long_run = trim_spinup(monthly_run(last_year=400), window_end_year=None)
+
+    # 10 spin-up years dropped from each, the rest kept.
+    assert short.sizes["time"] == 139
+    assert long_run.sizes["time"] == 389
+    for out in (short, long_run):
+        assert out["time"].values[0] == cftime.DatetimeNoLeap(1, 1, 1)

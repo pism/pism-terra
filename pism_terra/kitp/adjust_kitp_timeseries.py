@@ -90,27 +90,59 @@ def adjust_kitp_timeseries(
     if missing:
         raise ValueError(f"variables not in the input: {missing}; available: {sorted(ds.data_vars)}")
 
+    ds = trim_spinup(ds, spinup_end_year=spinup_end_year, window_end_year=window_end_year)
+
+    ds = normalize_timeseries(ds, variables, cftime.DatetimeNoLeap(1, 1, 1))
+    logger.info("Normalised %s to zero at year 1", ", ".join(variables))
+    return ds
+
+
+def trim_spinup(
+    ds: xr.Dataset,
+    spinup_end_year: int = SPINUP_END_YEAR,
+    window_end_year: int | None = WINDOW_END_YEAR,
+) -> xr.Dataset:
+    """
+    Drop the spin-up years, average to years, and restamp the rest from year 1.
+
+    A run's first years are still settling after initialisation, and its time
+    axis starts wherever the run did. Discarding the former and renumbering
+    what is left puts runs of different vintages on a common axis.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Scalar timeseries as written by PISM or by the scalar post-processing.
+        A ``time_bounds`` variable and its ``nv`` dimension are dropped if
+        present, since they would not survive the resampling.
+    spinup_end_year : int, optional
+        First year kept; everything before it is treated as spin-up.
+    window_end_year : int or None, optional
+        Last year kept. ``None`` keeps everything after the spin-up, which is
+        what you want when the runs differ in length.
+
+    Returns
+    -------
+    xarray.Dataset
+        Yearly means over the kept window, with ``time`` running from year 1.
+
+    Raises
+    ------
+    ValueError
+        If the requested window selects no time steps.
+    """
     ds = ds.drop_vars(["time_bounds"], errors="ignore").drop_dims("nv", errors="ignore")
-    ds = ds.sel(
-        {
-            "time": slice(
-                cftime.DatetimeNoLeap(spinup_end_year, 1, 1),
-                cftime.DatetimeNoLeap(window_end_year, 1, 1),
-            )
-        }
-    )
+    end = None if window_end_year is None else cftime.DatetimeNoLeap(window_end_year, 1, 1)
+    ds = ds.sel({"time": slice(cftime.DatetimeNoLeap(spinup_end_year, 1, 1), end)})
     if ds.sizes.get("time", 0) == 0:
         raise ValueError(
             f"no time steps between years {spinup_end_year} and {window_end_year}; "
-            "check the run length and the --spinup-end-year / --window-end-year options"
+            "check the run length and the spin-up / window options"
         )
 
     ds = ds.resample(time="YS").mean()
     ds["time"] = [cftime.DatetimeNoLeap(year, 1, 1) for year in range(1, len(ds.time) + 1)]
-    logger.info("Kept %d years, restamped as years 1-%d", ds.sizes["time"], ds.sizes["time"])
-
-    ds = normalize_timeseries(ds, variables, cftime.DatetimeNoLeap(1, 1, 1))
-    logger.info("Normalised %s to zero at year 1", ", ".join(variables))
+    logger.info("Dropped the first %d years; kept %d, restamped from year 1", spinup_end_year - 1, ds.sizes["time"])
     return ds
 
 
