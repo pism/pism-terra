@@ -360,7 +360,10 @@ def boot_file_from_grid(
     print("-" * 120)
 
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
-    prefix: str = kwargs.pop("prefix", "rgi")
+    prefix: str = kwargs.pop("prefix", "glacier/input")
+    # Ice thickness depends on the project's CRS overrides, so it is read from
+    # the project subdirectory; the bathymetry below is global and is not.
+    project_directory: str | None = kwargs.pop("project_directory", None)
 
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
@@ -376,6 +379,7 @@ def boot_file_from_grid(
         target_crs=dst_crs,
         bucket=bucket,
         prefix=prefix,
+        project_directory=project_directory,
         geometries=geometries,
         **kwargs,
     )

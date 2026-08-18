@@ -17,8 +17,14 @@ member; HPC submission is up to the user.
 
 S4F campaigns (`S4F_AK`, `S4F_CA`, `S4F_SV`) bundle many RGI v7 complexes
 into a single aggregate run. CSV target files under `pism_terra/config/`
-list the constituent glaciers; `pism-s4f-prepare` builds the union outlines,
-per-group CARRA2 caches, and aggregate ice-thickness mosaics.
+list the constituent glaciers; passing them to `pism-glacier-prepare` builds
+the union outlines, per-group CARRA2 caches, and aggregate ice-thickness
+mosaics:
+
+```bash
+pism-glacier-prepare pism_terra/config/setup_s4f.toml glacier_input \
+    pism_terra/config/S4F_target_*.csv
+```
 
 ## ISMIP7 Greenland
 

@@ -45,7 +45,7 @@ from rasterio.warp import (
 from shapely.geometry import box
 from tqdm.auto import tqdm
 
-from pism_terra.aws import download_from_s3, s3_to_local
+from pism_terra.aws import download_from_s3, project_prefix, s3_to_local
 from pism_terra.download import download_archive, extract_archive
 from pism_terra.raster import check_overlap
 from pism_terra.workflow import check_xr_lazy, drop_geotransform_attr
@@ -882,7 +882,7 @@ def get_ice_thickness_frank(
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
-    prefix: str = kwargs.pop("prefix", "glacier")
+    prefix: str = project_prefix(kwargs.pop("prefix", "glacier/input"), kwargs.pop("project_directory", None))
 
     out_dir = Path(path)
     thickness_file = out_dir / f"thickness_frank_{rgi_id}.nc"
@@ -962,7 +962,7 @@ def get_ice_thickness_maffezzoli(
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
-    prefix: str = kwargs.pop("prefix", "glacier")
+    prefix: str = project_prefix(kwargs.pop("prefix", "glacier/input"), kwargs.pop("project_directory", None))
 
     out_dir = Path(path)
     thickness_file = out_dir / f"thickness_maffezzoli_{rgi_id}.nc"
@@ -1061,9 +1061,11 @@ def get_ice_thickness_millan(
         - geometries : geopandas.GeoSeries / GeoDataFrame / iterable
             Glacier outline used to filter overlapping tiles. Required.
         - bucket : str, default ``"pism-cloud-data"``
-        - prefix : str, default ``"rgi/glacier"``
-            S3 prefix; tiles are read from
-            ``{prefix}/ice_thickness/millan/RGI-{region}/``.
+        - prefix : str, default ``"glacier/input"``
+            Shared S3 prefix.
+        - project_directory : str or None, default None
+            Project subdirectory under *prefix*; tiles are read from
+            ``{prefix}/{project_directory}/ice_thickness/millan/RGI-{region}/``.
         - force_overwrite : bool, default False
 
     Returns
@@ -1074,7 +1076,7 @@ def get_ice_thickness_millan(
 
     force_overwrite: bool = bool(kwargs.pop("force_overwrite", False))
     bucket: str = kwargs.pop("bucket", "pism-cloud-data")
-    prefix: str = kwargs.pop("prefix", "rgi/glacier")
+    prefix: str = project_prefix(kwargs.pop("prefix", "glacier/input"), kwargs.pop("project_directory", None))
     geometries = kwargs.pop("geometries", None)
     if geometries is None:
         raise ValueError("get_ice_thickness_millan requires `geometries` for tile overlap check")

@@ -14,8 +14,11 @@ supports several backends keyed off the run config's `climate` block.
 
 ## CARRA2 caching
 
-`pism-glacier-prepare` pre-reprojects CARRA2 once per S4F aggregate group and
-uploads `carra2_<rgi_id>.nc` to S3. The per-glacier
+`pism-glacier-prepare` pre-reprojects CARRA2 once per aggregate group and
+uploads `carra2_<rgi_id>.nc` to S3 under the project subtree
+(`<prefix>/<project_directory>/climate/`), since the result depends on that
+project's CRS. The merged `carra2.zarr` store itself is global and is shared
+across projects at `<prefix>/climate/`. The per-glacier
 {py:func}`~pism_terra.glacier.climate.carra2` call then downloads that single
 file instead of streaming the full Zarr — see
 {py:func}`~pism_terra.glacier.climate.prepare_carra2_for_group`.

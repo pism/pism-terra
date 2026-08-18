@@ -40,7 +40,7 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Point, Polygon, box
 
-from pism_terra.aws import download_from_s3, local_to_s3
+from pism_terra.aws import download_from_s3, local_to_s3, project_prefix
 from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import (
@@ -124,7 +124,8 @@ def main():
     config = cfg.campaign.as_params()
 
     print("RGI Database")
-    rgi_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_complex_file"]}"""
+    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
+    rgi_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_complex_file"]}"""
     rgi_local = path / config["rgi_complex_file"]
     if not rgi_local.exists():
         print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
@@ -264,9 +265,10 @@ def s4f_glacier(
     staging_path.mkdir(parents=True, exist_ok=True)
 
     print("RGI Database")
+    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
     rgi_complex_local = staging_path / config["rgi_complex_file"]
     if not rgi_complex_local.exists():
-        rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_complex_file"]}"""
+        rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_complex_file"]}"""
         print(f"Downloading {rgi_complex_s3_uri} -> {rgi_complex_local}")
         download_from_s3(rgi_complex_s3_uri, rgi_complex_local)
     else:
@@ -274,7 +276,7 @@ def s4f_glacier(
 
     rgi_glacier_local = staging_path / config["rgi_glacier_file"]
     if not rgi_glacier_local.exists():
-        rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_glacier_file"]}"""
+        rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_glacier_file"]}"""
         print(f"Downloading {rgi_glacier_s3_uri} -> {rgi_glacier_local}")
         download_from_s3(rgi_glacier_s3_uri, rgi_glacier_local)
     else:
@@ -320,6 +322,7 @@ def s4f_glacier(
         force_overwrite=force_overwrite,
         bucket=config["bucket"],
         prefix=config["prefix"],
+        project_directory=config.get("project_directory"),
     )
 
     print("")

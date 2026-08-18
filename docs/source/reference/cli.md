@@ -13,7 +13,8 @@ runnable as `python -m <module>`. The full list lives in
 * - Command
   - Purpose
 * - `pism-glacier-prepare`
-  - Bootstrap a glacier study (RGI download, complex IDs, base inputs).
+  - Bootstrap a glacier study (RGI download, complex IDs, base inputs). Takes
+    an optional list of glacier-ID CSVs to scope the run to a study area.
 * - `pism-glacier-stage`
   - Stage all PISM inputs for one RGI ID.
 * - `pism-glacier-run`
@@ -86,8 +87,6 @@ runnable as `python -m <module>`. The full list lives in
 
 * - Command
   - Purpose
-* - `pism-s4f-prepare`
-  - Build aggregate complexes (S4F_AK, S4F_CA, S4F_SV) and per-group inputs.
 * - `pism-s4f-planning`
   - Plan S4F campaigns.
 ```

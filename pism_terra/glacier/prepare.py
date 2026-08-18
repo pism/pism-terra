@@ -18,7 +18,12 @@
 
 # pylint: disable=too-many-positional-arguments,unused-import,broad-exception-caught
 """
-Prepare RGI and S4F data sets.
+Prepare glacier input data sets.
+
+One command covers every project. The setup TOML's ``[staging]
+project_directory`` names the subdirectory under ``input/`` that receives the
+products depending on that project's ``[regions]`` CRS overrides; the global
+data sets are written once, beside it, and shared.
 """
 
 import logging
@@ -79,36 +84,150 @@ xr.set_options(keep_attrs=True)
 
 logger = logging.getLogger(__name__)
 
-# Datasets each prepare command can process, in execution order. Used for the
+# Datasets ``prepare`` can process, in execution order. Used for the
 # ``--include`` selector and its help text.
-RGI_DATASETS = [
+PREPARE_DATASETS = [
     "rgi",
-    "heatflux_lucazeau",
     "ice_thickness_frank",
     "ice_thickness_maffezzoli",
     "gebco",
-    "snap",
-    "carra2",
-]
-S4F_DATASETS = [
-    "rgi",
     "heatflux_lucazeau",
-    "ice_thickness_frank",
-    "ice_thickness_maffezzoli",
-    "gebco",
     "glaciermip4",
     "snap",
     "carra2",
 ]
 
 
-def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
+def prepare_paths(output_path: Path | str, project_directory: str) -> dict[str, Path]:
     """
-    Prepare S4F glacier input data sets.
+    Build the output directory layout for one project.
+
+    Final artifacts land under ``<output>/input``, which is the tree that gets
+    synced to S3; everything intermediate lives in ``<output>/staging`` so it
+    can be deleted after a clean run without losing anything downstream tools
+    need.
+
+    ``input`` is split in two. Products whose content depends on the project's
+    ``[regions]`` CRS overrides — the RGI outlines, the ice-thickness rasters
+    and the per-group climate files — go under ``input/<project_directory>``,
+    so an S4F run and an RGI run cannot overwrite each other. The global
+    products (GEBCO, heat flux, SNAP, the merged CARRA2 store) sit directly
+    under ``input`` and are shared by every project. Staging is shared too: the
+    raw downloads are identical whatever the project.
+
+    Parameters
+    ----------
+    output_path : str or pathlib.Path
+        Root directory passed on the command line.
+    project_directory : str
+        Project subdirectory name, e.g. ``"rgi"`` or ``"s4f"``, taken from the
+        setup TOML's ``[staging] project_directory``.
+
+    Returns
+    -------
+    dict[str, pathlib.Path]
+        Directories keyed by role. No directory is created; call
+        :func:`ensure_dir` on the ones you actually write to.
+    """
+    output_path = Path(output_path)
+    input_path = output_path / "input"
+    project_path = input_path / project_directory
+    staging_path = output_path / "staging"
+
+    return {
+        "output": output_path,
+        "input": input_path,
+        "project": project_path,
+        # Project-specific (CRS-dependent).
+        "rgi": project_path / "rgi",
+        "ice_thickness": project_path / "ice_thickness",
+        "ice_thickness_frank": project_path / "ice_thickness" / "frank",
+        "ice_thickness_maffezzoli": project_path / "ice_thickness" / "maffezzoli",
+        "project_climate": project_path / "climate",
+        # Shared across projects.
+        "gebco": input_path / "gebco",
+        "heatflux": input_path / "heatflux",
+        "climate": input_path / "climate",
+        # Intermediates, shared, never uploaded.
+        "staging": staging_path,
+        "staging_rgi": staging_path / "rgi",
+        "staging_ice_thickness": staging_path / "ice_thickness",
+        "staging_gebco": staging_path / "gebco",
+        "staging_heatflux": staging_path / "heatflux",
+        "staging_glaciermip4": staging_path / "glaciermip4",
+        "staging_snap": staging_path / "snap",
+        "staging_carra2": staging_path / "carra2",
+    }
+
+
+def ensure_dir(path: Path) -> Path:
+    """
+    Create a directory (and its parents) and return it.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Directory to create.
+
+    Returns
+    -------
+    pathlib.Path
+        The same path, now guaranteed to exist.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def read_glacier_groups(glacier_files: Sequence[str | Path]) -> tuple[dict[str, pd.DataFrame], pd.DataFrame | None]:
+    """
+    Read the per-group glacier ID lists that scope a project to a study area.
+
+    Each CSV names one aggregate: ``S4F_target_AK_RGI_id.csv`` becomes the group
+    ``S4F_AK``. Files that do not match that convention fall back to their stem.
+
+    Parameters
+    ----------
+    glacier_files : sequence of str or pathlib.Path
+        CSV files with an ``rgi_id`` column. May be empty, in which case the
+        project covers every glacier in the configured regions.
+
+    Returns
+    -------
+    glacier_groups : dict[str, pandas.DataFrame]
+        Mapping of aggregate name to its rows. Empty when no files were given.
+    glaciers : pandas.DataFrame or None
+        All rows concatenated, with an ``o1regions`` column derived from the
+        RGI IDs. ``None`` when no files were given.
+    """
+    glacier_groups: dict[str, pd.DataFrame] = {}
+    if not glacier_files:
+        return glacier_groups, None
+
+    for glacier_file in glacier_files:
+        p = Path(glacier_file)
+        # "S4F_target_AK_RGI_id.csv" -> "S4F_AK"; fall back to the file stem.
+        m = re.match(r"^(?P<prefix>.+?)_target_(?P<region>.+?)_RGI_id$", p.stem)
+        name = f"{m['prefix']}_{m['region']}" if m else p.stem
+        glacier_groups[name] = pd.read_csv(p)
+
+    glaciers = pd.concat(glacier_groups.values(), ignore_index=True)
+    glaciers["o1regions"] = glaciers["rgi_id"].str.extract(r"-G-(\d{2})-")
+    return glacier_groups, glaciers
+
+
+def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
+    """
+    Prepare glacier input data sets for one project.
 
     This function is the programmatic entry point. It parses command-line style
-    arguments, creates the target grid, downloads and processes observation data,
-    and prepares climate/ocean forcing files for PISM simulations.
+    arguments, downloads and processes observation data, and prepares
+    climate/ocean forcing files for PISM simulations.
+
+    The setup TOML's ``[staging] project_directory`` decides where the
+    CRS-dependent products land (see :func:`prepare_paths`). Passing one or more
+    glacier-ID CSVs additionally scopes the run to those glaciers, adds an
+    aggregate "complex" per CSV, and pre-reprojects CARRA2 for each aggregate —
+    which is what an S4F run needs and a whole-region RGI run does not.
 
     Parameters
     ----------
@@ -123,6 +242,11 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     dict[str, Any]
         Mapping returned by :func:`prepare_rgi` (e.g. ``"rgi_complexes"``
         and ``"rgi_glaciers"`` paths).
+
+    Raises
+    ------
+    ValueError
+        If the setup TOML does not declare ``[staging] project_directory``.
     """
 
     parser = ArgumentParser()
@@ -138,7 +262,7 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
         type=int,
         default=8,
     )
-    add_include_argument(parser, S4F_DATASETS)
+    add_include_argument(parser, PREPARE_DATASETS)
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     parser.add_argument("GLACIER_FILES", nargs="*")
@@ -148,60 +272,53 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
     glacier_files = args.GLACIER_FILES
     force_overwrite = args.force_overwrite
     ntasks = args.ntasks
-    output_path = Path(args.OUTPUT_PATH[0])
-    output_path.mkdir(parents=True, exist_ok=True)
+    output_path = ensure_dir(Path(args.OUTPUT_PATH[0]))
 
     setup_logging(output_path / "prepare.log")
 
-    selected = select_datasets(args.include, S4F_DATASETS)
+    selected = select_datasets(args.include, PREPARE_DATASETS)
+
+    config = toml.loads(Path(config_file).read_text("utf-8"))
+    project_directory = config.get("staging", {}).get("project_directory")
+    if not isinstance(project_directory, str) or not project_directory:
+        raise ValueError(
+            f'{config_file} must declare a project directory, e.g.\n\n[staging]\nproject_directory = "s4f"\n\n'
+            "It names the subdirectory under `input/` holding the products that depend on this "
+            "project's [regions] CRS overrides."
+        )
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
     logger.info("=" * 120)
     logger.info("\n%s", banner)
     logger.info("=" * 120)
-    logger.info("Preparing S4F data")
+    logger.info("Preparing %s data", project_directory)
     logger.info("-" * 120)
 
-    config = toml.loads(Path(config_file).read_text("utf-8"))
     regions = pd.DataFrame.from_dict(config["regions"], orient="index")
     regions["region"] = regions.index.astype(str).str.zfill(2) + "_" + regions["name"]
 
-    glacier_groups: dict[str, pd.DataFrame] = {}  # aggregated-name -> CSV rows
-    if len(glacier_files) > 0:
-        for glacier_file in glacier_files:
-            p = Path(glacier_file)
-            # "S4F_target_AK_RGI_id.csv" -> "S4F_AK"; fall back to the file stem.
-            m = re.match(r"^(?P<prefix>.+?)_target_(?P<region>.+?)_RGI_id$", p.stem)
-            name = f"{m['prefix']}_{m['region']}" if m else p.stem
-            glacier_groups[name] = pd.read_csv(p)
-
-        glaciers_csv = pd.concat(glacier_groups.values(), ignore_index=True)
-        glaciers_csv["o1regions"] = glaciers_csv["rgi_id"].str.extract(r"-G-(\d{2})-")
+    glacier_groups, glaciers_csv = read_glacier_groups(glacier_files)
+    if glaciers_csv is not None:
+        # Only the O1 regions the listed glaciers actually fall in are worth
+        # downloading.
         o1regions = glaciers_csv["o1regions"].unique().astype(int).astype(str)
         regions = regions[regions.index.isin(o1regions)]
-    else:
-        glaciers_csv = None
-    # Final outputs land under glacier_path; everything intermediate lives in
-    # staging_path so the user can `rm -rf staging` after a clean run without
-    # losing anything that downstream tools need.
-    glacier_path = output_path / Path("glacier")
-    glacier_path.mkdir(parents=True, exist_ok=True)
-    staging_path = output_path / Path("staging")
-    staging_path.mkdir(parents=True, exist_ok=True)
+
+    paths = prepare_paths(output_path, project_directory)
+    ensure_dir(paths["input"])
+    ensure_dir(paths["staging"])
 
     # --- RGI ---
     # The RGI outlines are a dependency of ice thickness (and the CARRA2 group
     # reprojection); paths are always resolved, ``prepare_rgi`` only runs when
     # selected, otherwise the cached gpkg files from a previous run are reused.
-    rgi_path = glacier_path / Path("rgi")
-    rgi_path.mkdir(parents=True, exist_ok=True)
-    rgi_staging = staging_path / Path("rgi")
-    rgi_staging.mkdir(parents=True, exist_ok=True)
+    rgi_path = ensure_dir(paths["rgi"])
+    rgi_staging = ensure_dir(paths["staging_rgi"])
 
     rgi_files: dict[str, Any] = {
-        "rgi_complexes": rgi_path / "rgi_c.gpkg",
-        "rgi_glaciers": rgi_path / "rgi_g.gpkg",
+        "rgi_complexes": rgi_path / f"{project_directory}_c.gpkg",
+        "rgi_glaciers": rgi_path / f"{project_directory}_g.gpkg",
     }
     if "rgi" in selected:
         rgi_files = prepare_rgi(
@@ -212,6 +329,7 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
             extract_path=rgi_staging,
             force_overwrite=force_overwrite,
             ntasks=ntasks,
+            name_prefix=project_directory,
         )
 
     # Load the RGI outlines once if any consumer needs them.
@@ -223,19 +341,15 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     # --- Ice thickness ---
     if {"ice_thickness_frank", "ice_thickness_maffezzoli"} & set(selected):
-        ice_thickness_path = glacier_path / Path("ice_thickness")
-        ice_thickness_path.mkdir(parents=True, exist_ok=True)
-        ice_thickness_staging = staging_path / Path("ice_thickness")
-        ice_thickness_staging.mkdir(parents=True, exist_ok=True)
+        ensure_dir(paths["ice_thickness"])
+        ice_thickness_staging = ensure_dir(paths["staging_ice_thickness"])
 
         if "ice_thickness_frank" in selected:
-            frank_path = ice_thickness_path / Path("frank")
-            frank_path.mkdir(parents=True, exist_ok=True)
             prepare_ice_thickness_frank(
                 regions.index,
                 complexes=complexes,
                 glaciers=glaciers,
-                output_path=frank_path,
+                output_path=ensure_dir(paths["ice_thickness_frank"]),
                 extract_path=ice_thickness_staging,
                 rgi_extract_path=rgi_staging,
                 force_overwrite=force_overwrite,
@@ -243,13 +357,11 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
             )
 
         if "ice_thickness_maffezzoli" in selected:
-            maffezzoli_path = ice_thickness_path / Path("maffezzoli")
-            maffezzoli_path.mkdir(parents=True, exist_ok=True)
             prepare_ice_thickness_maffezzoli(
                 regions.index,
                 complexes=complexes,
                 glaciers=glaciers,
-                output_path=maffezzoli_path,
+                output_path=ensure_dir(paths["ice_thickness_maffezzoli"]),
                 extract_path=ice_thickness_staging,
                 force_overwrite=force_overwrite,
                 ntasks=ntasks,
@@ -257,261 +369,9 @@ def s4f(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     # --- GEBCO ---
     if "gebco" in selected:
-        # Source NetCDF download lands in staging; only the COG goes to glacier/.
-        gebco_path = glacier_path / Path("gebco")
-        gebco_path.mkdir(parents=True, exist_ok=True)
-        gebco_staging = staging_path / Path("gebco")
-        gebco_staging.mkdir(parents=True, exist_ok=True)
-        gebco_nc = download_gebco(target_dir=gebco_staging)
-        cog_gebco_p = gebco_path / Path("bathymetry.tif")
-
-        ds = xr.open_dataset(gebco_nc, chunks={"lat": 1024, "lon": 1024})
-        da = ds["elevation"].rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
-        if da.rio.crs is None:
-            da = da.rio.write_crs("EPSG:4326")
-        predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
-        da.rio.to_raster(
-            cog_gebco_p,
-            driver="COG",
-            compress="DEFLATE",
-            predictor=predictor,
-            blocksize=512,
-            bigtiff="YES",
-            overview_resampling="AVERAGE",
-            num_threads="ALL_CPUS",
-        )
-
-    # --- Heat flow (Lucazeau 2019) ---
-    if "heatflux_lucazeau" in selected:
-        heatflux_path = glacier_path / Path("heatflux")
-        heatflux_path.mkdir(parents=True, exist_ok=True)
-        heatflux_staging = staging_path / Path("heatflux")
-        heatflux_staging.mkdir(parents=True, exist_ok=True)
-        prepare_heatflux_lucazeau(
-            output_path=heatflux_path,
-            extract_path=heatflux_staging,
-            force_overwrite=force_overwrite,
-        )
-
-    # --- Climate ---
-    if {"glaciermip4", "snap", "carra2"} & set(selected):
-        climate_path = glacier_path / Path("climate")
-        climate_path.mkdir(parents=True, exist_ok=True)
-
-        if "glaciermip4" in selected:
-            glaciermip4_staging = staging_path / Path("glaciermip4")
-            glaciermip4_staging.mkdir(parents=True, exist_ok=True)
-            prepare_glaciermip4(glaciermip4_staging)
-
-        if "snap" in selected:
-            # SNAP/CRU-TS40 monthly climatologies (built under staging, copied to
-            # glacier/climate for upload; one file per 30-year window).
-            snap_staging = staging_path / Path("snap")
-            snap_staging.mkdir(parents=True, exist_ok=True)
-            for snap_file in prepare_snap(snap_staging, force_overwrite=force_overwrite):
-                shutil.copy2(snap_file, climate_path / Path(snap_file).name)
-
-        if "carra2" in selected:
-            # Run the download/merge under staging, then move only the merged
-            # product into glacier/climate. Year-by-year CDS intermediates stay
-            # in staging.
-            carra2_staging = staging_path / Path("carra2")
-            carra2_staging.mkdir(parents=True, exist_ok=True)
-
-            carra2_staging_file = prepare_carra2(carra2_staging)
-            carra2_final = climate_path / Path(carra2_staging_file.name)
-            if carra2_staging_file.is_dir():
-                # Zarr store — copytree
-                if carra2_final.exists():
-                    shutil.rmtree(carra2_final)
-                shutil.copytree(carra2_staging_file, carra2_final)
-            else:
-                # NetCDF or other single-file output
-                shutil.copy2(carra2_staging_file, carra2_final)
-
-            if glacier_groups:
-                # For each S4F group, pre-reproject CARRA2 to that group's CRS at
-                # CARRA2's native ~2.5 km resolution. Uploaded as
-                # ``carra2_<group>.nc`` so ``stage.carra2()`` can fetch a single
-                # small file per glacier instead of streaming the full Zarr and
-                # reprojecting every time.
-                assert complexes is not None  # loaded above (need_outlines)
-                for group_name in glacier_groups:
-                    row = complexes.loc[complexes["rgi_id"] == group_name]
-                    if row.empty:
-                        logger.warning("Aggregate complex %s not found in rgi_c.gpkg; skipping CARRA2 prep", group_name)
-                        continue
-                    group_crs = row["crs"].iloc[0]
-                    if not isinstance(group_crs, str) or not group_crs:
-                        logger.warning("Aggregate complex %s has no CRS; skipping CARRA2 prep", group_name)
-                        continue
-                    group_geom = row.geometry.iloc[0]
-                    group_out = climate_path / f"carra2_{group_name}.nc"
-                    logger.info("Preparing CARRA2 for group %s (%s) -> %s", group_name, group_crs, group_out)
-                    prepare_carra2_for_group(
-                        carra2_zarr=carra2_final,
-                        dst_crs=group_crs,
-                        geometry=group_geom,
-                        geometry_crs=str(complexes.crs),
-                        output_file=group_out,
-                        force_overwrite=force_overwrite,
-                    )
-
-    return rgi_files
-
-
-def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
-    """
-    Prepare RGI glacier input data sets.
-
-    This function is the programmatic entry point. It parses command-line style
-    arguments, creates the target grid, downloads and processes observation data,
-    and prepares climate/ocean forcing files for PISM simulations.
-
-    Parameters
-    ----------
-    argv : sequence of str or None, optional
-        Command-line arguments **excluding** the program name (i.e., like
-        ``sys.argv[1:]``). If ``None`` (default), arguments are taken from the
-        current process' ``sys.argv[1:]``. Passing ``argv=[]`` is recommended
-        when calling from a Jupyter notebook to avoid ipykernel arguments.
-
-    Returns
-    -------
-    dict[str, Any]
-        Mapping returned by :func:`prepare_rgi` (e.g. ``"rgi_complexes"``
-        and ``"rgi_glaciers"`` paths).
-    """
-
-    parser = ArgumentParser()
-    parser.add_argument(
-        "--force-overwrite",
-        help="Force downloading all files.",
-        action="store_true",
-        default=False,
-    )
-    parser.add_argument(
-        "--ntasks",
-        help="Parallel tasks.",
-        type=int,
-        default=8,
-    )
-    add_include_argument(parser, RGI_DATASETS)
-    parser.add_argument("CONFIG_FILE", nargs=1)
-    parser.add_argument("OUTPUT_PATH", nargs=1)
-    args = parser.parse_args(list(argv) if argv is not None else None)
-
-    config_file = args.CONFIG_FILE[0]
-    force_overwrite = args.force_overwrite
-    ntasks = args.ntasks
-    output_path = Path(args.OUTPUT_PATH[0])
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    setup_logging(output_path / "prepare.log")
-
-    selected = select_datasets(args.include, RGI_DATASETS)
-
-    f = Figlet(font="standard")
-    banner = f.renderText("pism-terra")
-    logger.info("=" * 120)
-    logger.info("\n%s", banner)
-    logger.info("=" * 120)
-    logger.info("Preparing RGI data")
-    logger.info("-" * 120)
-
-    config = toml.loads(Path(config_file).read_text("utf-8"))
-    regions = pd.DataFrame.from_dict(config["regions"], orient="index")
-    regions["region"] = regions.index.astype(str).str.zfill(2) + "_" + regions["name"]
-
-    # Final outputs land under glacier_path; everything intermediate lives in
-    # staging_path so the user can `rm -rf staging` after a clean run without
-    # losing anything that downstream tools need.
-    glacier_path = output_path / Path("glacier")
-    glacier_path.mkdir(parents=True, exist_ok=True)
-    staging_path = output_path / Path("staging")
-    staging_path.mkdir(parents=True, exist_ok=True)
-
-    # --- RGI ---
-    # The RGI outlines are a dependency of the ice-thickness datasets, so the
-    # paths are always resolved; ``prepare_rgi`` only runs when selected,
-    # otherwise the cached gpkg files from a previous run are reused.
-    rgi_path = glacier_path / Path("rgi")
-    rgi_path.mkdir(parents=True, exist_ok=True)
-    rgi_staging = staging_path / Path("rgi")
-    rgi_staging.mkdir(parents=True, exist_ok=True)
-
-    rgi_files: dict[str, Any] = {
-        "rgi_complexes": rgi_path / "rgi_c.gpkg",
-        "rgi_glaciers": rgi_path / "rgi_g.gpkg",
-    }
-    if "rgi" in selected:
-        rgi_files = prepare_rgi(
-            regions,
-            glaciers=None,
-            glacier_groups=None,
-            output_path=rgi_path,
-            extract_path=rgi_staging,
-            force_overwrite=force_overwrite,
-            ntasks=ntasks,
-        )
-
-    # --- Heat flow (Lucazeau 2019) ---
-    if "heatflux_lucazeau" in selected:
-        heatflux_path = glacier_path / Path("heatflux")
-        heatflux_path.mkdir(parents=True, exist_ok=True)
-        heatflux_staging = staging_path / Path("heatflux")
-        heatflux_staging.mkdir(parents=True, exist_ok=True)
-        prepare_heatflux_lucazeau(
-            output_path=heatflux_path,
-            extract_path=heatflux_staging,
-            force_overwrite=force_overwrite,
-        )
-
-    # --- Ice thickness (needs the RGI outlines) ---
-    if {"ice_thickness_frank", "ice_thickness_maffezzoli"} & set(selected):
-        ice_thickness_path = glacier_path / Path("ice_thickness")
-        ice_thickness_path.mkdir(parents=True, exist_ok=True)
-        ice_thickness_staging = staging_path / Path("ice_thickness")
-        ice_thickness_staging.mkdir(parents=True, exist_ok=True)
-
-        complexes = gpd.read_file(rgi_files["rgi_complexes"])
-        glaciers = gpd.read_file(rgi_files["rgi_glaciers"])
-
-        if "ice_thickness_frank" in selected:
-            frank_path = ice_thickness_path / Path("frank")
-            frank_path.mkdir(parents=True, exist_ok=True)
-            prepare_ice_thickness_frank(
-                regions.index,
-                complexes=complexes,
-                glaciers=glaciers,
-                output_path=frank_path,
-                extract_path=ice_thickness_staging,
-                rgi_extract_path=rgi_staging,
-                force_overwrite=force_overwrite,
-                ntasks=ntasks,
-            )
-
-        if "ice_thickness_maffezzoli" in selected:
-            maffezzoli_path = ice_thickness_path / Path("maffezzoli")
-            maffezzoli_path.mkdir(parents=True, exist_ok=True)
-            prepare_ice_thickness_maffezzoli(
-                regions.index,
-                complexes=complexes,
-                glaciers=glaciers,
-                output_path=maffezzoli_path,
-                extract_path=ice_thickness_staging,
-                force_overwrite=force_overwrite,
-                ntasks=ntasks,
-            )
-
-    # --- GEBCO ---
-    if "gebco" in selected:
-        # Source NetCDF download lands in staging; only the COG goes to glacier/.
-        gebco_path = glacier_path / Path("gebco")
-        gebco_path.mkdir(parents=True, exist_ok=True)
-        gebco_staging = staging_path / Path("gebco")
-        gebco_staging.mkdir(parents=True, exist_ok=True)
-        gebco_nc = download_gebco(target_dir=gebco_staging)
+        # Source NetCDF download lands in staging; only the COG goes to input/.
+        gebco_path = ensure_dir(paths["gebco"])
+        gebco_nc = download_gebco(target_dir=ensure_dir(paths["staging_gebco"]))
         cog_gebco_p = gebco_path / Path("bathymetry.tif")
 
         # Use xr.open_dataset (CF-aware) so the lat/lon coords become a real
@@ -533,25 +393,33 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
             num_threads="ALL_CPUS",
         )
 
+    # --- Heat flow (Lucazeau 2019) ---
+    if "heatflux_lucazeau" in selected:
+        prepare_heatflux_lucazeau(
+            output_path=ensure_dir(paths["heatflux"]),
+            extract_path=ensure_dir(paths["staging_heatflux"]),
+            force_overwrite=force_overwrite,
+        )
+
     # --- Climate ---
-    if {"snap", "carra2"} & set(selected):
-        climate_path = glacier_path / Path("climate")
-        climate_path.mkdir(parents=True, exist_ok=True)
+    if {"glaciermip4", "snap", "carra2"} & set(selected):
+        climate_path = ensure_dir(paths["climate"])
+
+        if "glaciermip4" in selected:
+            prepare_glaciermip4(ensure_dir(paths["staging_glaciermip4"]))
 
         if "snap" in selected:
             # SNAP/CRU-TS40 monthly climatologies (built under staging, copied to
-            # glacier/climate for upload; one file per 30-year window).
-            snap_staging = staging_path / Path("snap")
-            snap_staging.mkdir(parents=True, exist_ok=True)
+            # input/climate for upload; one file per 30-year window).
+            snap_staging = ensure_dir(paths["staging_snap"])
             for snap_file in prepare_snap(snap_staging, force_overwrite=force_overwrite):
                 shutil.copy2(snap_file, climate_path / Path(snap_file).name)
 
         if "carra2" in selected:
             # Run the download/merge under staging, then move only the merged
-            # product into glacier/climate. Year-by-year CDS intermediates stay
+            # product into input/climate. Year-by-year CDS intermediates stay
             # in staging.
-            carra2_staging = staging_path / Path("carra2")
-            carra2_staging.mkdir(parents=True, exist_ok=True)
+            carra2_staging = ensure_dir(paths["staging_carra2"])
 
             carra2_staging_file = prepare_carra2(carra2_staging)
             carra2_final = climate_path / Path(carra2_staging_file.name)
@@ -563,6 +431,40 @@ def rgi(argv: Sequence[str] | None = None) -> dict[str, Any]:
             else:
                 # NetCDF or other single-file output
                 shutil.copy2(carra2_staging_file, carra2_final)
+
+            if glacier_groups:
+                # For each group, pre-reproject CARRA2 to that group's CRS at
+                # CARRA2's native ~2.5 km resolution. Uploaded as
+                # ``carra2_<group>.nc`` so ``stage.carra2()`` can fetch a single
+                # small file per glacier instead of streaming the full Zarr and
+                # reprojecting every time. The result depends on the group's
+                # CRS, so it lives under the project directory.
+                assert complexes is not None  # loaded above (need_outlines)
+                project_climate_path = ensure_dir(paths["project_climate"])
+                for group_name in glacier_groups:
+                    row = complexes.loc[complexes["rgi_id"] == group_name]
+                    if row.empty:
+                        logger.warning(
+                            "Aggregate complex %s not found in %s; skipping CARRA2 prep",
+                            group_name,
+                            rgi_files["rgi_complexes"],
+                        )
+                        continue
+                    group_crs = row["crs"].iloc[0]
+                    if not isinstance(group_crs, str) or not group_crs:
+                        logger.warning("Aggregate complex %s has no CRS; skipping CARRA2 prep", group_name)
+                        continue
+                    group_geom = row.geometry.iloc[0]
+                    group_out = project_climate_path / f"carra2_{group_name}.nc"
+                    logger.info("Preparing CARRA2 for group %s (%s) -> %s", group_name, group_crs, group_out)
+                    prepare_carra2_for_group(
+                        carra2_zarr=carra2_final,
+                        dst_crs=group_crs,
+                        geometry=group_geom,
+                        geometry_crs=str(complexes.crs),
+                        output_file=group_out,
+                        force_overwrite=force_overwrite,
+                    )
 
     return rgi_files
 
@@ -581,7 +483,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
     int
         Exit code (0 for success).
     """
-    _ = rgi(argv=argv)
+    _ = prepare(argv=argv)
     return 0
 
 

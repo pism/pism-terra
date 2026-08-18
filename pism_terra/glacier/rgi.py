@@ -137,6 +137,7 @@ def prepare_rgi(
     extract_path: Path | str = "rgi_archive",
     force_overwrite: bool = False,
     ntasks: int = 8,
+    name_prefix: str = "rgi",
 ):
     """
     Download, extract, and merge RGI region shapefiles for complex and glacier outlines.
@@ -179,6 +180,11 @@ def prepare_rgi(
         If True, re-download the file even if it already exists locally.
     ntasks : int, default 8
         Maximum number of parallel workers.
+    name_prefix : str, default "rgi"
+        Stem of the written GeoPackages: ``{name_prefix}_c.gpkg`` and
+        ``{name_prefix}_g.gpkg``. A project's ``[regions]`` CRS overrides change
+        the *content* of the outlines, so naming them per project keeps an S4F
+        tree from being confused with an RGI one.
 
     Returns
     -------
@@ -354,10 +360,10 @@ def prepare_rgi(
                 ", ".join(r["rgi_id"] for r in extra_rows),
             )
 
-    complex_path = output_path / "rgi_c.gpkg"
+    complex_path = output_path / f"{name_prefix}_c.gpkg"
     logger.info("Saving complexes to %s", complex_path)
     rgi_c.to_file(complex_path)
-    glaciers_path = output_path / "rgi_g.gpkg"
+    glaciers_path = output_path / f"{name_prefix}_g.gpkg"
     logger.info("Saving glaciers to %s", glaciers_path)
     rgi_g.to_file(glaciers_path)
 

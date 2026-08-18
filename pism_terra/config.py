@@ -1373,7 +1373,14 @@ class CampaignConfig(BaseModel):
     pathway : str or None
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     prefix : str or None
-        path to data in bucket (e.g., ``"ismip7_greenland_input"``).
+        path to data in bucket (e.g., ``"ismip7_greenland_input"``). Addresses
+        the datasets shared by every project (GEBCO, heat flux, SNAP, the
+        merged CARRA2 store).
+    project_directory : str or None
+        Project subdirectory under ``prefix`` holding the datasets that depend
+        on the project's CRS overrides (RGI outlines, ice thickness, per-group
+        climate), e.g. ``"s4f"``. Leave unset for campaigns whose input tree is
+        not split by project.
     present_day_forcings : str, list, or None
         Present-day forcing identifier(s).
     regrid_file : str or None
@@ -1426,6 +1433,7 @@ class CampaignConfig(BaseModel):
     ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)
+    project_directory: str | None = Field(default=None)
     present_day_forcings: str | list | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)

@@ -17,11 +17,35 @@ PISM-ready NetCDF inputs a run needs. The work is driven by
 
 ## Output layout
 
+`pism-glacier-stage` writes one tree per glacier:
+
 ```text
 <RGI_ID>/
 ├── input/                 # final, PISM-ready NetCDFs (boot file, climate, obs, …)
 └── staging/               # intermediates (cached so reruns are cheap)
 ```
+
+## Prepared-input layout
+
+`pism-glacier-prepare` writes the tree those runs draw from. Its `input/`
+directory is what gets synced to S3 and addressed by the campaign config's
+`prefix`:
+
+```text
+<OUTPUT_PATH>/
+├── input/
+│   ├── gebco/, heatflux/, climate/     # global — shared by every project
+│   └── <project_directory>/            # e.g. rgi, s4f
+│       ├── rgi/<project>_{c,g}.gpkg
+│       ├── ice_thickness/{frank,maffezzoli}/
+│       └── climate/carra2_<group>.nc
+└── staging/                            # intermediates, never uploaded
+```
+
+The split follows the `[regions]` CRS overrides: anything whose contents depend
+on them lives under `<project_directory>` (addressed as
+`{prefix}/{project_directory}`), and everything else is stored once. Campaigns
+that do not set `project_directory` see the two prefixes collapse into one.
 
 ```{admonition} TODO
 - Document per-input cache invalidation rules (`force_overwrite`).

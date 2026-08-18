@@ -51,6 +51,7 @@ from pyproj import Transformer
 from rasterio.enums import Resampling
 from tqdm.auto import tqdm
 
+from pism_terra.aws import project_prefix
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.download import (
     FileInfo,
@@ -1420,6 +1421,7 @@ def carra2(
     path: Path | str = ".",
     bucket: str = "pism-cloud-data",
     prefix: str = "",
+    project_directory: str | None = None,
     force_overwrite: bool = False,
 ) -> Path:
     """
@@ -1449,8 +1451,12 @@ def carra2(
     bucket : str, default ``"pism-cloud-data"``
         S3 bucket hosting the CARRA2 Zarr store.
     prefix : str, default ``""``
-        Optional S3 key prefix; the full URI becomes
+        Shared S3 key prefix; the full URI becomes
         ``s3://<bucket>/<prefix>/climate/carra2.zarr``.
+    project_directory : str or None, optional
+        Project subdirectory under *prefix*. The pre-reprojected per-group file
+        depends on that project's CRS, so it is looked up under
+        ``s3://<bucket>/<prefix>/<project_directory>/climate/carra2_<rgi_id>.nc``.
     force_overwrite : bool, default ``False``
         If True, regenerate the output even if the cached NetCDF exists.
 
@@ -1502,7 +1508,7 @@ def carra2(
     # and uploads ``carra2_<rgi_id>.nc`` (CARRA2 ~2.5 km, already in the
     # group's CRS). If that file exists on S3, fetch it and let PISM handle
     # interpolation onto the model grid at runtime.
-    pre_key = f"{prefix}/climate/carra2_{rgi_id}.nc".lstrip("/")
+    pre_key = f"{project_prefix(prefix, project_directory)}/climate/carra2_{rgi_id}.nc".lstrip("/")
     pre_uri = f"s3://{bucket}/{pre_key}"
     fs = s3fs.S3FileSystem(anon=True)
     if fs.exists(pre_uri):

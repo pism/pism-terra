@@ -40,7 +40,7 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Point, Polygon, box
 
-from pism_terra.aws import download_from_s3, local_to_s3
+from pism_terra.aws import download_from_s3, local_to_s3, project_prefix
 from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import (
@@ -174,7 +174,8 @@ def stage_glacier(
     staging_path.mkdir(parents=True, exist_ok=True)
 
     print("RGI Database")
-    rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_glacier_file"]}"""
+    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
+    rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_glacier_file"]}"""
     rgi_glacier_local = staging_path / config["rgi_glacier_file"]
     if not rgi_glacier_local.exists():
         print(f"Downloading {rgi_glacier_s3_uri} -> {rgi_glacier_local}")
@@ -182,7 +183,7 @@ def stage_glacier(
     else:
         print(f"Using cached {rgi_glacier_local}")
 
-    rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{config["prefix"]}/rgi/{config["rgi_complex_file"]}"""
+    rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_complex_file"]}"""
     rgi_complex_local = staging_path / config["rgi_complex_file"]
     if not rgi_complex_local.exists():
         print(f"Downloading {rgi_complex_s3_uri} -> {rgi_complex_local}")
@@ -238,6 +239,7 @@ def stage_glacier(
         force_overwrite=force_overwrite,
         bucket=config["bucket"],
         prefix=config["prefix"],
+        project_directory=config.get("project_directory"),
     )
 
     print("")
@@ -303,6 +305,7 @@ def stage_glacier(
         path=staging_path,
         bucket=config["bucket"],
         prefix=config["prefix"],
+        project_directory=config.get("project_directory"),
         force_overwrite=force_overwrite,
     )  # list[Path]
     # Normalize to list[Path]

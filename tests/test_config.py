@@ -33,11 +33,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 # Adjust this import path to match your project layout:
 # Adjust the import path to wherever your models live
+import toml
+from pydantic import ValidationError
+
 from pism_terra.config import (  # noqa: F401  (ensure DistSpec is imported)
+    CampaignConfig,
     DistSpec,
     UQConfig,
     load_config,
@@ -350,3 +353,43 @@ def test_campaign_init_fields():
     params = cfg.campaign.as_params()
     assert params["init_start"] == "2006-01-01"
     assert params["init_end"] == "2007-01-01"
+
+
+def _campaign(name: str) -> CampaignConfig:
+    """
+    Validate just the ``[campaign]`` table of a packaged config.
+
+    The glacier configs do not satisfy the full ``PismConfig`` schema (they
+    predate the required ``bed_deformation`` section), so load the one section
+    under test rather than the whole file.
+
+    Parameters
+    ----------
+    name : str
+        File name under ``pism_terra/config``.
+
+    Returns
+    -------
+    CampaignConfig
+        The validated campaign section.
+    """
+    path = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / name
+    return CampaignConfig.model_validate(toml.loads(path.read_text("utf-8"))["campaign"])
+
+
+def test_campaign_project_directory():
+    """Campaign project_directory is parsed and exported by as_params()."""
+    s4f = _campaign("s4f_carra2.toml")
+    assert s4f.prefix == "glacier/input"
+    assert s4f.project_directory == "s4f"
+    assert s4f.as_params()["project_directory"] == "s4f"
+    # The outlines depend on the project's CRS overrides, so they are named for it.
+    assert s4f.rgi_complex_file == "s4f_c.gpkg"
+
+    assert _campaign("rgi_era5_frank.toml").project_directory == "rgi"
+
+    # Campaigns whose input tree is not split by project leave it unset, and
+    # as_params() drops empty fields, so stage's .get() falls back to None.
+    kitp = _campaign("kitp_greenland.toml")
+    assert kitp.project_directory is None
+    assert kitp.as_params().get("project_directory") is None

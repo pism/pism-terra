@@ -38,6 +38,48 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 # -----------------------------------------
+# Key-prefix helpers
+# -----------------------------------------
+
+
+def project_prefix(prefix: str | None, project_directory: str | None = None) -> str:
+    """
+    Join the shared data prefix with an optional project subdirectory.
+
+    Prepared input data is split in two: products that depend on a project's
+    ``[regions]`` CRS overrides (RGI outlines, ice thickness, per-group climate)
+    live under ``<prefix>/<project_directory>``, while the global products
+    (GEBCO, heat flux, SNAP, the merged CARRA2 store) live directly under
+    ``<prefix>`` and are shared by every project. Readers of the former call
+    this; readers of the latter use ``prefix`` unchanged.
+
+    Parameters
+    ----------
+    prefix : str or None
+        Shared S3 key prefix, e.g. ``"glacier/input"``. ``None`` is treated as
+        the empty prefix.
+    project_directory : str or None, optional
+        Project subdirectory, e.g. ``"s4f"``. When ``None`` or empty the shared
+        prefix is returned unchanged, which is what campaigns that do not use a
+        project split (ISMIP7, KITP, ML) want.
+
+    Returns
+    -------
+    str
+        The joined prefix, without leading or trailing slashes.
+
+    Examples
+    --------
+    >>> project_prefix("glacier/input", "s4f")
+    'glacier/input/s4f'
+    >>> project_prefix("kitp/input")
+    'kitp/input'
+    """
+    parts = [str(part).strip("/") for part in (prefix, project_directory) if part]
+    return "/".join(part for part in parts if part)
+
+
+# -----------------------------------------
 # Pure boto3 implementation (one-way syncs)
 # -----------------------------------------
 

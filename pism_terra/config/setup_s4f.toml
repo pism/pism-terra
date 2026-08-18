@@ -1,3 +1,7 @@
+[staging]
+
+project_directory = "s4f"
+
 [regions]
 
 1 = {name = "alaska", crs = "EPSG:5936"}

@@ -1,3 +1,7 @@
+[staging]
+
+project_directory = "rgi"
+
 [regions]
 
 1 = {name = "alaska"}

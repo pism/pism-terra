@@ -9,6 +9,26 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- Glacier input preparation is one command again. `pism_terra/glacier/prepare.py` carried two near-identical ~200-line functions, `rgi()` and `s4f()`, that had already drifted apart (different step order, different outline loading, a lost comment); they are now a single `prepare()`. **Removed:** `pism-s4f-prepare` — use `pism-glacier-prepare` and pass the glacier-ID CSVs as trailing arguments:
+
+  ```bash
+  pism-glacier-prepare pism_terra/config/setup_rgi.toml glacier_input
+  pism-glacier-prepare pism_terra/config/setup_s4f.toml glacier_input \
+      pism_terra/config/S4F_target_*.csv
+  ```
+
+  With no CSVs the run covers whole regions, exactly as `pism-glacier-prepare` did before. `--include glaciermip4` is now accepted for every project (it used to be an S4F-only dataset name).
+- Prepared inputs are split by project instead of sharing one `glacier/` tree. The setup TOML declares `[staging] project_directory = "rgi"` (or `"s4f"`), and the output layout becomes:
+
+  ```text
+  <OUTPUT_PATH>/input/{gebco,heatflux,climate}/     # global — written once
+  <OUTPUT_PATH>/input/<project>/rgi/<project>_{c,g}.gpkg
+  <OUTPUT_PATH>/input/<project>/ice_thickness/{frank,maffezzoli}/
+  <OUTPUT_PATH>/input/<project>/climate/carra2_<group>.nc
+  ```
+
+  The split follows the `[regions]` `crs` overrides. Those change the *contents* of the RGI GeoPackages and the ice-thickness rasters without changing their paths, so an S4F run and an RGI run previously overwrote each other's `ice_thickness/frank/RGI2000-v7.0-C-01/*_thickness.tif` and `rgi/rgi_c.gpkg`. Everything that does not depend on a CRS override — GEBCO, heat flux, SNAP, the merged `carra2.zarr` — is now stored once rather than per project, and `staging/` stays shared so the raw downloads are not fetched twice.
+  **Migration:** campaign configs gain `project_directory` alongside `prefix`, which now names the shared root: `prefix = "rgi/glacier"` becomes `prefix = "glacier/input"` + `project_directory = "rgi"`, and the S4F configs also switch to `rgi_complex_file = "s4f_c.gpkg"` / `rgi_glacier_file = "s4f_g.gpkg"`. Readers of project-specific data (outlines, ice thickness, per-group CARRA2) address `{prefix}/{project_directory}/…`; readers of global data keep using `{prefix}/…`. Campaigns that leave `project_directory` unset — ISMIP7, KITP, ML — are unaffected, since the two prefixes then coincide. The S3 tree has to be rearranged to match before the new configs resolve; the old `rgi/glacier/…` and `s4f/glacier/…` trees can stay in place until the cutover is confirmed.
 - Post-processing is now two campaign-neutral modules, `pism_terra/postprocess_scalar.py` and `pism_terra/postprocess_spatial.py`, exposed as `pism-postprocess-scalar` and `pism-postprocess-spatial`. They serve Greenland basins and RGI glaciers alike: the CRS is read from the file's grid mapping instead of assuming EPSG:3413, outlines are reprojected onto it (RGI ships EPSG:4326), the label column is resolved from `glacier_id`/`rgi_id`/`SUBREGION1`, the region dimension is `--dim-name` (default `glacier_id`), the whole-domain total is opt-in via `--total-name`, and each region carries its outline `area`. **Removed:** `pism-ismip7-greenland-postprocess`, `pism-ismip7-greenland-postprocess-spatial` and `pism-kitp-postprocess` — regenerate run scripts, or call `pism-postprocess-scalar ... --total-name GIS`. `pism-glacier-postprocess` is unchanged.
   **Migration:** every campaign, Greenland included, now writes the region dimension as `glacier_id` and labels basins from the outline's `glacier_id` column (`GIS_CE`, `GIS_CW`, …) rather than `basin`/`CE`. Selection becomes `ds.set_index(glacier_id="glacier_id_name").sel(glacier_id="GIS_CE")`; the appended whole-ice-sheet total is still `GIS`. Analysis code that hard-codes the old names — `pism_terra/analyze_scalar.py`, `pism_terra/kitp/analyze.py` — has not been updated and will need it. Pass `--column SUBREGION1 --dim-name basin` to reproduce the previous naming.
 - `glacier.execute` no longer accepts a `--job-id` parameter and now stages files based on the full S3 URI of `RUN_SCIPT`, if needed.
@@ -16,6 +36,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `pism-glacier-prepare` exits 0 on success. Its entry point pointed at a function returning a `dict`, which setuptools passed to `sys.exit`, so a completely successful run printed the dict to stderr and exited 1.
 - Per-region scalar output no longer carries a CF grid mapping. A summed timeseries has no grid, but the dimensionless `mapping` (or `spatial_ref`) variable survived the reduction over `x`/`y` and every variable pointed at it through `coordinates = "glacier_id_name mapping"`. Dropping it before the reduction was not enough — `rio.write_crs` recreates it from the dataset's own grid-mapping name — so it is now stripped from the result. Affects `pism-postprocess-scalar` and `pism-glacier-postprocess`; the spatial post-processing keeps its grid mapping, which it needs.
 - `normalize_timeseries` no longer fails on a single-element variable list. `ds[["a"]] -= ...` takes a different `__setitem__` branch than a longer list and raised `cannot directly convert an xarray.Dataset into a numpy array`, so a bare string and a two-variable list worked while `["a"]` did not.
 - `pism-kitp-analyze` reads the current post-processing output again. It assumed a `basin` dimension carrying string labels; scalar files now use the `glacier_id` integer index with labels in `glacier_id_name`. `with_region_labels` normalises all three layouts it has produced over time — `glacier_id`, `basin`/`RGIid`, and raw PISM scalar files with no region dimension — so selection by region name works regardless of file age. Two long-standing bugs fell out: the per-cell area used to convert grounding-line flux was hard-coded to 900 m (rescaling every other resolution by `(dx/900)²`, e.g. 1.78× at 1200 m) and is now read from the run's `grid.dx`; and `grounding_line_flux_nonneg`, which only post-processed files carry, is omitted with a log line instead of raising `KeyError` on raw scalar input.

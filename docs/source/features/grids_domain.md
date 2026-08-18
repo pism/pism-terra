@@ -22,8 +22,12 @@ variable lands on the same cells.
 ## CRS handling
 
 - Aggregate complexes (S4F: `S4F_AK`, `S4F_CA`, `S4F_SV`) carry an explicit
-  CRS in `rgi_c.gpkg`.
-- Single-glacier complexes inherit a per-region UTM (or polar-stereo) CRS.
+  CRS in the project's complex GeoPackage (`<project>_c.gpkg`).
+- Single-glacier complexes inherit a per-region UTM (or polar-stereo) CRS,
+  unless the setup TOML's `[regions]` table pins one for the whole O1 region.
+- Because that override changes the *contents* of the outlines and of the
+  ice-thickness rasters, each project writes them under its own
+  `input/<project_directory>/` subtree (see {doc}`staging`).
 
 ```{admonition} TODO
 - Add an example showing how to build a domain from a custom polygon.
