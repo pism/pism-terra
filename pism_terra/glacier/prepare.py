@@ -92,8 +92,6 @@ PREPARE_DATASETS = [
     "ice_thickness_maffezzoli",
     "gebco",
     "heatflux_lucazeau",
-    "glaciermip4",
-    "snap",
     "carra2",
 ]
 
