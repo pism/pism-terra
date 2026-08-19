@@ -90,9 +90,11 @@ Re-add ``main`` and ``stage_glacier`` here when the upstream import is fixed.
 
     era5
     carra2
+    carra2_monthly_mean
     snap
     prepare_carra2
     prepare_carra2_for_group
+    prepare_carra2_monthly_mean
 ```
 
 ### Ice thickness

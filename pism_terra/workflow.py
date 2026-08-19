@@ -812,6 +812,44 @@ def stamp_grid_mapping(ds: xr.Dataset, name: str = "spatial_ref") -> xr.Dataset:
     return ds
 
 
+def compressed_encoding(ds: xr.Dataset, complevel: int = 2, **extra: Any) -> dict[str, dict[str, Any]]:
+    """
+    Build a per-variable NetCDF encoding that keeps the CF grid mapping.
+
+    Passing an ``encoding`` dict to ``to_netcdf`` *replaces* a variable's
+    encoding rather than merging into it. rioxarray and
+    :func:`stamp_grid_mapping` record ``grid_mapping`` in encoding, so asking
+    for compression the obvious way silently drops the pointer to the CRS
+    variable and the written file has no discoverable projection — PISM then
+    falls back to comparing raw x/y and rejects the forcing whenever the model
+    grid uses a different projection.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset about to be written, after its grid mapping has been stamped.
+    complevel : int, default 2
+        Compression level passed to zlib.
+    **extra
+        Additional encoding entries applied to every data variable.
+
+    Returns
+    -------
+    dict[str, dict]
+        Encoding suitable for ``ds.to_netcdf(encoding=...)``, carrying each
+        variable's existing ``grid_mapping`` through.
+    """
+    encoding: dict[str, dict[str, Any]] = {}
+    for name in ds.data_vars:
+        entry: dict[str, Any] = {"zlib": True, "complevel": complevel, "shuffle": True}
+        entry.update(extra)
+        grid_mapping = ds[name].encoding.get("grid_mapping")
+        if grid_mapping:
+            entry["grid_mapping"] = grid_mapping
+        encoding[name] = entry
+    return encoding
+
+
 def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     Open a dataset and run a **sampled** health check with xarray.

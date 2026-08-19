@@ -66,6 +66,7 @@ from pism_terra.glacier.climate import (
     convert_many_tifs_concurrent,
     prepare_carra2,
     prepare_carra2_for_group,
+    prepare_carra2_monthly_mean,
 )
 from pism_terra.glacier.ice_thickness import (
     prepare_ice_thickness_frank,
@@ -415,13 +416,23 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
             # NetCDF or other single-file output
             shutil.copy2(carra2_staging_file, carra2_final)
 
+        # Twelve-step monthly climatology over a fixed reference period. It is
+        # in CARRA2's own CRS, so it is shared by every project like the store
+        # it comes from; ``stage.carra2_monthly_mean()`` reads it.
+        carra2_climatology = prepare_carra2_monthly_mean(
+            carra2_zarr=carra2_final,
+            output_zarr=climate_path / "carra2_monthly_mean.zarr",
+            force_overwrite=force_overwrite,
+        )
+
         if glacier_groups:
             # For each group, pre-reproject CARRA2 to that group's CRS at
             # CARRA2's native ~2.5 km resolution. Uploaded as
             # ``carra2_<group>.nc`` so ``stage.carra2()`` can fetch a single
             # small file per glacier instead of streaming the full Zarr and
             # reprojecting every time. The result depends on the group's
-            # CRS, so it lives under the project directory.
+            # CRS, so it lives under the project directory. The climatology
+            # gets the same treatment for ``stage.carra2_monthly_mean()``.
             assert complexes is not None  # loaded above (need_outlines)
             project_climate_path = ensure_dir(paths["project_climate"])
             for group_name in glacier_groups:
@@ -438,16 +449,17 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
                     logger.warning("Aggregate complex %s has no CRS; skipping CARRA2 prep", group_name)
                     continue
                 group_geom = row.geometry.iloc[0]
-                group_out = project_climate_path / f"carra2_{group_name}.nc"
-                logger.info("Preparing CARRA2 for group %s (%s) -> %s", group_name, group_crs, group_out)
-                prepare_carra2_for_group(
-                    carra2_zarr=carra2_final,
-                    dst_crs=group_crs,
-                    geometry=group_geom,
-                    geometry_crs=str(complexes.crs),
-                    output_file=group_out,
-                    force_overwrite=force_overwrite,
-                )
+                for source, stem in ((carra2_final, "carra2"), (carra2_climatology, "carra2_monthly_mean")):
+                    group_out = project_climate_path / f"{stem}_{group_name}.nc"
+                    logger.info("Preparing %s for group %s (%s) -> %s", stem, group_name, group_crs, group_out)
+                    prepare_carra2_for_group(
+                        carra2_zarr=source,
+                        dst_crs=group_crs,
+                        geometry=group_geom,
+                        geometry_crs=str(complexes.crs),
+                        output_file=group_out,
+                        force_overwrite=force_overwrite,
+                    )
 
     return rgi_files
 

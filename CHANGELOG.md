@@ -8,6 +8,10 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `carra2-monthly-mean`, a CARRA2 monthly climatology, as the counterpart of `era5-monthly-mean`. Twelve fields, one per calendar month, on the periodic 365-day `days since 0001-01-01` axis with `time_bounds` tiling the year, so PISM cycles it for the length of the run. `pism-glacier-prepare` does the averaging once into `climate/carra2_monthly_mean.zarr` (shared, like the store it comes from) and pre-reprojects it per aggregate group as `climate/carra2_monthly_mean_<group>.nc`; `stage` fetches the group file when it exists and otherwise clips the store directly. Select it with `climate = "carra2-monthly-mean"`.
+  The reference period is **fixed** at 1990-2019 (`CARRA2_CLIMATOLOGY_YEARS`) rather than "everything in the store", so extending the CARRA2 download later does not silently change the climatology, and it stays comparable with the ERA5/RACMO/MAR means over the same years. `air_temp_sd` is averaged like every other field and so remains the typical *within-month* variability that PISM's PDD scheme reads — not the year-to-year spread of the monthly means.
+
 ### Changed
 - Glacier input preparation is one command again. `pism_terra/glacier/prepare.py` carried two near-identical ~200-line functions, `rgi()` and `s4f()`, that had already drifted apart (different step order, different outline loading, a lost comment); they are now a single `prepare()`. **Removed:** `pism-s4f-prepare` — use `pism-glacier-prepare` and pass the glacier-ID CSVs as trailing arguments:
 
@@ -36,6 +40,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- CARRA2 forcing files carry a CF `grid_mapping` attribute again. `_finalize_pism_crs` stamps it, but rioxarray records `grid_mapping` in each variable's *encoding*, and handing `to_netcdf` a per-variable `encoding` dict for compression **replaces** that encoding rather than merging into it — so the attribute never reached the file and the written NetCDF had no discoverable projection. It went unnoticed because the per-glacier file is reprojected onto the model grid, where PISM does not need the projection; a per-group cache, which PISM must reproject itself, would have been rejected with "computational domain is not a subset". A new `pism_terra.workflow.compressed_encoding` builds the encoding while carrying `grid_mapping` through, and the three CARRA2 write sites use it. Re-run staging to fix existing files; nothing else changes in them.
 - CARRA2 staging no longer stacks the time-invariant `orography` field once per output year. `_carra2_fill_years_and_bounds` concatenated its per-year pieces with xarray's default `data_vars="all"`, which broadcast orography across the whole time axis only for the next block to drop the copies; it now passes `data_vars="minimal"` explicitly. Output is unchanged, and xarray's `FutureWarning` about the changing default is gone.
 - `pism-glacier-prepare` exits 0 on success. Its entry point pointed at a function returning a `dict`, which setuptools passed to `sys.exit`, so a completely successful run printed the dict to stderr and exited 1.
 - Per-region scalar output no longer carries a CF grid mapping. A summed timeseries has no grid, but the dimensionless `mapping` (or `spatial_ref`) variable survived the reduction over `x`/`y` and every variable pointed at it through `coordinates = "glacier_id_name mapping"`. Dropping it before the reduction was not enough — `rio.write_crs` recreates it from the dataset's own grid-mapping name — so it is now stripped from the result. Affects `pism-postprocess-scalar` and `pism-glacier-postprocess`; the spatial post-processing keeps its grid mapping, which it needs.

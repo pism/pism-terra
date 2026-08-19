@@ -45,6 +45,7 @@ from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import (
     carra2,
+    carra2_monthly_mean,
     create_offset_file,
     create_step_file,
     elevation_dependent,
@@ -70,6 +71,7 @@ xr.set_options(keep_attrs=True)
 
 CLIMATE: Mapping[str, Callable] = {
     "carra2": carra2,
+    "carra2-monthly-mean": carra2_monthly_mean,
     "elevation-dependent": elevation_dependent,
     "era5": era5,
     "era5-mean": era5_mean,

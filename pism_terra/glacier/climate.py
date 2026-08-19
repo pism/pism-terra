@@ -29,6 +29,7 @@ import gc
 import logging
 import os
 import re
+import shutil
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
@@ -70,6 +71,7 @@ from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import (
     check_xr_fully,
     check_xr_lazy,
+    compressed_encoding,
     drop_geotransform_attr,
     stamp_grid_mapping,
 )
@@ -743,6 +745,238 @@ def prepare_carra2(
     return carra2_filename
 
 
+CARRA2_CLIMATOLOGY_YEARS = range(1990, 2020)
+
+# Days in each month of a 365-day (no-leap) year, used to place a monthly
+# climatology on the periodic time axis PISM cycles.
+_MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+
+def open_carra2_zarr(uri: Path | str) -> xr.Dataset:
+    """
+    Open a CARRA2 Zarr store with its spatial dims and CRS attached.
+
+    The published store records its projection in a *data variable* named
+    ``crs`` rather than a coordinate, so rioxarray does not find it on its own.
+    This follows each variable's CF ``grid_mapping`` pointer, then falls back to
+    scanning every variable for a CRS-shaped attribute.
+
+    Parameters
+    ----------
+    uri : str or pathlib.Path
+        Local path or ``s3://`` URI of the Zarr store. Public S3 stores are read
+        anonymously.
+
+    Returns
+    -------
+    xarray.Dataset
+        The store, lazily opened, with ``x``/``y`` registered as spatial dims
+        and a usable ``rio.crs``.
+
+    Raises
+    ------
+    ValueError
+        If no CRS can be recovered from any variable.
+    """
+    storage_options = {"anon": True} if str(uri).startswith("s3://") else None
+    ds = xr.open_zarr(str(uri), consolidated=True, storage_options=storage_options, chunks={})
+
+    if "x" in ds.dims and "y" in ds.dims:
+        ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
+    elif "lon" in ds.dims and "lat" in ds.dims:
+        ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
+
+    if ds.rio.crs is None:
+        crs_wkt = None
+        # First, follow any data variable's CF grid_mapping pointer.
+        for var in ds.data_vars:
+            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get("grid_mapping")
+            if gm and gm in ds.variables:  # checks both data_vars and coords
+                crs_wkt = ds[gm].attrs.get("crs_wkt") or ds[gm].attrs.get("spatial_ref")
+                if crs_wkt:
+                    break
+        # Fall back to scanning every variable for a CRS-shaped attr.
+        if not crs_wkt:
+            for name in ds.variables:
+                attrs = ds[name].attrs
+                crs_wkt = attrs.get("crs_wkt") or attrs.get("spatial_ref")
+                if crs_wkt:
+                    break
+        if not crs_wkt:
+            raise ValueError(
+                f"Could not recover a CRS from the CARRA2 Zarr store at {uri}. Variables present: {list(ds.variables)}"
+            )
+        # inplace=True avoids a deep copy of the full lazy zarr.
+        ds.rio.write_crs(crs_wkt, inplace=True)
+    return ds
+
+
+def prepare_carra2_monthly_mean(
+    carra2_zarr: Path | str,
+    output_zarr: Path | str,
+    years: list[int] | Iterable[int] = CARRA2_CLIMATOLOGY_YEARS,
+    force_overwrite: bool = False,
+) -> Path:
+    """
+    Average the CARRA2 store by calendar month into a 12-step climatology.
+
+    Reduces the full monthly time series to one field per calendar month over a
+    fixed reference period, giving a periodic forcing PISM can cycle
+    indefinitely — the CARRA2 counterpart of
+    :func:`era5_monthly_mean`. Averaging over a *fixed* period matters: it keeps
+    the climatology stable when the CARRA2 download is later extended, and
+    comparable with the ERA5/RACMO/MAR 1990-2019 means.
+
+    ``air_temp_sd`` is averaged like every other field, so it keeps its meaning
+    — the typical within-month temperature variability for that month, which is
+    what PISM's positive-degree-day scheme reads. It is *not* the year-to-year
+    spread of the monthly means.
+
+    Time-invariant variables (``orography``) are carried through untouched. The
+    output's ``time`` coordinate is the calendar month, ``1``-``12``; the
+    CF climatological axis is stamped later, when a per-glacier file is written
+    (see :func:`carra2_monthly_mean`), so this intermediate survives the
+    reprojection round trip unambiguously.
+
+    Parameters
+    ----------
+    carra2_zarr : str or pathlib.Path
+        Local path or ``s3://`` URI of the full CARRA2 Zarr store.
+    output_zarr : str or pathlib.Path
+        Destination Zarr store, conventionally ``carra2_monthly_mean.zarr``.
+    years : list of int or Iterable of int, optional
+        Reference period to average over. Defaults to
+        :data:`CARRA2_CLIMATOLOGY_YEARS` (1990-2019).
+    force_overwrite : bool, default False
+        If True, recompute even when the output already exists.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the written Zarr store.
+
+    Raises
+    ------
+    ValueError
+        If the source store has no time steps in the requested period, or if a
+        month of the period is missing entirely.
+    """
+    output_zarr = Path(output_zarr)
+    if output_zarr.exists() and not force_overwrite:
+        logger.info("Using cached CARRA2 monthly climatology %s", output_zarr)
+        return output_zarr
+
+    years = sorted({int(y) for y in years})
+    ds = open_carra2_zarr(carra2_zarr)
+    crs_wkt = ds.rio.crs.to_wkt()
+    # Bounds describe the source months; they mean nothing once averaged.
+    ds = ds.drop_vars(["time_bnds", "time_bounds"], errors="ignore")
+
+    sub = ds.sel(time=ds["time.year"].isin(years))
+    if sub.sizes.get("time", 0) == 0:
+        src_years = sorted({int(y) for y in ds["time.year"].values})
+        raise ValueError(
+            f"CARRA2 store at {carra2_zarr} has no time steps in {years[0]}-{years[-1]}; "
+            f"it covers {src_years[0]}-{src_years[-1]}"
+        )
+
+    # Time-invariant fields (orography) would be averaged into a no-op; carry
+    # them through as they are so the climatology keeps a 2-D surface.
+    static_names = [n for n in sub.data_vars if "time" not in sub[n].dims]
+    varying_names = [n for n in sub.data_vars if "time" in sub[n].dims]
+
+    logger.info(
+        "Averaging %d CARRA2 time steps (%d-%d) by calendar month: %s",
+        sub.sizes["time"],
+        years[0],
+        years[-1],
+        ", ".join(sorted(varying_names)),
+    )
+    clim = sub[varying_names].groupby("time.month").mean("time", keep_attrs=True)
+    if clim.sizes["month"] != 12:
+        present = [int(m) for m in clim["month"].values]
+        raise ValueError(f"Expected 12 calendar months in the climatology, got {len(present)}: {present}")
+
+    clim = clim.rename({"month": "time"})
+    clim["time"].attrs = {"long_name": "calendar month"}
+    for name in static_names:
+        clim[name] = sub[name]
+
+    clim = clim.astype("float32")
+    clim.attrs.update(
+        {
+            "Conventions": "CF-1.8",
+            "title": "CARRA2 monthly mean climatology",
+            "climatology_period": f"{years[0]}-{years[-1]}",
+            "source": str(carra2_zarr),
+        }
+    )
+    # groupby drops the grid mapping; put it back so the store is self-describing.
+    clim = _finalize_pism_crs(clim, crs_wkt)
+    for name in list(clim.coords) + list(clim.data_vars):
+        for key in ("dtype", "_FillValue", "units", "calendar", "chunks", "preferred_chunks"):
+            clim[name].encoding.pop(key, None)
+
+    logger.info("Writing CARRA2 monthly climatology to %s", output_zarr)
+    if output_zarr.exists():
+        shutil.rmtree(output_zarr)
+    output_zarr.parent.mkdir(parents=True, exist_ok=True)
+    clim.to_zarr(output_zarr, mode="w", consolidated=True)
+    ds.close()
+    return output_zarr
+
+
+def stamp_monthly_climatology_axis(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Put a 12-step dataset on the periodic time axis PISM cycles.
+
+    Replaces the calendar-month coordinate with mid-month day offsets in a
+    365-day year and attaches the matching ``time_bounds``, so PISM reads the
+    forcing as a climatology and repeats it for the length of the run. Matches
+    what :func:`era5_monthly_mean` writes.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with a length-12 ``time`` dimension in calendar-month order.
+
+    Returns
+    -------
+    xarray.Dataset
+        The same data with a CF climatological ``time`` axis and
+        ``time_bounds``.
+
+    Raises
+    ------
+    ValueError
+        If ``time`` is not length 12.
+    """
+    if ds.sizes.get("time") != 12:
+        raise ValueError(f"A monthly climatology needs 12 time steps, got {ds.sizes.get('time')}")
+
+    bounds_start = np.cumsum([0] + _MONTH_LENGTHS[:-1]).astype("float64")
+    bounds_end = np.cumsum(_MONTH_LENGTHS).astype("float64")
+
+    ds = ds.drop_vars(["time_bnds", "time_bounds"], errors="ignore")
+    ds = ds.assign_coords(time=("time", (bounds_start + bounds_end) / 2.0))
+    ds["time"].attrs.update(
+        {
+            "standard_name": "time",
+            "long_name": "time",
+            "axis": "T",
+            "units": "days since 0001-01-01",
+            "calendar": "365_day",
+            "bounds": "time_bounds",
+        }
+    )
+    ds["time_bounds"] = (("time", "nv"), np.column_stack([bounds_start, bounds_end]))
+    # The axis is already the literal encoding; let xarray write it verbatim
+    # instead of re-deriving datetime units.
+    ds["time"].encoding.pop("units", None)
+    ds["time"].encoding.pop("calendar", None)
+    return ds
+
+
 def prepare_carra2_for_group(
     carra2_zarr: Path | str,
     dst_crs: str,
@@ -795,31 +1029,8 @@ def prepare_carra2_for_group(
     x_bnds, y_bnds = get_bounds_from_geometry(geom_projected, buffer_dist=5_000.0, dx=1_000.0)
     target_grid = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
 
-    # Open the source Zarr (local or s3); anon read works for our public store.
-    storage_options = {"anon": True} if str(carra2_zarr).startswith("s3://") else None
-    ds = xr.open_zarr(str(carra2_zarr), consolidated=True, storage_options=storage_options, chunks={})
-    # Make sure spatial dims and CRS are attached.
-    if "x" in ds.dims and "y" in ds.dims:
-        ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
-    elif "lon" in ds.dims and "lat" in ds.dims:
-        ds = ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
-    if ds.rio.crs is None:
-        crs_wkt = None
-        for var in ds.data_vars:
-            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get("grid_mapping")
-            if gm and gm in ds.variables:
-                crs_wkt = ds[gm].attrs.get("crs_wkt") or ds[gm].attrs.get("spatial_ref")
-                if crs_wkt:
-                    break
-        if not crs_wkt:
-            for name in ds.variables:
-                attrs = ds[name].attrs
-                crs_wkt = attrs.get("crs_wkt") or attrs.get("spatial_ref")
-                if crs_wkt:
-                    break
-        if not crs_wkt:
-            raise ValueError(f"Could not recover a CRS from CARRA2 Zarr at {carra2_zarr}")
-        ds = ds.rio.write_crs(crs_wkt)
+    # Open the source Zarr (local or s3) with its spatial dims and CRS attached.
+    ds = open_carra2_zarr(carra2_zarr)
 
     # Clip to group bounds in CARRA2 coords (cheap; just a .sel slice).
     t = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
@@ -890,11 +1101,143 @@ def prepare_carra2_for_group(
         # the dimension itself is written unlimited below.
         out["time"].attrs.update({"standard_name": "time", "long_name": "time", "axis": "T"})
 
-    encoding = {name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars}
+    encoding = compressed_encoding(out)
     output_file.unlink(missing_ok=True)
     unlimited = ["time"] if "time" in out.dims else None
     out.to_netcdf(output_file, encoding=encoding, engine="h5netcdf", unlimited_dims=unlimited)
     return output_file
+
+
+def carra2_monthly_mean(
+    target_grid: xr.Dataset,
+    rgi_id: str,
+    years: list[int] | Iterable[int] = CARRA2_CLIMATOLOGY_YEARS,
+    path: Path | str = ".",
+    bucket: str = "pism-cloud-data",
+    prefix: str = "",
+    project_directory: str | None = None,
+    force_overwrite: bool = False,
+    **kwargs,
+) -> Path:
+    """
+    Write the CARRA2 monthly climatology for one glacier's grid.
+
+    The CARRA2 counterpart of :func:`era5_monthly_mean`: twelve fields, one per
+    calendar month, on the periodic time axis PISM cycles for the length of the
+    run. The averaging happens once in
+    :func:`prepare_carra2_monthly_mean`; this only crops and reprojects.
+
+    Two sources are tried, cheapest first. If ``prepare`` pre-reprojected the
+    climatology for this glacier's group, that single small NetCDF is
+    downloaded and PISM interpolates onto the model grid at runtime. Otherwise
+    the pan-Arctic climatology store is opened and clipped — only 12 time steps,
+    so a single-shot reprojection is fine.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        Grid providing the destination CRS (via its grid mapping) and extent.
+    rgi_id : str
+        Glacier identifier, used in the output filename and to find the
+        pre-reprojected group file.
+    years : list of int or Iterable of int, optional
+        Accepted and ignored: the reference period is fixed when the
+        climatology is built. Present so the climate builders share a signature.
+    path : str or pathlib.Path, default ``"."``
+        Output directory. Receives ``carra2_monthly_mean_<rgi_id>.nc``.
+    bucket : str, default ``"pism-cloud-data"``
+        S3 bucket holding the staged climate data.
+    prefix : str, default ``""``
+        Shared S3 key prefix.
+    project_directory : str or None, optional
+        Project subdirectory under *prefix*; the per-group file depends on the
+        project's CRS and is looked up there.
+    force_overwrite : bool, default False
+        If True, regenerate even when the output exists.
+    **kwargs
+        Ignored; accepted so every climate builder takes the same arguments.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the written NetCDF.
+    """
+    _ = years, kwargs
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+    print("")
+    print("Generate monthly climate climatology")
+    print("-" * 120)
+
+    out_file = path / f"carra2_monthly_mean_{rgi_id}.nc"
+    if out_file.exists() and not force_overwrite and check_xr_lazy(out_file):
+        print(f"Using cached {out_file}")
+        return out_file
+
+    mapping_var = target_grid.rio.grid_mapping
+    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
+
+    # Fast path: prepare.py pre-reprojects the climatology once per aggregate
+    # group. Fetch that and let PISM interpolate onto the model grid.
+    pre_key = f"{project_prefix(prefix, project_directory)}/climate/carra2_monthly_mean_{rgi_id}.nc".lstrip("/")
+    pre_uri = f"s3://{bucket}/{pre_key}"
+    fs = s3fs.S3FileSystem(anon=True)
+    if fs.exists(pre_uri):
+        print(f"Found precomputed {pre_uri}; downloading")
+        tmp_pre = path / f"_carra2_monthly_mean_pre_{rgi_id}.nc"
+        fs.get(pre_uri, str(tmp_pre))
+        with xr.open_dataset(tmp_pre) as pre:
+            out = pre.load()
+        tmp_pre.unlink(missing_ok=True)
+    else:
+        uri = f"s3://{bucket}/{prefix}/climate/carra2_monthly_mean.zarr".replace("//", "/").replace("s3:/", "s3://")
+        print(f"Opening {uri}")
+        ds = open_carra2_zarr(uri)
+        print(f"  opened zarr: vars={list(ds.data_vars)}, dims={dict(ds.sizes)}", flush=True)
+
+        bounds = (
+            float(target_grid.x_bnds.values[0][0]),
+            float(target_grid.y_bnds.values[0][0]),
+            float(target_grid.x_bnds.values[-1][-1]),
+            float(target_grid.y_bnds.values[-1][-1]),
+        )
+        transformer = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
+        minx, miny, maxx, maxy = transformer.transform_bounds(*bounds)
+        x_ascending = bool(ds.x[-1] > ds.x[0])
+        y_ascending = bool(ds.y[-1] > ds.y[0])
+        sub = ds.sel(
+            x=slice(minx, maxx) if x_ascending else slice(maxx, minx),
+            y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
+        )
+        print(f"  subset dims: {dict(sub.sizes)}", flush=True)
+
+        # The stale grid-mapping variable would trip reproject_match, which
+        # walks every variable expecting spatial dims.
+        sub = sub.drop_vars(["crs", "time_bnds", "time_bounds"], errors="ignore")
+        out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32").load()
+
+    # Same per-variable fills as the full CARRA2 path: 0 K air temperature at
+    # the masked corners would wreck PISM's energy balance, so use a plausible
+    # cold value instead.
+    fill_defaults = {"air_temp": 260.0, "air_temp_sd": 0.0, "precipitation": 0.0, "orography": 0.0}
+    for name in out.data_vars:
+        if np.issubdtype(out[name].dtype, np.floating):
+            out[name] = out[name].fillna(fill_defaults.get(str(name), 0.0))
+
+    out = stamp_monthly_climatology_axis(out)
+    out.attrs["Conventions"] = "CF-1.8"
+    for name in list(out.coords) + list(out.data_vars):
+        for key in ("dtype", "_FillValue", "chunks", "preferred_chunks"):
+            out[name].encoding.pop(key, None)
+    out = _finalize_pism_crs(out, dst_crs)
+
+    encoding = compressed_encoding(out)
+    out_file.unlink(missing_ok=True)
+    out.to_netcdf(out_file, encoding=encoding, engine="h5netcdf", unlimited_dims=["time"])
+    print(f"Wrote {out_file}")
+    return out_file
 
 
 def convert_many_tifs_concurrent(
@@ -1534,9 +1877,7 @@ def carra2(
                 "preferred_chunks",
             ):
                 out[name].encoding.pop(k, None)
-        encoding: dict[str, dict[str, object]] = {
-            name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars
-        }
+        encoding: dict[str, dict[str, object]] = compressed_encoding(out)
         encoding.update(
             {
                 "time": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
@@ -1556,47 +1897,8 @@ def carra2(
 
     uri = f"s3://{bucket}/{prefix}/climate/carra2.zarr".replace("//", "/").replace("s3:/", "s3://")
     print(f"Opening {uri}")
-    ds = xr.open_zarr(
-        uri,
-        consolidated=True,
-        storage_options={"anon": True},
-        chunks={},
-    )
+    ds = open_carra2_zarr(uri)
     print(f"  opened zarr: vars={list(ds.data_vars)}, dims={dict(ds.sizes)}", flush=True)
-
-    # Make sure rioxarray knows which dims are spatial and what the CRS is.
-    # inplace=True avoids deep-copying the full lazy zarr just to stamp metadata.
-    if "x" in ds.dims and "y" in ds.dims:
-        ds.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-    elif "lon" in ds.dims and "lat" in ds.dims:
-        ds.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
-
-    # Recover CRS from whichever grid-mapping variable the Zarr writer used.
-    # CARRA2 stores it as a *data variable* (not a coord) named "crs"; other
-    # writers use "spatial_ref", "polar_stereographic", "lambert_conformal_conic", etc.
-    if ds.rio.crs is None:
-        crs_wkt = None
-        # First, follow any data variable's CF grid_mapping pointer.
-        for var in ds.data_vars:
-            gm = ds[var].attrs.get("grid_mapping") or ds[var].encoding.get("grid_mapping")
-            if gm and gm in ds.variables:  # checks both data_vars and coords
-                crs_wkt = ds[gm].attrs.get("crs_wkt") or ds[gm].attrs.get("spatial_ref")
-                if crs_wkt:
-                    break
-        # Fall back to scanning every variable for a CRS-shaped attr.
-        if not crs_wkt:
-            for name in ds.variables:
-                attrs = ds[name].attrs
-                crs_wkt = attrs.get("crs_wkt") or attrs.get("spatial_ref")
-                if crs_wkt:
-                    break
-        if not crs_wkt:
-            raise ValueError(
-                f"Could not recover a CRS from the CARRA2 Zarr store at {uri}. "
-                f"Variables present: {list(ds.variables)}"
-            )
-        # inplace=True avoids a deep copy of the full lazy zarr.
-        ds.rio.write_crs(crs_wkt, inplace=True)
     print(f"  CRS resolved: {ds.rio.crs}", flush=True)
 
     # Transform the target bbox into CARRA2 coordinates and clip there.
@@ -1759,9 +2061,7 @@ def carra2(
                     out[name].encoding.pop(k, None)
 
             # Compressed NetCDF (zlib level 2 + shuffle for floats).
-            encoding_c: dict[str, dict[str, object]] = {
-                name: {"zlib": True, "complevel": 2, "shuffle": True} for name in out.data_vars
-            }
+            encoding_c: dict[str, dict[str, object]] = compressed_encoding(out)
             encoding_c.update(
                 {
                     "time": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},

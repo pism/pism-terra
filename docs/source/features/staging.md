@@ -34,11 +34,12 @@ directory is what gets synced to S3 and addressed by the campaign config's
 ```text
 <OUTPUT_PATH>/
 ├── input/
-│   ├── gebco/, heatflux/, climate/     # global — shared by every project
+│   ├── gebco/, heatflux/               # global — shared by every project
+│   ├── climate/carra2.zarr, carra2_monthly_mean.zarr
 │   └── <project_directory>/            # e.g. rgi, s4f
 │       ├── rgi/<project>_{c,g}.gpkg
 │       ├── ice_thickness/{frank,maffezzoli}/
-│       └── climate/carra2_<group>.nc
+│       └── climate/carra2_<group>.nc, carra2_monthly_mean_<group>.nc
 └── staging/                            # intermediates, never uploaded
 ```
 
