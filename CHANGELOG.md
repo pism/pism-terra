@@ -17,7 +17,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
       pism_terra/config/S4F_target_*.csv
   ```
 
-  With no CSVs the run covers whole regions, exactly as `pism-glacier-prepare` did before. `--include glaciermip4` is now accepted for every project (it used to be an S4F-only dataset name).
+  With no CSVs the run covers whole regions, exactly as `pism-glacier-prepare` did before. **Removed:** the `glaciermip4` and `snap` steps — those products are already staged on S3 and nothing rebuilds them here, so `--include glaciermip4` / `--include snap` now exit with an unknown-dataset error. `prepare_glaciermip4` and `prepare_snap` remain in `pism_terra.glacier.climate` for direct use, and the stage-time `snap` climate backend is unaffected.
 - Prepared inputs are split by project instead of sharing one `glacier/` tree. The setup TOML declares `[staging] project_directory = "rgi"` (or `"s4f"`), and the output layout becomes:
 
   ```text
@@ -36,6 +36,7 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- CARRA2 staging no longer stacks the time-invariant `orography` field once per output year. `_carra2_fill_years_and_bounds` concatenated its per-year pieces with xarray's default `data_vars="all"`, which broadcast orography across the whole time axis only for the next block to drop the copies; it now passes `data_vars="minimal"` explicitly. Output is unchanged, and xarray's `FutureWarning` about the changing default is gone.
 - `pism-glacier-prepare` exits 0 on success. Its entry point pointed at a function returning a `dict`, which setuptools passed to `sys.exit`, so a completely successful run printed the dict to stderr and exited 1.
 - Per-region scalar output no longer carries a CF grid mapping. A summed timeseries has no grid, but the dimensionless `mapping` (or `spatial_ref`) variable survived the reduction over `x`/`y` and every variable pointed at it through `coordinates = "glacier_id_name mapping"`. Dropping it before the reduction was not enough — `rio.write_crs` recreates it from the dataset's own grid-mapping name — so it is now stripped from the result. Affects `pism-postprocess-scalar` and `pism-glacier-postprocess`; the spatial post-processing keeps its grid mapping, which it needs.
 - `normalize_timeseries` no longer fails on a single-element variable list. `ds[["a"]] -= ...` takes a different `__setitem__` branch than a longer list and raised `cannot directly convert an xarray.Dataset into a numpy array`, so a bare string and a two-variable list worked while `["a"]` did not.

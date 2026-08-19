@@ -1390,9 +1390,13 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
         new_times = np.array([_replace_year(t, ty) for t in sub["time"].values])
         pieces.append(sub.assign_coords(time=new_times))
 
-    merged = xr.concat(pieces, dim="time")
+    # ``data_vars="minimal"`` concatenates only the variables that already have
+    # a time dimension. The default ("all") stacks time-invariant fields such as
+    # orography once per year and then throws the copies away below; it is also
+    # the deprecated default, and xarray warns about it.
+    merged = xr.concat(pieces, dim="time", data_vars="minimal")
 
-    # Orography is time-invariant; concat (or an upstream broadcast) gives it a
+    # Orography is time-invariant, but an upstream broadcast can still give it a
     # redundant time dimension with identical slices. Drop it back to a single
     # 2-D field.
     if "orography" in merged and "time" in merged["orography"].dims:

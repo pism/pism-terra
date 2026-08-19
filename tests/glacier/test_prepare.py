@@ -305,20 +305,38 @@ def test_glacier_files_scope_the_regions(monkeypatch, tmp_path, setup_file):
     assert isinstance(seen["kwargs"]["glaciers"], pd.DataFrame)
 
 
-def test_dataset_list_covers_both_former_commands():
+def test_dataset_list_is_the_execution_order():
     """
-    Keep every dataset the two old commands offered.
+    Keep the selector list in step with what the body actually runs.
+
+    The order is the order the datasets are prepared in, and it is what
+    ``--include`` advertises. GlacierMIP4 and SNAP were dropped: their staged
+    products are already on S3 and nothing rebuilds them here.
     """
-    assert set(PREPARE_DATASETS) == {
+    assert PREPARE_DATASETS == [
         "rgi",
-        "heatflux_lucazeau",
         "ice_thickness_frank",
         "ice_thickness_maffezzoli",
         "gebco",
-        "glaciermip4",
-        "snap",
+        "heatflux_lucazeau",
         "carra2",
-    }
+    ]
+
+
+def test_dropped_datasets_are_rejected(tmp_path, setup_file):
+    """
+    Fail loudly on a dataset the command no longer prepares.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    setup_file : pathlib.Path
+        Minimal setup TOML from the fixture.
+    """
+    for dropped in ("snap", "glaciermip4"):
+        with pytest.raises(SystemExit):
+            prepare(["--include", dropped, str(setup_file), str(tmp_path / "out")])
 
 
 @pytest.mark.parametrize(

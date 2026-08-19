@@ -66,8 +66,6 @@ from pism_terra.glacier.climate import (
     convert_many_tifs_concurrent,
     prepare_carra2,
     prepare_carra2_for_group,
-    prepare_glaciermip4,
-    prepare_snap,
 )
 from pism_terra.glacier.ice_thickness import (
     prepare_ice_thickness_frank,
@@ -109,7 +107,7 @@ def prepare_paths(output_path: Path | str, project_directory: str) -> dict[str, 
     ``[regions]`` CRS overrides — the RGI outlines, the ice-thickness rasters
     and the per-group climate files — go under ``input/<project_directory>``,
     so an S4F run and an RGI run cannot overwrite each other. The global
-    products (GEBCO, heat flux, SNAP, the merged CARRA2 store) sit directly
+    products (GEBCO, heat flux, the merged CARRA2 store) sit directly
     under ``input`` and are shared by every project. Staging is shared too: the
     raw downloads are identical whatever the project.
 
@@ -152,8 +150,6 @@ def prepare_paths(output_path: Path | str, project_directory: str) -> dict[str, 
         "staging_ice_thickness": staging_path / "ice_thickness",
         "staging_gebco": staging_path / "gebco",
         "staging_heatflux": staging_path / "heatflux",
-        "staging_glaciermip4": staging_path / "glaciermip4",
-        "staging_snap": staging_path / "snap",
         "staging_carra2": staging_path / "carra2",
     }
 
@@ -400,69 +396,58 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
         )
 
     # --- Climate ---
-    if {"glaciermip4", "snap", "carra2"} & set(selected):
+    if "carra2" in selected:
         climate_path = ensure_dir(paths["climate"])
 
-        if "glaciermip4" in selected:
-            prepare_glaciermip4(ensure_dir(paths["staging_glaciermip4"]))
+        # Run the download/merge under staging, then move only the merged
+        # product into input/climate. Year-by-year CDS intermediates stay
+        # in staging.
+        carra2_staging = ensure_dir(paths["staging_carra2"])
 
-        if "snap" in selected:
-            # SNAP/CRU-TS40 monthly climatologies (built under staging, copied to
-            # input/climate for upload; one file per 30-year window).
-            snap_staging = ensure_dir(paths["staging_snap"])
-            for snap_file in prepare_snap(snap_staging, force_overwrite=force_overwrite):
-                shutil.copy2(snap_file, climate_path / Path(snap_file).name)
+        carra2_staging_file = prepare_carra2(carra2_staging)
+        carra2_final = climate_path / Path(carra2_staging_file.name)
+        if carra2_staging_file.is_dir():
+            # Zarr store — copytree
+            if carra2_final.exists():
+                shutil.rmtree(carra2_final)
+            shutil.copytree(carra2_staging_file, carra2_final)
+        else:
+            # NetCDF or other single-file output
+            shutil.copy2(carra2_staging_file, carra2_final)
 
-        if "carra2" in selected:
-            # Run the download/merge under staging, then move only the merged
-            # product into input/climate. Year-by-year CDS intermediates stay
-            # in staging.
-            carra2_staging = ensure_dir(paths["staging_carra2"])
-
-            carra2_staging_file = prepare_carra2(carra2_staging)
-            carra2_final = climate_path / Path(carra2_staging_file.name)
-            if carra2_staging_file.is_dir():
-                # Zarr store — copytree
-                if carra2_final.exists():
-                    shutil.rmtree(carra2_final)
-                shutil.copytree(carra2_staging_file, carra2_final)
-            else:
-                # NetCDF or other single-file output
-                shutil.copy2(carra2_staging_file, carra2_final)
-
-            if glacier_groups:
-                # For each group, pre-reproject CARRA2 to that group's CRS at
-                # CARRA2's native ~2.5 km resolution. Uploaded as
-                # ``carra2_<group>.nc`` so ``stage.carra2()`` can fetch a single
-                # small file per glacier instead of streaming the full Zarr and
-                # reprojecting every time. The result depends on the group's
-                # CRS, so it lives under the project directory.
-                assert complexes is not None  # loaded above (need_outlines)
-                project_climate_path = ensure_dir(paths["project_climate"])
-                for group_name in glacier_groups:
-                    row = complexes.loc[complexes["rgi_id"] == group_name]
-                    if row.empty:
-                        logger.warning(
-                            "Aggregate complex %s not found in %s; skipping CARRA2 prep",
-                            group_name,
-                            rgi_files["rgi_complexes"],
-                        )
-                        continue
-                    group_crs = row["crs"].iloc[0]
-                    if not isinstance(group_crs, str) or not group_crs:
-                        logger.warning("Aggregate complex %s has no CRS; skipping CARRA2 prep", group_name)
-                        continue
-                    group_geom = row.geometry.iloc[0]
-                    group_out = project_climate_path / f"carra2_{group_name}.nc"
-                    logger.info("Preparing CARRA2 for group %s (%s) -> %s", group_name, group_crs, group_out)
-                    prepare_carra2_for_group(
-                        carra2_zarr=carra2_final,
-                        dst_crs=group_crs,
-                        geometry=group_geom,
-                        geometry_crs=str(complexes.crs),
-                        output_file=group_out,
-                        force_overwrite=force_overwrite,
+        if glacier_groups:
+            # For each group, pre-reproject CARRA2 to that group's CRS at
+            # CARRA2's native ~2.5 km resolution. Uploaded as
+            # ``carra2_<group>.nc`` so ``stage.carra2()`` can fetch a single
+            # small file per glacier instead of streaming the full Zarr and
+            # reprojecting every time. The result depends on the group's
+            # CRS, so it lives under the project directory.
+            assert complexes is not None  # loaded above (need_outlines)
+            project_climate_path = ensure_dir(paths["project_climate"])
+            for group_name in glacier_groups:
+                row = complexes.loc[complexes["rgi_id"] == group_name]
+                if row.empty:
+                    logger.warning(
+                        "Aggregate complex %s not found in %s; skipping CARRA2 prep",
+                        group_name,
+                        rgi_files["rgi_complexes"],
                     )
+                    continue
+                group_crs = row["crs"].iloc[0]
+                if not isinstance(group_crs, str) or not group_crs:
+                    logger.warning("Aggregate complex %s has no CRS; skipping CARRA2 prep", group_name)
+                    continue
+                group_geom = row.geometry.iloc[0]
+                group_out = project_climate_path / f"carra2_{group_name}.nc"
+                logger.info("Preparing CARRA2 for group %s (%s) -> %s", group_name, group_crs, group_out)
+                prepare_carra2_for_group(
+                    carra2_zarr=carra2_final,
+                    dst_crs=group_crs,
+                    geometry=group_geom,
+                    geometry_crs=str(complexes.crs),
+                    output_file=group_out,
+                    force_overwrite=force_overwrite,
+                )
 
     return rgi_files
 
