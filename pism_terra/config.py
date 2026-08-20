@@ -28,6 +28,7 @@ import re
 from pathlib import Path
 from typing import Any, ClassVar, Iterator
 
+import pandas as pd
 import scipy.stats as st
 import toml
 from jinja2 import Environment
@@ -285,6 +286,42 @@ class DistSpec(BaseModel):
         return self
 
 
+class DerivedSpec(BaseModel):
+    """
+    Specification for a parameter computed from another, not sampled.
+
+    Some PISM options are not independent: a mass-balance profile, for
+    instance, may shift as a unit, so its melt limits and ELA move together.
+    Sampling them separately decorrelates values that are physically locked,
+    and encoding that linkage as parallel ``choices`` lists only works if the
+    sampler happens to keep the lists aligned — which Latin Hypercube
+    deliberately does not.
+
+    A derived parameter names its base and a linear relation to it::
+
+        value = base * scale + offset
+
+    It is evaluated after sampling, so the base may be categorical or
+    continuous, and a derived parameter may itself serve as another's base.
+
+    Attributes
+    ----------
+    derived_from : str
+        Dotted name of the parameter this one follows. Must resolve to another
+        entry in the same UQ file, sampled or derived.
+    offset : float, default 0.0
+        Added after scaling.
+    scale : float, default 1.0
+        Multiplies the base before the offset.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    derived_from: str
+    offset: float = 0.0
+    scale: float = 1.0
+
+
 class UQConfig(BaseModel):
     """
     Uncertainty specification as a flat dotted-key map with sampling metadata.
@@ -366,6 +403,7 @@ class UQConfig(BaseModel):
     method: str | None = Field(default=None)
     mapping: dict | None = None
     tree: dict[str, "DistSpec"]  # values parsed as DistSpec after 'before' validator
+    derived: dict[str, "DerivedSpec"] = {}
 
     @field_validator("method")
     @classmethod
@@ -435,6 +473,23 @@ class UQConfig(BaseModel):
         # Be permissive: any dict with a 'distribution' key is a candidate leaf.
         return isinstance(node, dict) and ("distribution" in node)
 
+    @staticmethod
+    def _is_derived(node: Any) -> bool:
+        """
+        Return ``True`` if a node declares a derived parameter.
+
+        Parameters
+        ----------
+        node : Any
+            Arbitrary value encountered during flattening.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``node`` is a ``dict`` with a ``"derived_from"`` key.
+        """
+        return isinstance(node, dict) and ("derived_from" in node)
+
     @classmethod
     def _flatten_leaves(cls, node: Any, prefix: str = "") -> dict[str, dict[str, Any]]:
         """
@@ -468,7 +523,7 @@ class UQConfig(BaseModel):
         if isinstance(node, dict):
             for k, v in node.items():
                 key = f"{prefix}.{k}" if prefix else k
-                if cls._is_leaf(v):
+                if cls._is_leaf(v) or cls._is_derived(v):
                     flat[key] = v
                 elif isinstance(v, dict):
                     flat.update(cls._flatten_leaves(v, key))
@@ -519,6 +574,7 @@ class UQConfig(BaseModel):
         samples = v.get("samples")
         method = v.get("method")
         mapping = v.get("mapping")
+        explicit_derived = v.get("derived")
 
         # Where the specs live: either under 'tree' or at top level
         raw = v.get("tree", v)
@@ -541,26 +597,184 @@ class UQConfig(BaseModel):
             method = raw.pop("method")
         if mapping is None and "mapping" in raw:
             mapping = raw.pop("mapping")
+        if explicit_derived is None and "derived" in raw:
+            explicit_derived = raw.pop("derived")
 
         # Ensure these don't leak into tree
         raw.pop("samples", None)
         raw.pop("method", None)
         raw.pop("mapping", None)
+        raw.pop("derived", None)
 
         # If keys are already dotted (['a.b.c']), keep only dict-valued items
         if any(isinstance(k, str) and "." in k for k in raw):
-            tree = {k: v for k, v in raw.items() if isinstance(v, dict)}
+            entries = {k: v for k, v in raw.items() if isinstance(v, dict)}
         else:
-            # Nested TOML tables -> flatten by finding leaves (by 'distribution' key)
-            tree = cls._flatten_leaves(raw)
+            # Nested TOML tables -> flatten by finding leaves
+            entries = cls._flatten_leaves(raw)
 
-        out: dict[str, Any] = {"tree": tree}
+        # An entry either draws from a distribution or follows another entry.
+        both = sorted(k for k, v in entries.items() if cls._is_leaf(v) and cls._is_derived(v))
+        if both:
+            raise ValueError(
+                f"UQ entries declare both 'distribution' and 'derived_from': {both}. "
+                "A parameter is either sampled or derived, not both."
+            )
+        tree = {k: v for k, v in entries.items() if cls._is_leaf(v)}
+        derived = {k: v for k, v in entries.items() if cls._is_derived(v)}
+        unknown = sorted(set(entries) - set(tree) - set(derived))
+        if unknown:
+            raise ValueError(
+                f"UQ entries declare neither 'distribution' nor 'derived_from': {unknown}. "
+                "Sampled parameters need a distribution; parameters computed from another "
+                "need derived_from."
+            )
+
+        if isinstance(explicit_derived, dict):
+            derived = {**derived, **explicit_derived}
+
+        out: dict[str, Any] = {"tree": tree, "derived": derived}
         if samples is not None:
             out["samples"] = samples
         if method is not None:
             out["method"] = method
         if mapping is not None:
             out["mapping"] = mapping
+        return out
+
+    @model_validator(mode="after")
+    def _check_derived(self) -> "UQConfig":
+        """
+        Check that every derived parameter resolves and that none form a cycle.
+
+        Catching this at load time matters: an unresolvable base would
+        otherwise surface much later as a missing column, after the ensemble
+        has already been staged.
+
+        Returns
+        -------
+        UQConfig
+            The validated model.
+
+        Raises
+        ------
+        ValueError
+            If a name is both sampled and derived, if a base does not exist,
+            or if the derived parameters form a cycle.
+        """
+        both = sorted(set(self.tree) & set(self.derived))
+        if both:
+            raise ValueError(f"UQ parameters are both sampled and derived: {both}")
+
+        known = set(self.tree) | set(self.derived)
+        missing = sorted({spec.derived_from for spec in self.derived.values()} - known)
+        if missing:
+            raise ValueError(f"derived_from names no UQ parameter: {missing}; available: {sorted(known)}")
+
+        # Depth-first walk over derived -> base edges; sampled names terminate.
+        visiting: set[str] = set()
+        done: set[str] = set()
+
+        def visit(name: str, chain: list[str]) -> None:
+            """
+            Walk one derived parameter's chain of bases.
+
+            Parameters
+            ----------
+            name : str
+                Parameter to resolve.
+            chain : list of str
+                Names visited so far, for the error message.
+
+            Raises
+            ------
+            ValueError
+                If the walk revisits a name still being resolved.
+            """
+            if name in done or name not in self.derived:
+                return
+            if name in visiting:
+                raise ValueError("derived parameters form a cycle: " + " -> ".join(chain + [name]))
+            visiting.add(name)
+            visit(self.derived[name].derived_from, chain + [name])
+            visiting.discard(name)
+            done.add(name)
+
+        for name in self.derived:
+            visit(name, [])
+        return self
+
+    def derived_order(self) -> list[str]:
+        """
+        Return derived parameter names, bases before the parameters that use them.
+
+        Returns
+        -------
+        list of str
+            Names in an order safe to evaluate sequentially.
+        """
+        order: list[str] = []
+        seen: set[str] = set()
+
+        def emit(name: str) -> None:
+            """
+            Append one derived parameter after its base.
+
+            Parameters
+            ----------
+            name : str
+                Parameter to emit.
+            """
+            if name in seen or name not in self.derived:
+                return
+            seen.add(name)
+            emit(self.derived[name].derived_from)
+            order.append(name)
+
+        for name in self.derived:
+            emit(name)
+        return order
+
+    def apply_derived(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add the derived parameters as columns of a sampled DataFrame.
+
+        Each is computed as ``base * scale + offset``. When the base, the scale
+        and the offset are all whole numbers the result is written as an
+        integer, so an elevation stays ``1750`` rather than ``1750.0``.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Output of :func:`pism_terra.sampling.generate_samples`, carrying one
+            column per sampled parameter.
+
+        Returns
+        -------
+        pandas.DataFrame
+            A copy with one added column per derived parameter.
+
+        Raises
+        ------
+        KeyError
+            If a base column is missing from *df*.
+        """
+        out = df.copy()
+        for name in self.derived_order():
+            spec = self.derived[name]
+            if spec.derived_from not in out.columns:
+                raise KeyError(
+                    f"derived parameter {name!r} needs column {spec.derived_from!r}, "
+                    f"which the sample does not carry: {sorted(out.columns)}"
+                )
+            base = pd.to_numeric(out[spec.derived_from])
+            values = base * spec.scale + spec.offset
+            whole = (
+                float(spec.scale).is_integer()
+                and float(spec.offset).is_integer()
+                and bool((base == base.round()).all())
+            )
+            out[name] = values.round().astype("int64") if whole else values
         return out
 
     # helpers

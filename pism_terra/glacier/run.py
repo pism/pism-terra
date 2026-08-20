@@ -1014,6 +1014,13 @@ def _build_ensemble_df(
             uq_df = uq_df.drop(columns=duplicate_cols)
         uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
+    # Derived parameters follow whatever their base ended up as, so resolve
+    # them after the posterior has had its say.
+    overwritten = sorted(set(uq.derived) & set(uq_df.columns))
+    if overwritten:
+        print(f"WARNING: derived parameters override sampled/posterior columns: {overwritten}")
+    uq_df = uq.apply_derived(uq_df)
+
     uq_df.rename(columns={"sample": "uq"}).to_csv(output_path / "uq.csv", index=False)
 
     if uq.mapping:
