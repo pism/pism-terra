@@ -55,6 +55,100 @@ from pism_terra.workflow import (
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
 
+# Dotted PISM flags that name the climate forcing file. The init leg swaps
+# them to ``campaign.init_climate``'s file so a run can spin up on a
+# climatology and then continue on the transient forcing.
+CLIMATE_FILE_OPTIONS = (
+    "atmosphere.given.file",
+    "surface.debm_simple.albedo_input.file",
+    "surface.debm_simple.std_dev.file",
+    "surface.pdd.std_dev.file",
+)
+
+
+def _build_init_leg(
+    cfg,
+    run: Mapping[str, object],
+    *,
+    rgi_id: str,
+    init_start: str,
+    init_end: str,
+    resolution: str,
+    name_options: str,
+    init_climate_file: str | Path | None,
+    state_path: Path,
+    scalar_path: Path,
+    spatial_path: Path,
+    pism_config_cdl: str | Path | None,
+) -> tuple[str, Path]:
+    """
+    Build the optional init leg that the main run restarts from.
+
+    A short bootstrap run over ``campaign.init_start``..``campaign.init_end``,
+    letting the geometry and thermal state settle before the run of interest.
+    ``campaign.init_climate`` optionally swaps the forcing for this leg only —
+    typically a monthly climatology, which PISM cycles, so the spin-up is not
+    tied to a particular stretch of the historical record.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded configuration; only used for option validation context.
+    run : Mapping[str, object]
+        The fully assembled main-leg option dict. Copied, then re-timed and
+        re-pointed at the init outputs; nothing is mutated in place.
+    rgi_id : str
+        Glacier identifier, for the output filenames.
+    init_start, init_end : str
+        Time bounds of the init leg as ``YYYY-MM-DD``.
+    resolution : str
+        Grid resolution tag (e.g. ``"500m"``), for filenames.
+    name_options : str
+        Filename stem chunk shared with the main leg (``id_<sample>`` or the
+        descriptive fallback).
+    init_climate_file : str or pathlib.Path or None
+        Forcing staged for ``campaign.init_climate``. When ``None`` the init
+        leg keeps the main leg's climate.
+    state_path, scalar_path, spatial_path : pathlib.Path
+        Output directories.
+    pism_config_cdl : str or pathlib.Path or None
+        Optional PISM CDL master config for option validation.
+
+    Returns
+    -------
+    tuple of (str, pathlib.Path)
+        The rendered command line and the state file the next leg restarts
+        from.
+    """
+    _ = cfg
+    run_init = dict(run)
+    run_init.pop("time.start", None)
+    run_init.pop("time.end", None)
+    run_init.update({"time.start": init_start, "time.end": init_end})
+
+    if init_climate_file is not None:
+        # Only re-point the options the main leg actually carries: which of
+        # them exist depends on the selected surface model.
+        for option in CLIMATE_FILE_OPTIONS:
+            if option in run_init:
+                run_init[option] = init_climate_file
+
+    init_tag = f"g{resolution}_{rgi_id}_{name_options}_{init_start}_{init_end}"
+    state_init = state_path / Path(f"state_{init_tag}.nc")
+    run_init.update(
+        {
+            "output.file": state_init.resolve(),
+            "output.scalar.file": (scalar_path / Path(f"scalar_{init_tag}.nc")).resolve(),
+            "output.spatial.file": (spatial_path / Path(f"spatial_{init_tag}.nc")).resolve(),
+        }
+    )
+
+    if pism_config_cdl is not None:
+        validate_pism_options(run_init, pism_config_cdl)
+
+    return dict2str(sort_dict_by_key(run_init)), state_init
+
+
 def _render_inverse_run(
     rgi_id: str,
     config_file: str | Path,
@@ -66,6 +160,7 @@ def _render_inverse_run(
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
+    init_climate_file: str | Path | None = None,
     pism_config_cdl: str | Path | None = None,
 ):
     """
@@ -116,6 +211,9 @@ def _render_inverse_run(
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._s0042``). If neither is provided,
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+    init_climate_file : str or pathlib.Path or None, optional
+        Forcing staged for ``campaign.init_climate``, used by the init leg
+        only. Ignored when the campaign config declares no init bounds.
     pism_config_cdl : str or Path or None, optional
         Path to a PISM CDL master config file. If provided, all run options
         are validated against it before generating the command line.
@@ -319,6 +417,32 @@ def _render_inverse_run(
         }
     )
 
+    # Optional init leg: when the campaign config carries init_start/init_end,
+    # render a short bootstrap run first and restart the main leg from its
+    # state instead of bootstrapping directly. ``campaign.init_climate`` swaps
+    # the forcing for that leg only — typically a climatology, which PISM
+    # cycles. Without the campaign fields the main leg bootstraps as before.
+    init_start = cfg.campaign.init_start
+    init_end = cfg.campaign.init_end
+    run_init_str = ""
+    if init_start and init_end:
+        run_init_str, state_init = _build_init_leg(
+            cfg,
+            run,
+            rgi_id=rgi_id,
+            init_start=init_start,
+            init_end=init_end,
+            resolution=resolution,
+            name_options=name_options,
+            init_climate_file=init_climate_file,
+            state_path=state_path,
+            scalar_path=scalar_path,
+            spatial_path=spatial_path,
+            pism_config_cdl=pism_config_cdl,
+        )
+        run["input.file"] = state_init.resolve()
+        run.pop("input.bootstrap", None)
+
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
 
@@ -368,6 +492,7 @@ def _render_inverse_run(
     with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
+    params.update({"run_init_str": run_init_str})
     params.update({"run_str": run_str})
     params.update({"inv_str": inv_str})
     params.update({"post_script": "pism-glacier-postprocess"})
@@ -397,6 +522,7 @@ def _render_forward_run(
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
     sample: int | None = None,
+    init_climate_file: str | Path | None = None,
     pism_config_cdl: str | Path | None = None,
 ):
     """
@@ -447,6 +573,9 @@ def _render_forward_run(
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._s0042``). If neither is provided,
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
+    init_climate_file : str or pathlib.Path or None, optional
+        Forcing staged for ``campaign.init_climate``, used by the init leg
+        only. Ignored when the campaign config declares no init bounds.
     pism_config_cdl : str or Path or None, optional
         Path to a PISM CDL master config file. If provided, all run options
         are validated against it before generating the command line.
@@ -622,6 +751,32 @@ def _render_forward_run(
         }
     )
 
+    # Optional init leg: when the campaign config carries init_start/init_end,
+    # render a short bootstrap run first and restart the main leg from its
+    # state instead of bootstrapping directly. ``campaign.init_climate`` swaps
+    # the forcing for that leg only — typically a climatology, which PISM
+    # cycles. Without the campaign fields the main leg bootstraps as before.
+    init_start = cfg.campaign.init_start
+    init_end = cfg.campaign.init_end
+    run_init_str = ""
+    if init_start and init_end:
+        run_init_str, state_init = _build_init_leg(
+            cfg,
+            run,
+            rgi_id=rgi_id,
+            init_start=init_start,
+            init_end=init_end,
+            resolution=resolution,
+            name_options=name_options,
+            init_climate_file=init_climate_file,
+            state_path=state_path,
+            scalar_path=scalar_path,
+            spatial_path=spatial_path,
+            pism_config_cdl=pism_config_cdl,
+        )
+        run["input.file"] = state_init.resolve()
+        run.pop("input.bootstrap", None)
+
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
 
@@ -664,6 +819,7 @@ def _render_forward_run(
     with open(post_file, "w", encoding="utf-8") as toml_file:
         toml.dump(run_toml, toml_file)
 
+    params.update({"run_init_str": run_init_str})
     params.update({"run_str": run_str})
     params.update({"post_script": "pism-glacier-postprocess"})
     params.update({"post_file": post_file})
@@ -1018,6 +1174,7 @@ def _run(*, kind: str) -> None:
             debug=options.debug,
             uq=uq_overrides,
             sample=sample,
+            init_climate_file=row["init_climate_file"] if "init_climate_file" in row else None,
             pism_config_cdl=pism_config_cdl,
         )
 

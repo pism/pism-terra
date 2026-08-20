@@ -379,7 +379,7 @@ def _campaign(name: str) -> CampaignConfig:
 
 def test_campaign_project_directory():
     """Campaign project_directory is parsed and exported by as_params()."""
-    s4f = _campaign("s4f_carra2.toml")
+    s4f = _campaign("s4f_carra2_maffezzoli.toml")
     assert s4f.prefix == "glacier/input"
     assert s4f.project_directory == "s4f"
     assert s4f.as_params()["project_directory"] == "s4f"
@@ -393,3 +393,59 @@ def test_campaign_project_directory():
     kitp = _campaign("kitp_greenland.toml")
     assert kitp.project_directory is None
     assert kitp.as_params().get("project_directory") is None
+
+
+def _config_without(section: str, tmp_path: Path) -> Path:
+    """
+    Copy a packaged config with one whole section removed.
+
+    Parameters
+    ----------
+    section : str
+        Section name, e.g. ``"bed_deformation"``.
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+
+    Returns
+    -------
+    pathlib.Path
+        The stripped config.
+    """
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "s4f_carra2_maffezzoli.toml"
+    kept, dropping = [], False
+    for line in source.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            dropping = stripped.strip("[]'\"").split(".")[0] == section
+        if not dropping:
+            kept.append(line)
+    out = tmp_path / f"no_{section}.toml"
+    out.write_text("\n".join(kept), encoding="utf-8")
+    return out
+
+
+@pytest.mark.parametrize("section", ["bed_deformation", "frontal_melt"])
+def test_optional_model_sections_may_be_omitted(section, tmp_path):
+    """
+    Validate a config that omits an optional model section.
+
+    Parameters
+    ----------
+    section : str
+        Section name to remove before loading.
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    cfg = load_config(_config_without(section, tmp_path))
+
+    assert getattr(cfg, section).model == "none"
+    # An omitted section must contribute nothing to the PISM command line.
+    assert getattr(cfg, section).selected() == {}
+
+
+def test_declared_model_sections_are_untouched():
+    """Keep the options of a config that does declare the sections."""
+    cfg = load_config(Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_c001.toml")
+
+    assert cfg.bed_deformation.selected() == {"bed_deformation.model": "lc"}
+    assert cfg.frontal_melt.selected()["frontal_melt.models"] == "routing"

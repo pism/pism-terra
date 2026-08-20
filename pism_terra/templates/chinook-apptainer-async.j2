@@ -33,4 +33,8 @@ ulimit
 
 pismtasks=$(( SLURM_NTASKS - 4 ))
 
+{% if run_init_str %}
+mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_init_str }} -output.asynchronous
+{% endif %}
+
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_str }} -output.asynchronous

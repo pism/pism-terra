@@ -94,7 +94,10 @@ def test_shared_products_live_beside_the_project(tmp_path):
 
     assert paths["gebco"] == tmp_path / "input" / "gebco"
     assert paths["heatflux"] == tmp_path / "input" / "heatflux"
+    # SNAP and the merged CARRA2 store are global; only the per-group CARRA2
+    # files depend on a project's CRS.
     assert paths["climate"] == tmp_path / "input" / "climate"
+    assert paths["staging_snap"] == tmp_path / "staging" / "snap"
     # Staging is shared too: the raw downloads do not depend on the project.
     assert paths["staging"] == tmp_path / "staging"
     assert paths["staging_carra2"] == tmp_path / "staging" / "carra2"
@@ -310,8 +313,8 @@ def test_dataset_list_is_the_execution_order():
     Keep the selector list in step with what the body actually runs.
 
     The order is the order the datasets are prepared in, and it is what
-    ``--include`` advertises. GlacierMIP4 and SNAP were dropped: their staged
-    products are already on S3 and nothing rebuilds them here.
+    ``--include`` advertises. GlacierMIP4 was dropped; its archive is only
+    mirrored into staging and nothing publishes it.
     """
     assert PREPARE_DATASETS == [
         "rgi",
@@ -319,6 +322,7 @@ def test_dataset_list_is_the_execution_order():
         "ice_thickness_maffezzoli",
         "gebco",
         "heatflux_lucazeau",
+        "snap",
         "carra2",
     ]
 
@@ -334,9 +338,8 @@ def test_dropped_datasets_are_rejected(tmp_path, setup_file):
     setup_file : pathlib.Path
         Minimal setup TOML from the fixture.
     """
-    for dropped in ("snap", "glaciermip4"):
-        with pytest.raises(SystemExit):
-            prepare(["--include", dropped, str(setup_file), str(tmp_path / "out")])
+    with pytest.raises(SystemExit):
+        prepare(["--include", "glaciermip4", str(setup_file), str(tmp_path / "out")])
 
 
 @pytest.mark.parametrize(

@@ -84,6 +84,84 @@ MODIFIER: Mapping[str, Callable] = {
 }
 
 
+def _build_climate(
+    name: str,
+    grid_ds,
+    *,
+    rgi_id: str,
+    config: Mapping,
+    path: Path,
+    staging_path: Path,
+    force_overwrite: bool,
+) -> list[Path]:
+    """
+    Run one climate builder and place its output next to the other inputs.
+
+    Parameters
+    ----------
+    name : str
+        Key of :data:`CLIMATE` selecting the builder (e.g. ``"carra2"``).
+    grid_ds : xarray.Dataset
+        Target grid the forcing is built for.
+    rgi_id : str
+        Glacier identifier, passed to the builder and used in its filenames.
+    config : Mapping
+        Campaign parameters (``bucket``, ``prefix``, ``project_directory``,
+        ``years``).
+    path : pathlib.Path
+        Input directory the finished forcing is copied into.
+    staging_path : pathlib.Path
+        Directory the builder works in; its output stays there so the
+        builder's own cache guard short-circuits on reruns.
+    force_overwrite : bool
+        Rebuild even when a cached file exists.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The forcing files, in ``path``. Empty for a parameterized climate that
+        writes no file (e.g. ``"elevation-dependent"``).
+
+    Raises
+    ------
+    KeyError
+        If *name* is not a known climate builder.
+    """
+    if name not in CLIMATE:
+        raise KeyError(f"Unknown climate {name!r}; available: {sorted(CLIMATE)}")
+
+    responses = CLIMATE[name](
+        grid_ds,
+        rgi_id=rgi_id,
+        years=config["years"],
+        path=staging_path,
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        project_directory=config.get("project_directory"),
+        force_overwrite=force_overwrite,
+    )
+    if responses is None:
+        return []
+    files = [Path(responses)] if isinstance(responses, (str, Path)) else [Path(p) for p in responses]
+
+    if staging_path.resolve() == path.resolve():
+        return files
+
+    # Copy (not move) the finished forcing into the input dir, leaving the
+    # builder's output in staging so its own cache guard short-circuits on
+    # reruns. Moving deletes the staging copy, so the climate would be
+    # regenerated/re-downloaded every run even though it already exists in the
+    # input dir. (Staging is excluded from the S3 upload.)
+    copied: list[Path] = []
+    for src in files:
+        dst = path / src.name
+        if src.resolve() != dst.resolve():
+            dst.unlink(missing_ok=True)
+            shutil.copy2(str(src), str(dst))
+        copied.append(dst)
+    return copied
+
+
 def stage_glacier(
     config: dict,
     rgi_id: str,
@@ -299,36 +377,44 @@ def stage_glacier(
 
     clim_mod = config["climate"]
     # Climate forcing — built into staging, then final outputs moved to `path`
-    climate_from_rgi = CLIMATE[config["climate"]]
-    responses = climate_from_rgi(
+    responses = _build_climate(
+        config["climate"],
         grid_ds,
         rgi_id=rgi_id,
-        years=config["years"],
-        path=staging_path,
-        bucket=config["bucket"],
-        prefix=config["prefix"],
-        project_directory=config.get("project_directory"),
+        config=config,
+        path=path,
+        staging_path=staging_path,
         force_overwrite=force_overwrite,
-    )  # list[Path]
-    # Normalize to list[Path]
-    if isinstance(responses, (str, Path)):
-        responses = [Path(responses)]
-    else:
-        responses = [Path(p) for p in responses]
-    if staging_path.resolve() != path.resolve():
-        # Copy (not move) the final climate file(s) into the input dir, leaving
-        # the builder's output in staging so its own cache guard short-circuits
-        # on reruns. Moving deletes the staging copy, so the climate would be
-        # regenerated/re-downloaded every run even though it already exists in
-        # the input dir. (Staging is excluded from the S3 upload.)
-        copied: list[Path] = []
-        for src in responses:
-            dst = path / src.name
-            if src.resolve() != dst.resolve():
-                dst.unlink(missing_ok=True)
-                shutil.copy2(str(src), str(dst))
-            copied.append(dst)
-        responses = copied
+    )
+
+    # Optional second forcing, used only by the init leg: a run can spin up on
+    # a climatology (``campaign.init_climate``) and then continue on the
+    # transient forcing named by ``campaign.climate``.
+    init_climate_file: Path | None = None
+    if config.get("init_climate"):
+        print("")
+        print(f"Init climate: {config['init_climate']}")
+        init_responses = _build_climate(
+            config["init_climate"],
+            grid_ds,
+            rgi_id=rgi_id,
+            config=config,
+            path=path,
+            staging_path=staging_path,
+            force_overwrite=force_overwrite,
+        )
+        if not init_responses:
+            raise ValueError(
+                f"campaign.init_climate = {config['init_climate']!r} produced no forcing file; "
+                "a parameterized climate cannot be used for the init leg"
+            )
+        if len(init_responses) > 1:
+            raise ValueError(
+                f"campaign.init_climate = {config['init_climate']!r} produced "
+                f"{len(init_responses)} files ({[p.name for p in init_responses]}); "
+                "the init leg needs exactly one"
+            )
+        init_climate_file = init_responses[0]
 
     # Build file index (one row per climate file)
     files_dict = {
@@ -338,6 +424,7 @@ def stage_glacier(
         "grid_file": grid_file.resolve(),
         "heatflux_file": bheatflux_file.resolve(),
         "obs_file": obs_file.resolve(),
+        "init_climate_file": init_climate_file.resolve() if init_climate_file else None,
     }
     dfs: list[pd.DataFrame] = []
     if not responses:

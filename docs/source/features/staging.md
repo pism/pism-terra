@@ -35,7 +35,7 @@ directory is what gets synced to S3 and addressed by the campaign config's
 <OUTPUT_PATH>/
 ├── input/
 │   ├── gebco/, heatflux/               # global — shared by every project
-│   ├── climate/carra2.zarr, carra2_monthly_mean.zarr
+│   ├── climate/carra2.zarr, carra2_monthly_mean.zarr, snap_cru_TS40_*.nc
 │   └── <project_directory>/            # e.g. rgi, s4f
 │       ├── rgi/<project>_{c,g}.gpkg
 │       ├── ice_thickness/{frank,maffezzoli}/

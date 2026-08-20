@@ -869,8 +869,11 @@ class PismConfig(BaseModelWithDot):
     atmosphere: AtmosphereConfig
     ocean: OceanConfig
     surface: SurfaceConfig
-    frontal_melt: FrontalMeltConfig
-    bed_deformation: BedDeformationConfig
+    # Optional: a run that does not model them omits the section entirely and
+    # PISM keeps its defaults. Both are read only by the ISMIP7 and KITP
+    # runners, whose configs declare them.
+    frontal_melt: FrontalMeltConfig = Field(default_factory=lambda: _no_model(FrontalMeltConfig))
+    bed_deformation: BedDeformationConfig = Field(default_factory=lambda: _no_model(BedDeformationConfig))
     hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
     calving: dict[str, Any] = {}
@@ -1311,6 +1314,27 @@ class FrontalMeltConfig(ModelWithOptions):
     SECTION = "frontal_melt"
 
 
+def _no_model(cls: type) -> Any:
+    """
+    Build an empty "no model selected" section.
+
+    Used as the default for optional sub-sections: ``selected()`` then returns
+    an empty option dict, so a config that omits the section simply adds no
+    flags and PISM keeps its own defaults.
+
+    Parameters
+    ----------
+    cls : type
+        A :class:`ModelWithOptions` subclass.
+
+    Returns
+    -------
+    ModelWithOptions
+        Instance with ``model = "none"`` and a single empty option table.
+    """
+    return cls(model="none", options={"none": {}})
+
+
 class StressBalanceConfig(ModelWithOptions):
     """
     Stress-balance model configuration.
@@ -1391,6 +1415,12 @@ class CampaignConfig(BaseModel):
         Filename of the RGI glacier-complex ("-C") outlines in the bucket.
     rgi_glacier_file : str or None
         Filename of the RGI glacier ("-G") outlines in the bucket.
+    init_climate : str or None
+        Climate builder used for the init leg only, as a key of
+        ``pism_terra.glacier.stage.CLIMATE`` (e.g.
+        ``"carra2-monthly-mean"``). Lets a run spin up on a climatology and
+        then continue on the transient forcing named by ``climate``. When
+        unset the init leg reuses ``climate``.
     init_start : str or None
         Start of the inverse-workflow init (prior) leg as ``YYYY-MM-DD``
         (e.g. ``"2006-01-01"``); required by
@@ -1439,6 +1469,7 @@ class CampaignConfig(BaseModel):
     retreat_file: str | None = Field(default=None)
     rgi_complex_file: str | None = Field(default=None)
     rgi_glacier_file: str | None = Field(default=None)
+    init_climate: str | None = Field(default=None)
     init_start: str | None = Field(default=None)
     init_end: str | None = Field(default=None)
     historical_start_year: str | float | None = Field(default=None)
