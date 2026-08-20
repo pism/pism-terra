@@ -22,8 +22,8 @@
 Provide raster functions.
 """
 
+import math
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 import geopandas as gpd
 import numpy as np
@@ -32,7 +32,7 @@ import rasterio
 import rioxarray as rxr
 import xarray as xr
 from geocube.api.core import make_geocube
-from rasterio.warp import Resampling, calculate_default_transform, reproject
+from pyproj import CRS, Transformer
 from shapely.geometry import box
 
 from pism_terra.workflow import check_xr_lazy
@@ -109,7 +109,7 @@ def create_ds(
     encoding.update(encoding_time)
     encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
 
-    ds.to_netcdf(output_file, encoding=encoding)
+    ds.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
 
     return output_file
 
@@ -302,50 +302,173 @@ def raster_overlaps_glacier(
     return glacier_box.intersects(raster_box)
 
 
-def reproject_file(src_file: str | Path, dst_crs: str | dict, resolution: float) -> str:
+def local_scale_factor(
+    crs,
+    x,
+    y,
+    eps_deg: float = 1.0e-6,
+):
     """
-    Reproject a raster file to a new coordinate reference system and resolution.
+    Local linear scale factor of a projected CRS at a point.
 
-    This function opens a source raster file, reprojects its contents to a specified
-    destination CRS and resolution using average resampling, and writes the result
-    to a temporary GeoTIFF file. The path to this reprojected file is returned.
+    Returns the dimensionless number ``k`` such that **1 metre of true
+    ground displacement at ``(x, y)`` corresponds to ``k`` metres measured
+    in ``crs`` map units**. ``k = 1`` for an isometric projection (e.g.
+    polar stereographic near its true-scale latitude); ``k > 1`` where the
+    projection inflates distances (e.g. Web Mercator at high latitudes;
+    ``k ≈ 1/cos(lat)`` there); ``k < 1`` where it shrinks them.
+
+    The factor is computed as ``sqrt(|det J|)``, where ``J`` is the
+    Jacobian of the *true-to-map* coordinate transform at the point:
+
+    .. math::
+
+        J = \\begin{pmatrix}
+            \\partial x_\\mathrm{crs} / \\partial x_\\mathrm{true} &
+            \\partial x_\\mathrm{crs} / \\partial y_\\mathrm{true} \\\\
+            \\partial y_\\mathrm{crs} / \\partial x_\\mathrm{true} &
+            \\partial y_\\mathrm{crs} / \\partial y_\\mathrm{true}
+        \\end{pmatrix}
+
+    The Jacobian is estimated by finite-differencing the
+    geographic-to-map transform a small distance from the point. The
+    geographic step (in degrees) is converted to a true-metres step using
+    the **prime-vertical radius of curvature** ``N(lat)`` along longitude
+    and the **meridional radius of curvature** ``M(lat)`` along latitude,
+    both evaluated on the source CRS's own ellipsoid (no spherical-Earth
+    approximation):
+
+    .. math::
+
+        e^2 = 2f - f^2, \\quad
+        N(\\varphi) = \\frac{a}{\\sqrt{1 - e^2 \\sin^2 \\varphi}}, \\quad
+        M(\\varphi) = \\frac{a (1 - e^2)}{(1 - e^2 \\sin^2 \\varphi)^{3/2}}
+
+    where ``a`` is the ellipsoid's semi-major axis and ``f`` its
+    flattening. One degree of latitude corresponds to ``M·π/180`` metres;
+    one degree of longitude at latitude ``φ`` corresponds to
+    ``N·cos(φ)·π/180`` metres. Using these to normalise the Jacobian gives
+    ``det J`` in units of ``m_crs² / m_true²``; its square root is the
+    scalar scale factor.
+
+    For **conformal** CRSs (Mercator, polar stereographic, UTM,
+    Lambert conformal conic, …) the projection is locally isotropic, so
+    ``k_x = k_y = k`` — the single returned number fully describes the
+    distortion. For **non-conformal** CRSs (Albers equal-area, …)
+    ``k_x ≠ k_y``; ``sqrt(|det J|)`` is the area-equivalent (geometric
+    mean) scale and is good enough for vector-magnitude corrections.
 
     Parameters
     ----------
-    src_file : str or Path
-        Path to the source raster file.
-    dst_crs : str or dict
-        Destination coordinate reference system (e.g., "EPSG:32633" or a CRS dict).
-    resolution : float
-        Target resolution for the output raster in units of the destination CRS.
+    crs : str or pyproj.CRS
+        Source CRS for the velocity (or other vector) field. Anything
+        :class:`pyproj.CRS` accepts: ``"EPSG:3857"``, WKT, PROJ4, etc.
+    x, y : float or numpy.ndarray
+        Position(s) in ``crs`` units (typically metres) where the scale
+        factor is evaluated. Scalars or broadcastable arrays.
+    eps_deg : float, default ``1.0e-6``
+        Geographic step (degrees) used for the numerical Jacobian. The
+        default keeps the truncation error below 1 part in 10⁵ for the
+        projections used in glaciology while staying well above floating
+        -point precision.
 
     Returns
     -------
-    str
-        Path to the temporary reprojected raster file (GeoTIFF).
+    float or numpy.ndarray
+        Local scale factor ``k`` (dimensionless). Same shape as ``x``/``y``.
 
     Notes
     -----
-    - The output file is written to a temporary location and is not automatically deleted.
-      It is the caller's responsibility to clean it up.
-    - The reprojected data is resampled using `Resampling.average`.
-    """
-    with rasterio.open(src_file) as src:
-        transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
-        kwargs = src.meta.copy()
-        kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+    **How to use this to correct a finite-difference velocity transform.**
 
-        with NamedTemporaryFile(suffix=".tif", delete=False) as projected_file:
-            with rasterio.open(projected_file.name, "w", **kwargs) as dst:
-                for i in range(1, src.count + 1):
-                    reproject(
-                        source=rasterio.band(src, i),
-                        destination=rasterio.band(dst, i),
-                        src_transform=src.transform,
-                        src_crs=src.crs,
-                        dst_transform=transform,
-                        dst_crs=dst_crs,
-                        resampling=Resampling.average,
-                        resolution=resolution,
-                    )
-            return projected_file.name
+    Vector products like ITS_LIVE store velocity components as the
+    *true ground motion* in m/yr, projected onto the raster CRS's
+    coordinate axes. The advect-and-roundtrip pattern used by
+    :func:`pism_terra.glacier.observations.glacier_velocities_from_grid`,
+    however, implicitly assumes the components describe the *rate of
+    change of the map coordinate* (i.e. ``v = dx_crs/dt``). The two
+    conventions agree when the source CRS has unit scale factor at the
+    point of interest (polar stereographic over Greenland or Antarctica
+    near 70°S/70°N, UTM near its central meridian), but diverge wherever
+    ``k != 1`` — most visibly with Web Mercator (EPSG:3857), where
+    ``k = 1/cos(φ) ≈ 2`` at 60° latitude.
+
+    To make the FD round-trip recover the right magnitude regardless of
+    the source CRS, pre-multiply the source-side velocity by the local
+    scale factor before advecting:
+
+    .. code-block:: python
+
+        from pism_terra.raster import local_scale_factor
+
+        k = local_scale_factor(src_crs, X_, Y_)   # X_, Y_ in src_crs metres
+        vx_pts *= k
+        vy_pts *= k
+        # ... continue with the existing FD round-trip; the result is now
+        # in m/yr aligned with the destination CRS axes, independent of
+        # the source CRS's local distortion.
+
+    Equivalently, divide by ``k`` *after* the round-trip. For an isometric
+    source (``k ≈ 1``) the correction is a no-op, so it's safe to apply
+    unconditionally as a defensive measure.
+
+    Examples
+    --------
+    Mercator (EPSG:3857) inflates distances by ``1/cos(φ)``. At about 60° N
+    the local scale factor is therefore close to 2:
+
+    >>> from pism_terra.raster import local_scale_factor
+    >>> round(local_scale_factor("EPSG:3857", 0.0, 8362900.0), 2)
+    1.99
+
+    Polar stereographic NSIDC (EPSG:3413) has true scale at 70° N, so the
+    factor is close to 1 over most of the Greenland Ice Sheet:
+
+    >>> round(local_scale_factor("EPSG:3413", 0.0, -1_000_000.0), 2)
+    0.98
+
+    Vectorised call — pass arrays of points and get an array back:
+
+    >>> import numpy as np
+    >>> ks = local_scale_factor("EPSG:3857", np.zeros(3), np.linspace(0, 8e6, 3))
+    >>> [round(float(k), 2) for k in ks]
+    [1.0, 1.2, 1.89]
+    """
+    crs_obj = CRS(crs)
+    ellps = crs_obj.geodetic_crs.ellipsoid
+    a = ellps.semi_major_metre
+    inv_f = ellps.inverse_flattening
+    f = 1.0 / inv_f if inv_f and not math.isinf(inv_f) else 0.0
+    e2 = 2.0 * f - f * f
+
+    to_geo = Transformer.from_crs(crs_obj, "EPSG:4326", always_xy=True)
+    from_geo = Transformer.from_crs("EPSG:4326", crs_obj, always_xy=True)
+
+    lon, lat = to_geo.transform(x, y)
+
+    # Numerical Jacobian d(crs) / d(lon, lat) in m_crs / deg.
+    xp, yp = from_geo.transform(np.add(lon, eps_deg), lat)
+    xm, ym = from_geo.transform(np.subtract(lon, eps_deg), lat)
+    xyp, yyp = from_geo.transform(lon, np.add(lat, eps_deg))
+    xym, yym = from_geo.transform(lon, np.subtract(lat, eps_deg))
+
+    j_xlon = (np.asarray(xp) - np.asarray(xm)) / (2.0 * eps_deg)
+    j_ylon = (np.asarray(yp) - np.asarray(ym)) / (2.0 * eps_deg)
+    j_xlat = (np.asarray(xyp) - np.asarray(xym)) / (2.0 * eps_deg)
+    j_ylat = (np.asarray(yyp) - np.asarray(yym)) / (2.0 * eps_deg)
+
+    # Convert deg → true-metres using the local radii of curvature.
+    sin_lat = np.sin(np.radians(lat))
+    cos_lat = np.cos(np.radians(lat))
+    w = np.sqrt(1.0 - e2 * sin_lat * sin_lat)
+    n_prime = a / w  # prime-vertical radius (m)
+    m_meridional = a * (1.0 - e2) / w**3  # meridional radius (m)
+    deg_to_rad = math.pi / 180.0
+    m_per_deg_lon = n_prime * cos_lat * deg_to_rad
+    m_per_deg_lat = m_meridional * deg_to_rad
+
+    # det of the Jacobian in (m_crs / m_true)^2.
+    det = np.abs(j_xlon * j_ylat - j_xlat * j_ylon) / (m_per_deg_lon * m_per_deg_lat)
+
+    k = np.sqrt(det)
+    return float(k) if np.isscalar(x) and np.isscalar(y) else k

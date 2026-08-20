@@ -24,6 +24,9 @@ Vector Functions.
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
+import shapely
+import xarray as xr
 
 
 def glaciers_in_complex(rgi_c_id: str, rgi_g: gpd.GeoDataFrame) -> list:
@@ -33,17 +36,25 @@ def glaciers_in_complex(rgi_c_id: str, rgi_g: gpd.GeoDataFrame) -> list:
     Parameters
     ----------
     rgi_c_id : str
-        The complex outline identifier (e.g. ``"RGI2000-v7.0-C-01-09429"``).
+        The complex outline identifier (e.g. ``"RGI2000-v7.0-C-01-09429"`` or
+        an aggregate name like ``"S4F_AK"``).
     rgi_g : geopandas.GeoDataFrame
         Glacier outline dataframe with an ``rgi_id_c`` column mapping each
-        glacier to its parent complex.
+        glacier to its parent complex. May also have an
+        ``rgi_id_c_aggregate`` column with one or more aggregate-complex
+        names per glacier (semicolon-separated).
 
     Returns
     -------
     list
-        List of ``rgi_id`` strings whose ``rgi_id_c`` matches *rgi_c_id*.
+        List of ``rgi_id`` strings whose ``rgi_id_c`` matches ``rgi_c_id``,
+        plus any whose ``rgi_id_c_aggregate`` lists ``rgi_c_id``.
     """
-    return rgi_g.loc[rgi_g["rgi_id_c"] == rgi_c_id, "rgi_id"].tolist()
+    mask = rgi_g["rgi_id_c"] == rgi_c_id
+    if "rgi_id_c_aggregate" in rgi_g.columns:
+        agg = rgi_g["rgi_id_c_aggregate"].fillna("")
+        mask = mask | agg.str.split(";").apply(lambda parts: rgi_c_id in parts)
+    return rgi_g.loc[mask, "rgi_id"].tolist()
 
 
 def get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame | str | Path, rgi_id: str) -> gpd.GeoDataFrame:
@@ -115,7 +126,56 @@ def aggregate(n, df):
     if n == 0:
         return df.iloc[[n]]
     else:
-        geom = df.iloc[range(n)].unary_union
+        geom = df.iloc[range(n)].union_all()
         merged_df = df.iloc[[n]]
         merged_df.iloc[0].geometry = geom
         return merged_df
+
+
+def grid_points_from_dataset(ds: xr.Dataset) -> gpd.GeoDataFrame:
+    """
+    Build a GeoDataFrame of grid cell centers from a domain dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with ``x`` and ``y`` coordinates (cell centers) and a
+        ``spatial_ref`` variable carrying CRS information in ``crs_wkt``.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        One Point geometry per cell center, in the dataset's CRS.
+    """
+    xs, ys = np.meshgrid(ds.x.values, ds.y.values)
+    points = shapely.points(xs.ravel(), ys.ravel())
+    return gpd.GeoDataFrame(geometry=points, crs=ds.spatial_ref.attrs.get("crs_wkt"))
+
+
+def grid_cells_from_dataset(ds: xr.Dataset) -> gpd.GeoDataFrame:
+    """
+    Build a GeoDataFrame of grid cell polygons from a domain dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with ``x_bnds`` and ``y_bnds`` cell-edge bounds, a ``domain``
+        variable, and a ``spatial_ref`` variable carrying CRS information in
+        ``crs_wkt``.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        One rectangular Polygon per grid cell, with a ``domain`` column
+        copied from ``ds.domain`` and the dataset's CRS.
+    """
+    x0, x1 = ds.x_bnds.values[:, 0], ds.x_bnds.values[:, 1]
+    y0, y1 = ds.y_bnds.values[:, 0], ds.y_bnds.values[:, 1]
+    X0, Y0 = np.meshgrid(x0, y0)
+    X1, Y1 = np.meshgrid(x1, y1)
+    polys = shapely.box(X0.ravel(), Y0.ravel(), X1.ravel(), Y1.ravel())
+    return gpd.GeoDataFrame(
+        {"domain": ds.domain.values.flatten()},
+        geometry=polys,
+        crs=ds.spatial_ref.attrs.get("crs_wkt"),
+    )
