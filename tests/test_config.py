@@ -33,11 +33,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 # Adjust this import path to match your project layout:
 # Adjust the import path to wherever your models live
+import toml
+from pydantic import ValidationError
+
 from pism_terra.config import (  # noqa: F401  (ensure DistSpec is imported)
+    CampaignConfig,
     DistSpec,
     UQConfig,
     load_config,
@@ -350,3 +353,99 @@ def test_campaign_init_fields():
     params = cfg.campaign.as_params()
     assert params["init_start"] == "2006-01-01"
     assert params["init_end"] == "2007-01-01"
+
+
+def _campaign(name: str) -> CampaignConfig:
+    """
+    Validate just the ``[campaign]`` table of a packaged config.
+
+    The glacier configs do not satisfy the full ``PismConfig`` schema (they
+    predate the required ``bed_deformation`` section), so load the one section
+    under test rather than the whole file.
+
+    Parameters
+    ----------
+    name : str
+        File name under ``pism_terra/config``.
+
+    Returns
+    -------
+    CampaignConfig
+        The validated campaign section.
+    """
+    path = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / name
+    return CampaignConfig.model_validate(toml.loads(path.read_text("utf-8"))["campaign"])
+
+
+def test_campaign_project_directory():
+    """Campaign project_directory is parsed and exported by as_params()."""
+    s4f = _campaign("s4f_carra2_maffezzoli.toml")
+    assert s4f.prefix == "glacier/input"
+    assert s4f.project_directory == "s4f"
+    assert s4f.as_params()["project_directory"] == "s4f"
+    # The outlines depend on the project's CRS overrides, so they are named for it.
+    assert s4f.rgi_complex_file == "s4f_c.gpkg"
+
+    assert _campaign("rgi_era5_frank.toml").project_directory == "rgi"
+
+    # Campaigns whose input tree is not split by project leave it unset, and
+    # as_params() drops empty fields, so stage's .get() falls back to None.
+    kitp = _campaign("kitp_greenland.toml")
+    assert kitp.project_directory is None
+    assert kitp.as_params().get("project_directory") is None
+
+
+def _config_without(section: str, tmp_path: Path) -> Path:
+    """
+    Copy a packaged config with one whole section removed.
+
+    Parameters
+    ----------
+    section : str
+        Section name, e.g. ``"bed_deformation"``.
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+
+    Returns
+    -------
+    pathlib.Path
+        The stripped config.
+    """
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "s4f_carra2_maffezzoli.toml"
+    kept, dropping = [], False
+    for line in source.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            dropping = stripped.strip("[]'\"").split(".")[0] == section
+        if not dropping:
+            kept.append(line)
+    out = tmp_path / f"no_{section}.toml"
+    out.write_text("\n".join(kept), encoding="utf-8")
+    return out
+
+
+@pytest.mark.parametrize("section", ["bed_deformation", "frontal_melt"])
+def test_optional_model_sections_may_be_omitted(section, tmp_path):
+    """
+    Validate a config that omits an optional model section.
+
+    Parameters
+    ----------
+    section : str
+        Section name to remove before loading.
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    cfg = load_config(_config_without(section, tmp_path))
+
+    assert getattr(cfg, section).model == "none"
+    # An omitted section must contribute nothing to the PISM command line.
+    assert getattr(cfg, section).selected() == {}
+
+
+def test_declared_model_sections_are_untouched():
+    """Keep the options of a config that does declare the sections."""
+    cfg = load_config(Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_c001.toml")
+
+    assert cfg.bed_deformation.selected() == {"bed_deformation.model": "lc"}
+    assert cfg.frontal_melt.selected()["frontal_melt.models"] == "routing"

@@ -353,8 +353,9 @@ def run_kitp(
     post_process_str = ""
     if outline_file != "none":
         post_process_str = (
-            f"pism-kitp-postprocess "
-            f"{spatial_file.resolve()} {basin_file.resolve()} {outline_file}{_postprocess_ntasks(config_cli)}"
+            f"pism-postprocess-scalar "
+            f"{spatial_file.resolve()} {basin_file.resolve()} {outline_file} "
+            f"--total-name GIS{_postprocess_ntasks(config_cli)}"
         )
 
     params.update({"run_str": run_str})
@@ -548,7 +549,7 @@ def run_single():
             "input.file": row["boot_file"],
             "input.regrid.file": row["regrid_file"],
             "energy.bedrock_thermal.file": row["heatflux_file"],
-            "geometry.front_retreat.prescribed.file": row["boot_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
             "grid.file": row["grid_file"],
             "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.given.file": row["climate_file"],
@@ -750,6 +751,13 @@ def run_ensemble():
             uq_df = uq_df.drop(columns=duplicate_cols)
         uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
 
+    # Derived parameters follow whatever their base ended up as, so resolve
+    # them after the posterior has had its say.
+    overwritten = sorted(set(uq.derived) & set(uq_df.columns))
+    if overwritten:
+        print(f"WARNING: derived parameters override sampled/posterior columns: {overwritten}")
+    uq_df = uq.apply_derived(uq_df)
+
     uq_file = output_path / Path("uq.csv")
     uq_df.rename(columns={"sample": "id"}).to_csv(uq_file, index=False)
 
@@ -773,7 +781,7 @@ def run_ensemble():
             "input.file": row["boot_file"],
             "input.regrid.file": row["regrid_file"],
             "energy.bedrock_thermal.file": row["heatflux_file"],
-            "geometry.front_retreat.prescribed.file": row["boot_file"],
+            "geometry.front_retreat.prescribed.file": row["retreat_file"],
             "grid.file": row["grid_file"],
             "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.given.file": row["climate_file"],

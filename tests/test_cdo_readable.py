@@ -115,3 +115,39 @@ def test_missing_dim_is_a_no_op():
 
     assert out["ice_mass"].dims == ("time", "basin")
     assert out["basin"].values.tolist() == ["CE", "CW", "GIS"]
+
+
+def test_labels_are_written_as_a_char_array(tmp_path):
+    """
+    Store labels on disk as NC_CHAR, which every NetCDF reader understands.
+
+    xarray defaults to the netCDF-4-only NC_STRING type, which tools that
+    read variables numerically reject outright — ncview fails the file with
+    "Not a valid data type or _FillValue type mismatch".
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    import netCDF4  # pylint: disable=import-outside-toplevel
+
+    out = make_cdo_readable(labelled(), "basin")
+    assert out["basin_name"].encoding["dtype"] == "S1"
+
+    path = tmp_path / "scalar.nc"
+    out.to_netcdf(path, encoding={var: {"zlib": True, "complevel": 2} for var in out.data_vars})
+
+    with netCDF4.Dataset(path) as ds:  # pylint: disable=no-member
+        stored = ds.variables["basin_name"]
+        assert stored.dtype == np.dtype("S1"), f"stored as {stored.dtype}"
+        # The char array carries a string-length dimension alongside the region.
+        assert stored.dimensions[0] == "basin"
+        assert len(stored.dimensions) == 2
+
+    # And it still round-trips to labels usable for selection.
+    with xr.open_dataset(path) as back:
+        assert [str(v) for v in back["basin_name"].values] == ["CE", "CW", "GIS"]
+        assert float(back.set_index(basin="basin_name")["ice_mass"].sel(basin="GIS").isel(time=0)) == float(
+            out["ice_mass"].sel(basin=2).isel(time=0)
+        )

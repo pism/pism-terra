@@ -20,4 +20,8 @@ ulimit
 # FORWARD RUN
 # ###############################################################################
 
+{% if run_init_str %}
+mpirun -np  {{ ntasks | default(40) }} pism {{ run_init_str }}
+{% endif %}
+
 mpirun -np  {{ ntasks | default(40) }} pism {{ run_str }}

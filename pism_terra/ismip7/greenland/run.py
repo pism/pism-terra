@@ -487,8 +487,9 @@ def _build_forward_legs(
         if outline_file != "none":
             _nt = _postprocess_ntasks(config_cli)
             post_process_str = (
-                f"pism-ismip7-greenland-postprocess "
-                f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file}{_nt}"
+                f"pism-postprocess-scalar "
+                f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file} "
+                f"--total-name GIS{_nt}"
             )
     else:
         # --- Counter-driven ISMIP7 two-leg run (historical -> projection) ---
@@ -1322,6 +1323,13 @@ def _build_ensemble_df(
             print(f"WARNING: posterior overrides UQ for columns: {sorted(duplicate_cols)}")
             uq_df = uq_df.drop(columns=duplicate_cols)
         uq_df = pd.concat([uq_df, posterior_sampled_df], axis=1)
+
+    # Derived parameters follow whatever their base ended up as, so resolve
+    # them after the posterior has had its say.
+    overwritten = sorted(set(uq.derived) & set(uq_df.columns))
+    if overwritten:
+        print(f"WARNING: derived parameters override sampled/posterior columns: {overwritten}")
+    uq_df = uq.apply_derived(uq_df)
 
     uq_df.rename(columns={"sample": "uq"}).to_csv(output_path / "uq.csv", index=False)
 

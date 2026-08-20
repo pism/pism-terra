@@ -49,6 +49,7 @@ dependencies:
   - s3fs
   - scikit-learn
   - scipy
+  - seaborn
   - shapely
   - toml
   - tqdm

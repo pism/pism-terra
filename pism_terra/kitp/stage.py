@@ -137,11 +137,12 @@ def stage(
     boot_file = input_path / Path(config["boot_file"])
     heatflux_file = input_path / Path(config["heatflux_file"])
     regrid_file = input_path / Path(config["regrid_file"])
+    retreat_file = input_path / Path(config["retreat_file"])
     ocean_file = input_path / Path(config["ocean_file"])
     outline_file = input_path / Path(config["outline_file"])
 
     # Validate the lazy-check inputs concurrently; only invalid files print.
-    input_lazy_files = [boot_file, heatflux_file, regrid_file, ocean_file]
+    input_lazy_files = [boot_file, heatflux_file, regrid_file, retreat_file, ocean_file]
     # Processes (not threads): HDF5 isn't reliably thread-safe across all
     # builds (Chinook segfaults), so each worker gets its own interpreter
     # and HDF5 state.
@@ -165,6 +166,7 @@ def stage(
         "ocean_file": ocean_file.resolve(),
         "outline_file": outline_file.resolve(),
         "regrid_file": regrid_file.resolve(),
+        "retreat_file": retreat_file.resolve(),
     }
 
     gcms = config["gcms"]

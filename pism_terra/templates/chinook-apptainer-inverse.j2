@@ -35,6 +35,10 @@ ulimit
 # FORWARD RUN
 # ###############################################################################
 
+{% if run_init_str %}
+mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pism {{ run_init_str }}
+{% endif %}
+
 mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pism {{ run_str }}
 
 # ###############################################################################

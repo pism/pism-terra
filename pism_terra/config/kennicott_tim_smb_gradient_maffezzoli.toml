@@ -6,9 +6,9 @@
 [campaign]
 
 bucket = "pism-cloud-data"
-climate = "era5-monthly-mean"
+climate = "elevation-dependent"
 dem = "glo_90"
-ice_thickness = "millan"
+ice_thickness = "maffezzoli"
 bathymetry = "gebco"
 name = "Calibration"
 prefix = "glacier/input"
@@ -16,19 +16,19 @@ project_directory = "rgi"
 rgi_complex_file = "rgi_c.gpkg"
 rgi_glacier_file = "rgi_g.gpkg"
 velocity = "its_live"
-forcing_mask = "all"
+forcing_mask = "none"
 heatflux = "lucazeau"
+ocean_moat = "yes"
 
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0006-01-01"
+'time.end' =  "0251-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 500
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -51,10 +51,10 @@ heatflux = "lucazeau"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
-'output.scalar.times' = "daily"
+'output.scalar.times' = "monthly"
 'output.spatial.file' = "none"
-'output.spatial.times' = "yearly"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes"
+'output.spatial.times' = "10"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,ice_mass,mass_fluxes"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 
@@ -63,9 +63,9 @@ heatflux = "lucazeau"
 resolution = "500m"
 'grid.file' = "none"
 'grid.Lbz' = 0
-'grid.Lz' = 1200
+'grid.Lz' = 2000
 'grid.Mbz' = 1
-'grid.Mz' = 61
+'grid.Mz' = 101
 'grid.registration' = "center"
 
 [energy]
@@ -100,6 +100,7 @@ model = 'blatter'
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
+'time_stepping.adaptive_ratio' = 500
 
 [stress_balance.options.hybrid]
 
@@ -126,33 +127,53 @@ model = 'blatter'
 
 [surface]
 
-model = "pdd"
+model = "elevation_dependent"
 
-[surface.options.cosipy]
+[surface.options.elevation_dependent]
 
-'surface.models' = "given,forcing"
+'surface.models' = "elevation_dependent"
+
+'surface.elevation_dependent.z_M_min' = 700
+'surface.elevation_dependent.M_min' = -8.80         # = -8000 kg/m^2 / 910 kg/m^3
+'surface.elevation_dependent.z_ELA' = 1750
+'surface.elevation_dependent.z_M_max' = 2200
+'surface.elevation_dependent.M_max' = 2.42
+'surface.elevation_dependent.M_limit_min' = -8.80
+'surface.elevation_dependent.M_limit_max' = 2.42
 
 [surface.options.pdd]
 
-'surface.models' = "pdd,forcing"
-'surface.force_to_thickness.alpha' = 0.75
-'surface.force_to_thickness.ice_free_alpha_factor' = 10.0
-'surface.force_to_thickness.file' = "none"
+'surface.models' = "pdd"
 
-[calving]
+[surface.options.debm_simple]
 
-'calving.methods' = 'vonmises_calving'
-'calving.vonmises_calving.sigma_max' = 7.5e5
+'surface.models' = "debm_simple"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 29
+'surface.debm_simple.c2' = -93
+'surface.debm_simple.refreeze' = 0.60
+'surface.debm_simple.refreeze_ice_melt' = "no"
+'surface.debm_simple.air_temp_all_precip_as_snow' = 273.15
+'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
+
+[surface.options.debm_enhanced]
+
+'surface.models' = "debm_enhanced"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 29
+'surface.debm_simple.c2' = -93
+'surface.debm_simple.refreeze' = 0.60
+'surface.debm_simple.refreeze_ice_melt' = "no"
+'surface.debm_simple.air_temp_all_precip_as_snow' = 273.15
+'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
+
+
 
 [atmosphere]
 
-model = "given"
+model = "none"
 
-[atmosphere.options.given]
-
-'atmosphere.models' = "given"
-'atmosphere.given.file' = "none"
-'atmosphere.given.periodic' = "yes"
+[atmosphere.options.none]
 
 [ocean]
 
@@ -209,21 +230,23 @@ model = "none"
 'inverse.huber.delta' =  1e2
 
 [solver.forward]
+
+bp_ksp_rtol = 1e-3
 bp_ksp_type = "fgmres"
-bp_pc_type = "mg"
-bp_mg_levels_ksp_type = "richardson"
-bp_mg_levels_pc_type = "sor"
+bp_mg_coarse_ksp_max_it = 50
+bp_mg_coarse_ksp_rtol = 1e-2
 bp_mg_coarse_ksp_type = "gmres"
 bp_mg_coarse_pc_type = "gamg"
-bp_mg_coarse_ksp_rtol = 1e-2
-bp_mg_coarse_ksp_max_it = 50
+bp_mg_levels_ksp_type = "richardson"
+bp_mg_levels_pc_type = "sor"
 bp_pc_mg_levels = 3
+bp_pc_type = "mg"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_rtol = 1e-3
-bp_ksp_rtol = 1e-3
 
 [solver.inverse]
+
 inv_adj_ksp_type = "gmres"
 inv_adj_pc_type = "jacobi"
 bp_ksp_rtol = 1e-4

@@ -13,7 +13,8 @@ runnable as `python -m <module>`. The full list lives in
 * - Command
   - Purpose
 * - `pism-glacier-prepare`
-  - Bootstrap a glacier study (RGI download, complex IDs, base inputs).
+  - Bootstrap a glacier study (RGI download, complex IDs, base inputs). Takes
+    an optional list of glacier-ID CSVs to scope the run to a study area.
 * - `pism-glacier-stage`
   - Stage all PISM inputs for one RGI ID.
 * - `pism-glacier-run`
@@ -23,7 +24,21 @@ runnable as `python -m <module>`. The full list lives in
 * - `pism-glacier-execute`
   - Execute a pre-rendered run script.
 * - `pism-glacier-postprocess`
-  - Clip and aggregate spatial output.
+  - Clip and aggregate spatial output (TOML-driven).
+```
+
+## Post-processing (all campaigns)
+
+```{list-table}
+:header-rows: 1
+:widths: 35 65
+
+* - Command
+  - Purpose
+* - `pism-postprocess-scalar`
+  - Reduce a spatial file to per-region scalar sums.
+* - `pism-postprocess-spatial`
+  - Extract per-region masked spatial fields, one file per region.
 ```
 
 ## ISMIP7 Greenland
@@ -42,8 +57,6 @@ runnable as `python -m <module>`. The full list lives in
   - Render the run script.
 * - `pism-ismip7-greenland-run-ensemble`
   - Render ensemble run scripts.
-* - `pism-ismip7-greenland-postprocess`
-  - Post-process Greenland output.
 ```
 
 ## KITP
@@ -62,8 +75,6 @@ runnable as `python -m <module>`. The full list lives in
   - Render the run script.
 * - `pism-kitp-run-ensemble`
   - Render ensemble run scripts.
-* - `pism-kitp-postprocess`
-  - Clip to basin and aggregate scalar diagnostics.
 * - `pism-kitp-writer`
   - Async writer side process for KITP.
 ```
@@ -76,8 +87,6 @@ runnable as `python -m <module>`. The full list lives in
 
 * - Command
   - Purpose
-* - `pism-s4f-prepare`
-  - Build aggregate complexes (S4F_AK, S4F_CA, S4F_SV) and per-group inputs.
 * - `pism-s4f-planning`
   - Plan S4F campaigns.
 ```

@@ -812,6 +812,44 @@ def stamp_grid_mapping(ds: xr.Dataset, name: str = "spatial_ref") -> xr.Dataset:
     return ds
 
 
+def compressed_encoding(ds: xr.Dataset, complevel: int = 2, **extra: Any) -> dict[str, dict[str, Any]]:
+    """
+    Build a per-variable NetCDF encoding that keeps the CF grid mapping.
+
+    Passing an ``encoding`` dict to ``to_netcdf`` *replaces* a variable's
+    encoding rather than merging into it. rioxarray and
+    :func:`stamp_grid_mapping` record ``grid_mapping`` in encoding, so asking
+    for compression the obvious way silently drops the pointer to the CRS
+    variable and the written file has no discoverable projection — PISM then
+    falls back to comparing raw x/y and rejects the forcing whenever the model
+    grid uses a different projection.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset about to be written, after its grid mapping has been stamped.
+    complevel : int, default 2
+        Compression level passed to zlib.
+    **extra
+        Additional encoding entries applied to every data variable.
+
+    Returns
+    -------
+    dict[str, dict]
+        Encoding suitable for ``ds.to_netcdf(encoding=...)``, carrying each
+        variable's existing ``grid_mapping`` through.
+    """
+    encoding: dict[str, dict[str, Any]] = {}
+    for name in ds.data_vars:
+        entry: dict[str, Any] = {"zlib": True, "complevel": complevel, "shuffle": True}
+        entry.update(extra)
+        grid_mapping = ds[name].encoding.get("grid_mapping")
+        if grid_mapping:
+            entry["grid_mapping"] = grid_mapping
+        encoding[name] = entry
+    return encoding
+
+
 def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     Open a dataset and run a **sampled** health check with xarray.
@@ -1067,6 +1105,14 @@ def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = Non
             }
             ds = ds.assign_coords({name_var: (label_dim, labels.astype(str))})
             ds[name_var].attrs = {"long_name": f"{label_dim} name"}
+            # Write the labels as a NetCDF char array rather than the
+            # variable-length NC_STRING xarray would choose by default.
+            # NC_STRING is netCDF-4 only and tools that read every variable
+            # numerically choke on it — ncview reports "netcdf_fi_get_data:
+            # error on nc_get_vara_float call ... Not a valid data type".
+            # A char array is what NetCDF-3 always used for text, and it
+            # round-trips back to strings unchanged.
+            ds[name_var].encoding["dtype"] = "S1"
 
     if "time" in ds.dims:
         ds = ds.transpose("time", ...)
@@ -1234,3 +1280,74 @@ def add_provenance(script: str, command: Iterable[str] | None = None, repo: Path
         block.append("")
     merged = [*lines[:insert_at], "", *block, *tail]
     return "\n".join(merged) + ("\n" if script.endswith("\n") else "")
+
+
+def pism_config_value(ds: xr.Dataset, key: str, default: Any = None) -> Any:
+    """
+    Read one PISM configuration parameter from a model output file.
+
+    PISM writes its full configuration as attributes on a scalar
+    ``pism_config`` variable, which is the authoritative record of what the
+    run actually used. Reading a threshold from there keeps post-processing
+    consistent with the simulation instead of restating a default that the
+    config may have overridden.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset opened from PISM output. A missing ``pism_config`` variable
+        is not an error; ``default`` is returned.
+    key : str
+        Configuration parameter name, e.g.
+        ``"output.ice_free_thickness_standard"``.
+    default : any, optional
+        Value to return when the variable or the parameter is absent.
+
+    Returns
+    -------
+    any
+        The parameter value, converted from NumPy to a plain Python scalar,
+        or ``default``.
+    """
+    if "pism_config" not in ds.variables:
+        return default
+
+    value = ds["pism_config"].attrs.get(key, default)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+# CF grid-mapping variables written by PISM, CDO and rioxarray.
+GRID_MAPPING_VARS = ("mapping", "spatial_ref", "crs", "polar_stereographic")
+
+
+def drop_grid_mapping(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Strip the CF grid mapping from a dataset that no longer has a grid.
+
+    Reducing over ``x``/``y`` leaves per-region scalars, but the grid-mapping
+    variable is dimensionless and survives the reduction, so it rides along
+    into the output and every variable keeps pointing at it through its
+    ``coordinates`` attribute. A projection describes a grid, and a summed
+    timeseries has none, so it is dropped along with the references to it.
+
+    Dropping the variable before the reduction is not enough: ``rio.write_crs``
+    recreates it from the dataset's own grid-mapping name, which is how it
+    reappears as ``mapping`` on PISM output.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset whose spatial dimensions have already been reduced away.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset without grid-mapping variables or references to them.
+    """
+    ds = ds.drop_vars([name for name in GRID_MAPPING_VARS if name in ds.variables], errors="ignore")
+    for var in ds.variables.values():
+        var.attrs.pop("grid_mapping", None)
+        var.encoding.pop("grid_mapping", None)
+    return ds

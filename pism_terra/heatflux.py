@@ -215,7 +215,7 @@ def heatflux_from_grid(
     dataset: str = "lucazeau",
     path: Path | str = "tmp.nc",
     bucket: str = "pism-cloud-data",
-    prefix: str = "glacier",
+    prefix: str = "glacier/input",
     force_overwrite: bool = False,
 ) -> xr.Dataset:
     """
@@ -238,8 +238,9 @@ def heatflux_from_grid(
         Output/cache NetCDF (e.g. ``bheatflux_{rgi_id}.nc``).
     bucket : str, default ``"pism-cloud-data"``
         S3 bucket holding the staged heat-flow Zarr.
-    prefix : str, default ``"glacier"``
-        S3 key prefix under *bucket*.
+    prefix : str, default ``"glacier/input"``
+        Shared S3 key prefix under *bucket*. Heat flow is a global data set, so
+        it is not scoped by project directory.
     force_overwrite : bool, default ``False``
         If ``True``, ignore any cache at ``path`` and regenerate.
 

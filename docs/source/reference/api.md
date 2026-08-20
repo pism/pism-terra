@@ -90,9 +90,11 @@ Re-add ``main`` and ``stage_glacier`` here when the upstream import is fixed.
 
     era5
     carra2
+    carra2_monthly_mean
     snap
     prepare_carra2
     prepare_carra2_for_group
+    prepare_carra2_monthly_mean
 ```
 
 ### Ice thickness
@@ -141,6 +143,18 @@ that's resolved.
     main
 ```
 
+## Post-processing (all campaigns)
+
+```{eval-rst}
+.. currentmodule:: pism_terra
+
+.. autosummary::
+    :toctree: generated/
+
+    postprocess_scalar
+    postprocess_spatial
+```
+
 ## ISMIP7 Greenland
 
 ```{eval-rst}
@@ -153,7 +167,6 @@ that's resolved.
     prepare
     stage
     run
-    postprocess
 ```
 
 ## KITP
@@ -167,7 +180,6 @@ that's resolved.
     prepare
     stage
     run
-    postprocess
     analyze
     forcing
 ```

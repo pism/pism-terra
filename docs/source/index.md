@@ -93,6 +93,13 @@ examples/index
 ```
 
 ```{toctree}
+:caption: Developer's Corner
+:hidden:
+
+developer/documentation
+```
+
+```{toctree}
 :caption: Reference
 :hidden:
 
