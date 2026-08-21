@@ -32,17 +32,21 @@ ulimit -s unlimited
 ulimit
 
 # ###############################################################################
-# FORWARD RUN
+# INIT RUN
 # ###############################################################################
 
 {% if run_init_str %}
 mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pism {{ run_init_str }}
 {% endif %}
 
-mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pism {{ run_str }}
-
 # ###############################################################################
 # INVERSION RUN
 # ###############################################################################
 
 mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pismi {{ inv_str }}
+
+# ###############################################################################
+# FORWARD RUN
+# ###############################################################################
+
+mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pism {{ run_str }}

@@ -898,10 +898,11 @@ def _render_inverse_run(
         the ``[campaign]`` section must carry ``init_start``/``init_end``).
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template. The context includes
-        ``run_init_str`` (init pism call, also aliased as ``run_str`` for
-        the generic inverse templates), ``inv_str`` (pismi call), and the
-        forward-leg slots ``run_hist_str``/``run_proj_str`` plus the
-        post-processing strings shared with the forward template.
+        ``run_init_str`` (init pism call), ``inv_str`` (pismi call), and
+        the forward-leg slots ``run_hist_str``/``run_proj_str`` plus the
+        post-processing strings shared with the forward template. There is
+        no ``run_str`` slot: use an ISMIP7 inverse template (e.g.
+        ``debug-ismip7-inverse.j2``), not the generic glacier one.
     outline_file : str or pathlib.Path or None
         Path to a geopandas file with the basin outline used by
         post-processing. Pass ``None`` to record it as the literal string
@@ -1136,9 +1137,6 @@ def _render_inverse_run(
         params.update(JobConfig(**job_kwargs).as_params())
 
     params.update({"run_init_str": run_init_str})
-    # The generic (non-ISMIP7) inverse templates name the pism prior slot
-    # ``run_str``; keep them usable as init+pismi-only scripts.
-    params.update({"run_str": run_init_str})
     params.update({"inv_str": inv_str})
     # ``run_hist_str`` / ``run_proj_str`` and the post-processing strings now
     # carry the forward (tauc) legs, matching the forward template semantics.
