@@ -1,0 +1,5 @@
+samples = 3
+
+['inverse.stress_balance.method']
+
+choices = ['tikhonov_lmvm', 'tikhonov_cg', 'tikhonov_blmvm']
