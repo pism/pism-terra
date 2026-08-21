@@ -2,5 +2,5 @@ samples = 3
 
 ['inverse.stress_balance.tauc_min']
 
-choices = [0, 1e2, 1e4]
+choices = [1e0, 1e2, 1e4]
 distribution = "choices"
