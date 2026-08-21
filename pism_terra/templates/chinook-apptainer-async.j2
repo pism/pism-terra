@@ -53,7 +53,7 @@ mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pismi {{ inv_str }}
 # FORWARD RUN
 # ###############################################################################
 
-{% if run__str %}
+{% if run_str %}
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_hist_str }} -output.asynchronous
 {% endif %}
 
