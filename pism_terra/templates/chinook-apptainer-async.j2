@@ -2,7 +2,7 @@
 #SBATCH --partition={{ queue | default("t2small") }}
 #SBATCH --ntasks={{ ntasks | default(40) }}
 #SBATCH --tasks-per-node={{ tasks | default(40) }}
-#SBATCH --time={{ walltime | default("24:00:00") }}
+#SBATCH --time={{ walltime | default("48:00:00") }}
 #SBATCH --mail-type=BEGIN
 #SBATCH --mail-type=END
 #SBATCH --mail-type=FAIL
@@ -11,7 +11,7 @@
 module purge
 module load intel-compilers/2023.1.0 impi/2021.9.0
 
-export container=$HOME/pism-dev.sif
+export container=$HOME/pism-ismip7.sif
 if [ ! -f "${container}" ]; then
     echo "Container ${container} not found." >&2
     exit 1
@@ -33,8 +33,29 @@ ulimit
 
 pismtasks=$(( SLURM_NTASKS - 4 ))
 
+# ###############################################################################
+# INIT RUN
+# ###############################################################################
+
 {% if run_init_str %}
-mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_init_str }} -output.asynchronous
+mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pism {{ run_init_str }}
 {% endif %}
 
-mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_str }} -output.asynchronous
+# ###############################################################################
+# INVERSION RUN
+# ###############################################################################
+
+{% if inv_str %}
+mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pismi {{ inv_str }}
+{% endif %}
+
+# ###############################################################################
+# FORWARD RUN
+# ###############################################################################
+
+{% if run__str %}
+mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_hist_str }} -output.asynchronous
+{% endif %}
+
+
+{{ post_process_str }}

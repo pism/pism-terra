@@ -13,7 +13,7 @@ forcing_mask = "glacier"
 heatflux = "lucazeau"
 ice_thickness = "maffezzoli"
 init_climate = "carra2-monthly-mean"
-init_end = "0011-01-01"
+init_end = "0051-01-01"
 init_start = "0001-01-01"
 name = "Hindcast"
 prefix = "glacier/input"
@@ -31,7 +31,6 @@ velocity = "its_live"
 
 [time_stepping]
 
-'time_stepping.adaptive_ratio' = 500
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -107,6 +106,7 @@ model = 'none'
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.sia.max_diffusivity' = 100000.0
+'time_stepping.adaptive_ratio' = 500
 
 [stress_balance.options.hybrid]
 
