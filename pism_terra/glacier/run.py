@@ -80,7 +80,7 @@ def _build_init_leg(
     scalar_path: Path,
     spatial_path: Path,
     pism_config_cdl: str | Path | None,
-) -> tuple[str, Path]:
+) -> tuple[str, Path, str]:
     """
     Build the optional init leg that the main run restarts from.
 
