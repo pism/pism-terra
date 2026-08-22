@@ -355,7 +355,7 @@ def prepare_carra2(
     - Output variables:
       - ``air_temp`` (K) from CARRA ``t2m``.
       - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
-      - ``albedo`` (1) derived as ``1 - SW_net / SW_down`` from the surface
+      - ``surface_albedo`` (1) derived as ``1 - SW_net / SW_down`` from the surface
         shortwave radiation budget (NaN where ``SW_down == 0``).
     - ``time_bounds`` are added for CF-style climatological metadata.
     - If missing values are detected in the regional subset, the function
@@ -719,7 +719,7 @@ def prepare_carra2(
                 "units": "1",
             }
         )
-        ds["albedo"] = albedo
+        ds["surface_albedo"] = albedo
         ds = ds.drop_vars([sw_down_var, sw_net_var])
 
         ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
@@ -1823,9 +1823,9 @@ def carra2(
     -----
     - Output variables and their units are inherited from the source CARRA2
       Zarr store (typically ``air_temp`` in K, ``precipitation`` in
-      kg m^-2 day^-1, and dimensionless ``albedo``).
+      kg m^-2 day^-1, and dimensionless ``surface_albedo``).
     - Floating-point variables have NaNs filled with 0 for PISM; for
-      ``albedo`` this only affects polar-night months (no insolation), where
+      ``surface_albedo`` this only affects polar-night months (no insolation), where
       the value is irrelevant.
     - Compression: zlib level 2 + shuffle.
     """
