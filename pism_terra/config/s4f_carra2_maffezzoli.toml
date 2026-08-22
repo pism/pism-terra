@@ -91,7 +91,7 @@ model = "none"
 
 [stress_balance]
 
-model = 'none'
+model = 'blatter'
 
 [stress_balance.options.none]
 
