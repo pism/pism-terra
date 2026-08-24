@@ -2,5 +2,5 @@ samples = 3
 
 ['inverse.max_iterations']
 
-choices = [100, 1000, 2500]
+choices = [100, 500, 1000, 1500, 2000, 2500]
 distribution = "choices"
