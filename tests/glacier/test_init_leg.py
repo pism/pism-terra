@@ -44,6 +44,7 @@ MAIN_TAG = f"g1000m_{RGI_ID}_id_0_{MAIN_START}_{MAIN_END}"
 
 CLIMATE_FILE = "/in/carra2_RGI.nc"
 INIT_CLIMATE_FILE = "/in/carra2_monthly_mean_RGI.nc"
+BOOT_FILE = "/in/boot.nc"
 
 
 def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE) -> str:
@@ -72,10 +73,12 @@ def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE) -> str:
         path=tmp_path,
         config_cli={"resolution": "1000m"},
         uq={
-            "input.file": "/in/boot.nc",
+            "input.file": BOOT_FILE,
             "grid.file": "/in/grid.nc",
             "atmosphere.given.file": CLIMATE_FILE,
             "surface.debm_simple.std_dev.file": CLIMATE_FILE,
+            "surface.debm_simple.albedo_input.file": CLIMATE_FILE,
+            "surface.force_to_thickness.file": BOOT_FILE,
         },
         sample=0,
         init_climate_file=init_climate_file,
@@ -152,7 +155,7 @@ def test_only_the_init_leg_bootstraps(tmp_path):
     init, main = legs(render(tmp_path))
 
     assert "-input.bootstrap yes" in init
-    assert "-input.file /in/boot.nc" in init
+    assert f"-input.file {BOOT_FILE}" in init
     assert "-input.bootstrap" not in main
     assert f"state_{INIT_TAG}.nc" in main
 
@@ -224,3 +227,103 @@ def test_no_init_bounds_renders_one_leg(tmp_path, no_init_config):
     assert len(legs(script)) == 1
     assert "-input.bootstrap yes" in script
     assert f"-time.end {INIT_END}" not in script
+
+
+def surface_models(script: str) -> list[str]:
+    """
+    Pull the ``surface.models`` value out of each PISM call.
+
+    Parameters
+    ----------
+    script : str
+        Rendered submission script.
+
+    Returns
+    -------
+    list of str
+        One entry per leg, in order.
+    """
+    return [
+        next(line.split("-surface.models ")[1].split()[0] for line in leg.splitlines() if "-surface.models " in line)
+        for leg in legs(script)
+    ]
+
+
+def test_init_leg_can_use_its_own_surface_model(tmp_path):
+    """
+    Swap the surface model for the spin-up only.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    init, main = surface_models(render(tmp_path))
+
+    init_model = _CFG.campaign.init_surface_model
+    assert init_model is not None, "the packaged config is expected to set init_surface_model"
+    assert init == _CFG.surface.options[init_model]["surface.models"]
+    assert main == _CFG.surface.selected()["surface.models"]
+    assert init != main
+
+
+def test_swapping_the_surface_model_keeps_the_staged_files(tmp_path):
+    """
+    Keep resolved paths rather than reverting them to the "none" placeholder.
+
+    The init model's option table declares its forcing files as ``"none"``,
+    the value staging fills in. Laying that table down verbatim would unset
+    files the main leg had already resolved.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    init, _ = legs(render(tmp_path))
+
+    # Carried over from the main leg, untouched by the swap.
+    assert f"-surface.force_to_thickness.file {BOOT_FILE}" in init
+    # Still re-pointed at the init climatology by the init_climate swap.
+    assert f"-surface.debm_simple.std_dev.file {INIT_CLIMATE_FILE}" in init
+    assert "-surface.debm_simple.std_dev.file none" not in init
+
+
+def test_an_unknown_init_surface_model_is_rejected(tmp_path):
+    """
+    Name the available surface models rather than failing inside PISM.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    broken = "\n".join(
+        'init_surface_model = "does_not_exist"' if line.startswith("init_surface_model") else line
+        for line in CONFIG.read_text(encoding="utf-8").splitlines()
+    )
+    config = tmp_path / "broken.toml"
+    config.write_text(broken, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="names no \\[surface.options"):
+        render(tmp_path, config=config)
+
+
+def test_without_an_init_surface_model_both_legs_agree(tmp_path):
+    """
+    Leave the surface model alone when the campaign does not override it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    stripped = "\n".join(
+        line for line in CONFIG.read_text(encoding="utf-8").splitlines() if not line.startswith("init_surface_model")
+    )
+    config = tmp_path / "no_init_surface.toml"
+    config.write_text(stripped, encoding="utf-8")
+
+    init, main = surface_models(render(tmp_path, config=config))
+
+    assert init == main == _CFG.surface.selected()["surface.models"]

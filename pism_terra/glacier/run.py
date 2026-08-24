@@ -76,6 +76,7 @@ def _build_init_leg(
     resolution: str,
     name_options: str,
     init_climate_file: str | Path | None,
+    init_surface_model: str | None = None,
     state_path: Path,
     scalar_path: Path,
     spatial_path: Path,
@@ -109,6 +110,10 @@ def _build_init_leg(
     init_climate_file : str or pathlib.Path or None
         Forcing staged for ``campaign.init_climate``. When ``None`` the init
         leg keeps the main leg's climate.
+    init_surface_model : str or None, optional
+        Key of ``cfg.surface.options`` selecting a surface model for this leg
+        only, from ``campaign.init_surface_model``. When ``None`` the init leg
+        keeps the main leg's surface model.
     state_path, scalar_path, spatial_path : pathlib.Path
         Output directories.
     pism_config_cdl : str or pathlib.Path or None
@@ -121,12 +126,32 @@ def _build_init_leg(
         the state file the next leg restarts from, and the
         ``g<res>_<rgi_id>_<opts>_<init_start>_<init_end>`` filename tag (used
         e.g. to name the inversion output).
+
+    Raises
+    ------
+    ValueError
+        If ``init_surface_model`` names no ``[surface.options.*]`` table.
     """
-    _ = cfg
     run_init = dict(run)
     run_init.pop("time.start", None)
     run_init.pop("time.end", None)
     run_init.update({"time.start": init_start, "time.end": init_end})
+
+    if init_surface_model is not None:
+        if init_surface_model not in cfg.surface.options:
+            raise ValueError(
+                f"campaign.init_surface_model = {init_surface_model!r} names no [surface.options.*] "
+                f"table in the config; available: {sorted(cfg.surface.options)}"
+            )
+        # Drop the main leg's surface options wholesale, then lay down the init
+        # model's. A bare ``"none"`` is the placeholder staging fills in, so
+        # keep whatever the main leg resolved it to rather than reverting the
+        # forcing files to unset.
+        for option in cfg.surface.selected():
+            run_init.pop(option, None)
+        for option, value in cfg.surface.options[init_surface_model].items():
+            placeholder = isinstance(value, str) and value.strip().lower() == "none"
+            run_init[option] = run[option] if placeholder and option in run else value
 
     if init_climate_file is not None:
         # Only re-point the options the main leg actually carries: which of
@@ -466,6 +491,7 @@ def _render_inverse_run(
         resolution=resolution,
         name_options=name_options,
         init_climate_file=init_climate_file,
+        init_surface_model=cfg.campaign.init_surface_model,
         state_path=state_path,
         scalar_path=scalar_path,
         spatial_path=spatial_path,
@@ -811,6 +837,7 @@ def _render_forward_run(
             resolution=resolution,
             name_options=name_options,
             init_climate_file=init_climate_file,
+            init_surface_model=cfg.campaign.init_surface_model,
             state_path=state_path,
             scalar_path=scalar_path,
             spatial_path=spatial_path,

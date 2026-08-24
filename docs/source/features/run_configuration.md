@@ -31,6 +31,7 @@ its `[campaign]` section:
 [campaign]
 climate = "carra2"
 init_climate = "carra2-monthly-mean"
+init_surface_model = "debm_enhanced_forcing"
 init_start = "0001-01-01"
 init_end = "0051-01-01"
 ```
@@ -48,6 +49,15 @@ and substituted into `atmosphere.given.file`, `surface.debm_simple.std_dev.file`
 monthly climatology is the usual choice: PISM cycles it, so the spin-up is not
 pinned to a particular stretch of the historical record and its length is free.
 Omit `init_climate` to spin up on the same forcing as the main leg.
+
+`init_surface_model` is the same idea for the surface scheme: it names one of
+the config's `[surface.options.*]` tables and applies to the init leg alone, so
+the spin-up can run a different model — typically one adding `forcing` to hold
+the geometry — before the main leg continues with `[surface] model`. Option
+values of `"none"` are the placeholders staging fills in, so a file the main leg
+already resolved is carried over rather than reset; everything else comes from
+the named table. An unknown name fails at render time, listing what the config
+offers.
 
 Without `init_start`/`init_end` the run bootstraps directly, exactly as before.
 The mechanism mirrors the ISMIP7 Greenland runner, which uses the same two
