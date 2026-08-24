@@ -322,6 +322,7 @@ def boot_file_from_grid(
     -------
     xarray.Dataset
         Regular 2-D dataset (dims typically ``y``, ``x``) in the glacier CRS with at least:
+
         - ``surface`` : float32, m — DEM surface elevation.
         - ``thickness`` : float32, m — ice thickness on the target grid.
         - ``bed`` : float32, m — bedrock elevation (``surface - thickness``).

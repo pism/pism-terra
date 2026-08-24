@@ -64,6 +64,7 @@ def stage(
     ----------
     config : dict
         Configuration mapping. Must contain at least:
+
         - ``"grid_file"`` : str
             Path to the grid NetCDF file relative to the input directory.
         - ``"boot_file"`` : str

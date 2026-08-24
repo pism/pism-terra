@@ -11,6 +11,8 @@ from __future__ import annotations
 from importlib import metadata
 from pathlib import Path
 
+from sphinx.ext.autodoc import INSTANCEATTR
+
 # -- Project information -----------------------------------------------------
 
 project = "pism-terra"
@@ -54,10 +56,20 @@ exclude_patterns: list[str] = [
     ".DS_Store",
     "**.ipynb_checkpoints",
     # Sphinx-gallery generates .rst, .py, .ipynb, .codeobj.json, .py.md5 and
-    # .zip side-by-side under ``auto_examples/``. The .ipynb collides with
-    # myst-nb's parser for the same document, so let sphinx-gallery's .rst
-    # be the canonical source.
+    # .zip side-by-side under ``auto_examples/``. Every one of them looks like
+    # the same document to Sphinx ("multiple files found for the document"),
+    # and the winner is picked by suffix order — which is how the gallery's
+    # labels went missing. Let the .rst be the canonical source.
+    "auto_examples/*.ipynb",
+    "auto_examples/*.py",
+    "auto_examples/*.py.md5",
+    "auto_examples/*.codeobj.json",
+    "auto_examples/*.zip",
     "auto_examples/**/*.ipynb",
+    "auto_examples/**/*.py",
+    "auto_examples/**/*.py.md5",
+    "auto_examples/**/*.codeobj.json",
+    "auto_examples/**/*.zip",
 ]
 
 # myst-nb registers parsers for both .md and .ipynb on its own; .rst stays
@@ -163,23 +175,24 @@ suppress_warnings = [
 
 
 # -- Pydantic v2 dedup -------------------------------------------------------
-# Pydantic models emit each field twice from a single ``autoclass`` call —
-# once as the typed class attribute, once through ``model_fields`` — which
-# Sphinx flags as "duplicate object description". Track the exact objects
-# we've documented and skip the second registration.
-def _skip_duplicate_pydantic_members(_app, _what, _name, obj, skip, _options):
-    """Drop the second registration of an identical object from autodoc."""
+# Pydantic v2 strips field defaults from the class namespace, so autodoc sees
+# every field of a model as an undocumented *instance* attribute and emits a
+# bare ``py:attribute`` for it — on top of the described one numpydoc already
+# renders from the model's ``Attributes`` docstring section. Sphinx flags the
+# pair as "duplicate object description". Autodoc marks those members with a
+# single shared sentinel (``INSTANCEATTR``), which is the reliable way to spot
+# them; an earlier dedup keyed on ``id(obj)`` let exactly one field through
+# (the sentinel is one object, so every later field looked "already seen").
+def _skip_pydantic_field_stubs(_app, _what, _name, obj, skip, _options):
+    """Drop autodoc's bare re-listing of a Pydantic field."""
     if skip:
         return True
-    seen = _skip_duplicate_pydantic_members.__dict__.setdefault("_seen", set())
-    key = id(obj)
-    if key in seen:
+    if obj is INSTANCEATTR:
         return True
-    seen.add(key)
     return None
 
 
 def setup(app):
     """Sphinx extension entry point."""
-    app.connect("autodoc-skip-member", _skip_duplicate_pydantic_members)
+    app.connect("autodoc-skip-member", _skip_pydantic_field_stubs)
     return {"parallel_read_safe": True, "parallel_write_safe": True}

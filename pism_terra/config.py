@@ -327,12 +327,13 @@ class UQConfig(BaseModel):
     Uncertainty specification as a flat dotted-key map with sampling metadata.
 
     This model holds:
-      1) the number of ensemble ``samples`` (an integer),
-      2) an optional column name ``mapping`` (e.g., to map categorical draws to
-         filenames later), and
-      3) a ``tree`` mapping from **dotted variable names** (e.g.,
-         ``"surface.pdd.factor_ice"``) to :class:`DistSpec` entries that describe
-         the probability distribution for each variable.
+
+    1. the number of ensemble ``samples`` (an integer),
+    2. an optional column name ``mapping`` (e.g., to map categorical draws to
+       filenames later), and
+    3. a ``tree`` mapping from **dotted variable names** (e.g.,
+       ``"surface.pdd.factor_ice"``) to :class:`DistSpec` entries that describe
+       the probability distribution for each variable.
 
     Input TOML can be either *nested* (hierarchical tables) or already *flat*
     (quoted dotted-table keys). A ``model_validator(mode="before")`` flattens
@@ -358,10 +359,9 @@ class UQConfig(BaseModel):
 
     Notes
     -----
-    - The *before* validator accepts either:
-        * top-level leaves (possibly nested tables), or
-        * a block under the key ``"tree"``.
-      In both cases, it extracts leaf specs and assigns them to ``tree``.
+    - The *before* validator accepts either top-level leaves (possibly nested
+      tables) or a block under the key ``"tree"``. In both cases, it extracts
+      leaf specs and assigns them to ``tree``.
     - The presence of a key named ``"distribution"`` is used to detect leaves,
       deferring detailed parameter validation to :class:`DistSpec`.
 

@@ -10,7 +10,8 @@ config are independent of any other glacier or campaign.
 ## Ensemble (Latin Hypercube)
 
 Combine a UQ TOML (see {doc}`../features/uncertainty_quantification`) with
-`pism-glacier-run-ensemble`. The output is one rendered run script per
+`pism-glacier-run-forward` or `pism-glacier-run-inverse` — the UQ file is
+their optional fourth positional. The output is one rendered run script per
 member; HPC submission is up to the user.
 
 ## Snow 4 Flow (S4F) aggregates
@@ -28,15 +29,14 @@ pism-glacier-prepare pism_terra/config/setup_s4f.toml glacier_input \
 
 ## ISMIP7 Greenland
 
-`pism-ismip7-greenland-{prepare,stage,run,run-ensemble,postprocess}` drive
-the ISMIP7 community simulations. Inputs come from BedMachine and the
+`pism-ismip7-greenland-{prepare,add-basins,stage,run-forward,run-inverse}`
+drive the ISMIP7 community simulations. Inputs come from BedMachine and the
 GreenlandObsISMIP7 dataset.
 
 ## KITP
 
-`pism-kitp-{prepare,stage,run,run-ensemble,postprocess,writer}` cover the
-Kaskawulsh / Tuktut / Paxson studies, including the
-`pism-kitp-writer` async-writer side process.
+`pism-kitp-{prepare,stage,run,run-ensemble,calibrate,analyze,adjust-timeseries}`
+cover the Kaskawulsh / Tuktut / Paxson studies.
 
 ```{admonition} TODO
 - Walk each workflow end-to-end with timings.

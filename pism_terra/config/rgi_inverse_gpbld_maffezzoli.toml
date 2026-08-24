@@ -18,11 +18,13 @@ rgi_glacier_file = "rgi_g.gpkg"
 velocity = "its_live"
 forcing_mask = "all"
 heatflux = "lucazeau"
+init_start = "0001-01-01"
+init_end = "0006-01-01"
 
 [time]
 
-'time.start' = "0001-01-01"
-'time.end' =  "0006-01-01"
+'time.start' = "0006-01-01"
+'time.end' =  "0007-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 

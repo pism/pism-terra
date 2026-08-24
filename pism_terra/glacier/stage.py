@@ -185,6 +185,7 @@ def stage_glacier(
     ----------
     config : dict
         Configuration mapping. Must contain at least:
+
         - ``"dem"`` : str
             DEM source passed to :func:`boot_file_from_grid`.
         - ``"climate"`` : str

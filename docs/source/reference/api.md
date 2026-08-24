@@ -60,11 +60,14 @@ no `:toctree:` so the field descriptions are registered in exactly one place
 
 ### Staging entrypoints
 
-```{note}
-``pism_terra.glacier.stage`` is documented as a CLI in {doc}`./cli`. It's
-excluded from autosummary because it currently has an import-time error
-(references `pmip4` from `pism_terra.glacier.climate`, which doesn't exist).
-Re-add ``main`` and ``stage_glacier`` here when the upstream import is fixed.
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.stage
+
+.. autosummary::
+    :toctree: generated/
+
+    stage_glacier
+    main
 ```
 
 ### DEM
@@ -127,11 +130,14 @@ Re-add ``main`` and ``stage_glacier`` here when the upstream import is fixed.
 
 ### Run generation & post-processing
 
-```{note}
-``pism_terra.glacier.run`` is documented as a CLI in {doc}`./cli`. It's
-excluded from autosummary because of an outstanding import-time error
-(`pmip4` missing from `pism_terra.glacier.climate`); add it back here when
-that's resolved.
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.run
+
+.. autosummary::
+    :toctree: generated/
+
+    run_forward
+    run_inverse
 ```
 
 ```{eval-rst}
@@ -182,12 +188,6 @@ that's resolved.
     run
     analyze
     forcing
-```
-
-```{note}
-``pism_terra.kitp.writer`` is documented as a CLI in
-{doc}`./cli` but excluded from autosummary because it imports the optional
-`yac` dependency, which is not installed in the docs build environment.
 ```
 
 ## Infrastructure

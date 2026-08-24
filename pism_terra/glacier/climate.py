@@ -353,10 +353,12 @@ def prepare_carra2(
     Notes
     -----
     - Output variables:
+
       - ``air_temp`` (K) from CARRA ``t2m``.
       - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
       - ``surface_albedo`` (1) derived as ``1 - SW_net / SW_down`` from the surface
         shortwave radiation budget (NaN where ``SW_down == 0``).
+
     - ``time_bounds`` are added for CF-style climatological metadata.
     - If missing values are detected in the regional subset, the function
       patches them from the global reanalysis (same period).
