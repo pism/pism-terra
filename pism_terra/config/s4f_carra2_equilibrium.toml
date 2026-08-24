@@ -58,7 +58,7 @@ velocity = "its_live"
 'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
 'output.spatial.times' = "yearly"
-'output.spatial.vars' = "velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk"
+'output.spatial.vars' = "velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk,surface_albedo"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 
