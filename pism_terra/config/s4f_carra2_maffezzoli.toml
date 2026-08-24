@@ -65,9 +65,9 @@ velocity = "its_live"
 resolution = "500m"
 'grid.file' = "none"
 'grid.Lbz' = 0
-'grid.Lz' = 1200
+'grid.Lz' = 1500
 'grid.Mbz' = 1
-'grid.Mz' = 61
+'grid.Mz' = 151
 'grid.registration' = "center"
 
 [energy]
@@ -140,10 +140,13 @@ model = "debm_enhanced"
 'surface.models' = "pdd"
 'surface.pdd.std_dev.file' = "none"
 'surface.pdd.std_dev.periodic' = "yes"
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
 
 [surface.options.debm_simple]
 
-'surface.models' = "debm_simple"
+'surface.models' = "debm_simple,forcing"
 'surface.debm_simple.albedo_input.file' = "none"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.std_dev.file' = "none"
@@ -155,10 +158,13 @@ model = "debm_enhanced"
 'surface.debm_simple.refreeze_ice_melt' = "no"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
 'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
 
 [surface.options.debm_enhanced]
 
-'surface.models' = "debm_enhanced"
+'surface.models' = "debm_enhanced,forcing"
 'surface.debm_simple.albedo_input.file' = "none"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.std_dev.file' = "none"
@@ -170,6 +176,9 @@ model = "debm_enhanced"
 'surface.debm_simple.refreeze_ice_melt' = "no"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
 'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
 
 [calving]
 
@@ -221,7 +230,7 @@ model = "null"
 'inverse.max_iterations' = 50
 'inverse.design.param' = "exp"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
-'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_min' = 1e2
 'inverse.stress_balance.tauc_max' = 5e7
 'inverse.tikhonov.penalty_weight' = 10
 'inverse.use_zeta_fixed_mask' = "yes"
@@ -230,6 +239,7 @@ model = "null"
 'inverse.huber.delta' =  1e2
 
 [solver.forward]
+
 bp_ksp_type = "fgmres"
 bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
@@ -245,6 +255,7 @@ bp_snes_rtol = 1e-3
 bp_ksp_rtol = 1e-3
 
 [solver.inverse]
+
 inv_adj_ksp_type = "gmres"
 inv_adj_pc_type = "jacobi"
 bp_ksp_rtol = 1e-4
