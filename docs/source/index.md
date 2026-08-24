@@ -66,6 +66,13 @@ features/postprocessing
 
 
 ```{toctree}
+:caption: Greenland
+:hidden:
+
+greenland/inversion
+```
+
+```{toctree}
 :caption: Summer School in Glaciology 2026
 :hidden:
 
