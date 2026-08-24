@@ -60,13 +60,66 @@ That writes one `output/inverse/inv_*.nc` per member.
 ## Reducing the output
 
 Each member is about 2 GB, nearly all of it 3-D fields the analysis never
-touches. Two quantities are needed per member:
+touches. The L-curve needs two numbers per member, and both come straight out
+of the functional the inversion minimizes {cite}`Habermann2013`:
 
-- the **model norm** $N=\sqrt{J_\mathrm{design}}$, how far the solution has been
-  pushed from the prior — read from `J_design` at the last iteration;
-- the **data misfit** $M$, the area-weighted RMS of `inv_residual` over the
-  misfit domain, in m/yr. `inv_J_misfit` measures the same thing but is
-  dimensionless, so the RMS is what to quote.
+$$
+I(\tau_\mathrm{c}, \eta) = \eta\, M^2 + N^2 .
+$$
+
+$M$ is the **data–model misfit**: how far the modelled surface velocity
+$\mathbf{u}(\tau_\mathrm{c})$ sits from the observed $\mathbf{u}^\mathrm{obs}$,
+averaged over the misfit area $\Omega$ (here, grounded ice with velocity
+observations — the cells `vel_misfit_weight` marks),
+
+$$
+M^2 = \frac{1}{|\Omega|} \int_\Omega
+      \left\lVert \mathbf{u}(\tau_\mathrm{c}) - \mathbf{u}^\mathrm{obs} \right\rVert^2
+      \, \mathrm{d}\Omega ,
+$$
+
+so $M$ carries the units of the velocities, m/yr. $N$ is the **model norm**,
+the regularization term: how far the solution has been pushed from the prior
+estimate $\tau_\mathrm{c}^\mathrm{prior}$, and how rough it got on the way,
+
+$$
+N^2 = \frac{1}{|\Omega|} \int_\Omega
+      c_{L^2} \left( \tau_\mathrm{c} - \tau_\mathrm{c}^\mathrm{prior} \right)^2
+      + K^2 c_{H^1} \left\lvert \nabla \left( \tau_\mathrm{c} -
+        \tau_\mathrm{c}^\mathrm{prior} \right) \right\rvert^2
+      \, \mathrm{d}\Omega .
+$$
+
+The two halves are weighted by config options, so what "model norm" means is a
+choice you make per sweep:
+
+| symbol | option | this sweep |
+| --- | --- | --- |
+| $\eta$ | `inverse.tikhonov.penalty_weight` | swept, $10^{-1}$ … $10^{7}$ |
+| $c_{L^2}$ | `inverse.design.cL2` | 0 |
+| $c_{H^1}$ | `inverse.design.cH1` | 1 |
+| $K$ | `inverse.stress_balance.length_scale` | 50 km |
+
+With $c_{L^2} = 0$ and $c_{H^1} = 1$ this sweep uses a pure Sobolev $H^1$
+norm: $N$ measures how *rough* the solution is, not how far its values moved
+from the prior. $K$ is the length scale that rescales the gradient term, so it
+sets the scale below which structure counts as roughness. Raising $\eta$ shifts
+weight onto $M^2$ — a better fit bought with a larger model norm, which is the
+trade-off the sweep maps out.
+
+Per member, then:
+
+- $N = \sqrt{J_\mathrm{design}}$ at the last iteration. PISM optimizes a design
+  variable rather than $\tau_\mathrm{c}$ itself — with
+  `inverse.design.param = "exp"` that is $\zeta$ in
+  $\tau_\mathrm{c} = \tau_\mathrm{c,scale}\,e^{\zeta}$, which keeps
+  $\tau_\mathrm{c}$ positive — so `J_design` is the norm above evaluated on
+  $\zeta$: the same roughness measure, dimensionless rather than in Pa.
+- $M$ is the area-weighted RMS of `inv_residual` over the misfit domain, in
+  m/yr — the equation above, computed from the output. PISM's own
+  `inv_J_misfit` is the dimensionless functional value, and with
+  `inverse.state_func = "huber"` it deliberately down-weights the largest
+  residuals, so it is not $M^2$ rescaled. Quote the RMS.
 
 {download}`docs/make_data/lcurve_fixture.py <../../make_data/lcurve_fixture.py>`
 collapses a sweep to those numbers plus the per-iteration traces:
