@@ -353,7 +353,7 @@ def stage_glacier(
     grid_ds.to_netcdf(grid_file, engine="h5netcdf")
     check_xr_fully(grid_file)
 
-    _ = glacier_velocities_from_grid(grid_ds, glacier_projected.geometry, path=obs_file)
+    _ = glacier_velocities_from_grid(grid_ds, glacier_projected.geometry, path=obs_file, rgi_id=rgi_id)
     check_xr_fully(obs_file)
 
     # Save domain extent polygon as a GPKG (intermediate, used for sanity checks)

@@ -440,7 +440,7 @@ def boot_file_from_grid(
     ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat], compat="no_conflicts")
     if velocity_dataset not in ("none", None):
         v_filename = path / Path(f"obs_{rgi_id}.nc")
-        v = glacier_velocities_from_grid(target_grid, geometries, path=v_filename)
+        v = glacier_velocities_from_grid(target_grid, geometries, path=v_filename, rgi_id=rgi_id)
         _v = v["v"].fillna(0)
         ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 250, 2, 1 + (_v - 100) / (250 - 100)))
         ds["tillwat"].attrs.update({"units": "m"})

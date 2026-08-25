@@ -24,6 +24,8 @@ Prepare observations.
 """
 
 import collections
+import logging
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -45,6 +47,8 @@ from pism_terra.workflow import (
     stamp_grid_mapping,
 )
 
+logger = logging.getLogger(__name__)
+
 # RGI o1 codes for which ITS_LIVE v2.1 publishes a per-region COG. 13/15/16 are
 # absent because they're merged into the High Mountain Asia (14) mosaic.
 _ITS_LIVE_REGION_CODES: tuple[str, ...] = (
@@ -65,6 +69,41 @@ _ITS_LIVE_REGION_CODES: tuple[str, ...] = (
     "18",
     "19",
 )
+
+
+#: RGI regions ITS_LIVE folds into another mosaic rather than publishing
+#: separately: High Mountain Asia is one COG covering 13, 14 and 15/16.
+_ITS_LIVE_REGION_ALIASES: dict[str, str] = {"13": "14", "15": "14", "16": "14"}
+
+
+def region_code_from_rgi_id(rgi_id: str | None) -> str | None:
+    """
+    Read the ITS_LIVE region code out of an RGI identifier.
+
+    The o1 region is part of the ID (``RGI2000-v7.0-C-03-01124`` is region
+    ``03``), which is authoritative in a way a bounding box is not: the
+    per-region COGs overlap generously in polar stereographic, so a box over
+    Ellesmere Island falls inside both the Arctic Canada and the Greenland
+    footprints and geometry alone cannot say which holds the data.
+
+    Parameters
+    ----------
+    rgi_id : str or None
+        RGI v7 identifier, or an aggregate name such as ``"S4F_AK"``.
+
+    Returns
+    -------
+    str or None
+        Two-digit region code with ITS_LIVE's aliases applied, or ``None``
+        when *rgi_id* carries no region ITS_LIVE publishes.
+    """
+    if not rgi_id:
+        return None
+    match = re.search(r"-[CG]-(\d{2})-", str(rgi_id))
+    if not match:
+        return None
+    code = _ITS_LIVE_REGION_ALIASES.get(match.group(1), match.group(1))
+    return code if code in _ITS_LIVE_REGION_CODES else None
 
 
 @lru_cache(maxsize=None)
@@ -96,13 +135,51 @@ def _its_live_region_footprint(region_code: str):
         return src.crs, _shapely_box(b.left, b.bottom, b.right, b.top)
 
 
-def region_code_from_bounds(bounds: tuple[float, float, float, float], crs: str) -> str:
+def _coverage(code: str, bounds: tuple[float, float, float, float], crs: str) -> float:
     """
-    Return the RGI region code whose ITS_LIVE COG contains ``bounds``.
+    Fraction of ``bounds`` a region's ITS_LIVE COG covers.
 
-    Probes each published v2.1 per-region COG header on S3 (cached per
-    process), reprojects ``bounds`` into the COG's CRS, and returns the
-    first region whose footprint fully contains them.
+    Parameters
+    ----------
+    code : str
+        Two-digit RGI o1 region code.
+    bounds : tuple of float
+        ``(minx, miny, maxx, maxy)`` in the CRS given by ``crs``.
+    crs : str
+        CRS of ``bounds``.
+
+    Returns
+    -------
+    float
+        Covered fraction, 0.0 to 1.0.
+    """
+    cog_crs, cog_poly = _its_live_region_footprint(code)
+    transformer = Transformer.from_crs(crs, cog_crs, always_xy=True)
+    box = _shapely_box(*transformer.transform_bounds(*bounds))
+    if box.area == 0:
+        return 0.0
+    return cog_poly.intersection(box).area / box.area
+
+
+def region_code_from_bounds(
+    bounds: tuple[float, float, float, float],
+    crs: str,
+    rgi_id: str | None = None,
+) -> str:
+    """
+    Return the RGI region code whose ITS_LIVE COG covers ``bounds``.
+
+    When ``rgi_id`` names a region ITS_LIVE publishes, that region is used —
+    the ID is authoritative, whereas the footprints overlap generously in
+    polar stereographic and a box can sit inside several of them. Otherwise
+    each published COG header is probed (cached per process) and the region
+    covering the most of ``bounds`` wins.
+
+    Full containment is preferred but not required. A staged domain is the
+    glacier plus a buffer plus a geographic pad, so it routinely overhangs a
+    COG edge by a few kilometres even when the glacier itself is well inside;
+    the interpolation downstream already yields NaN outside the tile and zeroes
+    it. A shortfall is logged so genuinely uncovered domains are still visible.
 
     Parameters
     ----------
@@ -110,6 +187,9 @@ def region_code_from_bounds(bounds: tuple[float, float, float, float], crs: str)
         ``(minx, miny, maxx, maxy)`` in the CRS given by ``crs``.
     crs : str
         CRS of ``bounds`` (anything pyproj accepts: EPSG code, WKT, …).
+    rgi_id : str or None, optional
+        RGI identifier of the glacier being staged. Its o1 region selects the
+        COG directly when ITS_LIVE publishes one for it.
 
     Returns
     -------
@@ -119,25 +199,49 @@ def region_code_from_bounds(bounds: tuple[float, float, float, float], crs: str)
     Raises
     ------
     ValueError
-        If no published region COG fully contains ``bounds``.
+        If no published region COG overlaps ``bounds`` at all.
     """
-    minx, miny, maxx, maxy = bounds
-    for code in _ITS_LIVE_REGION_CODES:
-        cog_crs, cog_poly = _its_live_region_footprint(code)
-        t = Transformer.from_crs(crs, cog_crs, always_xy=True)
-        ub = t.transform_bounds(minx, miny, maxx, maxy)
-        if cog_poly.contains(_shapely_box(*ub)):
-            return code
-    raise ValueError(
-        f"No ITS_LIVE per-region COG fully contains bounds {bounds} (crs={crs}). "
-        "Region may straddle two regions, or fall outside published coverage."
-    )
+    preferred = region_code_from_rgi_id(rgi_id)
+    if preferred is not None:
+        covered = _coverage(preferred, bounds, crs)
+        if covered > 0:
+            if covered < 1:
+                logger.warning(
+                    "ITS_LIVE region %s covers %.1f%% of the requested domain; the rest has no "
+                    "velocity data and is zeroed. This is normal when the domain buffer overhangs "
+                    "a tile edge — check the glacier itself is inside if the shortfall is large.",
+                    preferred,
+                    100 * covered,
+                )
+            return preferred
+        logger.warning(
+            "ITS_LIVE region %s (from %s) does not overlap the domain at all; falling back to a footprint search.",
+            preferred,
+            rgi_id,
+        )
+
+    coverage = {code: _coverage(code, bounds, crs) for code in _ITS_LIVE_REGION_CODES}
+    best = max(coverage, key=lambda code: coverage[code])
+    if coverage[best] == 0:
+        raise ValueError(
+            f"No ITS_LIVE per-region COG overlaps bounds {bounds} (crs={crs}); "
+            "the domain falls outside published coverage."
+        )
+    if coverage[best] < 1:
+        logger.warning(
+            "No ITS_LIVE COG fully contains the domain; using region %s, which covers %.1f%%. "
+            "Pass the glacier's rgi_id to select the region directly.",
+            best,
+            100 * coverage[best],
+        )
+    return best
 
 
 def get_velocities_by_bounds(
     bounds: tuple[float, float, float, float],
     product_name: str = "its_live",
     src_crs: str | None = None,
+    rgi_id: str | None = None,
 ) -> xr.Dataset:
     """
     Retrieve and subset a velocity product over a specified geographic bounding box.
@@ -155,6 +259,9 @@ def get_velocities_by_bounds(
     src_crs : str or None, optional
         CRS of ``bounds`` (e.g., ``"EPSG:3413"``). If ``None``, ``"EPSG:4326"``
         (longitude/latitude) is assumed.
+    rgi_id : str or None, optional
+        RGI identifier of the glacier, used to pick the ITS_LIVE region
+        directly instead of inferring it from the footprints.
 
     Returns
     -------
@@ -179,7 +286,7 @@ def get_velocities_by_bounds(
 
     # Load dataset
     if product_name == "its_live":
-        region_code = region_code_from_bounds(bounds, crs=src_crs)
+        region_code = region_code_from_bounds(bounds, crs=src_crs, rgi_id=rgi_id)
         ds = get_itslive_velocities_by_region_code(region_code)
     else:
         raise NotImplementedError(f"Velocity product '{product_name}' is not supported.")
@@ -270,6 +377,7 @@ def glacier_velocities_from_grid(
     product_name: str = "its_live",
     path: Path | str = "tmp.nc",
     force_overwrite: bool = False,
+    rgi_id: str | None = None,
 ) -> xr.Dataset:
     """
     Generate observed glacier surface velocities for a glacier by RGI ID.
@@ -296,6 +404,10 @@ def glacier_velocities_from_grid(
         (per :func:`check_xr_lazy`), it is opened instead of re-downloading.
     force_overwrite : bool, default ``False``
         If ``True``, ignore any existing cache at ``path`` and regenerate.
+    rgi_id : str or None, optional
+        RGI identifier of the glacier. Its o1 region selects the ITS_LIVE tile
+        directly, which the overlapping polar-stereographic footprints cannot
+        do unambiguously.
 
     Returns
     -------
@@ -334,7 +446,7 @@ def glacier_velocities_from_grid(
             geo_bounds[2] + lon_pad,
             geo_bounds[3] + lat_pad,
         )
-        ds = get_velocities_by_bounds(padded, product_name=product_name)
+        ds = get_velocities_by_bounds(padded, product_name=product_name, rgi_id=rgi_id)
 
         # The interpolator is built on ITS_LIVE's native coordinates, so the
         # intermediate frame must match. The finite-difference round-trip
