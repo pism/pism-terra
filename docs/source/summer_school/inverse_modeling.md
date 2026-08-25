@@ -85,7 +85,7 @@ pism-glacier-run-inverse \
     --output-path frank_inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_inverse_gpbld_frank.toml \
-    pism_terra/templates/debug-inverse.j2
+    pism_terra/templates/debug.j2
 ```
 
 and then for the Maffezzoli dataset:
@@ -95,7 +95,7 @@ pism-glacier-run-inverse \
     --output-path maffezzoli_inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_inverse_gpbld_maffezzoli.toml \
-    pism_terra/templates/debug-inverse.j2
+    pism_terra/templates/debug.j2
 ```
 
 and finally for the Millan dataset:
@@ -105,24 +105,26 @@ pism-glacier-run-inverse \
     --output-path millan_inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_inverse_gpbld_millan.toml \
-    pism_terra/templates/debug-inverse.j2
+    pism_terra/templates/debug.j2
 ```
 
 Now you can run the models. Each script spins the glacier up, inverts for
 `tauc`, and then runs forward with the inverted field. The script's name
 carries the resolution, the RGI ID and the `[time]` span, so let the shell find
-it rather than typing it out:
+it rather than typing it out. Run them with `bash`, not `.` — the scripts carry
+`set -e` so that a failing leg stops the ones after it, and sourcing would
+leave that switched on in your own shell:
 
 ```bash
-. frank_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
+bash frank_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
 ```
 
 ```bash
-. maffezzoli_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
+bash maffezzoli_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
 ```
 
 ```bash
-. millan_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
+bash millan_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
 ```
 
 The inversion writes one `output/inverse/inv_*.nc` per glacier; that file is

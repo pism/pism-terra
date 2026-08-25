@@ -91,11 +91,16 @@ no state to invert on.
 Templates expose the rendered `run_str` (PISM command-line flags) plus any
 HPC scheduler scaffolding. `run_init_str` carries the init leg's command line
 and is empty when no init bounds are configured, so templates guard it with
-`{% raw %}{% if run_init_str %}{% endraw %}`. Inverse templates additionally
-render `inv_str`, the `pismi` command line, **between** the two — the
-`*-inverse.j2` templates are laid out in that order. Bundled templates live in
-`pism_terra/templates/`. The `debug.j2` template is for interactive runs;
-Slurm/PBS variants are provided per cluster.
+`{% raw %}{% if run_init_str %}{% endraw %}`. `inv_str`, the `pismi` command
+line, is rendered **between** the two, and is likewise empty for a forward
+run — so one template serves both, as long as its legs are laid out in that
+order. Bundled templates live in `pism_terra/templates/`. The `debug.j2`
+template is for interactive runs; Slurm/PBS variants are provided per cluster.
+
+Every bundled template starts with `set -e`, so a leg that fails stops the
+ones after it instead of letting them run on a state file that was never
+written. Run a rendered script with `bash script.sh` rather than sourcing it,
+or `pism-glacier-execute`, which runs it as `bash -ex`.
 
 The ISMIP7 runners split the forward span into `run_hist_str` and
 `run_proj_str` instead of a single `run_str`, so their templates

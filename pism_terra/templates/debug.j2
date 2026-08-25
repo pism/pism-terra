@@ -1,3 +1,9 @@
+# Abort on the first failing leg. Without this a leg that dies still leaves
+# the next one to start on a missing input file — and pismi, whose Python
+# driver has no top-level catch, then deadlocks in MPI_Finalize and holds
+# the nodes until the job is cancelled.
+set -e
+
 {% if run_init_str %}
 mpirun -np  {{ ntasks | default(8) }} pism {{ run_init_str }}
 {% endif %}
