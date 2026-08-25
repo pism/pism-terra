@@ -14,8 +14,6 @@ heatflux = "lucazeau"
 ice_thickness = "maffezzoli"
 init_climate = "carra2-monthly-mean"
 init_surface_model = "debm_enhanced"
-init_end = "0501-01-01"
-init_start = "0001-01-01"
 name = "Hindcast"
 prefix = "glacier/input"
 project_directory = "s4f"
@@ -25,8 +23,8 @@ velocity = "its_live"
 
 [time]
 
-'time.start' = "0501-01-01"
-'time.end' =  "0502-01-01"
+'time.start' = "0001-01-01"
+'time.end' =  "1001-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "0001-01-01"
 
