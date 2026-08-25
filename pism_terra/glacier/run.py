@@ -30,7 +30,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
@@ -47,6 +46,7 @@ from pism_terra.workflow import (
     dict2str,
     filter_overrides_by_config,
     normalize_row,
+    postprocess_ntasks,
     sort_dict_by_key,
     validate_pism_options,
 )
@@ -64,6 +64,55 @@ CLIMATE_FILE_OPTIONS = (
     "surface.debm_simple.std_dev.file",
     "surface.pdd.std_dev.file",
 )
+
+
+def _postprocess_commands(
+    spatial_file: Path,
+    output_path: Path,
+    outline_c_file: str,
+    outline_g_file: str,
+    config_cli: dict,
+) -> str:
+    """
+    Build the per-run post-processing commands.
+
+    A glacier run is reduced twice: once against the complex outline (``-C``,
+    one region — the whole glacier complex) and once against the per-glacier
+    outlines (``-G``, one region per glacier). Both read the same spatial file,
+    so the outputs are named for the outline type to keep them apart.
+
+    Parameters
+    ----------
+    spatial_file : pathlib.Path
+        The run's spatial output, the input to both reductions.
+    output_path : pathlib.Path
+        The run's ``output/`` directory; the results go in
+        ``processed_scalar/`` beneath it.
+    outline_c_file, outline_g_file : str
+        Complex and glacier outline paths, or ``"none"`` when the run was
+        staged without outlines.
+    config_cli : dict
+        CLI overrides; only ``"ntasks"`` is consulted, to size the Dask
+        cluster the reduction runs on.
+
+    Returns
+    -------
+    str
+        Newline-separated commands, or an empty string when no outline is
+        available to reduce over.
+    """
+    stem = spatial_file.name
+    stem = stem[len("spatial_") :] if stem.startswith("spatial_") else stem
+    scalar_dir = output_path / "processed_scalar"
+    ntasks = postprocess_ntasks(config_cli)
+
+    commands = []
+    for kind, outline in (("C", outline_c_file), ("G", outline_g_file)):
+        if outline == "none":
+            continue
+        outfile = scalar_dir / f"scalar_{kind}_{stem}"
+        commands.append(f"pism-postprocess-scalar {spatial_file.resolve()} {outfile.resolve()} {outline}{ntasks}")
+    return "\n".join(commands)
 
 
 def _build_init_leg(
@@ -544,27 +593,16 @@ def _render_inverse_run(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
-    run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline_c": outline_c_file, "outline_g": outline_g_file},
-        "output": {
-            "spatial": str(spatial_file.resolve()),
-            "scalar.file": scalar_file.resolve(),
-            "state": str(state_file.resolve()),
-        },
-        "config": run,
-    }
-    post_path = output_path / Path("post_processing")
-    post_path.mkdir(parents=True, exist_ok=True)
-
-    post_file = post_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
-    with open(post_file, "w", encoding="utf-8") as toml_file:
-        toml.dump(run_toml, toml_file)
-
     params.update({"run_init_str": run_init_str})
     params.update({"run_str": run_str})
     params.update({"inv_str": inv_str})
-    params.update({"post_script": "pism-glacier-postprocess"})
-    params.update({"post_file": post_file})
+    params.update(
+        {
+            "post_process_str": _postprocess_commands(
+                spatial_file, output_path, outline_c_file, outline_g_file, config_cli
+            )
+        }
+    )
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
@@ -576,7 +614,6 @@ def _render_inverse_run(
     run_script.write_text(rendered_script)
 
     print(f"\nSLURM script written to {run_script.resolve()}\n")
-    print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
 def _render_forward_run(
@@ -872,26 +909,15 @@ def _render_forward_run(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
-    run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline_c": outline_c_file, "outline_g": outline_g_file},
-        "output": {
-            "spatial": str(spatial_file.resolve()),
-            "scalar.file": scalar_file.resolve(),
-            "state": str(state_file.resolve()),
-        },
-        "config": run,
-    }
-    post_path = output_path / Path("post_processing")
-    post_path.mkdir(parents=True, exist_ok=True)
-
-    post_file = post_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
-    with open(post_file, "w", encoding="utf-8") as toml_file:
-        toml.dump(run_toml, toml_file)
-
     params.update({"run_init_str": run_init_str})
     params.update({"run_str": run_str})
-    params.update({"post_script": "pism-glacier-postprocess"})
-    params.update({"post_file": post_file})
+    params.update(
+        {
+            "post_process_str": _postprocess_commands(
+                spatial_file, output_path, outline_c_file, outline_g_file, config_cli
+            )
+        }
+    )
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
@@ -903,7 +929,6 @@ def _render_forward_run(
     run_script.write_text(rendered_script)
 
     print(f"\nSLURM script written to {run_script.resolve()}\n")
-    print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
 def _nullable_string(argument_string: str) -> str | None:

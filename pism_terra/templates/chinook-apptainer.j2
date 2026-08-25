@@ -46,3 +46,5 @@ mpiexec -n $SLURM_NTASKS apptainer run ${container} pism {{ run_init_str }}
 {% endif %}
 
 mpiexec -n $SLURM_NTASKS apptainer run ${container} pism {{ run_str }}
+
+{{ post_process_str }}

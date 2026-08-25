@@ -812,6 +812,36 @@ def stamp_grid_mapping(ds: xr.Dataset, name: str = "spatial_ref") -> xr.Dataset:
     return ds
 
 
+#: Upper bound on Dask workers for post-processing. A PISM run can use a very
+#: wide MPI decomposition; translating that straight into worker *processes*
+#: would thrash a single node, and the reduction is I/O bound well before then.
+POSTPROCESS_MAX_WORKERS = 8
+
+
+def postprocess_ntasks(config_cli: dict) -> str:
+    """
+    Build the ``--ntasks`` flag for a post-processing command.
+
+    Clamps the run's MPI task count to :data:`POSTPROCESS_MAX_WORKERS` so a
+    wide PISM decomposition does not translate into an unusable number of Dask
+    worker processes.
+
+    Parameters
+    ----------
+    config_cli : dict
+        CLI overrides; only ``"ntasks"`` is consulted.
+
+    Returns
+    -------
+    str
+        ``" --ntasks N"`` when a task count is set, else an empty string.
+    """
+    ntasks = config_cli.get("ntasks")
+    if not ntasks:
+        return ""
+    return f" --ntasks {min(int(ntasks), POSTPROCESS_MAX_WORKERS)}"
+
+
 def compressed_encoding(ds: xr.Dataset, complevel: int = 2, **extra: Any) -> dict[str, dict[str, Any]]:
     """
     Build a per-variable NetCDF encoding that keeps the CF grid mapping.

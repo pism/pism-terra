@@ -44,12 +44,14 @@ from pism_terra.workflow import (
     dict2str,
     filter_overrides_by_config,
     normalize_row,
+    postprocess_ntasks,
     sort_dict_by_key,
     validate_pism_options,
 )
 
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
+
 
 # Upper bound on Dask workers for the per-basin post-processing step. The run's
 # ``ntasks`` sizes the PISM *MPI* decomposition (40+ on Chinook); handing that
@@ -58,33 +60,6 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 # ``OSError: [Errno 24] Too many open files`` before any work starts. The
 # post-processing is a per-basin clip + field sum, so a handful of workers is
 # plenty regardless of how wide the PISM run was.
-_POSTPROCESS_MAX_WORKERS = 8
-
-
-def _postprocess_ntasks(config_cli: dict) -> str:
-    """
-    Build the ``--ntasks`` flag for the post-processing command.
-
-    Clamps the run's MPI task count to :data:`_POSTPROCESS_MAX_WORKERS` so a
-    wide PISM decomposition does not translate into an unusable number of Dask
-    worker processes.
-
-    Parameters
-    ----------
-    config_cli : dict
-        CLI overrides; only ``"ntasks"`` is consulted.
-
-    Returns
-    -------
-    str
-        ``" --ntasks N"`` when a task count is set, else an empty string.
-    """
-    ntasks = config_cli.get("ntasks")
-    if not ntasks:
-        return ""
-    return f" --ntasks {min(int(ntasks), _POSTPROCESS_MAX_WORKERS)}"
-
-
 def _make_output_paths(path: str | Path, *, inverse: bool = False) -> dict[str, Path]:
     """
     Create the run's output directory tree and return the paths.
@@ -485,7 +460,7 @@ def _build_forward_legs(
         # Clip the (combined) spatial output to basins and write per-basin
         # scalar sums. Needs a real outline; skip if none was supplied.
         if outline_file != "none":
-            _nt = _postprocess_ntasks(config_cli)
+            _nt = postprocess_ntasks(config_cli)
             post_process_str = (
                 f"pism-postprocess-scalar "
                 f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file} "

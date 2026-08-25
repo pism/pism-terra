@@ -56,3 +56,5 @@ mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pismi {{ inv_
 # ###############################################################################
 
 mpirun -np  {{ ntasks | default(40) }} apptainer run  ${container} pism {{ run_str }}
+
+{{ post_process_str }}

@@ -25,7 +25,8 @@ runnable as `python -m <module>`. The full list lives in
 * - `pism-glacier-execute`
   - Execute a pre-rendered run script.
 * - `pism-glacier-postprocess`
-  - Clip and aggregate spatial output (TOML-driven).
+  - Clip and aggregate spatial output (TOML-driven, legacy — the run scripts
+    now emit `pism-postprocess-scalar` instead).
 * - `pism-glacier-mip4`
   - Build the per-region `RGI7_NN` aggregate complexes and shared inputs for
     GlacierMIP4.

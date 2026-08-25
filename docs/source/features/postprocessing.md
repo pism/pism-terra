@@ -9,7 +9,15 @@ whatever the outline file contains.
 
 - `pism-postprocess-scalar` — per-region sums over `x`/`y`, one row per outline.
 - `pism-postprocess-spatial` — per-region masked fields, one NetCDF per outline.
-- `pism-glacier-postprocess` — legacy TOML-driven glacier variant.
+- `pism-glacier-postprocess` — legacy TOML-driven glacier variant. The glacier
+  run scripts no longer generate its input TOML; keep using it only against
+  TOMLs written by an earlier version.
+
+A glacier run is reduced twice, once per outline type: `-C` (the complex, one
+region covering the whole glacier system) and `-G` (one region per glacier).
+Both read the same spatial file, so `pism-glacier-run-*` names their outputs
+`processed_scalar/scalar_C_<stem>.nc` and `scalar_G_<stem>.nc` rather than
+letting both derive the same default name.
 
 ```bash
 pism-postprocess-scalar SPATIAL.nc OUTDIR/ OUTLINES.gpkg

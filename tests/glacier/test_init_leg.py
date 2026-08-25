@@ -327,3 +327,22 @@ def test_without_an_init_surface_model_both_legs_agree(tmp_path):
     init, main = surface_models(render(tmp_path, config=config))
 
     assert init == main == _CFG.surface.selected()["surface.models"]
+
+
+def test_the_run_toml_is_no_longer_written(tmp_path):
+    """
+    Emit the post-processing commands directly instead of a run TOML.
+
+    `pism-glacier-postprocess` read that TOML; the run script now calls
+    `pism-postprocess-scalar` with the outline files positionally, so the
+    TOML has no reader left.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    script = render(tmp_path)
+
+    assert not (tmp_path / RGI_ID / "output" / "post_processing").exists()
+    assert "pism-glacier-postprocess" not in script

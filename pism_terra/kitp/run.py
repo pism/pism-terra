@@ -43,40 +43,13 @@ from pism_terra.workflow import (
     dict2str,
     filter_overrides_by_config,
     normalize_row,
+    postprocess_ntasks,
     sort_dict_by_key,
     validate_pism_options,
 )
 
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
-
-# Dask worker processes for post-processing. A wide PISM decomposition (hundreds
-# of MPI ranks) must not translate into that many worker processes.
-_POSTPROCESS_MAX_WORKERS = 8
-
-
-def _postprocess_ntasks(config_cli: dict) -> str:
-    """
-    Build the ``--ntasks`` flag for the post-processing command.
-
-    Clamps the run's MPI task count to :data:`_POSTPROCESS_MAX_WORKERS` so a
-    wide PISM decomposition does not translate into an unusable number of Dask
-    worker processes.
-
-    Parameters
-    ----------
-    config_cli : dict
-        CLI overrides; only ``"ntasks"`` is consulted.
-
-    Returns
-    -------
-    str
-        ``" --ntasks N"`` when a task count is set, else an empty string.
-    """
-    ntasks = config_cli.get("ntasks")
-    if not ntasks:
-        return ""
-    return f" --ntasks {min(int(ntasks), _POSTPROCESS_MAX_WORKERS)}"
 
 
 def run_kitp(
@@ -355,7 +328,7 @@ def run_kitp(
         post_process_str = (
             f"pism-postprocess-scalar "
             f"{spatial_file.resolve()} {basin_file.resolve()} {outline_file} "
-            f"--total-name GIS{_postprocess_ntasks(config_cli)}"
+            f"--total-name GIS{postprocess_ntasks(config_cli)}"
         )
 
     params.update({"run_str": run_str})
