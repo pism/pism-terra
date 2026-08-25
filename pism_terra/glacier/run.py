@@ -1194,6 +1194,9 @@ def _run(*, kind: str) -> None:
         path=input_path,
         staging_path=staging_path,
         force_overwrite=force_overwrite,
+        # One copy of the project's RGI outlines for every glacier staged
+        # under this data path, not one per glacier.
+        rgi_cache_path=in_base,
     )
 
     if uq_file is not None:

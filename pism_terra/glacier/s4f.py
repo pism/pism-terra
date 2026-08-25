@@ -40,7 +40,7 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Point, Polygon, box
 
-from pism_terra.aws import download_from_s3, local_to_s3, project_prefix
+from pism_terra.aws import local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import (
@@ -50,6 +50,7 @@ from pism_terra.glacier.climate import (
     snap,
 )
 from pism_terra.glacier.dem import boot_file_from_grid
+from pism_terra.glacier.stage import staged_rgi_outlines
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import (
     get_glacier_from_rgi_id,
@@ -124,14 +125,10 @@ def main():
     config = cfg.campaign.as_params()
 
     print("RGI Database")
-    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
-    rgi_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_complex_file"]}"""
-    rgi_local = path / config["rgi_complex_file"]
-    if not rgi_local.exists():
-        print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
-        download_from_s3(rgi_s3_uri, rgi_local)
-    else:
-        print(f"Using cached {rgi_local}")
+    # Same cache the per-glacier staging below reads from, so the outlines are
+    # fetched once for the whole planning run rather than copied into the
+    # output tree as well.
+    rgi_local, _ = staged_rgi_outlines(config, staging_base)
     rgi = gpd.read_file(rgi_local)
 
     rgi_cloud = path / config["rgi_complex_file"].replace("gpkg", "fgb")
@@ -152,6 +149,7 @@ def main():
             path=input_path,
             staging_path=staging_path,
             force_overwrite=force_overwrite,
+            rgi_cache_path=staging_base,
         )
         all_nc_files.extend(Path(p) for p in glacier_boot_files.values() if Path(p).suffix == ".nc")
 
@@ -177,6 +175,7 @@ def s4f_glacier(
     staging_path: str | Path | None = None,
     resolution: float = 100.0,
     force_overwrite: bool = False,
+    rgi_cache_path: str | Path | None = None,
 ) -> dict:
     """
     Stage glacier inputs (boot dataset and Cloud Optimized GeoTIFFs).
@@ -219,6 +218,11 @@ def s4f_glacier(
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist (e.g., passed to :func:`boot_file_from_grid`).
+    rgi_cache_path : str or pathlib.Path or None, optional
+        Directory the project's RGI GeoPackages are cached in. Planning walks
+        every glacier in the project, so pointing this at a shared root fetches
+        the (large) outlines once instead of once per glacier. Defaults to
+        ``staging_path``.
 
     Returns
     -------
@@ -265,22 +269,11 @@ def s4f_glacier(
     staging_path.mkdir(parents=True, exist_ok=True)
 
     print("RGI Database")
-    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
-    rgi_complex_local = staging_path / config["rgi_complex_file"]
-    if not rgi_complex_local.exists():
-        rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_complex_file"]}"""
-        print(f"Downloading {rgi_complex_s3_uri} -> {rgi_complex_local}")
-        download_from_s3(rgi_complex_s3_uri, rgi_complex_local)
-    else:
-        print(f"Using cached {rgi_complex_local}")
-
-    rgi_glacier_local = staging_path / config["rgi_glacier_file"]
-    if not rgi_glacier_local.exists():
-        rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_glacier_file"]}"""
-        print(f"Downloading {rgi_glacier_s3_uri} -> {rgi_glacier_local}")
-        download_from_s3(rgi_glacier_s3_uri, rgi_glacier_local)
-    else:
-        print(f"Using cached {rgi_glacier_local}")
+    # Planning walks every glacier in the project, so the outlines -- one file
+    # pair for all of them -- are cached once instead of per glacier.
+    rgi_complex_local, rgi_glacier_local = staged_rgi_outlines(
+        config, rgi_cache_path if rgi_cache_path is not None else staging_path
+    )
 
     # NOTE: gpd.read_file/to_file corrupts the heap on some envs and crashes the
     # next libgdal allocation (e.g. inside dem_stitcher). Use pyogrio directly.
