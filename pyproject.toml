@@ -116,6 +116,7 @@ pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
 pism-kitp-stage = "pism_terra.kitp.stage:main"
 pism-glacier-mip4 = "pism_terra.glacier.glaciermip4:cli"
 pism-glacier-usgs-benchmark = "pism_terra.glacier.usgs_benchmark:cli"
+pism-glacier-usgs-stakes = "pism_terra.glacier.usgs_stakes:cli"
 pism-s4f-planning = "pism_terra.glacier.s4f:main"
 pism-validate = "pism_terra.validate:main"
 

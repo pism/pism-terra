@@ -36,6 +36,9 @@ runnable as `python -m <module>`. The full list lives in
     found under a run directory. Monthly model output additionally gives
     modelled winter and summer balances, integrated over the release's own
     measured season dates.
+* - `pism-glacier-usgs-stakes`
+  - Write the USGS benchmark-glacier stake measurements (m w.e., typed
+    dates) to a GeoPackage with `sites`, `stakes` and `subseasonal` layers.
 ```
 
 Both run commands take `RGI_ID CONFIG_FILE TEMPLATE_FILE` plus an *optional*

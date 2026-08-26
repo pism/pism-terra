@@ -152,6 +152,18 @@ no `:toctree:` so the field descriptions are registered in exactly one place
     run_pipeline
 ```
 
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs_stakes
+
+.. autosummary::
+    :toctree: generated/
+
+    parse_dates
+    load_measurements
+    build_stake_layers
+    write_stake_geopackage
+```
+
 ### Run generation & post-processing
 
 ```{eval-rst}
