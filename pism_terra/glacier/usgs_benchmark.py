@@ -42,12 +42,12 @@ import cf_xarray
 import geopandas as gpd
 import matplotlib as mpl
 import matplotlib.pylab as plt
-from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 import pint_xarray
 import requests
 import xarray as xr
+from matplotlib.ticker import MaxNLocator
 
 from pism_terra.download import download_archive, extract_archive
 from pism_terra.glacier.rgi import prepare_rgi_region
