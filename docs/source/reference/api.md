@@ -128,6 +128,26 @@ no `:toctree:` so the field descriptions are registered in exactly one place
     bathymetry_from_grid
 ```
 
+### USGS benchmark glaciers
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs_benchmark
+
+.. autosummary::
+    :toctree: generated/
+
+    download_usgs_benchmark
+    load_sites
+    load_rgi_glaciers
+    match_rgi_ids
+    load_glacier_wide
+    to_mass_rate
+    find_model_files
+    load_model_series
+    plot_glacier
+    run_pipeline
+```
+
 ### Run generation & post-processing
 
 ```{eval-rst}

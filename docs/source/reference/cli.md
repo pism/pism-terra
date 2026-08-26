@@ -30,6 +30,10 @@ runnable as `python -m <module>`. The full list lives in
 * - `pism-glacier-mip4`
   - Build the per-region `RGI7_NN` aggregate complexes and shared inputs for
     GlacierMIP4.
+* - `pism-glacier-usgs-benchmark`
+  - Download the USGS benchmark-glacier mass balances, match each glacier to
+    its RGI v7 ID, convert to Gt/yr and plot against any `scalar_G_*.nc`
+    found under a run directory.
 ```
 
 Both run commands take `RGI_ID CONFIG_FILE TEMPLATE_FILE` plus an *optional*
