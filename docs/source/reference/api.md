@@ -144,6 +144,9 @@ no `:toctree:` so the field descriptions are registered in exactly one place
     to_mass_rate
     find_model_files
     load_model_series
+    model_seasonal_balances
+    integrate_rate
+    is_monthly
     plot_glacier
     run_pipeline
 ```

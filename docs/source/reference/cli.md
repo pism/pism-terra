@@ -33,7 +33,9 @@ runnable as `python -m <module>`. The full list lives in
 * - `pism-glacier-usgs-benchmark`
   - Download the USGS benchmark-glacier mass balances, match each glacier to
     its RGI v7 ID, convert to Gt/yr and plot against any `scalar_G_*.nc`
-    found under a run directory.
+    found under a run directory. Monthly model output additionally gives
+    modelled winter and summer balances, integrated over the release's own
+    measured season dates.
 ```
 
 Both run commands take `RGI_ID CONFIG_FILE TEMPLATE_FILE` plus an *optional*

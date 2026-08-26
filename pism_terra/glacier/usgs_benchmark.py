@@ -79,6 +79,15 @@ BALANCE_VARS = {"Bw": "winter", "Bs": "summer", "Ba": "annual"}
 # version (or a user-edited CSV) adds them.
 UNCERTAINTY_SUFFIXES = ("_unc", "_uncertainty", "_err", "_sigma")
 MODEL_VAR = "tendency_of_ice_mass"
+#: Model counterpart of a glaciological seasonal balance. A stake network
+#: measures accumulation minus melt at the surface; within a season flow and
+#: discharge move mass around without a stake seeing it, so the surface flux is
+#: the like-for-like variable — not the total ``MODEL_VAR`` tendency.
+MODEL_SEASONAL_VAR = "tendency_of_ice_mass_due_to_surface_mass_flux"
+#: Columns of the release's glacier-wide solution giving the measured season
+#: boundaries: the winter maximum ends the winter season, the annual minimum
+#: ends the balance year.
+SEASON_DATE_COLUMNS = ("Bw_Date", "Ba_Date")
 DEFAULT_DATA_DIR = "~/base/pism-terra/usgs_benchmark"
 
 RHO_WATER = 1000.0  # constants.fresh_water.density
@@ -89,6 +98,9 @@ OBS_STYLE = {
     "Ba": {"color": "#000000", "marker": "o"},
 }
 MODEL_COLOR = "#228833"
+#: Modelled seasonal balances borrow their observation's colour so the eye
+#: pairs them, and are drawn as lines against the observations' markers.
+MODEL_SEASON_STYLE = {"Bw": {"color": "#4477AA", "ls": "--"}, "Bs": {"color": "#EE6677", "ls": "--"}}
 
 
 def sciencebase_file_urls(item_id: str = SCIENCEBASE_ITEM) -> dict[str, str]:
@@ -407,6 +419,13 @@ def load_glacier_wide(data_dir: Path | str, glacier: str, fallback_area_km2: flo
                 {"units": "m year^-1", "long_name": f"uncertainty of glacier-wide {season} mass balance (m w.e.)"},
             )
 
+    # The measured season boundaries. Keeping them on the dataset lets the
+    # model be integrated over exactly the interval each observation covers.
+    for column in SEASON_DATE_COLUMNS:
+        if column in df:
+            ds[column] = ("time", pd.to_datetime(df[column], errors="coerce").to_numpy())
+            ds[column].attrs = {"long_name": f"measured {column.split('_', maxsplit=1)[0]} date"}
+
     aad_csv = glacier_dir / f"Input_{glacier}_Area_Altitude_Distribution.csv"
     if aad_csv.exists():
         aad = pd.read_csv(aad_csv).set_index("Year")
@@ -455,7 +474,7 @@ def to_mass_rate(ds: xr.Dataset) -> xr.Dataset:
     rho = xr.DataArray(RHO_WATER).pint.quantify("kg m^-3")
     out: dict[str, xr.DataArray] = {}
     for var in list(ds.data_vars):
-        if var == "area":
+        if var == "area" or not np.issubdtype(ds[var].dtype, np.number):
             continue
         rate = (quantified[var] * rho * quantified["area"]).pint.to("Gt/year")
         rate.attrs["long_name"] = ds[var].attrs.get("long_name", var).replace("(m w.e.)", "").strip()
@@ -464,6 +483,9 @@ def to_mass_rate(ds: xr.Dataset) -> xr.Dataset:
     for var in result.data_vars:
         result[var].attrs["units"] = "Gt year^-1"
     result["area"] = ds["area"]
+    for column in SEASON_DATE_COLUMNS:
+        if column in ds:
+            result[column] = ds[column]
     result.attrs.update(ds.attrs)
     return result
 
@@ -611,8 +633,217 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
     return model
 
 
+def _month_edges(times: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calendar-month interval each monthly stamp represents.
+
+    PISM stamps a monthly mean at the middle of its month, so the interval is
+    the calendar month the stamp falls in.
+
+    Parameters
+    ----------
+    times : numpy.ndarray
+        Decoded time stamps (cftime or numpy datetimes).
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(starts, ends)`` as pandas Timestamps, ``ends`` exclusive.
+    """
+    starts, ends = [], []
+    for t in times:
+        stamp = pd.Timestamp(str(t)[:19])
+        start = stamp.normalize().replace(day=1)
+        starts.append(start)
+        ends.append(start + pd.offsets.MonthBegin(1))
+    return np.array(starts), np.array(ends)
+
+
+def is_monthly(times: np.ndarray) -> bool:
+    """
+    Report whether a time axis is monthly rather than annual.
+
+    Parameters
+    ----------
+    times : numpy.ndarray
+        Decoded time stamps.
+
+    Returns
+    -------
+    bool
+        True when consecutive stamps are less than 45 days apart.
+    """
+    if len(times) < 2:
+        return False
+    spans = [(pd.Timestamp(str(b)[:19]) - pd.Timestamp(str(a)[:19])).days for a, b in zip(times[:-1], times[1:])]
+    return bool(np.median(spans) < 45)
+
+
+def integrate_rate(rate: xr.DataArray, start: pd.Timestamp, end: pd.Timestamp, days_per_year: float = 365.0) -> float:
+    """
+    Integrate a monthly rate over an arbitrary interval.
+
+    Each monthly value is a mean rate over its calendar month, so a month
+    straddling a season boundary contributes in proportion to the days it
+    shares with the interval. The seasons are bounded by *measured* dates,
+    which fall mid-month far more often than not.
+
+    Parameters
+    ----------
+    rate : xarray.DataArray
+        Monthly rate in Gt/yr, with ``month_start``/``month_end`` coordinates.
+    start, end : pandas.Timestamp
+        Interval to integrate over; ``end`` exclusive.
+    days_per_year : float, default 365.0
+        Days per year of the model calendar, converting the rate to a mass.
+
+    Returns
+    -------
+    float
+        Mass change over the interval, in Gt. NaN when the interval is not
+        fully covered by the model record.
+    """
+    # xarray stores the coordinates as datetime64, so work in that dtype
+    # throughout rather than assuming Timestamps survive the round trip.
+    starts = pd.DatetimeIndex(rate["month_start"].values).values
+    ends = pd.DatetimeIndex(rate["month_end"].values).values
+    lower, upper = np.datetime64(start), np.datetime64(end)
+    if lower < starts.min() or upper > ends.max():
+        return float("nan")
+
+    overlap = (np.minimum(ends, upper) - np.maximum(starts, lower)) / np.timedelta64(1, "D")
+    overlap = np.clip(overlap.astype(float), 0.0, None)
+    return float(np.nansum(rate.values * overlap) / days_per_year)
+
+
+def model_seasonal_balances(
+    files: Sequence[Path | str],
+    rgi_id: str,
+    obs: xr.Dataset,
+    root: Path | str | None = None,
+    variable: str = MODEL_SEASONAL_VAR,
+) -> xr.Dataset | None:
+    """
+    Integrate the modelled surface mass flux over each measured season.
+
+    A balance year runs from one annual minimum to the next and is split at the
+    winter maximum, both dated in the release. The winter balance is therefore
+    the mass change from the *previous* year's ``Ba_Date`` to this year's
+    ``Bw_Date``, and the summer balance runs from there to this year's
+    ``Ba_Date``. Years where the release gives no dates — or that the model
+    record does not fully span — are left out, so every value plotted covers
+    exactly the interval its observation does.
+
+    Requires monthly model output; annual files carry no seasonal information
+    and yield ``None``.
+
+    Parameters
+    ----------
+    files : sequence of Path or str
+        Post-processed per-glacier scalar files.
+    rgi_id : str
+        RGI ``-G-`` identifier to select.
+    obs : xarray.Dataset
+        Observations carrying ``Bw_Date``/``Ba_Date`` (see
+        :func:`load_glacier_wide`).
+    root : Path or str or None, optional
+        Run directory the ``run`` labels are made relative to.
+    variable : str, optional
+        Model variable to integrate. Defaults to
+        :data:`MODEL_SEASONAL_VAR`.
+
+    Returns
+    -------
+    xarray.Dataset or None
+        ``Bw``/``Bs`` in Gt on ``(run, time)`` over balance years, plus the
+        derived annual ``Ba``. None when no file has monthly output for the
+        glacier, or the release dates no season.
+    """
+    if not all(column in obs for column in SEASON_DATE_COLUMNS):
+        logger.info("%s: release gives no season dates; no modelled seasons", rgi_id)
+        return None
+
+    years = obs["time"].values.astype(int)
+    bw_dates = pd.to_datetime(obs["Bw_Date"].values)
+    ba_dates = pd.to_datetime(obs["Ba_Date"].values)
+    # Winter starts at the previous balance year's minimum, so a year needs its
+    # own two dates and its predecessor's ``Ba_Date``.
+    previous = {int(y): ba for y, ba in zip(years, ba_dates)}
+
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
+    per_run: list[xr.Dataset] = []
+    labels: list[str] = []
+    for file in files:
+        file = Path(file)
+        with xr.open_dataset(file, decode_times=time_coder, decode_timedelta=delta_coder) as ds:
+            ds = with_region_labels(ds.drop_vars("pism_config", errors="ignore"))
+            names = ds[REGION_DIM].values
+            if names.dtype.kind == "S":
+                ds = ds.assign_coords({REGION_DIM: names.astype(str)})
+            if variable not in ds or rgi_id not in set(ds[REGION_DIM].values.tolist()):
+                continue
+            if not is_monthly(ds["time"].values):
+                logger.info("%s: %s is not monthly; no modelled seasons from it", rgi_id, file.name)
+                continue
+            rate = (
+                ds[variable]
+                .sel({REGION_DIM: rgi_id})
+                .pint.quantify()
+                .pint.to("Gt/year")
+                .pint.dequantify()
+                .load()
+                .drop_vars(REGION_DIM, errors="ignore")
+            )
+            starts, ends = _month_edges(ds["time"].values)
+            rate = rate.assign_coords(month_start=("time", starts), month_end=("time", ends))
+
+        winter, summer, kept = [], [], []
+        for year, bw_date, ba_date in zip(years, bw_dates, ba_dates):
+            year_start = previous.get(int(year) - 1)
+            if pd.isna(bw_date) or pd.isna(ba_date) or year_start is None or pd.isna(year_start):
+                continue
+            b_w = integrate_rate(rate, year_start, bw_date)
+            b_s = integrate_rate(rate, bw_date, ba_date)
+            if np.isnan(b_w) and np.isnan(b_s):
+                continue
+            winter.append(b_w)
+            summer.append(b_s)
+            kept.append(int(year))
+
+        if not kept:
+            continue
+        per_run.append(
+            xr.Dataset(
+                {"Bw": ("time", np.array(winter)), "Bs": ("time", np.array(summer))},
+                coords={"time": np.array(kept)},
+            )
+        )
+        labels.append(_run_label(file, root))
+        logger.info("%s: %d modelled seasons from %s", rgi_id, len(kept), labels[-1])
+
+    if not per_run:
+        return None
+
+    out = xr.concat(per_run, dim=pd.Index(labels, name="run"), join="outer").sortby("time")
+    out["Ba"] = out["Bw"] + out["Bs"]
+    for var, season in BALANCE_VARS.items():
+        out[var].attrs = {
+            "units": "Gt year^-1",
+            "long_name": f"modelled {season} surface mass balance",
+            "source_variable": variable,
+        }
+    return out
+
+
 def plot_glacier(
-    obs: xr.Dataset, model: xr.DataArray | None, glacier: str, rgi_id: str, output_dir: Path | str
+    obs: xr.Dataset,
+    model: xr.DataArray | None,
+    glacier: str,
+    rgi_id: str,
+    output_dir: Path | str,
+    *,
+    seasons: xr.Dataset | None = None,
 ) -> Path:
     """
     Plot observed seasonal and annual balances with the modelled mass-change rate.
@@ -630,6 +861,10 @@ def plot_glacier(
         RGI identifier for the title and file name.
     output_dir : Path or str
         Directory the figure is written to.
+    seasons : xarray.Dataset or None, optional
+        Modelled seasonal balances from :func:`model_seasonal_balances`,
+        drawn as lines in their observation's colour. ``None`` (the case for
+        annual model output) leaves the plot as it was.
 
     Returns
     -------
@@ -658,6 +893,39 @@ def plot_glacier(
                 ax.errorbar(obs["time"], obs[var], yerr=obs[unc], capsize=1, elinewidth=0.5, **kwargs)
             else:
                 ax.plot(obs["time"], obs[var], **kwargs)
+
+        if seasons is not None:
+            for var, style in MODEL_SEASON_STYLE.items():
+                if var not in seasons:
+                    continue
+                season = BALANCE_VARS[var]
+                values = seasons[var]
+                if values.sizes["run"] == 1:
+                    ax.plot(
+                        values["time"],
+                        values.isel(run=0),
+                        color=style["color"],
+                        ls=style["ls"],
+                        lw=1.0,
+                        label=f"PISM {season} (surface)",
+                    )
+                else:
+                    ax.fill_between(
+                        values["time"],
+                        values.quantile(0.05, dim="run"),
+                        values.quantile(0.95, dim="run"),
+                        color=style["color"],
+                        alpha=0.2,
+                        lw=0,
+                    )
+                    ax.plot(
+                        values["time"],
+                        values.median(dim="run"),
+                        color=style["color"],
+                        ls=style["ls"],
+                        lw=1.0,
+                        label=f"PISM {season} (surface, n={values.sizes['run']})",
+                    )
 
         if model is not None:
             if model.sizes["run"] == 1:
@@ -765,13 +1033,19 @@ def run_pipeline(
                     }
         rate = to_mass_rate(obs)
         model = load_model_series(model_files, row.rgi_id, root=run_dir) if model_files else None
-        png = plot_glacier(rate, model, row.glacier, row.rgi_id, output_dir)
+        seasons = model_seasonal_balances(model_files, row.rgi_id, rate, root=run_dir) if model_files else None
+        png = plot_glacier(rate, model, row.glacier, row.rgi_id, output_dir, seasons=seasons)
         figures.append(str(png))
         n_runs.append(0 if model is None else int(model.sizes["run"]))
 
-        out = xr.merge([rate, obs.drop_vars("area").rename({v: f"{v}_mwe" for v in obs.data_vars if v != "area"})])
+        mwe = [v for v in obs.data_vars if v != "area" and np.issubdtype(obs[v].dtype, np.number)]
+        out = xr.merge([rate, obs[mwe].rename({v: f"{v}_mwe" for v in mwe})])
         if model is not None:
             out[MODEL_VAR] = model
+        if seasons is not None:
+            for var in BALANCE_VARS:
+                if var in seasons:
+                    out[f"{var}_model"] = seasons[var]
         out.attrs["rgi_id"] = row.rgi_id
         out.to_netcdf(output_dir / f"usgs_benchmark_{row.glacier}_{row.rgi_id}.nc")
 
