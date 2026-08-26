@@ -98,6 +98,7 @@ no `:toctree:` so the field descriptions are registered in exactly one place
     prepare_carra2
     prepare_carra2_for_group
     prepare_carra2_monthly_mean
+    write_zarr_in_bands
 ```
 
 ### Ice thickness

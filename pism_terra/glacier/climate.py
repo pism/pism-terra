@@ -34,6 +34,7 @@ from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
+from typing import Any
 
 import cf_xarray
 import cftime
@@ -89,6 +90,10 @@ CARRA2_PROJ = (
     "+x_0=172840.374543307 +y_0=645049.059394855 "
     "+R=6371229 +units=m +no_defs"
 )
+
+# Store chunking: the whole record along time so a per-glacier clip reads one
+# chunk per tile and variable; ``-1`` = single chunk.
+CARRA2_ZARR_CHUNKS = {"time": -1, "y": 256, "x": 256}
 
 
 def _finalize_pism_crs(ds: xr.Dataset, crs_wkt: str) -> xr.Dataset:
@@ -566,7 +571,9 @@ def prepare_carra2(
     )
 
     grid = str(carra2_grid_path.resolve())
-    cdo = Cdo()
+    # Scratch next to the batches: the default is ``$TMPDIR``/``/tmp``, which
+    # on a workstation is often a RAM-backed tmpfs far too small for CARRA2.
+    cdo = Cdo(tempdir=str(path))
     cdo.debug = True
 
     # --- Step 1: per-year batches (setgrid, settaxis, monmean/monstd) ---
@@ -669,14 +676,26 @@ def prepare_carra2(
 
     batch_files = sorted(b[4] for b in batches)
 
-    # --- Step 2: mergetime all year batches  ---
+    # --- Step 2: concatenate all year batches  ---
     if (not check_xr_lazy(carra2_filename)) or force_overwrite:
-        logger.info("CDO: merging %d year batches...", len(batch_files))
-        ds = cdo.mergetime(
-            input=" ".join(batch_files),
-            options=f"-f nc4 -z zip_2 -P {max_workers}",
-            returnXDataset=True,
+        logger.info("Concatenating %d year batches...", len(batch_files))
+        # Lazily, straight from the batches into the Zarr below. ``cdo
+        # mergetime`` used to write the whole record (tens of GB) to a
+        # temporary NetCDF first, which overflowed a tmpfs ``/tmp`` with
+        # ``NetCDF: HDF error`` and doubled the bytes written.
+        ds = xr.open_mfdataset(
+            batch_files,
+            combine="nested",
+            concat_dim="time",
+            data_vars="minimal",
+            coords="minimal",
+            compat="override",
         )
+        # NetCDF chunk hints from the batches must not leak into the Zarr
+        # encoding; the store is chunked explicitly below.
+        for var in ds.variables:
+            for key in ("chunks", "chunksizes", "preferred_chunks", "contiguous", "zlib", "complevel", "shuffle"):
+                ds[var].encoding.pop(key, None)
 
         # Attach CARRA's static orography (single-step single-level field).
         # ``setgrid`` re-labels the native CARRA grid using the same descriptor
@@ -724,17 +743,20 @@ def prepare_carra2(
         ds["surface_albedo"] = albedo
         ds = ds.drop_vars([sw_down_var, sw_net_var])
 
-        ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
+        ds = ds.chunk(CARRA2_ZARR_CHUNKS)
         ds = (
             ds.rio.write_crs(CARRA2_PROJ, inplace=True)
             .rio.write_grid_mapping("spatial_ref", inplace=True)
             .rio.write_coordinate_system(inplace=True)
         )
 
-        ds.to_zarr(
+        # One band of rows at a time: the batches are chunked per time step
+        # while the store keeps the full record in one chunk, so writing the
+        # whole domain in one go is a rechunk of the entire record that
+        # spills far beyond RAM. A band bounds that to a few GB.
+        write_zarr_in_bands(
+            ds,
             carra2_filename,
-            mode="w",
-            consolidated=True,
             encoding={
                 "time": {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00"},
                 "time_bnds": {
@@ -743,8 +765,68 @@ def prepare_carra2(
                 },
                 "crs": {"dtype": "int32"},
             },
+            dim="y",
+            band_size=3 * CARRA2_ZARR_CHUNKS["y"],
         )
     return carra2_filename
+
+
+def write_zarr_in_bands(
+    ds: xr.Dataset,
+    store: Path | str,
+    encoding: dict[str, dict[str, Any]] | None = None,
+    dim: str = "y",
+    band_size: int = 768,
+) -> Path:
+    """
+    Write a dask-backed dataset to a Zarr store one band of ``dim`` at a time.
+
+    The store's layout is created up front (``compute=False``) together with
+    every variable that lacks ``dim`` — coordinates, bounds, grid mappings —
+    and the remaining variables are then written with ``region`` writes over
+    consecutive slabs of ``dim``. Each slab is a separate dask compute, so
+    peak memory is that of one band rather than of the rechunk of the whole
+    dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset already chunked the way the store should be.
+    store : Path or str
+        Zarr store to create.
+    encoding : dict or None, optional
+        Per-variable encoding, applied when the store is created.
+    dim : str, default "y"
+        Dimension to slab along.
+    band_size : int, default 768
+        Rows per slab. Should be a multiple of the store's chunk size along
+        ``dim`` so that region writes do not straddle chunks.
+
+    Returns
+    -------
+    Path
+        The store written.
+    """
+    store = Path(store)
+    chunk = ds.chunksizes.get(dim)
+    if chunk and band_size % chunk[0]:
+        raise ValueError(f"band_size {band_size} is not a multiple of the {dim!r} chunk size {chunk[0]}")
+
+    ds = ds.copy()
+    static = [str(name) for name in ds.variables if dim not in ds[name].dims]
+    for name in static:
+        if name in ds.coords:
+            ds.coords[name] = ds[name].load()
+        else:
+            ds[name] = ds[name].load()
+    ds.to_zarr(store, mode="w", compute=False, consolidated=True, encoding=encoding or {})
+
+    size = ds.sizes[dim]
+    for start in tqdm(range(0, size, band_size), desc=f"Writing {store.name}", unit="band"):
+        region = slice(start, min(start + band_size, size))
+        band = ds.isel({dim: region}).drop_vars(static)
+        band.to_zarr(store, mode="r+", region={dim: region}, consolidated=True)
+    return store
 
 
 CARRA2_CLIMATOLOGY_YEARS = range(1990, 2020)
