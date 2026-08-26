@@ -1,31 +1,34 @@
 [run_info]
 
 'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA Initialization Run"
+'run_info.title' = "PISM-TERRA Calibration Run"
 
 [campaign]
 
-bucket = "pism-cloud-data"
-climate = "elevation-dependent"
-dem = "glo_90"
-ice_thickness = "maffezzoli"
 bathymetry = "gebco"
-name = "Calibration"
-prefix = "glacier/input"
-project_directory = "rgi"
-rgi_complex_file = "rgi_wrangell_c.gpkg"
-rgi_glacier_file = "rgi_g.gpkg"
-velocity = "its_live"
-forcing_mask = "none"
+bucket = "pism-cloud-data"
+climate = "carra2"
+dem = "glo_90"
+forcing_mask = "glacier"
 heatflux = "lucazeau"
-ocean_moat = "yes"
+ice_thickness = "maffezzoli"
+init_climate = "carra2-monthly-mean"
+init_surface_model = "debm_enhanced_forcing"
+init_end = "0011-01-01"
+init_start = "0001-01-01"
+name = "Hindcast"
+prefix = "glacier/input"
+project_directory = "s4f"
+rgi_complex_file = "s4f_c.gpkg"
+rgi_glacier_file = "s4f_g.gpkg"
+velocity = "its_live"
 
 [time]
 
-'time.start' = "0001-01-01"
-'time.end' =  "0251-01-01"
-'time.calendar' =  "365_day"
-'time.reference_date' = "0001-01-01"
+'time.start' = "1986-01-01"
+'time.end' =  "2025-01-01"
+'time.calendar' =  "standard"
+'time.reference_date' = "1980-01-01"
 
 [time_stepping]
 
@@ -43,7 +46,7 @@ ocean_moat = "yes"
 'input.bootstrap' = "yes"
 'input.file' = "none"
 'input.forcing.time_extrapolation' = "yes"
-'input.forcing.buffer_size' = 390
+'input.forcing.buffer_size' = 24
 
 [reporting]
 
@@ -51,10 +54,10 @@ ocean_moat = "yes"
 'output.compression_level'= 2
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
-'output.scalar.times' = "monthly"
+'output.scalar.times' = "daily"
 'output.spatial.file' = "none"
-'output.spatial.times' = "10"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,ice_mass,mass_fluxes"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk,sftgif"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 
@@ -63,18 +66,17 @@ ocean_moat = "yes"
 resolution = "500m"
 'grid.file' = "none"
 'grid.Lbz' = 0
-'grid.Lz' = 2000
+'grid.Lz' = 2500
 'grid.Mbz' = 1
-'grid.Mz' = 101
+'grid.Mz' = 251
 'grid.registration' = "center"
 
 [energy]
 
-model = "enthalpy"
+model = "none"
 
 [energy.options.none]
 
-'energy.model' = "none"
 'flow_law.isothermal_Glen.ice_softness' = 1.0e-24
 'stress_balance.blatter.flow_law' = "isothermal_glen"
 'stress_balance.sia.flow_law' = "isothermal_glen"
@@ -83,6 +85,7 @@ model = "enthalpy"
 [energy.options.enthalpy]
 
 'energy.model' = "enthalpy"
+'energy.bedrock_thermal.file' = "none"
 'stress_balance.blatter.flow_law' = "gpbld"
 'stress_balance.sia.flow_law' = "gpbld"
 'stress_balance.ssa.flow_law' = "gpbld"
@@ -90,6 +93,10 @@ model = "enthalpy"
 [stress_balance]
 
 model = 'blatter'
+
+[stress_balance.options.none]
+
+'stress_balance.model' = "none"
 
 [stress_balance.options.blatter]
 
@@ -127,53 +134,94 @@ model = 'blatter'
 
 [surface]
 
-model = "elevation_dependent"
-
-[surface.options.elevation_dependent]
-
-'surface.models' = "elevation_dependent"
-
-'surface.elevation_dependent.z_M_min' = 700
-'surface.elevation_dependent.M_min' = -8.80         # = -8000 kg/m^2 / 910 kg/m^3
-'surface.elevation_dependent.z_ELA' = 1750
-'surface.elevation_dependent.z_M_max' = 2200
-'surface.elevation_dependent.M_max' = 2.42
-'surface.elevation_dependent.M_limit_min' = -8.80
-'surface.elevation_dependent.M_limit_max' = 2.42
-
-[surface.options.pdd]
-
-'surface.models' = "pdd"
+model = "debm_enhanced"
 
 [surface.options.debm_simple]
 
 'surface.models' = "debm_simple"
+'surface.debm_simple.albedo_input.file' = "none"
+'surface.debm_simple.albedo_input.periodic' = "yes"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
-'surface.debm_simple.c1' = 29
-'surface.debm_simple.c2' = -93
-'surface.debm_simple.refreeze' = 0.60
+'surface.debm_simple.c1' = 48
+'surface.debm_simple.c2' = -80
+'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.air_temp_all_precip_as_snow' = 273.15
-'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
+'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
+'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
+
+[surface.options.debm_simple_forcing]
+
+'surface.models' = "debm_simple,forcing"
+'surface.debm_simple.albedo_input.file' = "none"
+'surface.debm_simple.albedo_input.periodic' = "yes"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 48
+'surface.debm_simple.c2' = -80
+'surface.debm_simple.refreeze' = 0.5
+'surface.debm_simple.refreeze_ice_melt' = "no"
+'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
+'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
 
 [surface.options.debm_enhanced]
 
 'surface.models' = "debm_enhanced"
+'surface.debm_simple.albedo_input.file' = "none"
+'surface.debm_simple.albedo_input.periodic' = "yes"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
-'surface.debm_simple.c1' = 29
-'surface.debm_simple.c2' = -93
-'surface.debm_simple.refreeze' = 0.60
+'surface.debm_simple.c1' = 48
+'surface.debm_simple.c2' = -80
+'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.air_temp_all_precip_as_snow' = 273.15
-'surface.debm_simple.air_temp_all_precip_as_rain' = 275.15
+'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
+'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
 
+[surface.options.debm_enhanced_forcing]
 
+'surface.models' = "debm_enhanced,forcing"
+'surface.debm_simple.albedo_input.file' = "none"
+'surface.debm_simple.albedo_input.periodic' = "yes"
+'surface.debm_simple.std_dev.file' = "none"
+'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.interpret_precip_as_snow' = "no"
+'surface.debm_simple.c1' = 48
+'surface.debm_simple.c2' = -80
+'surface.debm_simple.refreeze' = 0.5
+'surface.debm_simple.refreeze_ice_melt' = "no"
+'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
+'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
+
+[calving]
+
+'calving.methods' = 'vonmises_calving'
+'calving.vonmises_calving.sigma_max' = 7.5e5
 
 [atmosphere]
 
-model = "none"
+model = "given"
 
-[atmosphere.options.none]
+[atmosphere.options.given]
+
+'atmosphere.models' = "given"
+'atmosphere.given.file' = "none"
+'atmosphere.given.periodic' = "yes"
 
 [ocean]
 
@@ -199,17 +247,6 @@ model = "null"
 'hydrology.model' = "null"
 'hydrology.null_diffuse_till_water' = "no"
 
-[frontal_melt]
-
-model = "off"
-
-[frontal_melt.options.off]
-
-[bed_deformation]
-
-model = "none"
-
-[bed_deformation.options.none]
 
 [inverse]
 
@@ -221,7 +258,7 @@ model = "none"
 'inverse.max_iterations' = 500
 'inverse.design.param' = "exp"
 'inverse.stress_balance.method' = "tikhonov_blmvm"
-'inverse.stress_balance.tauc_min' = 1e4
+'inverse.stress_balance.tauc_min' = 1e2
 'inverse.stress_balance.tauc_max' = 5e7
 'inverse.tikhonov.penalty_weight' = 10
 'inverse.tikhonov.rtol' = 0.15
@@ -232,19 +269,19 @@ model = "none"
 
 [solver.forward]
 
-bp_ksp_rtol = 1e-3
 bp_ksp_type = "fgmres"
-bp_mg_coarse_ksp_max_it = 50
-bp_mg_coarse_ksp_rtol = 1e-2
-bp_mg_coarse_ksp_type = "gmres"
-bp_mg_coarse_pc_type = "gamg"
+bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
 bp_mg_levels_pc_type = "sor"
+bp_mg_coarse_ksp_type = "gmres"
+bp_mg_coarse_pc_type = "gamg"
+bp_mg_coarse_ksp_rtol = 1e-2
+bp_mg_coarse_ksp_max_it = 50
 bp_pc_mg_levels = 3
-bp_pc_type = "mg"
 bp_snes_ksp_ew = 1
 bp_snes_ksp_ew_version = 3
 bp_snes_rtol = 1e-3
+bp_ksp_rtol = 1e-3
 
 [solver.inverse]
 
