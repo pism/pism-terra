@@ -1026,6 +1026,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         default=None,
         help="CSV file of posterior parameter distributions to sample from (ensemble mode only).",
     )
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=None,
+        help="Override the number of samples in the UQ file (ensemble mode only).",
+    )
     if supports_execute:
         parser.add_argument(
             "--execute",
@@ -1063,6 +1069,7 @@ def _build_ensemble_df(
     output_path: Path,
     posterior_file: str | Path | None,
     seed: int = 42,
+    samples: int | None = None,
 ) -> pd.DataFrame:
     """
     Build the per-member DataFrame for an ensemble run.
@@ -1085,6 +1092,9 @@ def _build_ensemble_df(
         UQ samples with.
     seed : int, default 42
         Seed for sampling (and posterior row choice).
+    samples : int or None, optional
+        Number of ensemble members to draw; overrides the ``samples`` entry
+        of the UQ file when given.
 
     Returns
     -------
@@ -1094,7 +1104,7 @@ def _build_ensemble_df(
     """
     rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
-    n_samples = uq.samples
+    n_samples = samples if samples is not None else uq.samples
 
     uq_df = generate_samples(uq.to_flat(), n_samples=n_samples, method=uq.method, seed=seed)
 
@@ -1200,7 +1210,7 @@ def _run(*, kind: str) -> None:
     )
 
     if uq_file is not None:
-        rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
+        rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file, samples=options.samples)
         header = f"Generate Ensemble Runs for Glacier {rgi_id}"
     else:
         rows_df = df

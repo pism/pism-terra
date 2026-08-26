@@ -627,6 +627,12 @@ def run_ensemble():
         default=None,
     )
     parser.add_argument(
+        "--samples",
+        type=int,
+        default=None,
+        help="Override the number of samples in the UQ file (ensemble mode only).",
+    )
+    parser.add_argument(
         "--debug",
         help="Debug or testing mode, do not write template, just the run command.",
         action="store_true",
@@ -710,7 +716,7 @@ def run_ensemble():
     seed = 42
     rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
-    n_samples = uq.samples
+    n_samples = options.samples if options.samples is not None else uq.samples
     mapping = uq.mapping
 
     uq_df = generate_samples(uq.to_flat(), n_samples=n_samples, method=uq.method, seed=seed)
