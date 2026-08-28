@@ -36,7 +36,7 @@ velocity = "its_live"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
-'geometry.update.enabled' = "no"
+'geometry.update.enabled' = "yes"
 
 ['input']
 
