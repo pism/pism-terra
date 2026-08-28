@@ -491,7 +491,9 @@ def test_model_series_carries_ice_area(tmp_path):
     model = ub.load_model_series([run / "scalar_G_with.nc"], GLACIER_A, root=tmp_path)
     assert model is not None
     np.testing.assert_allclose(model["area"].values, 4000.0 * 500.0**2)  # 1000 km^2
-    assert ub.load_model_series([scalar_file(run / "scalar_G_without.nc")], GLACIER_A)["area"].isnull().all()
+    without = ub.load_model_series([scalar_file(run / "scalar_G_without.nc")], GLACIER_A)
+    assert without is not None
+    assert without["area"].isnull().all()
 
 
 def test_specific_balance_conversion():
@@ -509,5 +511,6 @@ def test_specific_balance_conversion():
     model = rate.expand_dims(run=["a"]).assign_attrs(units="Gt year^-1")
     model.name = "tendency_of_ice_mass"
     model_mwe, seasons_mwe = ub.to_specific_balances(model, None, obs)
+    assert model_mwe is not None
     np.testing.assert_allclose(model_mwe.values, [[1.0, -1.0]])
     assert seasons_mwe is None
