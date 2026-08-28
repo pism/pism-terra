@@ -28,6 +28,7 @@ import re
 import tarfile
 import tempfile
 import time
+import warnings
 import zipfile
 from collections.abc import Iterable, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
@@ -664,9 +665,24 @@ def download_request(
             ds_part = xr.open_dataset(nc, decode_times=time_coder, decode_timedelta=True)
             if "valid_time" in ds_part.coords:
                 ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
+            if "valid_time" in ds_part.dims:
+                # A per-year file with a repeated timestamp (e.g. a stale or
+                # partially merged cache) makes ``xr.merge`` raise
+                # "cannot reindex or align along dimension 'valid_time'
+                # because the (pandas) index has duplicate values". Keep the
+                # first occurrence and say which file was affected so the
+                # cache can be inspected or deleted.
+                n_dup = int(ds_part.indexes["valid_time"].duplicated().sum())
+                if n_dup:
+                    warnings.warn(
+                        f"{nc}: dropping {n_dup} duplicate 'valid_time' entries (keeping first). "
+                        "Delete this file to force a fresh download.",
+                        stacklevel=2,
+                    )
+                    ds_part = ds_part.drop_duplicates("valid_time", keep="first")
             dss.append(ds_part)
 
-        ds = xr.merge(dss).drop_vars(["number", "expver"], errors="ignore")
+        ds = xr.merge(dss, join="outer", compat="no_conflicts").drop_vars(["number", "expver"], errors="ignore")
 
         if "latitude" in ds.coords:
             ds = ds.sortby("latitude")
