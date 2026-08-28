@@ -131,7 +131,7 @@ model = 'none'
 
 [surface]
 
-model = "debm_simple"
+model = "pdd"
 
 [surface.options.pdd]
 
