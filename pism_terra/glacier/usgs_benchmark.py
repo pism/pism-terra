@@ -101,6 +101,12 @@ MODEL_COLOR = "#228833"
 #: Modelled seasonal balances borrow their observation's colour so the eye
 #: pairs them, and are drawn as lines against the observations' markers.
 MODEL_SEASON_STYLE = {"Bw": {"color": "#4477AA", "ls": "--"}, "Bs": {"color": "#EE6677", "ls": "--"}}
+# Fewest overlapping years for which a correlation coefficient is reported; the
+# error statistics are given from a single year on.
+SKILL_MIN_YEARS = 3
+SPECIFIC_UNITS = "m year^-1"
+SPECIFIC_LABEL = "m w.e./yr"
+SKILL_COLUMNS = ["variable", "season", "source", "n", "r", "mae", "bias"]
 
 
 def sciencebase_file_urls(item_id: str = SCIENCEBASE_ITEM) -> dict[str, str]:
@@ -585,6 +591,155 @@ def _run_label(file: Path, root: Path | str | None) -> str:
     return f"{subdir} id_{match.group(1)}" if match else f"{subdir}/{file.name}"
 
 
+def _grid_spacing(ds: xr.Dataset) -> tuple[float, float] | None:
+    """
+    Read the grid spacing PISM records in ``pism_config``.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Scalar file as opened, before ``pism_config`` is dropped.
+
+    Returns
+    -------
+    tuple of float or None
+        ``(dx, dy)`` in metres, or None when the file carries no config.
+    """
+    if "pism_config" not in ds:
+        return None
+    attrs = ds["pism_config"].attrs
+    try:
+        return float(attrs["grid.dx"]), float(attrs["grid.dy"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def ice_area(ds: xr.Dataset, rgi_id: str, spacing: tuple[float, float] | None) -> xr.DataArray | None:
+    """
+    Ice-covered area of a glacier through time, from a per-glacier scalar file.
+
+    The post-processing sums ``sftgif`` (the ice-covered fraction of each
+    cell) over the outline, so it is a cell count; times the cell area it is
+    the glacierized area. Without it the outline area the post-processing
+    stores is used, which does not change in time.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Scalar dataset with region labels restored.
+    rgi_id : str
+        RGI ``-G-`` identifier to select.
+    spacing : tuple of float or None
+        ``(dx, dy)`` in metres from :func:`_grid_spacing`.
+
+    Returns
+    -------
+    xarray.DataArray or None
+        Area in m² on ``time``; None when the file has neither ``sftgif``
+        nor ``area``.
+    """
+    if "sftgif" in ds and spacing is not None:
+        dx, dy = spacing
+        area = ds["sftgif"].sel({REGION_DIM: rgi_id}).load() * dx * dy
+        area.attrs = {"units": "m^2", "long_name": "ice-covered area", "source": "sftgif * dx * dy"}
+    elif "area" in ds:
+        static = ds["area"].sel({REGION_DIM: rgi_id}).load()
+        area = xr.full_like(ds["time"], float(static), dtype=float)
+        area.attrs = {"units": "m^2", "long_name": "outline area", "source": "outline"}
+    else:
+        return None
+    return area.drop_vars(REGION_DIM, errors="ignore")
+
+
+def specific_balance(values: xr.DataArray, area: xr.DataArray) -> xr.DataArray:
+    """
+    Turn a mass-change rate into a specific balance in metres water equivalent.
+
+    Parameters
+    ----------
+    values : xarray.DataArray
+        Rates in Gt/yr (``units`` attribute required).
+    area : xarray.DataArray
+        Glacier area in m² (``units`` attribute required), broadcastable
+        against *values*.
+
+    Returns
+    -------
+    xarray.DataArray
+        ``values / (area * rho_water)`` in ``m year^-1``.
+    """
+    rho = xr.DataArray(RHO_WATER).pint.quantify("kg m^-3")
+    out = (values.pint.quantify() / (area.pint.quantify() * rho)).pint.to("m/year").pint.dequantify()
+    # the area used is reported separately; as a coordinate it would clash with
+    # the observed area when the series are merged into one dataset
+    out = out.drop_vars("area", errors="ignore")
+    out.attrs = {"units": SPECIFIC_UNITS, "long_name": f"{values.attrs.get('long_name', values.name)} (m w.e.)"}
+    return out
+
+
+def to_specific_balances(
+    model: xr.DataArray | None, seasons: xr.Dataset | None, obs: xr.Dataset
+) -> tuple[xr.DataArray | None, xr.Dataset | None]:
+    """
+    Express the modelled series per unit area, like the observations.
+
+    Each series is divided by the model's own ice area for that year (the
+    ``area`` coordinate/variable the loaders attach). Runs whose files
+    carry no area fall back to the observed area of the year.
+
+    Parameters
+    ----------
+    model : xarray.DataArray or None
+        Annual total rates in Gt/yr from :func:`load_model_series`.
+    seasons : xarray.Dataset or None
+        Seasonal balances in Gt from :func:`model_seasonal_balances`.
+    obs : xarray.Dataset
+        Observations from :func:`load_glacier_wide` (``area`` in km²).
+
+    Returns
+    -------
+    tuple
+        ``(model, seasons)`` in ``m year^-1``, None where the input was None.
+    """
+    obs_area = (obs["area"].pint.quantify().pint.to("m^2").pint.dequantify()).astype(float)
+    obs_area.attrs["units"] = "m^2"
+
+    def _area_for(values: xr.DataArray, area: xr.DataArray | None) -> xr.DataArray:
+        """
+        Area to divide by, filled from the observations where the model has none.
+
+        Parameters
+        ----------
+        values : xarray.DataArray
+            Series being converted (for its ``time`` axis and name).
+        area : xarray.DataArray or None
+            Model ice area in m², possibly with NaN years.
+
+        Returns
+        -------
+        xarray.DataArray
+            Area in m² on the series' years.
+        """
+        fallback = obs_area.reindex(time=values["time"])
+        if area is None:
+            logger.warning("%s: model files carry no ice area; using the observed area", values.name)
+            area = fallback
+        else:
+            area = area.where(np.isfinite(area), fallback).astype(float)
+        area.attrs["units"] = "m^2"
+        return area
+
+    model_mwe = None
+    if model is not None:
+        model_mwe = specific_balance(model, _area_for(model, model.coords.get("area")))
+        model_mwe.name = model.name
+    seasons_mwe = None
+    if seasons is not None:
+        area = _area_for(seasons["Bw"], seasons["area"] if "area" in seasons else None)
+        seasons_mwe = xr.Dataset({var: specific_balance(seasons[var], area) for var in BALANCE_VARS if var in seasons})
+    return model_mwe, seasons_mwe
+
+
 def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str | None = None) -> xr.DataArray | None:
     """
     Collect a glacier's annual ``tendency_of_ice_mass`` from every file that has it.
@@ -601,8 +756,9 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
     Returns
     -------
     xarray.DataArray or None
-        Annual-mean rate in Gt/yr on ``(run, time)`` with integer years;
-        None when no file contains the glacier.
+        Annual-mean rate in Gt/yr on ``(run, time)`` with integer years,
+        carrying the year's mean ice area (m²) as the ``area`` coordinate
+        (NaN for files without one); None when no file contains the glacier.
     """
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
     delta_coder = xr.coders.CFTimedeltaCoder()
@@ -611,6 +767,7 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
     for file in files:
         file = Path(file)
         with xr.open_dataset(file, decode_times=time_coder, decode_timedelta=delta_coder) as ds:
+            spacing = _grid_spacing(ds)
             ds = with_region_labels(ds.drop_vars("pism_config", errors="ignore"))
             names = ds[REGION_DIM].values
             if names.dtype.kind == "S":
@@ -618,9 +775,15 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
             if MODEL_VAR not in ds or rgi_id not in set(ds[REGION_DIM].values.tolist()):
                 continue
             da = ds[MODEL_VAR].sel({REGION_DIM: rgi_id}).pint.quantify().pint.to("Gt/year").pint.dequantify().load()
-            da = da.assign_coords(year=("time", _mean_years(ds))).swap_dims({"time": "year"}).drop_vars("time")
+            years = _mean_years(ds)
+            area = ice_area(ds, rgi_id, spacing)
+            if area is None:
+                area = xr.full_like(ds["time"], np.nan, dtype=float)
+            da = da.assign_coords(year=("time", years)).swap_dims({"time": "year"}).drop_vars("time")
             da = da.groupby("year").mean("year").rename({"year": "time"})
-            da = da.drop_vars(REGION_DIM, errors="ignore")
+            area = area.assign_coords(year=("time", years)).swap_dims({"time": "year"}).drop_vars("time")
+            area = area.groupby("year").mean("year").rename({"year": "time"})
+            da = da.assign_coords(area=("time", area.values)).drop_vars(REGION_DIM, errors="ignore")
         label = _run_label(file, root)
         series.append(da)
         labels.append(label)
@@ -777,6 +940,7 @@ def model_seasonal_balances(
     for file in files:
         file = Path(file)
         with xr.open_dataset(file, decode_times=time_coder, decode_timedelta=delta_coder) as ds:
+            spacing = _grid_spacing(ds)
             ds = with_region_labels(ds.drop_vars("pism_config", errors="ignore"))
             names = ds[REGION_DIM].values
             if names.dtype.kind == "S":
@@ -786,6 +950,15 @@ def model_seasonal_balances(
             if not is_monthly(ds["time"].values):
                 logger.info("%s: %s is not monthly; no modelled seasons from it", rgi_id, file.name)
                 continue
+            area = ice_area(ds, rgi_id, spacing)
+            area_by_year = (
+                None
+                if area is None
+                else area.assign_coords(year=("time", _mean_years(ds)))
+                .swap_dims({"time": "year"})
+                .groupby("year")
+                .mean("year")
+            )
             rate = (
                 ds[variable]
                 .sel({REGION_DIM: rgi_id})
@@ -798,7 +971,7 @@ def model_seasonal_balances(
             starts, ends = _month_edges(ds["time"].values)
             rate = rate.assign_coords(month_start=("time", starts), month_end=("time", ends))
 
-        winter, summer, kept = [], [], []
+        winter, summer, areas, kept = [], [], [], []
         for year, bw_date, ba_date in zip(years, bw_dates, ba_dates):
             year_start = previous.get(int(year) - 1)
             if pd.isna(bw_date) or pd.isna(ba_date) or year_start is None or pd.isna(year_start):
@@ -809,13 +982,23 @@ def model_seasonal_balances(
                 continue
             winter.append(b_w)
             summer.append(b_s)
+            # the year's mean ice area, for the conversion to metres water equivalent
+            areas.append(
+                float(area_by_year.sel(year=int(year)))
+                if area_by_year is not None and int(year) in area_by_year["year"].values
+                else np.nan
+            )
             kept.append(int(year))
 
         if not kept:
             continue
         per_run.append(
             xr.Dataset(
-                {"Bw": ("time", np.array(winter)), "Bs": ("time", np.array(summer))},
+                {
+                    "Bw": ("time", np.array(winter)),
+                    "Bs": ("time", np.array(summer)),
+                    "area": ("time", np.array(areas), {"units": "m^2", "long_name": "ice-covered area"}),
+                },
                 coords={"time": np.array(kept)},
             )
         )
@@ -836,6 +1019,128 @@ def model_seasonal_balances(
     return out
 
 
+def _ensemble_line(values: xr.DataArray) -> xr.DataArray:
+    """
+    Collapse an ensemble to the series the plot draws.
+
+    Parameters
+    ----------
+    values : xarray.DataArray
+        Modelled values, on ``(run, time)`` or just ``time``.
+
+    Returns
+    -------
+    xarray.DataArray
+        The single run, or the median across runs.
+    """
+    if "run" in values.dims:
+        return values.median(dim="run") if values.sizes["run"] > 1 else values.isel(run=0, drop=True)
+    return values
+
+
+def _score(observed: xr.DataArray, modelled: xr.DataArray) -> dict[str, float]:
+    """
+    Compare two annual series over the years both have a value for.
+
+    Parameters
+    ----------
+    observed : xarray.DataArray
+        Observed balances on integer ``time``.
+    modelled : xarray.DataArray
+        Modelled balances on integer ``time``.
+
+    Returns
+    -------
+    dict
+        ``n`` overlapping years, Pearson ``r`` (NaN below
+        :data:`SKILL_MIN_YEARS` years or for a constant series), ``mae``
+        and ``bias`` (model minus observation), in the series' units.
+    """
+    obs, mod = xr.align(observed, modelled, join="inner")
+    o = np.asarray(obs.values, dtype=float)
+    m = np.asarray(mod.values, dtype=float)
+    keep = np.isfinite(o) & np.isfinite(m)
+    o, m = o[keep], m[keep]
+    n = int(o.size)
+    if n == 0:
+        return {"n": 0, "r": np.nan, "mae": np.nan, "bias": np.nan}
+    r = np.nan
+    if n >= SKILL_MIN_YEARS and o.std() > 0 and m.std() > 0:
+        r = float(np.corrcoef(o, m)[0, 1])
+    return {"n": n, "r": r, "mae": float(np.mean(np.abs(m - o))), "bias": float(np.mean(m - o))}
+
+
+def skill_scores(obs: xr.Dataset, model: xr.DataArray | None = None, seasons: xr.Dataset | None = None) -> pd.DataFrame:
+    """
+    Score the modelled balances against the observations.
+
+    Every comparison uses the series the plot draws — the single run, or the
+    ensemble median — over the years both sides have. The seasonal and annual
+    surface balances are the natural counterparts of the stake-derived
+    observations; the total ``tendency_of_ice_mass`` is scored against the
+    annual balance as well, labelled ``total``, since it is what the annual
+    model line shows.
+
+    Parameters
+    ----------
+    obs : xarray.Dataset
+        Balances in Gt/yr from :func:`to_mass_rate`.
+    model : xarray.DataArray or None, optional
+        Annual total mass-change rates from :func:`load_model_series`.
+    seasons : xarray.Dataset or None, optional
+        Modelled seasonal balances from :func:`model_seasonal_balances`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per available comparison with :data:`SKILL_COLUMNS`;
+        empty when there is nothing to compare.
+    """
+    rows: list[dict[str, Any]] = []
+    if seasons is not None:
+        for var, season in BALANCE_VARS.items():
+            if var in obs and var in seasons:
+                rows.append(
+                    {
+                        "variable": var,
+                        "season": season,
+                        "source": "surface",
+                        **_score(obs[var], _ensemble_line(seasons[var])),
+                    }
+                )
+    if model is not None and "Ba" in obs:
+        rows.append(
+            {"variable": "Ba", "season": "annual", "source": "total", **_score(obs["Ba"], _ensemble_line(model))}
+        )
+    return pd.DataFrame(rows, columns=SKILL_COLUMNS)
+
+
+def format_skill(skill: pd.DataFrame, units: str = "Gt/yr") -> str:
+    """
+    Lay the scores out as the text block drawn on the figure.
+
+    Parameters
+    ----------
+    skill : pandas.DataFrame
+        Output of :func:`skill_scores`.
+    units : str, optional
+        Units appended to the error statistics.
+
+    Returns
+    -------
+    str
+        One line per comparison, e.g. ``winter  r=0.62  MAE=0.11 Gt/yr  n=30``.
+    """
+    lines = []
+    for row in skill.itertuples(index=False):
+        if row.n == 0:
+            continue
+        label = f"{row.season} ({row.source})" if row.source != "surface" else row.season
+        r = f"r={row.r:.2f}" if np.isfinite(row.r) else "r=n/a"
+        lines.append(f"{label:16s} {r:>7s}  MAE={row.mae:.3g} {units}  n={row.n}")
+    return "\n".join(lines)
+
+
 def plot_glacier(
     obs: xr.Dataset,
     model: xr.DataArray | None,
@@ -844,17 +1149,25 @@ def plot_glacier(
     output_dir: Path | str,
     *,
     seasons: xr.Dataset | None = None,
+    skill: pd.DataFrame | None = None,
+    area_km2: float | None = None,
 ) -> Path:
     """
     Plot observed seasonal and annual balances with the modelled mass-change rate.
 
+    Everything is drawn as a specific balance in metres water equivalent per
+    year. A second axis on the right reads the same curves in Gt/yr at a
+    fixed area — the mean observed area — since one scale factor cannot
+    follow the year-to-year area changes that went into the conversion.
+
     Parameters
     ----------
     obs : xarray.Dataset
-        Balances in Gt/yr from :func:`to_mass_rate`.
+        Balances in m w.e. per year from :func:`load_glacier_wide`.
     model : xarray.DataArray or None
-        Modelled rates on ``(run, time)`` from :func:`load_model_series`.
-        Several runs are drawn as their median and 5-95 % range.
+        Modelled specific balances on ``(run, time)`` from
+        :func:`to_specific_balances`. Several runs are drawn as their median
+        and 5-95 % range.
     glacier : str
         Glacier name for the title and file name.
     rgi_id : str
@@ -865,6 +1178,11 @@ def plot_glacier(
         Modelled seasonal balances from :func:`model_seasonal_balances`,
         drawn as lines in their observation's colour. ``None`` (the case for
         annual model output) leaves the plot as it was.
+    skill : pandas.DataFrame or None, optional
+        Scores from :func:`skill_scores`, written into the top-left corner.
+    area_km2 : float or None, optional
+        Glacier area the right-hand Gt/yr axis is scaled with. Defaults to
+        the mean of ``obs["area"]``.
 
     Returns
     -------
@@ -872,6 +1190,8 @@ def plot_glacier(
         The PNG written (a PDF sits next to it).
     """
     output_dir = Path(output_dir)
+    if area_km2 is None and "area" in obs:
+        area_km2 = float(obs["area"].mean())
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"usgs_benchmark_{glacier}_{rgi_id}"
 
@@ -948,10 +1268,30 @@ def plot_glacier(
                     label=f"PISM median, 5-95% (n={model.sizes['run']})",
                 )
 
+        if skill is not None and (text := format_skill(skill, units=SPECIFIC_LABEL)):
+            ax.text(
+                0.02,
+                0.98,
+                text,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=5,
+                family="monospace",
+                bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": "none", "alpha": 0.8},
+            )
+
         ax.axhline(y=0, color="k", ls="dotted", lw=0.5)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax.set_xlabel("Balance year")
-        ax.set_ylabel("Mass balance (Gt/yr)")
+        ax.set_ylabel("Mass balance (m w.e. yr$^{-1}$)")
+        if area_km2 is not None and np.isfinite(area_km2) and area_km2 > 0:
+            # 1 m w.e. over 1 km^2 is 1e-3 Gt
+            factor = area_km2 * 1e-3
+            secondary = ax.secondary_yaxis(
+                "right", functions=(lambda m: np.asarray(m) * factor, lambda g: np.asarray(g) / factor)
+            )
+            secondary.set_ylabel(f"Mass balance (Gt yr$^{{-1}}$ at {area_km2:.3g} km$^2$)")
         ax.set_title(f"{glacier} ({rgi_id})")
         handles, labels = ax.get_legend_handles_labels()
         legend = fig.legend(handles, labels, loc="outside lower center", ncol=2)
@@ -1012,6 +1352,7 @@ def run_pipeline(
 
     figures: list[str | None] = []
     n_runs: list[int] = []
+    skills: list[pd.DataFrame] = []
     for row in matches.itertuples(index=False):
         if pd.isna(row.rgi_id):
             figures.append(None)
@@ -1034,23 +1375,55 @@ def run_pipeline(
         rate = to_mass_rate(obs)
         model = load_model_series(model_files, row.rgi_id, root=run_dir) if model_files else None
         seasons = model_seasonal_balances(model_files, row.rgi_id, rate, root=run_dir) if model_files else None
-        png = plot_glacier(rate, model, row.glacier, row.rgi_id, output_dir, seasons=seasons)
+        model_mwe, seasons_mwe = to_specific_balances(model, seasons, obs)
+        skill = skill_scores(obs, model_mwe, seasons_mwe)
+        if not skill.empty:
+            skills.append(skill.assign(glacier=row.glacier, rgi_id=row.rgi_id, units=SPECIFIC_UNITS))
+            for line in format_skill(skill, units=SPECIFIC_LABEL).splitlines():
+                logger.info("%s: %s", row.glacier, line)
+        png = plot_glacier(obs, model_mwe, row.glacier, row.rgi_id, output_dir, seasons=seasons_mwe, skill=skill)
         figures.append(str(png))
         n_runs.append(0 if model is None else int(model.sizes["run"]))
 
         mwe = [v for v in obs.data_vars if v != "area" and np.issubdtype(obs[v].dtype, np.number)]
         out = xr.merge([rate, obs[mwe].rename({v: f"{v}_mwe" for v in mwe})])
         if model is not None:
-            out[MODEL_VAR] = model
-        if seasons is not None:
+            out[MODEL_VAR] = model.drop_vars("area", errors="ignore")
+            out[f"{MODEL_VAR}_mwe"] = model_mwe
+            if "area" in model.coords:
+                area = model.coords["area"]
+                out["model_area"] = xr.DataArray(
+                    area.values,
+                    dims=area.dims,
+                    coords={dim: model.coords[dim] for dim in area.dims},
+                    attrs={"units": "m^2", "long_name": "modelled ice-covered area"},
+                )
+        if seasons is not None and seasons_mwe is not None:
             for var in BALANCE_VARS:
                 if var in seasons:
                     out[f"{var}_model"] = seasons[var]
+                    out[f"{var}_model_mwe"] = seasons_mwe[var]
+        for score in skill.itertuples(index=False):
+            name = f"{MODEL_VAR}_mwe" if score.source == "total" else f"{score.variable}_model_mwe"
+            if name in out:
+                out[name].attrs.update(
+                    {
+                        "pearson_r": score.r,
+                        "mae": score.mae,
+                        "bias": score.bias,
+                        "n_years": score.n,
+                        "skill_units": SPECIFIC_UNITS,
+                    }
+                )
         out.attrs["rgi_id"] = row.rgi_id
         out.to_netcdf(output_dir / f"usgs_benchmark_{row.glacier}_{row.rgi_id}.nc")
 
     matches = matches.assign(figure=figures, n_runs=n_runs)
     matches.to_csv(output_dir / "usgs_benchmark_rgi_match.csv", index=False)
+    columns = ["glacier", "rgi_id", *SKILL_COLUMNS, "units"]
+    skill_table = pd.concat(skills, ignore_index=True) if skills else pd.DataFrame(columns=columns)
+    skill_table = skill_table[columns]
+    skill_table.to_csv(output_dir / "usgs_benchmark_skill.csv", index=False)
     return matches
 
 

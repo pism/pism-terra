@@ -146,6 +146,10 @@ no `:toctree:` so the field descriptions are registered in exactly one place
     find_model_files
     load_model_series
     model_seasonal_balances
+    ice_area
+    specific_balance
+    to_specific_balances
+    skill_scores
     integrate_rate
     is_monthly
     plot_glacier
