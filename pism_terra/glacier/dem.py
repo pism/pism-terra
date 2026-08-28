@@ -90,7 +90,6 @@ def get_surface_dem_by_bounds(
     if check_xr_lazy(geo_file, verbose=False) and not force_overwrite:
         return geo_file
 
-    print(bounds)
     X, p = stitch_dem(
         bounds,
         dem_name=dataset,

@@ -37,7 +37,11 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
-from pism_terra.glacier.usgs_benchmark import DEFAULT_DATA_DIR, download_usgs_benchmark, load_sites
+from pism_terra.glacier.usgs_benchmark import (
+    DEFAULT_DATA_DIR,
+    download_usgs_benchmark,
+    load_sites,
+)
 from pism_terra.log import setup_logging
 
 logger = logging.getLogger("pism_terra.glacier.usgs_stakes")
