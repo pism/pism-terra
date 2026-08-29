@@ -2185,6 +2185,90 @@ def carra2(
     return carra2_filename
 
 
+def _drop_time_dim(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Remove the time dimension from a time-invariant field.
+
+    CDS returns static fields such as geopotential with a length-1 ``time``
+    (ERA5-Land) or with one entry per requested month on ``valid_time``
+    (ERA5 single levels). Either way the values are identical, so keep the
+    first step and drop the coordinate.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with an optional ``time`` or ``valid_time`` dimension.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset without a time dimension or coordinate.
+    """
+    for dim in ("time", "valid_time"):
+        if dim in ds.dims:
+            ds = ds.isel({dim: 0}, drop=True)
+        ds = ds.drop_vars(dim, errors="ignore")
+    return ds
+
+
+def _pad_area(area: Sequence[float], pad: float) -> list[float]:
+    """
+    Expand a CDS ``[North, West, South, East]`` box by ``pad`` degrees.
+
+    Parameters
+    ----------
+    area : sequence of float
+        Bounding box as ``[North, West, South, East]`` in degrees.
+    pad : float
+        Padding in degrees added on every side. Latitudes are clamped to
+        ``[-90, 90]``; longitudes are left unclamped since CDS accepts
+        values outside ``[-180, 180]``.
+
+    Returns
+    -------
+    list of float
+        Padded ``[North, West, South, East]`` box.
+    """
+    n, w, s, e = area
+    return [min(n + pad, 90.0), w - pad, max(s - pad, -90.0), e + pad]
+
+
+def _fill_from_global(ds: xr.Dataset, ds_global: xr.Dataset) -> xr.Dataset:
+    """
+    Replace missing values in ``ds`` with values from a coarser global dataset.
+
+    ``ds_global`` is reprojected onto the grid of ``ds`` with bilinear
+    resampling and used to patch NaNs in every variable both datasets share.
+    Any cells still missing afterwards are reported.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Regional dataset on a lat/lon grid with ``latitude``/``longitude``
+        coordinates; may contain NaNs.
+    ds_global : xarray.Dataset
+        Global (or larger-extent) dataset covering the region.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``ds`` with NaNs filled where ``ds_global`` provides data.
+    """
+    ds_global_ = (
+        ds_global.rio.write_crs("EPSG:4326")
+        .rio.reproject_match(ds, resampling=Resampling.bilinear)
+        .rename({"x": "longitude", "y": "latitude"})
+        .assign_coords(longitude=ds["longitude"], latitude=ds["latitude"])
+    )
+    for v in sorted(set(ds.data_vars) & set(ds_global_.data_vars)):
+        n_before = int(ds[v].isnull().sum().item())
+        ds[v] = ds[v].where(ds[v].notnull(), ds_global_[v])
+        n_after = int(ds[v].isnull().sum().item())
+        print(f"  {v}: filled {n_before - n_after} of {n_before} missing values", end="")
+        print("" if n_after == 0 else f" ({n_after} still missing)")
+    return ds
+
+
 def era5(
     target_grid: xr.Dataset,
     rgi_id: str,
@@ -2304,25 +2388,40 @@ def era5(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
+    ds_missing = bool(ds.to_array().isnull().any().item())
+    geo_missing = bool(ds_geo_.to_array().isnull().any().item())
+    if ds_missing or geo_missing:
         print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+        # ERA5-Land is undefined over the ocean. Patch from global ERA5 on a
+        # *padded* box: CDS only returns the 0.25 deg grid points strictly
+        # inside the requested area, so with the same box the coarse cell
+        # centres stop short of the 0.1 deg domain edges and bilinear
+        # reprojection leaves the outermost rows/columns NaN.
+        area_pad = _pad_area(area, 1.0)
+        global_dataset = "reanalysis-era5-single-levels-monthly-means"
+        if ds_missing:
+            era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
+            era5_files.append(era5_filename_3)
+            ds_global = download_request(
+                global_dataset,
+                area_pad,
+                years,
+                file_path=era5_filename_3,
+                **kwargs,
+            )
+            ds = _fill_from_global(ds, ds_global)
+        if geo_missing:
+            era5_filename_4 = path / Path(f"era5_wgs84_{rgi_id}_tmp_4.nc")
+            era5_files.append(era5_filename_4)
+            ds_geo_global = download_request(
+                global_dataset,
+                area_pad,
+                [2013],
+                variable=["geopotential"],
+                file_path=era5_filename_4,
+                **kwargs,
+            )
+            ds_geo_ = _fill_from_global(ds_geo_, _drop_time_dim(ds_geo_global))
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
     ds = ds.rename({"valid_time": "time"})
@@ -2467,25 +2566,40 @@ def era5_mean(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
+    ds_missing = bool(ds.to_array().isnull().any().item())
+    geo_missing = bool(ds_geo_.to_array().isnull().any().item())
+    if ds_missing or geo_missing:
         print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+        # ERA5-Land is undefined over the ocean. Patch from global ERA5 on a
+        # *padded* box: CDS only returns the 0.25 deg grid points strictly
+        # inside the requested area, so with the same box the coarse cell
+        # centres stop short of the 0.1 deg domain edges and bilinear
+        # reprojection leaves the outermost rows/columns NaN.
+        area_pad = _pad_area(area, 1.0)
+        global_dataset = "reanalysis-era5-single-levels-monthly-means"
+        if ds_missing:
+            era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
+            era5_files.append(era5_filename_3)
+            ds_global = download_request(
+                global_dataset,
+                area_pad,
+                years,
+                file_path=era5_filename_3,
+                **kwargs,
+            )
+            ds = _fill_from_global(ds, ds_global)
+        if geo_missing:
+            era5_filename_4 = path / Path(f"era5_wgs84_{rgi_id}_tmp_4.nc")
+            era5_files.append(era5_filename_4)
+            ds_geo_global = download_request(
+                global_dataset,
+                area_pad,
+                [2013],
+                variable=["geopotential"],
+                file_path=era5_filename_4,
+                **kwargs,
+            )
+            ds_geo_ = _fill_from_global(ds_geo_, _drop_time_dim(ds_geo_global))
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
     # Time-mean snapshot, but preserve a length-1 ``time`` dim anchored at the
@@ -2697,25 +2811,40 @@ def era5_monthly_mean(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
+    ds_missing = bool(ds.to_array().isnull().any().item())
+    geo_missing = bool(ds_geo_.to_array().isnull().any().item())
+    if ds_missing or geo_missing:
         print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+        # ERA5-Land is undefined over the ocean. Patch from global ERA5 on a
+        # *padded* box: CDS only returns the 0.25 deg grid points strictly
+        # inside the requested area, so with the same box the coarse cell
+        # centres stop short of the 0.1 deg domain edges and bilinear
+        # reprojection leaves the outermost rows/columns NaN.
+        area_pad = _pad_area(area, 1.0)
+        global_dataset = "reanalysis-era5-single-levels-monthly-means"
+        if ds_missing:
+            era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
+            era5_files.append(era5_filename_3)
+            ds_global = download_request(
+                global_dataset,
+                area_pad,
+                years,
+                file_path=era5_filename_3,
+                **kwargs,
+            )
+            ds = _fill_from_global(ds, ds_global)
+        if geo_missing:
+            era5_filename_4 = path / Path(f"era5_wgs84_{rgi_id}_tmp_4.nc")
+            era5_files.append(era5_filename_4)
+            ds_geo_global = download_request(
+                global_dataset,
+                area_pad,
+                [2013],
+                variable=["geopotential"],
+                file_path=era5_filename_4,
+                **kwargs,
+            )
+            ds_geo_ = _fill_from_global(ds_geo_, _drop_time_dim(ds_geo_global))
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
     # Time-mean snapshot, but preserve a length-1 ``time`` dim anchored at the
