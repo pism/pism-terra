@@ -51,6 +51,7 @@ from cdo import Cdo
 from dask.diagnostics import ProgressBar
 from pyproj import Transformer
 from rasterio.enums import Resampling
+from scipy.spatial import cKDTree
 from tqdm.auto import tqdm
 
 from pism_terra.aws import project_prefix
@@ -2185,6 +2186,236 @@ def carra2(
     return carra2_filename
 
 
+GLOBAL_ERA5_DATASET = "reanalysis-era5-single-levels-monthly-means"
+
+
+def pad_area(area: Sequence[float], pad: float = 1.0) -> list[float]:
+    """
+    Grow a CDS bounding box outwards by ``pad`` degrees.
+
+    Slots 0 and 2 hold latitudes and slots 1 and 3 hold longitudes, which is
+    true for both the ``[North, West, South, East]`` order CDS documents and
+    the ``[South, West, North, East]`` order that a latitude-first
+    ``Transformer.transform_bounds`` produces, so the caller's slot order is
+    preserved.
+
+    Parameters
+    ----------
+    area : sequence of float
+        Bounding box with latitudes in slots 0/2 and longitudes in slots 1/3.
+    pad : float, default 1.0
+        Margin in degrees added on every side.
+
+    Returns
+    -------
+    list of float
+        Padded box in the same slot order, latitudes clipped to [-90, 90] and
+        longitudes to [-180, 180].
+
+    Notes
+    -----
+    The margin exists so that a coarse source (ERA5 single levels is 0.25°)
+    still has data *beyond* every edge of the fine target grid. Without it,
+    bilinear ``reproject_match`` cannot interpolate the outermost target rows
+    and columns and leaves them NaN.
+    """
+    lat_a, lon_west, lat_b, lon_east = (float(v) for v in area)
+
+    lat_lo, lat_hi = sorted((lat_a, lat_b))
+    lat_lo = max(-90.0, lat_lo - pad)
+    lat_hi = min(90.0, lat_hi + pad)
+    lat_first, lat_second = (lat_lo, lat_hi) if lat_a <= lat_b else (lat_hi, lat_lo)
+
+    # Slot 1 is always the western edge and slot 3 the eastern one, so West
+    # moves down and East moves up even for a box crossing the antimeridian.
+    lon_west = max(-180.0, lon_west - pad)
+    lon_east = min(180.0, lon_east + pad)
+
+    return [lat_first, lon_west, lat_second, lon_east]
+
+
+def _extrapolate_nearest(ds: xr.Dataset, names: Iterable[str]) -> tuple[xr.Dataset, int]:
+    """
+    Fill any remaining NaN cells from the nearest valid cell of the same field.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset on a ``latitude``/``longitude`` grid.
+    names : iterable of str
+        Variables to repair.
+
+    Returns
+    -------
+    tuple of (xarray.Dataset, int)
+        The repaired dataset and the number of (variable, cell) pairs that had
+        to be extrapolated.
+
+    Notes
+    -----
+    This is a last-resort safety net: ERA5-Land's ocean mask is static in time,
+    so the hole pattern is computed once per variable from the 2-D union of all
+    NaNs and every time slice is patched with the same nearest-neighbour map.
+    """
+    lat = ds["latitude"].values
+    lon = ds["longitude"].values
+    lon2d, lat2d = np.meshgrid(lon, lat)
+    repaired = 0
+
+    for name in names:
+        da = ds[name]
+        if "latitude" not in da.dims or "longitude" not in da.dims:
+            continue
+        values = da.transpose(..., "latitude", "longitude").values
+        holes = np.isnan(values)
+        if not holes.any():
+            continue
+        # Static mask: a cell is bad if it is NaN at any time.
+        bad2d = holes.reshape(-1, *holes.shape[-2:]).any(axis=0)
+        good2d = ~bad2d
+        if not good2d.any():
+            raise ValueError(f"'{name}' is entirely missing; nothing to extrapolate from")
+
+        tree = cKDTree(np.column_stack([lat2d[good2d], lon2d[good2d]]))
+        _, nearest = tree.query(np.column_stack([lat2d[bad2d], lon2d[bad2d]]))
+
+        flat = values.reshape(-1, *values.shape[-2:])
+        for slab in flat:
+            slab[bad2d] = slab[good2d][nearest]
+        repaired += int(bad2d.sum())
+
+        ds[name] = da.copy(data=flat.reshape(values.shape).astype(da.dtype)).transpose(*da.dims)
+
+    return ds, repaired
+
+
+def fill_from_global_era5(
+    ds: xr.Dataset,
+    area: Sequence[float],
+    years: Sequence[int],
+    file_path: Path | str,
+    pad: float = 1.0,
+    **kwargs,
+) -> xr.Dataset:
+    """
+    Patch ERA5-Land's masked cells with the global ERA5 single-level reanalysis.
+
+    ERA5-Land is undefined over water, so a coastal glacier's bounding box
+    comes back with NaN holes. Those cells are replaced by the corresponding
+    values from ERA5 single levels, which is defined everywhere.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        ERA5-Land subset with ``latitude``/``longitude`` coordinates and an
+        EPSG:4326 CRS. Returned unchanged when it holds no missing values.
+    area : sequence of float
+        Bounding box of ``ds`` as handed to :func:`download_request`.
+    years : sequence of int
+        Years to request from the global product.
+    file_path : str or pathlib.Path
+        Cache file for the global download.
+    pad : float, default 1.0
+        Degrees of margin added to ``area`` for the global request. Must be
+        larger than the global product's grid spacing (0.25°) so that bilinear
+        resampling has data past every edge of ``ds``.
+    **kwargs
+        Forwarded to :func:`download_request`.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``ds`` with all missing values filled.
+
+    Raises
+    ------
+    ValueError
+        If a variable is missing everywhere and cannot be reconstructed.
+
+    See Also
+    --------
+    pad_area : Builds the enlarged request box.
+    download_request : Performs the CDS query.
+
+    Notes
+    -----
+    Any cell the global product still cannot cover is filled from its nearest
+    valid neighbour, and the count is reported, so the returned dataset never
+    carries NaN into the forcing file.
+    """
+    missing = [
+        str(name) for name, da in ds.data_vars.items() if da.dtype.kind == "f" and bool(da.isnull().any().item())
+    ]
+    if not missing:
+        return ds
+
+    print(f"Missing values detected in {missing}, filling with global reanalysis")
+
+    padded = pad_area(area, pad)
+    print(f"Global bounding box {padded}")
+
+    ds_global = download_request(GLOBAL_ERA5_DATASET, padded, years, file_path=file_path, **kwargs)
+    ds_global_ = (
+        ds_global.rio.write_crs("EPSG:4326")
+        .rio.reproject_match(ds, resampling=Resampling.bilinear)
+        .rename({"x": "longitude", "y": "latitude"})
+    )
+
+    for name in set(missing) & set(map(str, ds_global_.data_vars)):
+        ds[name] = xr.where(np.isnan(ds[name]), ds_global_[name], ds[name], keep_attrs=True)
+
+    still_missing = [name for name in missing if bool(ds[name].isnull().any().item())]
+    if still_missing:
+        ds, repaired = _extrapolate_nearest(ds, still_missing)
+        print(
+            f"Global reanalysis left {repaired} cell(s) of {still_missing} uncovered; "
+            "filled from the nearest valid neighbour"
+        )
+
+    return ds
+
+
+def ensure_no_missing(ds: xr.Dataset, context: str = "") -> xr.Dataset:
+    """
+    Guarantee that a gridded dataset carries no missing values.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset on a ``latitude``/``longitude`` grid.
+    context : str, default ""
+        Label used in the report, e.g. the variable's origin.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``ds`` with every remaining NaN filled from its nearest valid neighbour.
+
+    See Also
+    --------
+    fill_from_global_era5 : Fills ERA5-Land's ocean mask from the global product.
+
+    Notes
+    -----
+    ERA5-Land's invariant fields (geopotential in particular) are merged in
+    after the global patch, so this final sweep is what keeps their mask from
+    reaching the forcing file.
+    """
+    names = [
+        str(name)
+        for name, da in ds.data_vars.items()
+        if da.dtype.kind == "f" and "latitude" in da.dims and "longitude" in da.dims
+    ]
+    holed = [name for name in names if bool(ds[name].isnull().any().item())]
+    if not holed:
+        return ds
+
+    ds, repaired = _extrapolate_nearest(ds, holed)
+    label = f" {context}" if context else ""
+    print(f"Filled {repaired} residual missing cell(s) in{label} {holed} from the nearest valid neighbour")
+    return ds
+
+
 def era5(
     target_grid: xr.Dataset,
     rgi_id: str,
@@ -2304,27 +2535,12 @@ def era5(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
-        print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+    era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
+    era5_files.append(era5_filename_3)
+    ds = fill_from_global_era5(ds, area, years, era5_filename_3, **kwargs)
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
+    ds = ensure_no_missing(ds, "the merged ERA5 fields")
     ds = ds.rename({"valid_time": "time"})
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
@@ -2467,27 +2683,12 @@ def era5_mean(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
-        print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+    era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
+    era5_files.append(era5_filename_3)
+    ds = fill_from_global_era5(ds, area, years, era5_filename_3, **kwargs)
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
+    ds = ensure_no_missing(ds, "the merged ERA5 fields")
     # Time-mean snapshot, but preserve a length-1 ``time`` dim anchored at the
     # midpoint of the source range. ERA5 monthly stamps are first-of-month, so
     # the climatology covers ``[min(src), max(src) + 1 month)``.
@@ -2697,27 +2898,12 @@ def era5_monthly_mean(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
-        print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+    era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
+    era5_files.append(era5_filename_3)
+    ds = fill_from_global_era5(ds, area, years, era5_filename_3, **kwargs)
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
+    ds = ensure_no_missing(ds, "the merged ERA5 fields")
     # Time-mean snapshot, but preserve a length-1 ``time`` dim anchored at the
     # midpoint of the source range. ERA5 monthly stamps are first-of-month, so
     # the climatology covers ``[min(src), max(src) + 1 month)``.

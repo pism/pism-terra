@@ -22,6 +22,8 @@ Module for downloading data.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -266,6 +268,54 @@ def extract_archive(
     return extracted_files
 
 
+def _request_key(request: dict) -> str:
+    """
+    Build a short, stable digest of a CDS request.
+
+    The digest covers every request key except ``year`` (which is varied per
+    cache file anyway). It is what makes cached downloads sensitive to the
+    requested ``area``: without it, widening a bounding box silently re-uses
+    the narrower download that is already on disk.
+
+    Parameters
+    ----------
+    request : dict
+        CDS request dict.
+
+    Returns
+    -------
+    str
+        Eight hex characters derived from the canonicalised request.
+    """
+    payload = {k: v for k, v in request.items() if k != "year"}
+    canonical = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha1(canonical.encode()).hexdigest()[:8]
+
+
+def _cache_key_matches(file_path: Path, cache_key: str) -> bool:
+    """
+    Check whether a cached NetCDF was produced by the request we are about to make.
+
+    Parameters
+    ----------
+    file_path : pathlib.Path
+        Cached NetCDF written by :func:`download_request`.
+    cache_key : str
+        Digest of the current request, from :func:`_request_key`.
+
+    Returns
+    -------
+    bool
+        ``True`` if the file records the same request digest. Files written
+        before request digests existed return ``False`` and are re-downloaded.
+    """
+    try:
+        with xr.open_dataset(file_path, decode_times=False) as cached:
+            return cached.attrs.get("cds_request_key") == cache_key
+    except Exception:
+        return False
+
+
 def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suffix: str = ".nc") -> Path:
     """
     Build a collision-resistant cache filename for a per-year CDS download.
@@ -275,9 +325,10 @@ def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suf
     dataset : str
         CDS dataset identifier (used in the filename).
     request : dict
-        CDS request dict; only ``request["variable"]`` is read, to avoid
-        cache collisions when different variables are requested for the
-        same dataset/year.
+        CDS request dict. ``request["variable"]`` goes into the filename
+        verbatim and the remaining keys (notably ``area``) are folded into a
+        short digest, so a changed bounding box gets its own cache entry
+        instead of silently re-using the previous download.
     year : str
         Four-digit year string.
     dest : Path
@@ -290,10 +341,11 @@ def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suf
     Returns
     -------
     Path
-        Path of the form ``<dest>/_cds_<dataset>_<variables>_<year><suffix>``.
+        Path of the form
+        ``<dest>/_cds_<dataset>_<variables>_<request-digest>_<year><suffix>``.
     """
     var_key = "_".join(sorted(request.get("variable", [])))
-    return dest / f"_cds_{dataset}_{var_key}_{year}{suffix}"
+    return dest / f"_cds_{dataset}_{var_key}_{_request_key(request)}_{year}{suffix}"
 
 
 def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: Path) -> Path:
@@ -576,7 +628,9 @@ def download_request(
         CDS dataset identifier to retrieve.
     area : sequence of float or None, default ``(90, -90, 45, 90)``
         Geographic bounding box **[North, West, South, East]** in degrees (WGS84).
-        Ignored when ``request_override`` is provided.
+        The two latitude entries are re-ordered if given the other way round,
+        so a ``[South, West, North, East]`` box also works. Ignored when
+        ``request_override`` is provided.
 
     year : iterable of int, default ``range(1980, 2025)``
         Years to request. Ignored when ``request_override`` is provided.
@@ -636,11 +690,24 @@ def download_request(
             "download_format": "unarchived",
         }
         if area is not None:
-            request["area"] = list(area)
+            # CDS wants [North, West, South, East]. Callers that build the box
+            # with ``Transformer.transform_bounds`` hand us [South, West,
+            # North, East] because EPSG:4326 is latitude-first, so order the
+            # two latitude slots here. Longitudes are left alone: a box that
+            # crosses the antimeridian legitimately has West > East.
+            north, west, south, east = area
+            request["area"] = [max(north, south), west, min(north, south), east]
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if (not check_xr_lazy(file_path)) or force_overwrite:
+    # Digest the whole request (bounding box included) so that changing e.g.
+    # ``area`` invalidates the cache instead of silently re-using a subset
+    # that no longer covers the domain.
+    cache_key = _request_key({**request, "_years": sorted(str(y) for y in request["year"])})
+
+    reuse_cache = (not force_overwrite) and check_xr_lazy(file_path) and _cache_key_matches(file_path, cache_key)
+
+    if not reuse_cache:
         client = _DatastoresClient()
 
         path = file_path.parent
@@ -674,6 +741,7 @@ def download_request(
             ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
             ds.rio.write_crs("EPSG:4326", inplace=True)
 
+        ds.attrs["cds_request_key"] = cache_key
         ds.to_netcdf(file_path)
     else:
         ds = xr.open_dataset(file_path, decode_times=time_coder, decode_timedelta=True)
