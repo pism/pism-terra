@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 import boto3
 import earthaccess
 import numpy as np
+import pandas as pd
 import requests
 import xarray as xr
 from ecmwf.datastores import Client as _DatastoresClient
@@ -266,6 +267,60 @@ def extract_archive(
         archive.close()
 
     return extracted_files
+
+
+def _unify_valid_time(ds: xr.Dataset, monthly: bool, source: Path | str = "") -> xr.Dataset:
+    """
+    Put all variables of a CDS download onto one common ``valid_time`` axis.
+
+    CDS ships instantaneous (e.g. ``2m_temperature``) and accumulated
+    (e.g. ``total_precipitation``) variables as separate files whose
+    timestamps differ by a few hours or a day. Merging them with
+    ``join="outer"`` yields twice as many timestamps as expected, each
+    holding only one of the two variables. This normalises the timestamps
+    (month start for monthly means, day start otherwise) and collapses the
+    split rows by taking the first non-missing value per timestamp.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset as read from a CDS NetCDF file.
+    monthly : bool
+        If True, snap timestamps to the first of the month; otherwise to
+        the start of the day.
+    source : Path or str, default ""
+        Origin of ``ds``; only used in the log message.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with a unique, sorted ``valid_time`` coordinate. Returned
+        unchanged if it has no ``valid_time`` coordinate.
+    """
+    if "valid_time" not in ds.coords:
+        return ds
+
+    vt = ds["valid_time"]
+    if monthly:
+        vt_new = xr.DataArray(
+            pd.to_datetime({"year": vt.dt.year.values, "month": vt.dt.month.values, "day": 1}).values,
+            dims=vt.dims,
+            attrs=vt.attrs,
+        )
+    else:
+        vt_new = vt.dt.floor("D")
+    ds = ds.assign_coords(valid_time=vt_new)
+
+    if "valid_time" not in ds.dims:
+        return ds
+
+    n_dup = int(ds.indexes["valid_time"].duplicated().sum())
+    if n_dup:
+        logging.getLogger(__name__).info(
+            "%s: collapsing %d split 'valid_time' entries onto a common time axis", source, n_dup
+        )
+        ds = ds.groupby("valid_time").first()
+    return ds.sortby("valid_time")
 
 
 def _request_key(request: dict) -> str:
@@ -729,11 +784,10 @@ def download_request(
         dss = []
         for nc in sorted(downloaded):
             ds_part = xr.open_dataset(nc, decode_times=time_coder, decode_timedelta=True)
-            if "valid_time" in ds_part.coords:
-                ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
+            ds_part = _unify_valid_time(ds_part, monthly="monthly" in dataset, source=nc)
             dss.append(ds_part)
 
-        ds = xr.merge(dss).drop_vars(["number", "expver"], errors="ignore")
+        ds = xr.merge(dss, join="outer", compat="no_conflicts").drop_vars(["number", "expver"], errors="ignore")
 
         if "latitude" in ds.coords:
             ds = ds.sortby("latitude")
