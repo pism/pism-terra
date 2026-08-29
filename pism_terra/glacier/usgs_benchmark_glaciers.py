@@ -28,434 +28,67 @@ rather than RGI ID. This module downloads the release, finds the RGI v7
 glacier (``-G-``) outline each glacier lives in, converts the balances to
 Gt/yr with the release's own time-varying glacier area, and plots each
 glacier's series with whatever PISM ``tendency_of_ice_mass`` exists for that
-RGI ID under a run directory.
+RGI ID under a run directory. Outputs are grouped by RGI ID in
+sub-directories of the output directory. The per-stake counterpart is
+:mod:`pism_terra.glacier.usgs_benchmark_stakes`.
 """
 
 import logging
-import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import cf_xarray
-import geopandas as gpd
 import matplotlib as mpl
 import matplotlib.pylab as plt
 import numpy as np
 import pandas as pd
 import pint_xarray
-import requests
 import xarray as xr
 from matplotlib.ticker import MaxNLocator
 
-from pism_terra.download import download_archive, extract_archive
-from pism_terra.glacier.rgi import prepare_rgi_region
+from pism_terra.download import download_usgs_benchmark
+from pism_terra.glacier.usgs import (
+    BALANCE_VARS,
+    DEFAULT_DATA_DIR,
+    MODEL_COLOR,
+    MODEL_SEASON_STYLE,
+    OBS_STYLE,
+    RHO_WATER,
+    SEASON_DATE_COLUMNS,
+    SKILL_COLUMNS,
+    SPECIFIC_LABEL,
+    SPECIFIC_UNITS,
+    ensemble_line,
+    find_model_files,
+    format_skill,
+    grid_spacing,
+    integrate_rate,
+    interval_edges,
+    is_monthly,
+    load_glacier_wide,
+    load_rgi_glaciers,
+    load_sites,
+    match_rgi_ids,
+    mean_years,
+    open_pism,
+    rgi_output_dir,
+    run_label,
+    score,
+    uncertainty_var,
+)
 from pism_terra.kitp.analyze import REGION_DIM, rc_params, with_region_labels
 from pism_terra.log import setup_logging
 
-logger = logging.getLogger("pism_terra.glacier.usgs_benchmark")
+logger = logging.getLogger("pism_terra.glacier.usgs_benchmark_glaciers")
 
-SCIENCEBASE_API = "https://www.sciencebase.gov/catalog"
-SCIENCEBASE_ITEM = "6441de03d34ee8d4ade7d2a5"
-DATA_ARCHIVE = "glacier_massBalance_data.zip"
-SITES_ARCHIVE = "Glacier_Mass_Balance_Sites.zip"
-
-# The release covers Alaska, Washington and Montana only, so two RGI o1
-# regions are enough to place every glacier in it. The project GeoPackages
-# (``s4f_g.gpkg`` etc.) are study-area subsets and miss most of these
-# glaciers, hence the full regional outlines by default.
-RGI_REGIONS = ("01_alaska", "02_western_canada_usa")
-# NSIDC keeps the complex and glacier products in sibling directories; the
-# template ``prepare_rgi_region`` defaults to only knows the complex one.
-RGI_URL_TEMPLATE = (
-    "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/"
-    "RGI2000-v7.0-{outline_type}/RGI2000-v7.0-{outline_type}-{region}.zip"
-)
-
-BALANCE_VARS = {"Bw": "winter", "Bs": "summer", "Ba": "annual"}
-# Column suffixes recognised as a one-sigma uncertainty for a balance
-# column. Version 10 of the release has none; they are honoured if a future
-# version (or a user-edited CSV) adds them.
-UNCERTAINTY_SUFFIXES = ("_unc", "_uncertainty", "_err", "_sigma")
 MODEL_VAR = "tendency_of_ice_mass"
 #: Model counterpart of a glaciological seasonal balance. A stake network
 #: measures accumulation minus melt at the surface; within a season flow and
 #: discharge move mass around without a stake seeing it, so the surface flux is
 #: the like-for-like variable — not the total ``MODEL_VAR`` tendency.
 MODEL_SEASONAL_VAR = "tendency_of_ice_mass_due_to_surface_mass_flux"
-#: Columns of the release's glacier-wide solution giving the measured season
-#: boundaries: the winter maximum ends the winter season, the annual minimum
-#: ends the balance year.
-SEASON_DATE_COLUMNS = ("Bw_Date", "Ba_Date")
-DEFAULT_DATA_DIR = "~/base/pism-terra/usgs_benchmark"
-
-RHO_WATER = 1000.0  # constants.fresh_water.density
-
-OBS_STYLE = {
-    "Bw": {"color": "#4477AA", "marker": "v"},
-    "Bs": {"color": "#EE6677", "marker": "^"},
-    "Ba": {"color": "#000000", "marker": "o"},
-}
-MODEL_COLOR = "#228833"
-#: Modelled seasonal balances borrow their observation's colour so the eye
-#: pairs them, and are drawn as lines against the observations' markers.
-MODEL_SEASON_STYLE = {"Bw": {"color": "#4477AA", "ls": "--"}, "Bs": {"color": "#EE6677", "ls": "--"}}
-# Fewest overlapping years for which a correlation coefficient is reported; the
-# error statistics are given from a single year on.
-SKILL_MIN_YEARS = 3
-SPECIFIC_UNITS = "m year^-1"
-SPECIFIC_LABEL = "m w.e./yr"
-SKILL_COLUMNS = ["variable", "season", "source", "n", "r", "mae", "bias"]
-
-
-def sciencebase_file_urls(item_id: str = SCIENCEBASE_ITEM) -> dict[str, str]:
-    """
-    Resolve the download URL of every file attached to a ScienceBase item.
-
-    The file URLs embed a content hash that changes whenever USGS posts a
-    new version, so they are looked up by file name at run time rather than
-    hard-coded.
-
-    Parameters
-    ----------
-    item_id : str, optional
-        ScienceBase item identifier.
-
-    Returns
-    -------
-    dict of str to str
-        Mapping from attached file name to its download URL.
-    """
-    response = requests.get(f"{SCIENCEBASE_API}/item/{item_id}", params={"format": "json"}, timeout=30)
-    response.raise_for_status()
-    return {entry["name"]: entry["url"] for entry in response.json().get("files", [])}
-
-
-def download_usgs_benchmark(data_dir: Path | str, force_overwrite: bool = False) -> dict[str, Path]:
-    """
-    Fetch and extract the mass-balance and site archives of the release.
-
-    Parameters
-    ----------
-    data_dir : Path or str
-        Directory the archives are downloaded to and extracted under.
-    force_overwrite : bool, default False
-        Re-download and re-extract even when the files already exist.
-
-    Returns
-    -------
-    dict of str to Path
-        ``"data"`` — directory with one sub-directory per glacier;
-        ``"sites"`` — directory with the measurement-site CSV.
-    """
-    data_dir = Path(data_dir).expanduser()
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    urls: dict[str, str] | None = None
-    result: dict[str, Path] = {}
-    for key, name in (("data", DATA_ARCHIVE), ("sites", SITES_ARCHIVE)):
-        archive = data_dir / name
-        extract_to = data_dir / Path(name).stem
-        if archive.exists() and extract_to.exists() and not force_overwrite:
-            logger.info("Using cached %s", extract_to)
-            result[key] = extract_to
-            continue
-        if not archive.exists() or force_overwrite:
-            if urls is None:
-                urls = sciencebase_file_urls()
-            if name not in urls:
-                raise KeyError(f"{name} is not attached to ScienceBase item {SCIENCEBASE_ITEM}")
-            logger.info("Downloading %s", name)
-            download_archive(urls[name], dest=archive, force_overwrite=force_overwrite, verbose=False)
-        logger.info("Extracting %s to %s", name, extract_to)
-        extract_archive(archive, extract_to, force_overwrite=force_overwrite, verbose=False)
-        result[key] = extract_to
-    return result
-
-
-def load_sites(sites_dir: Path | str) -> gpd.GeoDataFrame:
-    """
-    Read the glaciological measurement sites as points.
-
-    Weather stations are dropped: they sit off-glacier and would drag the
-    RGI match toward the wrong outline.
-
-    Parameters
-    ----------
-    sites_dir : Path or str
-        Directory holding ``Glacier_Mass_Balance_Data_Sites.csv``.
-
-    Returns
-    -------
-    geopandas.GeoDataFrame
-        One EPSG:4326 point per stake, with the release's ``Glacier`` and
-        ``site_name`` columns.
-    """
-    sites_dir = Path(sites_dir)
-    csv = next(iter(sorted(sites_dir.glob("*Sites*.csv"))), None)
-    if csv is None:
-        raise FileNotFoundError(f"No site CSV found in {sites_dir}")
-    df = pd.read_csv(csv)
-    df = df[df["Type"].str.strip().str.lower() == "glaciological"].copy()
-    df["Glacier"] = df["Glacier"].str.strip()
-    df["site_name"] = df["site_name"].astype(str).str.strip()
-    return gpd.GeoDataFrame(
-        df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326"
-    ).reset_index(drop=True)
-
-
-def load_rgi_glaciers(
-    data_dir: Path | str,
-    rgi_file: Path | str | None = None,
-    regions: Iterable[str] = RGI_REGIONS,
-    force_overwrite: bool = False,
-) -> gpd.GeoDataFrame:
-    """
-    Load RGI v7 glacier (``-G-``) outlines to match the sites against.
-
-    Parameters
-    ----------
-    data_dir : Path or str
-        Directory the regional RGI archives are cached under
-        (``<data_dir>/rgi_archive``).
-    rgi_file : Path or str or None, optional
-        An existing outline file (GeoPackage or shapefile) to use instead of
-        downloading the regions.
-    regions : iterable of str, optional
-        RGI region names to download when *rgi_file* is not given.
-    force_overwrite : bool, default False
-        Re-download the regional archives.
-
-    Returns
-    -------
-    geopandas.GeoDataFrame
-        Outlines with ``rgi_id``, ``glac_name``, ``area_km2`` and geometry.
-    """
-    columns = ["rgi_id", "glac_name", "area_km2", "geometry"]
-    if rgi_file is not None:
-        rgi = gpd.read_file(rgi_file)
-        if "glac_name" not in rgi:
-            rgi["glac_name"] = None
-        return rgi[columns]
-
-    extract_path = Path(data_dir).expanduser() / "rgi_archive"
-    frames = [
-        prepare_rgi_region(
-            {"region": region},
-            outline_type="G",
-            url_template=RGI_URL_TEMPLATE,
-            extract_path=extract_path,
-            area_threshold=0.0,
-            force_overwrite=force_overwrite,
-        )[columns]
-        for region in regions
-    ]
-    return gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=frames[0].crs)
-
-
-def match_rgi_ids(sites: gpd.GeoDataFrame, rgi: gpd.GeoDataFrame, max_distance_km: float = 5.0) -> pd.DataFrame:
-    """
-    Assign each glacier in the release to the RGI outline holding most of its stakes.
-
-    A glacier's stake network can spill onto tributaries with their own RGI
-    entry (Taku's does), so the modal outline is taken rather than requiring
-    every stake to agree. A glacier with no stake inside any outline falls
-    back to the outline nearest the stakes' centroid, but only within
-    *max_distance_km*: with a study-area subset of outlines the nearest one
-    can be hundreds of kilometres away, and such a glacier is better left
-    unmatched (``rgi_id`` NaN) than plotted against the wrong outline.
-
-    Parameters
-    ----------
-    sites : geopandas.GeoDataFrame
-        Stake points from :func:`load_sites`.
-    rgi : geopandas.GeoDataFrame
-        Outlines from :func:`load_rgi_glaciers`.
-    max_distance_km : float, default 5.0
-        Farthest an outline may be from the stakes' centroid for the
-        nearest-neighbour fallback.
-
-    Returns
-    -------
-    pandas.DataFrame
-        One row per glacier with ``glacier``, ``rgi_id``, ``glac_name``,
-        ``area_km2``, ``n_sites`` and ``n_matched`` (stakes inside the
-        chosen outline; 0 for a nearest-neighbour fallback).
-    """
-    outlines = rgi[["rgi_id", "glac_name", "area_km2", "geometry"]]
-    points = sites.to_crs(outlines.crs)
-    joined = gpd.sjoin(points, outlines, how="left", predicate="within")
-
-    rows: list[dict[str, Any]] = []
-    for glacier, group in joined.groupby("Glacier", sort=True):
-        n_sites = group.index.nunique()
-        matched = group.dropna(subset=["rgi_id"])
-        if matched.empty:
-            nearest = _nearest_outline(points.loc[group.index.unique()], outlines, max_distance_km)
-            if nearest is None:
-                logger.warning("%s: no RGI outline within %.0f km of its stakes; unmatched", glacier, max_distance_km)
-                nearest = {"rgi_id": None, "glac_name": None, "area_km2": np.nan}
-            else:
-                logger.warning("%s: no stake inside an RGI outline; using nearest %s", glacier, nearest["rgi_id"])
-            rows.append({"glacier": glacier, **nearest, "n_sites": n_sites, "n_matched": 0})
-            continue
-        counts = matched["rgi_id"].value_counts()
-        rgi_id = counts.index[0]
-        n_matched = int(counts.iloc[0])
-        if n_matched * 2 < n_sites:
-            logger.warning("%s: only %d of %d stakes fall in %s", glacier, n_matched, n_sites, rgi_id)
-        else:
-            logger.info("%s -> %s (%d of %d stakes)", glacier, rgi_id, n_matched, n_sites)
-        first = matched[matched["rgi_id"] == rgi_id].iloc[0]
-        rows.append(
-            {
-                "glacier": glacier,
-                "rgi_id": rgi_id,
-                "glac_name": first["glac_name"],
-                "area_km2": float(first["area_km2"]),
-                "n_sites": n_sites,
-                "n_matched": n_matched,
-            }
-        )
-    return pd.DataFrame(rows, columns=["glacier", "rgi_id", "glac_name", "area_km2", "n_sites", "n_matched"])
-
-
-def _nearest_outline(
-    points: gpd.GeoDataFrame, outlines: gpd.GeoDataFrame, max_distance_km: float
-) -> dict[str, Any] | None:
-    """
-    Find the outline nearest the centroid of a group of points.
-
-    Parameters
-    ----------
-    points : geopandas.GeoDataFrame
-        Stakes of one glacier.
-    outlines : geopandas.GeoDataFrame
-        Candidate outlines in the same CRS as *points*.
-    max_distance_km : float
-        Outlines farther than this are not considered.
-
-    Returns
-    -------
-    dict or None
-        ``rgi_id``, ``glac_name`` and ``area_km2`` of the nearest outline,
-        or None when none lies within *max_distance_km*.
-    """
-    centroid = gpd.GeoDataFrame(geometry=[points.union_all().centroid], crs=points.crs)
-    # Distances are meaningless in degrees, and reprojecting every outline
-    # in a region for one lookup is slow, so work in a local UTM on the
-    # outlines within a degree of the stakes.
-    x, y = centroid.geometry.iloc[0].x, centroid.geometry.iloc[0].y
-    candidates = outlines.cx[x - 1 : x + 1, y - 1 : y + 1]
-    if candidates.empty:
-        candidates = outlines
-    utm = centroid.estimate_utm_crs()
-    nearest = gpd.sjoin_nearest(
-        centroid.to_crs(utm), candidates.to_crs(utm), how="left", max_distance=max_distance_km * 1000.0
-    )
-    row = nearest.iloc[0]
-    if pd.isna(row["rgi_id"]):
-        return None
-    return {"rgi_id": row["rgi_id"], "glac_name": row["glac_name"], "area_km2": float(row["area_km2"])}
-
-
-def _uncertainty_var(ds: xr.Dataset | pd.DataFrame, var: str) -> str | None:
-    """
-    Name the uncertainty column that goes with a balance column, if any.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset or pandas.DataFrame
-        Container to look in.
-    var : str
-        Balance variable name (``Bw``, ``Bs`` or ``Ba``).
-
-    Returns
-    -------
-    str or None
-        The first ``<var><suffix>`` present, or None.
-    """
-    return next((f"{var}{suffix}" for suffix in UNCERTAINTY_SUFFIXES if f"{var}{suffix}" in ds), None)
-
-
-def load_glacier_wide(data_dir: Path | str, glacier: str, fallback_area_km2: float | None = None) -> xr.Dataset | None:
-    """
-    Read a glacier's calibrated glacier-wide balances and its area per balance year.
-
-    Parameters
-    ----------
-    data_dir : Path or str
-        Extracted ``glacier_massBalance_data`` directory.
-    glacier : str
-        Glacier name as used in the release's directory and file names.
-    fallback_area_km2 : float or None, optional
-        Area to use when the release has no area-altitude distribution for
-        the glacier (the RGI area, typically).
-
-    Returns
-    -------
-    xarray.Dataset or None
-        ``Bw``/``Bs``/``Ba`` (and any uncertainty columns) in
-        ``m year^-1`` — metres water equivalent per balance year — with
-        ``area`` in km² on an integer ``time`` axis of balance years. None
-        when the glacier has no glacier-wide solution file (point data only).
-    """
-    glacier_dir = Path(data_dir) / glacier
-    output_csv = glacier_dir / f"Output_{glacier}_Glacier_Wide_solutions_calibrated.csv"
-    if not output_csv.exists():
-        return None
-
-    df = pd.read_csv(output_csv, na_values=["nan", "NaN", "NAN"])
-    years = df["Year"].astype(int).to_numpy()
-    ds = xr.Dataset(coords={"time": ("time", years, {"long_name": "balance year"})})
-    for var, season in BALANCE_VARS.items():
-        if var not in df:
-            continue
-        ds[var] = (
-            "time",
-            df[var].astype(float).to_numpy(),
-            {"units": "m year^-1", "long_name": f"glacier-wide {season} mass balance (m w.e.)"},
-        )
-        unc = _uncertainty_var(df, var)
-        if unc is not None:
-            ds[unc] = (
-                "time",
-                df[unc].astype(float).to_numpy(),
-                {"units": "m year^-1", "long_name": f"uncertainty of glacier-wide {season} mass balance (m w.e.)"},
-            )
-
-    # The measured season boundaries. Keeping them on the dataset lets the
-    # model be integrated over exactly the interval each observation covers.
-    for column in SEASON_DATE_COLUMNS:
-        if column in df:
-            ds[column] = ("time", pd.to_datetime(df[column], errors="coerce").to_numpy())
-            ds[column].attrs = {"long_name": f"measured {column.split('_', maxsplit=1)[0]} date"}
-
-    aad_csv = glacier_dir / f"Input_{glacier}_Area_Altitude_Distribution.csv"
-    if aad_csv.exists():
-        aad = pd.read_csv(aad_csv).set_index("Year")
-        area = aad.sum(axis=1, numeric_only=True)
-        area.index = area.index.astype(int)
-        full_index = pd.RangeIndex(min(area.index.min(), years.min()), max(area.index.max(), years.max()) + 1)
-        # Years without a DEM-derived area (the tail of the record, usually)
-        # keep the last known geometry.
-        filled = area.reindex(full_index).ffill().bfill()
-        missing = sorted(int(year) for year in set(years) - set(area.index))
-        if missing:
-            logger.info("%s: no area for %s; carrying the nearest year forward", glacier, missing)
-        area_values = filled.reindex(years).to_numpy()
-        source = "area-altitude distribution"
-    elif fallback_area_km2 is not None:
-        logger.warning("%s: no area-altitude distribution; using constant %.3f km2", glacier, fallback_area_km2)
-        area_values = np.full(years.shape, float(fallback_area_km2))
-        source = "RGI"
-    else:
-        raise FileNotFoundError(f"{aad_csv} is missing and no fallback area was given")
-    ds["area"] = ("time", area_values, {"units": "km^2", "long_name": "glacier area", "source": source})
-    ds.attrs["glacier"] = glacier
-    ds.attrs["source"] = f"USGS Glacier Project, Compiled Input Data and Glacier-Wide Mass Balances, {output_csv.name}"
-    return ds
 
 
 def to_mass_rate(ds: xr.Dataset) -> xr.Dataset:
@@ -496,124 +129,6 @@ def to_mass_rate(ds: xr.Dataset) -> xr.Dataset:
     return result
 
 
-def find_model_files(root: Path | str, pattern: str = "scalar_G_*.nc") -> list[Path]:
-    """
-    Find per-glacier scalar files below a run directory.
-
-    Parameters
-    ----------
-    root : Path or str
-        Directory searched recursively.
-    pattern : str, optional
-        Glob pattern of the post-processed per-glacier scalar files.
-
-    Returns
-    -------
-    list of Path
-        Matching files, sorted.
-    """
-    return sorted(Path(root).expanduser().rglob(pattern))
-
-
-def _mean_years(ds: xr.Dataset) -> np.ndarray:
-    """
-    Label each reporting interval by the calendar year it covers.
-
-    Uses the interval start from ``time_bounds`` when the file has it. The
-    post-processed files drop the bounds and keep the interval midpoint as
-    the time stamp, so a stamp on 1 January is taken as the *end* of the
-    previous year's interval and any other stamp as lying inside its year.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Scalar dataset with a decoded (cftime or datetime) ``time`` axis.
-
-    Returns
-    -------
-    numpy.ndarray
-        Integer year per time step.
-    """
-    bounds_name = ds["time"].attrs.get("bounds", "time_bounds")
-    if bounds_name in ds:
-        starts = ds[bounds_name].isel({ds[bounds_name].dims[-1]: 0}).values
-        return np.array([_year(t) for t in starts], dtype=int)
-    years = []
-    for t in ds["time"].values:
-        t = pd.Timestamp(t) if isinstance(t, np.datetime64) else t
-        years.append(_year(t) - 1 if (t.month, t.day) == (1, 1) else _year(t))
-    return np.array(years, dtype=int)
-
-
-def _year(t: Any) -> int:
-    """
-    Calendar year of a cftime, pandas or numpy time stamp.
-
-    Parameters
-    ----------
-    t : object
-        Time stamp.
-
-    Returns
-    -------
-    int
-        Its year.
-    """
-    if isinstance(t, np.datetime64):
-        t = pd.Timestamp(t)
-    return int(t.year)
-
-
-def _run_label(file: Path, root: Path | str | None) -> str:
-    """
-    Name a run by its directory under the search root and its ensemble id.
-
-    Parameters
-    ----------
-    file : Path
-        Scalar file.
-    root : Path or str or None
-        Search root; None labels the run by file name.
-
-    Returns
-    -------
-    str
-        ``<subdirectory> id_<n>`` when both are known, otherwise the file
-        name (or ``<subdirectory>/<file name>`` when no ``id_<n>`` token exists).
-    """
-    if root is None or not file.is_relative_to(root):
-        return file.name
-    relative = file.relative_to(root)
-    if len(relative.parts) == 1:
-        return file.name
-    subdir = relative.parts[0]
-    match = re.search(r"_id_(\d+)_", file.name)
-    return f"{subdir} id_{match.group(1)}" if match else f"{subdir}/{file.name}"
-
-
-def _grid_spacing(ds: xr.Dataset) -> tuple[float, float] | None:
-    """
-    Read the grid spacing PISM records in ``pism_config``.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Scalar file as opened, before ``pism_config`` is dropped.
-
-    Returns
-    -------
-    tuple of float or None
-        ``(dx, dy)`` in metres, or None when the file carries no config.
-    """
-    if "pism_config" not in ds:
-        return None
-    attrs = ds["pism_config"].attrs
-    try:
-        return float(attrs["grid.dx"]), float(attrs["grid.dy"])
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
 def ice_area(ds: xr.Dataset, rgi_id: str, spacing: tuple[float, float] | None) -> xr.DataArray | None:
     """
     Ice-covered area of a glacier through time, from a per-glacier scalar file.
@@ -630,7 +145,7 @@ def ice_area(ds: xr.Dataset, rgi_id: str, spacing: tuple[float, float] | None) -
     rgi_id : str
         RGI ``-G-`` identifier to select.
     spacing : tuple of float or None
-        ``(dx, dy)`` in metres from :func:`_grid_spacing`.
+        ``(dx, dy)`` in metres from :func:`pism_terra.glacier.usgs.grid_spacing`.
 
     Returns
     -------
@@ -760,14 +275,12 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
         carrying the year's mean ice area (m²) as the ``area`` coordinate
         (NaN for files without one); None when no file contains the glacier.
     """
-    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-    delta_coder = xr.coders.CFTimedeltaCoder()
     series: list[xr.DataArray] = []
     labels: list[str] = []
     for file in files:
         file = Path(file)
-        with xr.open_dataset(file, decode_times=time_coder, decode_timedelta=delta_coder) as ds:
-            spacing = _grid_spacing(ds)
+        with open_pism(file) as ds:
+            spacing = grid_spacing(ds)
             ds = with_region_labels(ds.drop_vars("pism_config", errors="ignore"))
             names = ds[REGION_DIM].values
             if names.dtype.kind == "S":
@@ -775,7 +288,7 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
             if MODEL_VAR not in ds or rgi_id not in set(ds[REGION_DIM].values.tolist()):
                 continue
             da = ds[MODEL_VAR].sel({REGION_DIM: rgi_id}).pint.quantify().pint.to("Gt/year").pint.dequantify().load()
-            years = _mean_years(ds)
+            years = mean_years(ds)
             area = ice_area(ds, rgi_id, spacing)
             if area is None:
                 area = xr.full_like(ds["time"], np.nan, dtype=float)
@@ -784,7 +297,7 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
             area = area.assign_coords(year=("time", years)).swap_dims({"time": "year"}).drop_vars("time")
             area = area.groupby("year").mean("year").rename({"year": "time"})
             da = da.assign_coords(area=("time", area.values)).drop_vars(REGION_DIM, errors="ignore")
-        label = _run_label(file, root)
+        label = run_label(file, root)
         series.append(da)
         labels.append(label)
         logger.info("%s found in %s", rgi_id, label)
@@ -794,89 +307,6 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
     model.attrs = {"units": "Gt year^-1", "long_name": "rate of change of the ice mass"}
     model.name = MODEL_VAR
     return model
-
-
-def _month_edges(times: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Calendar-month interval each monthly stamp represents.
-
-    PISM stamps a monthly mean at the middle of its month, so the interval is
-    the calendar month the stamp falls in.
-
-    Parameters
-    ----------
-    times : numpy.ndarray
-        Decoded time stamps (cftime or numpy datetimes).
-
-    Returns
-    -------
-    tuple of numpy.ndarray
-        ``(starts, ends)`` as pandas Timestamps, ``ends`` exclusive.
-    """
-    starts, ends = [], []
-    for t in times:
-        stamp = pd.Timestamp(str(t)[:19])
-        start = stamp.normalize().replace(day=1)
-        starts.append(start)
-        ends.append(start + pd.offsets.MonthBegin(1))
-    return np.array(starts), np.array(ends)
-
-
-def is_monthly(times: np.ndarray) -> bool:
-    """
-    Report whether a time axis is monthly rather than annual.
-
-    Parameters
-    ----------
-    times : numpy.ndarray
-        Decoded time stamps.
-
-    Returns
-    -------
-    bool
-        True when consecutive stamps are less than 45 days apart.
-    """
-    if len(times) < 2:
-        return False
-    spans = [(pd.Timestamp(str(b)[:19]) - pd.Timestamp(str(a)[:19])).days for a, b in zip(times[:-1], times[1:])]
-    return bool(np.median(spans) < 45)
-
-
-def integrate_rate(rate: xr.DataArray, start: pd.Timestamp, end: pd.Timestamp, days_per_year: float = 365.0) -> float:
-    """
-    Integrate a monthly rate over an arbitrary interval.
-
-    Each monthly value is a mean rate over its calendar month, so a month
-    straddling a season boundary contributes in proportion to the days it
-    shares with the interval. The seasons are bounded by *measured* dates,
-    which fall mid-month far more often than not.
-
-    Parameters
-    ----------
-    rate : xarray.DataArray
-        Monthly rate in Gt/yr, with ``month_start``/``month_end`` coordinates.
-    start, end : pandas.Timestamp
-        Interval to integrate over; ``end`` exclusive.
-    days_per_year : float, default 365.0
-        Days per year of the model calendar, converting the rate to a mass.
-
-    Returns
-    -------
-    float
-        Mass change over the interval, in Gt. NaN when the interval is not
-        fully covered by the model record.
-    """
-    # xarray stores the coordinates as datetime64, so work in that dtype
-    # throughout rather than assuming Timestamps survive the round trip.
-    starts = pd.DatetimeIndex(rate["month_start"].values).values
-    ends = pd.DatetimeIndex(rate["month_end"].values).values
-    lower, upper = np.datetime64(start), np.datetime64(end)
-    if lower < starts.min() or upper > ends.max():
-        return float("nan")
-
-    overlap = (np.minimum(ends, upper) - np.maximum(starts, lower)) / np.timedelta64(1, "D")
-    overlap = np.clip(overlap.astype(float), 0.0, None)
-    return float(np.nansum(rate.values * overlap) / days_per_year)
 
 
 def model_seasonal_balances(
@@ -933,14 +363,12 @@ def model_seasonal_balances(
     # own two dates and its predecessor's ``Ba_Date``.
     previous = {int(y): ba for y, ba in zip(years, ba_dates)}
 
-    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-    delta_coder = xr.coders.CFTimedeltaCoder()
     per_run: list[xr.Dataset] = []
     labels: list[str] = []
     for file in files:
         file = Path(file)
-        with xr.open_dataset(file, decode_times=time_coder, decode_timedelta=delta_coder) as ds:
-            spacing = _grid_spacing(ds)
+        with open_pism(file) as ds:
+            spacing = grid_spacing(ds)
             ds = with_region_labels(ds.drop_vars("pism_config", errors="ignore"))
             names = ds[REGION_DIM].values
             if names.dtype.kind == "S":
@@ -954,7 +382,7 @@ def model_seasonal_balances(
             area_by_year = (
                 None
                 if area is None
-                else area.assign_coords(year=("time", _mean_years(ds)))
+                else area.assign_coords(year=("time", mean_years(ds)))
                 .swap_dims({"time": "year"})
                 .groupby("year")
                 .mean("year")
@@ -968,7 +396,7 @@ def model_seasonal_balances(
                 .load()
                 .drop_vars(REGION_DIM, errors="ignore")
             )
-            starts, ends = _month_edges(ds["time"].values)
+            starts, ends = interval_edges(ds)
             rate = rate.assign_coords(month_start=("time", starts), month_end=("time", ends))
 
         winter, summer, areas, kept = [], [], [], []
@@ -1002,7 +430,7 @@ def model_seasonal_balances(
                 coords={"time": np.array(kept)},
             )
         )
-        labels.append(_run_label(file, root))
+        labels.append(run_label(file, root))
         logger.info("%s: %d modelled seasons from %s", rgi_id, len(kept), labels[-1])
 
     if not per_run:
@@ -1017,57 +445,6 @@ def model_seasonal_balances(
             "source_variable": variable,
         }
     return out
-
-
-def _ensemble_line(values: xr.DataArray) -> xr.DataArray:
-    """
-    Collapse an ensemble to the series the plot draws.
-
-    Parameters
-    ----------
-    values : xarray.DataArray
-        Modelled values, on ``(run, time)`` or just ``time``.
-
-    Returns
-    -------
-    xarray.DataArray
-        The single run, or the median across runs.
-    """
-    if "run" in values.dims:
-        return values.median(dim="run") if values.sizes["run"] > 1 else values.isel(run=0, drop=True)
-    return values
-
-
-def _score(observed: xr.DataArray, modelled: xr.DataArray) -> dict[str, float]:
-    """
-    Compare two annual series over the years both have a value for.
-
-    Parameters
-    ----------
-    observed : xarray.DataArray
-        Observed balances on integer ``time``.
-    modelled : xarray.DataArray
-        Modelled balances on integer ``time``.
-
-    Returns
-    -------
-    dict
-        ``n`` overlapping years, Pearson ``r`` (NaN below
-        :data:`SKILL_MIN_YEARS` years or for a constant series), ``mae``
-        and ``bias`` (model minus observation), in the series' units.
-    """
-    obs, mod = xr.align(observed, modelled, join="inner")
-    o = np.asarray(obs.values, dtype=float)
-    m = np.asarray(mod.values, dtype=float)
-    keep = np.isfinite(o) & np.isfinite(m)
-    o, m = o[keep], m[keep]
-    n = int(o.size)
-    if n == 0:
-        return {"n": 0, "r": np.nan, "mae": np.nan, "bias": np.nan}
-    r = np.nan
-    if n >= SKILL_MIN_YEARS and o.std() > 0 and m.std() > 0:
-        r = float(np.corrcoef(o, m)[0, 1])
-    return {"n": n, "r": r, "mae": float(np.mean(np.abs(m - o))), "bias": float(np.mean(m - o))}
 
 
 def skill_scores(obs: xr.Dataset, model: xr.DataArray | None = None, seasons: xr.Dataset | None = None) -> pd.DataFrame:
@@ -1105,40 +482,12 @@ def skill_scores(obs: xr.Dataset, model: xr.DataArray | None = None, seasons: xr
                         "variable": var,
                         "season": season,
                         "source": "surface",
-                        **_score(obs[var], _ensemble_line(seasons[var])),
+                        **score(obs[var], ensemble_line(seasons[var])),
                     }
                 )
     if model is not None and "Ba" in obs:
-        rows.append(
-            {"variable": "Ba", "season": "annual", "source": "total", **_score(obs["Ba"], _ensemble_line(model))}
-        )
+        rows.append({"variable": "Ba", "season": "annual", "source": "total", **score(obs["Ba"], ensemble_line(model))})
     return pd.DataFrame(rows, columns=SKILL_COLUMNS)
-
-
-def format_skill(skill: pd.DataFrame, units: str = "Gt/yr") -> str:
-    """
-    Lay the scores out as the text block drawn on the figure.
-
-    Parameters
-    ----------
-    skill : pandas.DataFrame
-        Output of :func:`skill_scores`.
-    units : str, optional
-        Units appended to the error statistics.
-
-    Returns
-    -------
-    str
-        One line per comparison, e.g. ``winter  r=0.62  MAE=0.11 Gt/yr  n=30``.
-    """
-    lines = []
-    for row in skill.itertuples(index=False):
-        if row.n == 0:
-            continue
-        label = f"{row.season} ({row.source})" if row.source != "surface" else row.season
-        r = f"r={row.r:.2f}" if np.isfinite(row.r) else "r=n/a"
-        lines.append(f"{label:16s} {r:>7s}  MAE={row.mae:.3g} {units}  n={row.n}")
-    return "\n".join(lines)
 
 
 def plot_glacier(
@@ -1201,7 +550,7 @@ def plot_glacier(
             if var not in obs:
                 continue
             style = OBS_STYLE[var]
-            unc = _uncertainty_var(obs, var)
+            unc = uncertainty_var(obs, var)
             kwargs: dict[str, Any] = {
                 "color": style["color"],
                 "marker": style["marker"],
@@ -1324,7 +673,8 @@ def run_pipeline(
     data_dir : Path or str, optional
         Cache for the ScienceBase archives and RGI outlines.
     output_dir : Path or str, optional
-        Where figures, per-glacier NetCDF files and the match table go.
+        Where the match and skill tables go; each glacier's figures and
+        NetCDF file are written to a ``<rgi_id>`` sub-directory of it.
     rgi_file : Path or str or None, optional
         Outline file to match against instead of the downloaded regions.
     uncertainty : float or None, optional
@@ -1366,7 +716,7 @@ def run_pipeline(
             continue
         if uncertainty is not None:
             for var in BALANCE_VARS:
-                if var in obs and _uncertainty_var(obs, var) is None:
+                if var in obs and uncertainty_var(obs, var) is None:
                     obs[f"{var}_unc"] = xr.full_like(obs[var], uncertainty)
                     obs[f"{var}_unc"].attrs = {
                         "units": "m year^-1",
@@ -1381,7 +731,8 @@ def run_pipeline(
             skills.append(skill.assign(glacier=row.glacier, rgi_id=row.rgi_id, units=SPECIFIC_UNITS))
             for line in format_skill(skill, units=SPECIFIC_LABEL).splitlines():
                 logger.info("%s: %s", row.glacier, line)
-        png = plot_glacier(obs, model_mwe, row.glacier, row.rgi_id, output_dir, seasons=seasons_mwe, skill=skill)
+        glacier_dir = rgi_output_dir(output_dir, row.rgi_id)
+        png = plot_glacier(obs, model_mwe, row.glacier, row.rgi_id, glacier_dir, seasons=seasons_mwe, skill=skill)
         figures.append(str(png))
         n_runs.append(0 if model is None else int(model.sizes["run"]))
 
@@ -1403,20 +754,20 @@ def run_pipeline(
                 if var in seasons:
                     out[f"{var}_model"] = seasons[var]
                     out[f"{var}_model_mwe"] = seasons_mwe[var]
-        for score in skill.itertuples(index=False):
-            name = f"{MODEL_VAR}_mwe" if score.source == "total" else f"{score.variable}_model_mwe"
+        for entry in skill.itertuples(index=False):
+            name = f"{MODEL_VAR}_mwe" if entry.source == "total" else f"{entry.variable}_model_mwe"
             if name in out:
                 out[name].attrs.update(
                     {
-                        "pearson_r": score.r,
-                        "mae": score.mae,
-                        "bias": score.bias,
-                        "n_years": score.n,
+                        "pearson_r": entry.r,
+                        "mae": entry.mae,
+                        "bias": entry.bias,
+                        "n_years": entry.n,
                         "skill_units": SPECIFIC_UNITS,
                     }
                 )
         out.attrs["rgi_id"] = row.rgi_id
-        out.to_netcdf(output_dir / f"usgs_benchmark_{row.glacier}_{row.rgi_id}.nc")
+        out.to_netcdf(glacier_dir / f"usgs_benchmark_{row.glacier}_{row.rgi_id}.nc")
 
     matches = matches.assign(figure=figures, n_runs=n_runs)
     matches.to_csv(output_dir / "usgs_benchmark_rgi_match.csv", index=False)
@@ -1451,7 +802,9 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         help="Directory searched recursively for scalar_G_*.nc files. Omit to plot the observations alone.",
     )
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Cache for the USGS archives and RGI outlines.")
-    parser.add_argument("--output-dir", default=".", help="Directory for figures, NetCDF files and the match table.")
+    parser.add_argument(
+        "--output-dir", default=".", help="Directory for the tables; figures and NetCDF files go to <rgi_id>/ below it."
+    )
     parser.add_argument(
         "--rgi-glacier-file",
         default=None,

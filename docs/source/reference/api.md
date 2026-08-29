@@ -132,38 +132,73 @@ no `:toctree:` so the field descriptions are registered in exactly one place
 ### USGS benchmark glaciers
 
 ```{eval-rst}
-.. currentmodule:: pism_terra.glacier.usgs_benchmark
+.. currentmodule:: pism_terra.glacier.usgs
 
 .. autosummary::
     :toctree: generated/
 
-    download_usgs_benchmark
     load_sites
+    load_glacier_wide
+    parse_dates
+    load_measurements
     load_rgi_glaciers
     match_rgi_ids
-    load_glacier_wide
-    to_mass_rate
+    rgi_output_dir
     find_model_files
+    open_pism
+    grid_spacing
+    run_label
+    interval_edges
+    is_monthly
+    integrate_rate
+    score
+    format_skill
+```
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs_benchmark_glaciers
+
+.. autosummary::
+    :toctree: generated/
+
+    to_mass_rate
     load_model_series
     model_seasonal_balances
     ice_area
     specific_balance
     to_specific_balances
     skill_scores
-    integrate_rate
-    is_monthly
     plot_glacier
     run_pipeline
 ```
 
 ```{eval-rst}
-.. currentmodule:: pism_terra.glacier.usgs_stakes
+.. currentmodule:: pism_terra.glacier.usgs_benchmark_stakes
 
 .. autosummary::
     :toctree: generated/
 
-    parse_dates
-    load_measurements
+    find_spatial_files
+    stake_points
+    sample_points
+    point_smb_rate
+    stake_balances
+    stake_skill
+    plot_stakes
+    plot_scatter
+    fit_gradient
+    gradient_fits
+    plot_gradient
+    to_dataset
+    run_pipeline
+```
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs_generate_geopackage
+
+.. autosummary::
+    :toctree: generated/
+
     build_stake_layers
     write_stake_geopackage
 ```
@@ -254,6 +289,7 @@ no `:toctree:` so the field descriptions are registered in exactly one place
     extract_archive
     download_request
     carra_download_request
+    download_usgs_benchmark
 ```
 
 ```{eval-rst}

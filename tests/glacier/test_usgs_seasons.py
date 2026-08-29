@@ -30,7 +30,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from pism_terra.glacier.usgs_benchmark import _month_edges, integrate_rate, is_monthly
+from pism_terra.glacier.usgs import integrate_rate, is_monthly, month_edges
 
 
 def monthly_rate(value: float = 12.0, year: int = 2000, years: int = 1) -> xr.DataArray:
@@ -54,7 +54,7 @@ def monthly_rate(value: float = 12.0, year: int = 2000, years: int = 1) -> xr.Da
     starts = pd.date_range(f"{year}-01-01", periods=12 * years, freq="MS")
     times = starts + (starts.shift(1, freq="MS") - starts) / 2
     rate = xr.DataArray(np.full(len(times), value), dims="time", coords={"time": times})
-    month_start, month_end = _month_edges(times.to_numpy())
+    month_start, month_end = month_edges(times.to_numpy())
     return rate.assign_coords(month_start=("time", month_start), month_end=("time", month_end))
 
 

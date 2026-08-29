@@ -30,13 +30,20 @@ runnable as `python -m <module>`. The full list lives in
 * - `pism-glacier-mip4`
   - Build the per-region `RGI7_NN` aggregate complexes and shared inputs for
     GlacierMIP4.
-* - `pism-glacier-usgs-benchmark`
+* - `pism-glacier-usgs-benchmark-glaciers`
   - Download the USGS benchmark-glacier mass balances, match each glacier to
     its RGI v7 ID, convert to Gt/yr and plot against any `scalar_G_*.nc`
     found under a run directory. Monthly model output additionally gives
     modelled winter and summer balances, integrated over the release's own
-    measured season dates.
-* - `pism-glacier-usgs-stakes`
+    measured season dates. Outputs go to `<rgi_id>/` sub-directories.
+* - `pism-glacier-usgs-benchmark-stakes`
+  - Compare the release's stake measurements (`bw`, `ba`, sub-seasonal `db`)
+    with the surface mass balance PISM's monthly `spatial_*.nc` output gives at
+    each stake's location: one multi-panel figure, a modelled-vs-observed
+    scatter, balance-elevation gradient plots per season with two-piece fits
+    hinged at the ELA, and a NetCDF per glacier under `<rgi_id>/`, plus
+    per-site and pooled skill scores.
+* - `pism-glacier-usgs-generate-geopackage`
   - Write the USGS benchmark-glacier stake measurements (m w.e., typed
     dates) to a GeoPackage with `sites`, `stakes` and `subseasonal` layers.
 ```

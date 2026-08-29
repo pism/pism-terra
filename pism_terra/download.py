@@ -1246,3 +1246,80 @@ def download_hirham(
                 print(f"An error occurred: {e}")
 
     return responses
+
+
+# --- USGS benchmark glaciers (ScienceBase) -----------------------------------
+
+SCIENCEBASE_API = "https://www.sciencebase.gov/catalog"
+#: ScienceBase item of *Compiled Input Data and Glacier-Wide Mass Balances*
+#: (https://doi.org/10.5066/F7HD7SRF).
+SCIENCEBASE_ITEM = "6441de03d34ee8d4ade7d2a5"
+USGS_DATA_ARCHIVE = "glacier_massBalance_data.zip"
+USGS_SITES_ARCHIVE = "Glacier_Mass_Balance_Sites.zip"
+
+_usgs_logger = logging.getLogger("pism_terra.download.usgs")
+
+
+def sciencebase_file_urls(item_id: str = SCIENCEBASE_ITEM) -> dict[str, str]:
+    """
+    Resolve the download URL of every file attached to a ScienceBase item.
+
+    The file URLs embed a content hash that changes whenever USGS posts a
+    new version, so they are looked up by file name at run time rather than
+    hard-coded.
+
+    Parameters
+    ----------
+    item_id : str, optional
+        ScienceBase item identifier.
+
+    Returns
+    -------
+    dict of str to str
+        Mapping from attached file name to its download URL.
+    """
+    response = requests.get(f"{SCIENCEBASE_API}/item/{item_id}", params={"format": "json"}, timeout=30)
+    response.raise_for_status()
+    return {entry["name"]: entry["url"] for entry in response.json().get("files", [])}
+
+
+def download_usgs_benchmark(data_dir: Path | str, force_overwrite: bool = False) -> dict[str, Path]:
+    """
+    Fetch and extract the mass-balance and site archives of the USGS benchmark-glacier release.
+
+    Parameters
+    ----------
+    data_dir : Path or str
+        Directory the archives are downloaded to and extracted under.
+    force_overwrite : bool, default False
+        Re-download and re-extract even when the files already exist.
+
+    Returns
+    -------
+    dict of str to Path
+        ``"data"`` — directory with one sub-directory per glacier;
+        ``"sites"`` — directory with the measurement-site CSV.
+    """
+    data_dir = Path(data_dir).expanduser()
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    urls: dict[str, str] | None = None
+    result: dict[str, Path] = {}
+    for key, name in (("data", USGS_DATA_ARCHIVE), ("sites", USGS_SITES_ARCHIVE)):
+        archive = data_dir / name
+        extract_to = data_dir / Path(name).stem
+        if archive.exists() and extract_to.exists() and not force_overwrite:
+            _usgs_logger.info("Using cached %s", extract_to)
+            result[key] = extract_to
+            continue
+        if not archive.exists() or force_overwrite:
+            if urls is None:
+                urls = sciencebase_file_urls()
+            if name not in urls:
+                raise KeyError(f"{name} is not attached to ScienceBase item {SCIENCEBASE_ITEM}")
+            _usgs_logger.info("Downloading %s", name)
+            download_archive(urls[name], dest=archive, force_overwrite=force_overwrite, verbose=False)
+        _usgs_logger.info("Extracting %s to %s", name, extract_to)
+        extract_archive(archive, extract_to, force_overwrite=force_overwrite, verbose=False)
+        result[key] = extract_to
+    return result

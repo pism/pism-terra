@@ -18,7 +18,7 @@
 """
 USGS benchmark-glacier stake measurements as a GeoPackage.
 
-The ScienceBase release behind :mod:`pism_terra.glacier.usgs_benchmark`
+The ScienceBase release behind :mod:`pism_terra.glacier.usgs_benchmark_glaciers`
 also ships the point (stake, pit, probe) measurements every glacier-wide
 balance was built from: seasonal ``bw``/``ba`` per site and year in
 ``Input_<Glacier>_Glaciological_Data.csv``, and for some glaciers the
@@ -37,88 +37,16 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
-from pism_terra.glacier.usgs_benchmark import (
+from pism_terra.download import download_usgs_benchmark
+from pism_terra.glacier.usgs import (
     DEFAULT_DATA_DIR,
-    download_usgs_benchmark,
+    LAYERS,
+    load_measurements,
     load_sites,
 )
 from pism_terra.log import setup_logging
 
-logger = logging.getLogger("pism_terra.glacier.usgs_stakes")
-
-# Every layer: the per-glacier CSV suffix and its date columns.
-LAYERS = {
-    "stakes": ("Glaciological_Data", ("spring_date", "fall_date")),
-    "subseasonal": ("SubSeasonal_Glaciological_Data", ("Date1", "Date2")),
-}
-# The release writes dates as YYYY/MM/DD in most files and M/D/YYYY in a few
-# (Kennicott); both are tried, in this order.
-DATE_FORMATS = ("%Y/%m/%d", "%m/%d/%Y")
-
-
-def parse_dates(values: pd.Series) -> pd.Series:
-    """
-    Parse the release's date strings, whichever of its notations they use.
-
-    Parameters
-    ----------
-    values : pandas.Series
-        Date strings (``nan`` for missing).
-
-    Returns
-    -------
-    pandas.Series
-        ``datetime64[ns]`` values, ``NaT`` where missing.
-
-    Raises
-    ------
-    ValueError
-        If a non-missing value matches none of :data:`DATE_FORMATS`.
-    """
-    text = values.astype("string").str.strip()
-    parsed = pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
-    for fmt in DATE_FORMATS:
-        parsed = parsed.fillna(pd.to_datetime(text, format=fmt, errors="coerce"))
-    bad = text.notna() & parsed.isna() & ~text.str.lower().isin(["nan", ""])
-    if bad.any():
-        raise ValueError(f"Unparseable dates: {sorted(text[bad].unique())[:10]}")
-    return parsed
-
-
-def load_measurements(data_dir: Path | str, glacier: str, layer: str = "stakes") -> pd.DataFrame | None:
-    """
-    Read one glacier's point measurements with typed dates.
-
-    Parameters
-    ----------
-    data_dir : Path or str
-        Extracted ``glacier_massBalance_data`` directory.
-    glacier : str
-        Glacier name as used in the release's directory and file names.
-    layer : str, default "stakes"
-        Which table, a key of :data:`LAYERS`.
-
-    Returns
-    -------
-    pandas.DataFrame or None
-        The CSV with a leading ``glacier`` column, stripped ``site_name``,
-        integer ``Year`` and ``datetime64`` date columns; None when the
-        glacier has no such file.
-    """
-    suffix, date_columns = LAYERS[layer]
-    csv = Path(data_dir) / glacier / f"Input_{glacier}_{suffix}.csv"
-    if not csv.exists():
-        return None
-    df = pd.read_csv(csv, na_values=["nan", "NaN", "NAN"])
-    df.insert(0, "glacier", glacier)
-    df["Year"] = df["Year"].astype(int)
-    missing_site = df["site_name"].isna()
-    if missing_site.any():
-        logger.warning("%s: %d %s rows without a site name", glacier, int(missing_site.sum()), layer)
-    df["site_name"] = df["site_name"].astype("string").str.strip()
-    for column in date_columns:
-        df[column] = parse_dates(df[column])
-    return df
+logger = logging.getLogger("pism_terra.glacier.usgs_generate_geopackage")
 
 
 def build_stake_layers(data_dir: Path | str, sites: gpd.GeoDataFrame) -> dict[str, gpd.GeoDataFrame]:
@@ -131,7 +59,7 @@ def build_stake_layers(data_dir: Path | str, sites: gpd.GeoDataFrame) -> dict[st
         Extracted ``glacier_massBalance_data`` directory; each
         sub-directory is a glacier.
     sites : geopandas.GeoDataFrame
-        Stake locations from :func:`pism_terra.glacier.usgs_benchmark.load_sites`.
+        Stake locations from :func:`pism_terra.glacier.usgs.load_sites`.
 
     Returns
     -------

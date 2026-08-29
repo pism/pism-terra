@@ -29,8 +29,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pism_terra.glacier import usgs_stakes as us
-from pism_terra.glacier.usgs_benchmark import load_sites
+from pism_terra.glacier import usgs
+from pism_terra.glacier import usgs_generate_geopackage as us
+from pism_terra.glacier.usgs import load_sites
 
 
 @pytest.fixture(name="release")
@@ -85,13 +86,13 @@ def test_parse_dates_accepts_both_notations():
     """
     ``YYYY/MM/DD`` and ``M/D/YYYY`` both parse; ``nan`` becomes ``NaT``; junk raises.
     """
-    parsed = us.parse_dates(pd.Series(["2000/05/01", "5/26/2016", "nan", np.nan]))
+    parsed = usgs.parse_dates(pd.Series(["2000/05/01", "5/26/2016", "nan", np.nan]))
     assert parsed.dtype == "datetime64[ns]"
     assert parsed.iloc[0] == pd.Timestamp("2000-05-01")
     assert parsed.iloc[1] == pd.Timestamp("2016-05-26")
     assert parsed.iloc[2:].isna().all()
     with pytest.raises(ValueError, match="Unparseable"):
-        us.parse_dates(pd.Series(["May 1 2000"]))
+        usgs.parse_dates(pd.Series(["May 1 2000"]))
 
 
 def test_measurements_are_typed(release):
@@ -103,14 +104,14 @@ def test_measurements_are_typed(release):
     release : dict of str to Path
         The synthetic release directories.
     """
-    df = us.load_measurements(release["data"], "Foo")
+    df = usgs.load_measurements(release["data"], "Foo")
     assert df is not None
     assert df["glacier"].tolist() == ["Foo", "Foo"]
     assert df["site_name"].tolist() == ["A", "A"]
     assert df["Year"].dtype.kind == "i"
     assert df["spring_date"].tolist() == [pd.Timestamp("2000-05-01"), pd.Timestamp("2001-05-03")]
     assert pd.isna(df["fall_date"].iloc[1])
-    assert us.load_measurements(release["data"], "Bar", "subseasonal") is None
+    assert usgs.load_measurements(release["data"], "Bar", "subseasonal") is None
 
 
 def test_layers_join_site_coordinates(release):

@@ -55,7 +55,12 @@ from pyfiglet import Figlet
 from rasterio.features import geometry_mask
 
 from pism_terra.log import setup_logging
-from pism_terra.workflow import drop_grid_mapping, make_cdo_readable, pism_config_value
+from pism_terra.workflow import (
+    dataset_crs,
+    drop_grid_mapping,
+    make_cdo_readable,
+    pism_config_value,
+)
 
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
@@ -124,52 +129,6 @@ def _dim_chunks(ds: xr.Dataset, dim: str, fallback: int) -> tuple[int, ...] | in
     if not counts:
         return fallback
     return counts.most_common(1)[0][0]
-
-
-def dataset_crs(ds: xr.Dataset, crs: str | None = None) -> str:
-    """
-    Determine the CRS of a PISM output file.
-
-    PISM writes a CF grid-mapping variable (``mapping``, or ``spatial_ref``
-    once a file has round-tripped through rioxarray) carrying ``crs_wkt``,
-    so the projection can be read from the file itself. That matters because
-    the projection is campaign-specific — polar stereographic for Greenland,
-    a UTM zone for an Alaskan glacier — and a hard-coded default would
-    silently misplace one of them.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Dataset as opened from disk, before the grid-mapping variable is
-        dropped.
-    crs : str or None, optional
-        Explicit override (e.g. ``"EPSG:3413"``). When given it wins, which
-        is the escape hatch for files that carry no usable grid mapping.
-
-    Returns
-    -------
-    str
-        CRS as WKT or as the given override string.
-
-    Raises
-    ------
-    ValueError
-        If no override was given and the file has no grid-mapping variable
-        with ``crs_wkt``.
-    """
-    if crs is not None:
-        return crs
-
-    grid_mapping = ds.rio.grid_mapping
-    if grid_mapping in ds.variables:
-        crs_wkt = ds[grid_mapping].attrs.get("crs_wkt")
-        if crs_wkt:
-            logger.info("Using CRS from '%s'", grid_mapping)
-            return str(crs_wkt)
-
-    raise ValueError(
-        "input file carries no grid-mapping variable with 'crs_wkt'; pass --crs explicitly (e.g. --crs EPSG:3413)"
-    )
 
 
 def resolve_column(outline: gpd.GeoDataFrame, column: str | None = None) -> str:
