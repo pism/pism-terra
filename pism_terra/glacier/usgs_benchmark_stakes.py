@@ -64,6 +64,7 @@ from pism_terra.glacier.usgs import (
     SEASON_DATE_COLUMNS,
     SPECIFIC_LABEL,
     SPECIFIC_UNITS,
+    datetime_encoding,
     find_model_files,
     grid_spacing,
     integrate_rate,
@@ -1379,7 +1380,7 @@ def run_pipeline(
             gradients.append(fits.assign(glacier=glacier, rgi_id=row.rgi_id))
         out = to_dataset(table, samples[glacier])
         out.attrs.update({"glacier": glacier, "rgi_id": row.rgi_id, "sampling": method})
-        out.to_netcdf(glacier_dir / f"usgs_benchmark_stakes_{glacier}_{row.rgi_id}.nc")
+        out.to_netcdf(glacier_dir / f"usgs_benchmark_stakes_{glacier}_{row.rgi_id}.nc", encoding=datetime_encoding(out))
         table.to_csv(glacier_dir / f"usgs_benchmark_stakes_{glacier}_{row.rgi_id}.csv", index=False)
         figures.append(str(png))
         n_runs.append(len(tables[glacier]))

@@ -36,6 +36,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -500,6 +501,36 @@ def find_model_files(root: Path | str, pattern: str = "scalar_G_*.nc") -> list[P
     return sorted(Path(root).expanduser().rglob(pattern))
 
 
+def datetime_encoding(ds: xr.Dataset) -> dict[str, dict[str, str]]:
+    """
+    NetCDF encoding that lets datetime variables round-trip through a file.
+
+    ``DataArray.from_series`` grids leave ``NaT`` where a combination has no
+    value, and xarray writes ``NaT`` as the raw int64 minimum without a
+    ``_FillValue`` when it integer-encodes a datetime variable — a value its
+    own reader then refuses to decode (an ``OverflowError`` wrapped in
+    "unable to decode time units"). Encoding the variables as floats makes
+    ``NaT`` a NaN with a proper fill value instead.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset about to be written with :meth:`xarray.Dataset.to_netcdf`.
+
+    Returns
+    -------
+    dict
+        ``{name: {"dtype": "float64", "units": "days since 1970-01-01"}}``
+        for every datetime variable (coordinates included); pass as the
+        ``encoding`` argument.
+    """
+    return {
+        str(name): {"dtype": "float64", "units": "days since 1970-01-01"}
+        for name, variable in ds.variables.items()
+        if np.issubdtype(variable.dtype, np.datetime64)
+    }
+
+
 def map_files(
     worker: Callable[..., Any],
     files: Sequence[Path | str],
@@ -516,6 +547,9 @@ def map_files(
     the GIL serialize within one process — so the parallelism uses processes,
     not threads. Results come back in the order of *files* regardless of
     completion order, so callers build identical outputs at any ``n_jobs``.
+    Workers start via ``forkserver`` rather than plain ``fork`` — the parent
+    is multi-threaded by the time a pool spins up, and forking a
+    multi-threaded process is deprecated (and deadlock-prone).
 
     Parameters
     ----------
@@ -541,7 +575,7 @@ def map_files(
     if n_jobs <= 1 or len(files) <= 1:
         return [worker(Path(file), *args) for file in tqdm(files, desc=desc, unit="file", leave=leave)]
     results: dict[int, Any] = {}
-    with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+    with ProcessPoolExecutor(max_workers=n_jobs, mp_context=get_context("forkserver")) as pool:
         futures = {pool.submit(worker, Path(file), *args): index for index, file in enumerate(files)}
         for future in tqdm(as_completed(futures), total=len(futures), desc=desc, unit="file", leave=leave):
             results[futures[future]] = future.result()

@@ -61,6 +61,7 @@ from pism_terra.glacier.usgs import (
     SKILL_COLUMNS,
     SPECIFIC_LABEL,
     SPECIFIC_UNITS,
+    datetime_encoding,
     ensemble_line,
     find_model_files,
     format_skill,
@@ -972,7 +973,7 @@ def run_pipeline(
                     }
                 )
         out.attrs["rgi_id"] = row.rgi_id
-        out.to_netcdf(glacier_dir / f"usgs_benchmark_{row.glacier}_{row.rgi_id}.nc")
+        out.to_netcdf(glacier_dir / f"usgs_benchmark_{row.glacier}_{row.rgi_id}.nc", encoding=datetime_encoding(out))
 
     matches = matches.assign(figure=figures, n_runs=n_runs)
     matches.to_csv(output_dir / "usgs_benchmark_rgi_match.csv", index=False)
