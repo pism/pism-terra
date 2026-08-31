@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 ISMIP7_GLOBUS_BASE = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS"
 
 
-def _make_url(year, ice_sheet, gcm, pathway, short_hand, m_var, version):
+def _make_url(year, ice_sheet, gcm, pathway, short_hand, m_var, version, source=None):
     """
     Build the Globus HTTPS URL for one ISMIP7 GrIS forcing file.
 
@@ -103,18 +103,24 @@ def _make_url(year, ice_sheet, gcm, pathway, short_hand, m_var, version):
         Variable name (e.g. ``"acabf"``, ``"tas"``).
     version : str
         Version string (e.g. ``"v1"``).
+    source : str or None, optional
+        Source dataset for reanalysis-forced trees (e.g. OCX uses
+        ``"RACMO2.3p2-ERA"`` for climate and ``"EN4"`` for ocean). When given,
+        the directory is ``{gcm}/{source}/...`` (no pathway segment) and the
+        filename embeds ``{source}_{gcm}`` instead of ``{gcm}_{pathway}``.
 
     Returns
     -------
     str
         Globus HTTPS URL for the file.
     """
+    name_gcm, name_pathway = (gcm, pathway) if source is None else (source, gcm)
     fname = (
-        f"{m_var}_{ice_sheet}_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc"
+        f"{m_var}_{ice_sheet}_{name_gcm}_{name_pathway}_{short_hand}_{version}_{year}.nc"
         if short_hand != "none"
-        else f"{m_var}_{ice_sheet}_{gcm}_{pathway}_{version}_{year}.nc"
+        else f"{m_var}_{ice_sheet}_{name_gcm}_{name_pathway}_{version}_{year}.nc"
     )
-    parts = [ISMIP7_GLOBUS_BASE, gcm, pathway]
+    parts = [ISMIP7_GLOBUS_BASE, gcm, pathway if source is None else source]
     if short_hand != "none":
         parts.append(short_hand)
     parts.extend([m_var, version, fname])
@@ -251,7 +257,7 @@ def _download_many(
     return results
 
 
-def _local_path(year, data_path, ice_sheet, gcm, pathway, short_hand, m_var, version):
+def _local_path(year, data_path, ice_sheet, gcm, pathway, short_hand, m_var, version, source=None):
     """
     Build the local file path for an ISMIP7 forcing variable and year.
 
@@ -281,6 +287,11 @@ def _local_path(year, data_path, ice_sheet, gcm, pathway, short_hand, m_var, ver
         Variable name (e.g. ``"acabf"``, ``"tas"``).
     version : str
         Version string (e.g. ``"v1"``).
+    source : str or None, optional
+        Source dataset for reanalysis-forced trees (e.g. OCX uses
+        ``"RACMO2.3p2-ERA"`` for climate and ``"EN4"`` for ocean). When given,
+        the directory is ``{gcm}/{source}/...`` (no pathway segment) and the
+        filename embeds ``{source}_{gcm}`` instead of ``{gcm}_{pathway}``.
 
     Returns
     -------
@@ -289,12 +300,13 @@ def _local_path(year, data_path, ice_sheet, gcm, pathway, short_hand, m_var, ver
         is where the file actually lives). When neither candidate exists, the
         first candidate is returned so callers can surface a sensible error.
     """
+    name_gcm, name_pathway = (gcm, pathway) if source is None else (source, gcm)
     fname = (
-        f"{m_var}_{ice_sheet}_{gcm}_{pathway}_{short_hand}_{version}_{year}.nc"
+        f"{m_var}_{ice_sheet}_{name_gcm}_{name_pathway}_{short_hand}_{version}_{year}.nc"
         if short_hand != "none"
-        else f"{m_var}_{ice_sheet}_{gcm}_{pathway}_{version}_{year}.nc"
+        else f"{m_var}_{ice_sheet}_{name_gcm}_{name_pathway}_{version}_{year}.nc"
     )
-    rel_parts = [gcm, pathway]
+    rel_parts = [gcm, pathway if source is None else source]
     if short_hand != "none":
         rel_parts.append(short_hand)
     rel_parts.extend([m_var, version, fname])
@@ -302,7 +314,7 @@ def _local_path(year, data_path, ice_sheet, gcm, pathway, short_hand, m_var, ver
     return data_path / ice_sheet / rel
 
 
-def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version):
+def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version, source=None):
     """
     Build the resolved file path for an ISMIP7 forcing variable and year.
 
@@ -322,21 +334,28 @@ def _make_path(year, base_path, gcm, pathway, short_hand, m_var, version):
         Variable name (e.g. "acabf", "tas").
     version : str
         Version string (e.g. "v1").
+    source : str or None, optional
+        Source dataset for reanalysis-forced trees (e.g. OCX uses
+        ``"RACMO2.3p2-ERA"`` for climate and ``"EN4"`` for ocean). When given,
+        the directory is ``{gcm}/{source}/...`` (no pathway segment) and the
+        filename embeds ``{source}_{gcm}`` instead of ``{gcm}_{pathway}``.
 
     Returns
     -------
     str
         Resolved file path as a string.
     """
+    name_gcm, name_pathway = (gcm, pathway) if source is None else (source, gcm)
+    subdir = pathway if source is None else source
     p = (
-        base_path / Path(gcm) / Path(pathway) / Path(short_hand) / Path(m_var) / Path(version)
+        base_path / Path(gcm) / Path(subdir) / Path(short_hand) / Path(m_var) / Path(version)
         if short_hand != "none"
-        else base_path / Path(gcm) / Path(pathway) / Path(m_var) / Path(version)
+        else base_path / Path(gcm) / Path(subdir) / Path(m_var) / Path(version)
     )
     v = (
-        Path(f"{m_var}_{gcm}_{pathway}_{short_hand}_{year}.nc")
+        Path(f"{m_var}_{name_gcm}_{name_pathway}_{short_hand}_{year}.nc")
         if short_hand != "none"
-        else Path(f"{m_var}_{gcm}_{pathway}_{year}.nc")
+        else Path(f"{m_var}_{name_gcm}_{name_pathway}_{year}.nc")
     )
     url = (p / v).resolve()
     return str(url)
@@ -402,6 +421,7 @@ def _process_single_forcing(
     calendar: str = "365_day",
     data_path: Path | None = None,
     staging_path: Path | None = None,
+    source: str | None = None,
 ) -> list[Path]:
     """
     Process a single (GCM, pathway, forcing) combination into one output file.
@@ -455,6 +475,12 @@ def _process_single_forcing(
         via ``TemporaryDirectory``. When ``None`` (default),
         ``output_path`` is used — but only the final merged file is left
         in ``output_path`` either way.
+    source : str or None, optional
+        Per-forcing source dataset for reanalysis-forced trees like OCX
+        (e.g. ``"RACMO2.3p2-ERA"`` for climate, ``"EN4"`` for ocean).
+        Changes the source directory layout to ``{gcm}/{source}/...`` and the
+        filenames to ``..._{source}_{gcm}_...``; ``None`` for standard
+        GCM/pathway trees.
 
     Returns
     -------
@@ -492,10 +518,10 @@ def _process_single_forcing(
             location under ``base_path``.
         """
         if data_path is not None:
-            return _local_path(year, data_path, ice_sheet, gcm, pathway_name, short_hand, m_var, version)
+            return _local_path(year, data_path, ice_sheet, gcm, pathway_name, short_hand, m_var, version, source=source)
         # _make_path doesn't take ice_sheet (the segment isn't part of the legacy
         # base_path layout).
-        return Path(_make_path(year, base_path, gcm, pathway_name, short_hand, m_var, version))
+        return Path(_make_path(year, base_path, gcm, pathway_name, short_hand, m_var, version, source=source))
 
     if data_path is None:
         # Build (url, local_path) pairs for every (variable, year) we need
@@ -504,7 +530,7 @@ def _process_single_forcing(
         download_pairs: list[tuple[str, Path]] = []
         for m_var in fields:
             for year in range(start_year, end_year + 1):
-                url = _make_url(year, ice_sheet, gcm, pathway, short_hand, m_var, version)
+                url = _make_url(year, ice_sheet, gcm, pathway, short_hand, m_var, version, source=source)
                 download_pairs.append((url, _resolve(year, pathway, m_var)))
 
         _download_many(download_pairs, desc=f"Download {gcm}/{pathway}/{forcing}")
@@ -1309,9 +1335,13 @@ def prepare_ismip7_forcing(
             version = "v" + str(_pathway_config["version"])
             start_year = int(_pathway_config["start"])
             end_year = int(_pathway_config["end"])
+            # Per-forcing source dataset (e.g. OCX: RACMO2.3p2-ERA for
+            # climate, EN4 for ocean). Empty for standard GCM trees.
+            sources = _pathway_config.get("source", {})
             for forcing, forcing_dict in config["forcing"].items():
                 short_hand = forcing_dict["short_hand"]
                 fields = forcing_dict["fields"]
+                source = sources.get(forcing)
                 tasks.append(
                     (
                         ice_sheet,
@@ -1323,6 +1353,7 @@ def prepare_ismip7_forcing(
                         end_year,
                         short_hand,
                         fields,
+                        source,
                     )
                 )
 
@@ -1341,6 +1372,7 @@ def prepare_ismip7_forcing(
             end_year,
             short_hand,
             fields,
+            source,
         ) in tasks:
             future = client.submit(
                 _process_single_forcing,
@@ -1358,6 +1390,7 @@ def prepare_ismip7_forcing(
                 ismip7_to_pism,
                 data_path=data_path,
                 staging_path=staging_path,
+                source=source,
             )
             futures.append(future)
 
