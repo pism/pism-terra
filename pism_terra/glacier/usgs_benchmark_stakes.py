@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=unused-import,too-many-locals,too-many-branches,too-many-statements
+# pylint: disable=unused-import,too-many-locals,too-many-branches,too-many-statements,too-many-positional-arguments
 
 """
 USGS benchmark-glacier stake measurements against PISM spatial output.
@@ -52,6 +52,7 @@ import pandas as pd
 import pint_xarray
 import xarray as xr
 from matplotlib.ticker import MaxNLocator
+from tqdm.auto import tqdm
 
 from pism_terra.download import download_usgs_benchmark
 from pism_terra.glacier.usgs import (
@@ -72,6 +73,7 @@ from pism_terra.glacier.usgs import (
     load_measurements,
     load_rgi_glaciers,
     load_sites,
+    map_files,
     match_rgi_ids,
     open_pism,
     rgi_output_dir,
@@ -1178,6 +1180,71 @@ def to_dataset(table: pd.DataFrame, sampled: Sequence[xr.Dataset] = ()) -> xr.Da
     return drop_grid_mapping(out)
 
 
+def _sample_one_file(
+    file: Path,
+    run_dir: Path | str | None,
+    points: gpd.GeoDataFrame,
+    stakes: dict[str, pd.DataFrame],
+    subseasonal: dict[str, pd.DataFrame],
+    glacier_wide: dict[str, xr.Dataset],
+    method: str,
+) -> tuple[dict[str, pd.DataFrame], dict[str, xr.Dataset], dict[tuple[str, str], int]] | None:
+    """
+    Sample one spatial file at every stake and integrate its balances.
+
+    The per-file body of the sampling loop in :func:`run_pipeline`, split out
+    so :func:`pism_terra.glacier.usgs.map_files` can run it in worker
+    processes.
+
+    Parameters
+    ----------
+    file : pathlib.Path
+        PISM spatial output file.
+    run_dir : Path or str or None
+        Run directory the ``run`` labels are made relative to.
+    points : geopandas.GeoDataFrame
+        Measured sites from :func:`stake_points`.
+    stakes : dict
+        Stake measurements per glacier.
+    subseasonal : dict
+        Sub-seasonal measurements per glacier.
+    glacier_wide : dict
+        Glacier-wide balances per glacier.
+    method : {"nearest", "linear"}
+        How the grid is sampled at a stake (see :func:`sample_points`).
+
+    Returns
+    -------
+    tuple or None
+        Per-glacier balance tables, per-glacier sampled series and the
+        number of ice-free months per ``(glacier, site)``; None when the
+        file is not monthly or no stake falls inside its grid.
+    """
+    label = run_label(file, run_dir)
+    with open_pism(file) as ds:
+        if not is_monthly(ds["time"].values):
+            logger.info("%s: not monthly output; skipping", label)
+            return None
+        sampled = sample_points(ds, points, method=method)
+    if sampled is None:
+        logger.info("%s: no stake inside the grid", label)
+        return None
+    tables: dict[str, pd.DataFrame] = {}
+    samples: dict[str, xr.Dataset] = {}
+    ice_free: dict[tuple[str, str], int] = {}
+    for glacier in np.unique(sampled["glacier"].values):
+        at = sampled.sel(site=sampled["glacier"].values == glacier)
+        logger.info("%s: %d sites of %s sampled", label, at.sizes["site"], glacier)
+        tables[str(glacier)] = stake_balances(
+            at, stakes[glacier], subseasonal.get(glacier), glacier_wide.get(glacier), run=label
+        )
+        samples[str(glacier)] = at
+        if "thk" in at:
+            for site_name, months in zip(at["site_name"].values, (at["thk"] <= 0).sum("time").values):
+                ice_free[(str(glacier), str(site_name))] = int(months)
+    return tables, samples, ice_free
+
+
 def run_pipeline(
     run_dir: Path | str | None,
     *,
@@ -1185,6 +1252,7 @@ def run_pipeline(
     output_dir: Path | str = ".",
     rgi_file: Path | str | None = None,
     method: str = "nearest",
+    n_jobs: int = 1,
     force_overwrite: bool = False,
 ) -> pd.DataFrame:
     """
@@ -1204,6 +1272,9 @@ def run_pipeline(
         Outline file to match against instead of the downloaded regions.
     method : {"nearest", "linear"}, optional
         How the grid is sampled at a stake (see :func:`sample_points`).
+    n_jobs : int, optional
+        Worker processes used to sample the spatial files (see
+        :func:`pism_terra.glacier.usgs.map_files`).
     force_overwrite : bool, default False
         Re-download the archives.
 
@@ -1248,27 +1319,27 @@ def run_pipeline(
     tables: dict[str, list[pd.DataFrame]] = {glacier: [] for glacier in stakes}
     samples: dict[str, list[xr.Dataset]] = {glacier: [] for glacier in stakes}
     ice_free: dict[tuple[str, str], int] = {}
-    for file in files:
-        label = run_label(file, run_dir)
-        with open_pism(file) as ds:
-            if not is_monthly(ds["time"].values):
-                logger.info("%s: not monthly output; skipping", label)
-                continue
-            sampled = sample_points(ds, points, method=method)
-        if sampled is None:
-            logger.info("%s: no stake inside the grid", label)
+    for result in map_files(
+        _sample_one_file,
+        files,
+        run_dir,
+        points,
+        stakes,
+        subseasonal,
+        glacier_wide,
+        method,
+        n_jobs=n_jobs,
+        desc="Sampling spatial files",
+    ):
+        if result is None:
             continue
-        for glacier in np.unique(sampled["glacier"].values):
-            at = sampled.sel(site=sampled["glacier"].values == glacier)
-            logger.info("%s: %d sites of %s sampled", label, at.sizes["site"], glacier)
-            tables[glacier].append(
-                stake_balances(at, stakes[glacier], subseasonal.get(glacier), glacier_wide.get(glacier), run=label)
-            )
+        file_tables, file_samples, file_ice_free = result
+        for glacier, table in file_tables.items():
+            tables[glacier].append(table)
+        for glacier, at in file_samples.items():
             samples[glacier].append(at)
-            if "thk" in at:
-                for site_name, months in zip(at["site_name"].values, (at["thk"] <= 0).sum("time").values):
-                    key = (str(glacier), str(site_name))
-                    ice_free[key] = max(ice_free.get(key, 0), int(months))
+        for key, months in file_ice_free.items():
+            ice_free[key] = max(ice_free.get(key, 0), months)
 
     figures: list[str | None] = []
     n_runs: list[int] = []
@@ -1276,7 +1347,7 @@ def run_pipeline(
     n_sampled: list[int] = []
     skills: list[pd.DataFrame] = []
     gradients: list[pd.DataFrame] = []
-    for row in matches.itertuples(index=False):
+    for row in tqdm(matches.itertuples(index=False), total=len(matches), desc="Benchmark glaciers", unit="glacier"):
         glacier = row.glacier
         if glacier not in stakes:
             figures.append(None)
@@ -1367,6 +1438,12 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         default="nearest",
         help="Sample the nearest cell, or interpolate bilinearly from the four neighbours.",
     )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=4,
+        help="Worker processes for sampling the spatial files; 1 runs serially.",
+    )
     parser.add_argument("--force-overwrite", action="store_true", default=False, help="Re-download the archives.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -1380,6 +1457,7 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         output_dir=output_dir,
         rgi_file=args.rgi_glacier_file,
         method=args.method,
+        n_jobs=args.n_jobs,
         force_overwrite=args.force_overwrite,
     )
     print(matches.to_string(index=False))

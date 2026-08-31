@@ -34,7 +34,8 @@ skill statistics. The command-line tools live in
 
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
+from tqdm.auto import tqdm
 
 from pism_terra.glacier.rgi import prepare_rgi_region
 from pism_terra.workflow import pism_config_value
@@ -496,6 +498,54 @@ def find_model_files(root: Path | str, pattern: str = "scalar_G_*.nc") -> list[P
         Matching files, sorted.
     """
     return sorted(Path(root).expanduser().rglob(pattern))
+
+
+def map_files(
+    worker: Callable[..., Any],
+    files: Sequence[Path | str],
+    *args: Any,
+    n_jobs: int = 1,
+    desc: str = "Processing files",
+    leave: bool = True,
+) -> list[Any]:
+    """
+    Run *worker* over *files*, optionally in parallel worker processes.
+
+    The per-file work in the benchmark tools is independent and dominated by
+    NetCDF reads and unit-converted reductions, which the HDF5 library and
+    the GIL serialize within one process — so the parallelism uses processes,
+    not threads. Results come back in the order of *files* regardless of
+    completion order, so callers build identical outputs at any ``n_jobs``.
+
+    Parameters
+    ----------
+    worker : callable
+        Called as ``worker(Path(file), *args)`` for each file. Must be a
+        module-level (picklable) function when ``n_jobs > 1``.
+    files : sequence of Path or str
+        Files to process.
+    *args
+        Extra arguments passed to every call.
+    n_jobs : int, optional
+        Number of worker processes; ``1`` (the default) runs in-process.
+    desc : str, optional
+        Progress-bar label.
+    leave : bool, default True
+        Keep the finished progress bar on screen.
+
+    Returns
+    -------
+    list
+        One result per file, in the order of *files*.
+    """
+    if n_jobs <= 1 or len(files) <= 1:
+        return [worker(Path(file), *args) for file in tqdm(files, desc=desc, unit="file", leave=leave)]
+    results: dict[int, Any] = {}
+    with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+        futures = {pool.submit(worker, Path(file), *args): index for index, file in enumerate(files)}
+        for future in tqdm(as_completed(futures), total=len(futures), desc=desc, unit="file", leave=leave):
+            results[futures[future]] = future.result()
+    return [results[index] for index in range(len(files))]
 
 
 def open_pism(file: Path | str, **kwargs: Any) -> xr.Dataset:

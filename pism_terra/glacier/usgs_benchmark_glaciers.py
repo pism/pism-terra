@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
-# pylint: disable=unused-import
+# pylint: disable=unused-import,too-many-positional-arguments
 
 """
 USGS benchmark-glacier mass balances against PISM output.
@@ -47,6 +47,7 @@ import pandas as pd
 import pint_xarray
 import xarray as xr
 from matplotlib.ticker import MaxNLocator
+from tqdm.auto import tqdm
 
 from pism_terra.download import download_usgs_benchmark
 from pism_terra.glacier.usgs import (
@@ -70,6 +71,7 @@ from pism_terra.glacier.usgs import (
     load_glacier_wide,
     load_rgi_glaciers,
     load_sites,
+    map_files,
     match_rgi_ids,
     mean_years,
     open_pism,
@@ -255,9 +257,289 @@ def to_specific_balances(
     return model_mwe, seasons_mwe
 
 
-def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str | None = None) -> xr.DataArray | None:
+def _season_spec(obs: xr.Dataset) -> tuple[np.ndarray, pd.DatetimeIndex, pd.DatetimeIndex] | None:
+    """
+    Balance years and season dates of a glacier's observations.
+
+    Parameters
+    ----------
+    obs : xarray.Dataset
+        Observations from :func:`load_glacier_wide` (or their mass rates,
+        which carry the same date columns).
+
+    Returns
+    -------
+    tuple or None
+        ``(years, bw_dates, ba_dates)``; None when the release dates no
+        season for the glacier.
+    """
+    if not all(column in obs for column in SEASON_DATE_COLUMNS):
+        return None
+    years = obs["time"].values.astype(int)
+    return years, pd.to_datetime(obs["Bw_Date"].values), pd.to_datetime(obs["Ba_Date"].values)
+
+
+def _annual_from_ds(ds: xr.Dataset, rgi_id: str, spacing: tuple[float, float] | None) -> xr.DataArray:
+    """
+    Annual-mean mass-change rate of one glacier from an open scalar dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Scalar dataset with region labels restored; must carry
+        :data:`MODEL_VAR` and the glacier.
+    rgi_id : str
+        RGI ``-G-`` identifier to select.
+    spacing : tuple of float or None
+        ``(dx, dy)`` in metres from :func:`pism_terra.glacier.usgs.grid_spacing`.
+
+    Returns
+    -------
+    xarray.DataArray
+        Annual-mean rate in Gt/yr on integer years, carrying the year's mean
+        ice area (m²) as the ``area`` coordinate (NaN when the file has none).
+    """
+    da = ds[MODEL_VAR].sel({REGION_DIM: rgi_id}).pint.quantify().pint.to("Gt/year").pint.dequantify().load()
+    years = mean_years(ds)
+    area = ice_area(ds, rgi_id, spacing)
+    if area is None:
+        area = xr.full_like(ds["time"], np.nan, dtype=float)
+    da = da.assign_coords(year=("time", years)).swap_dims({"time": "year"}).drop_vars("time")
+    da = da.groupby("year").mean("year").rename({"year": "time"})
+    area = area.assign_coords(year=("time", years)).swap_dims({"time": "year"}).drop_vars("time")
+    area = area.groupby("year").mean("year").rename({"year": "time"})
+    return da.assign_coords(area=("time", area.values)).drop_vars(REGION_DIM, errors="ignore")
+
+
+def _seasonal_from_ds(
+    ds: xr.Dataset,
+    rgi_id: str,
+    spacing: tuple[float, float] | None,
+    spec: tuple[np.ndarray, pd.DatetimeIndex, pd.DatetimeIndex],
+    variable: str,
+) -> xr.Dataset | None:
+    """
+    Seasonal surface-flux balances of one glacier from an open monthly dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Monthly scalar dataset with region labels restored; must carry
+        *variable* and the glacier.
+    rgi_id : str
+        RGI ``-G-`` identifier to select.
+    spacing : tuple of float or None
+        ``(dx, dy)`` in metres from :func:`pism_terra.glacier.usgs.grid_spacing`.
+    spec : tuple
+        ``(years, bw_dates, ba_dates)`` from :func:`_season_spec`.
+    variable : str
+        Model variable to integrate.
+
+    Returns
+    -------
+    xarray.Dataset or None
+        ``Bw``/``Bs`` in Gt and the ice area on the kept balance years; None
+        when the record fully spans no measured season.
+    """
+    years, bw_dates, ba_dates = spec
+    area = ice_area(ds, rgi_id, spacing)
+    area_by_year = (
+        None
+        if area is None
+        else area.assign_coords(year=("time", mean_years(ds))).swap_dims({"time": "year"}).groupby("year").mean("year")
+    )
+    rate = (
+        ds[variable]
+        .sel({REGION_DIM: rgi_id})
+        .pint.quantify()
+        .pint.to("Gt/year")
+        .pint.dequantify()
+        .load()
+        .drop_vars(REGION_DIM, errors="ignore")
+    )
+    starts, ends = interval_edges(ds)
+    rate = rate.assign_coords(month_start=("time", starts), month_end=("time", ends))
+
+    # Winter starts at the previous balance year's minimum, so a year needs its
+    # own two dates and its predecessor's ``Ba_Date``.
+    previous = {int(y): ba for y, ba in zip(years, ba_dates)}
+    winter, summer, areas, kept = [], [], [], []
+    for year, bw_date, ba_date in zip(years, bw_dates, ba_dates):
+        year_start = previous.get(int(year) - 1)
+        if pd.isna(bw_date) or pd.isna(ba_date) or year_start is None or pd.isna(year_start):
+            continue
+        b_w = integrate_rate(rate, year_start, bw_date)
+        b_s = integrate_rate(rate, bw_date, ba_date)
+        if np.isnan(b_w) and np.isnan(b_s):
+            continue
+        winter.append(b_w)
+        summer.append(b_s)
+        # the year's mean ice area, for the conversion to metres water equivalent
+        areas.append(
+            float(area_by_year.sel(year=int(year)))
+            if area_by_year is not None and int(year) in area_by_year["year"].values
+            else np.nan
+        )
+        kept.append(int(year))
+
+    if not kept:
+        return None
+    return xr.Dataset(
+        {
+            "Bw": ("time", np.array(winter)),
+            "Bs": ("time", np.array(summer)),
+            "area": ("time", np.array(areas), {"units": "m^2", "long_name": "ice-covered area"}),
+        },
+        coords={"time": np.array(kept)},
+    )
+
+
+def _extract_one_file(
+    file: Path,
+    rgi_ids: Sequence[str],
+    seasonal_specs: dict[str, tuple[np.ndarray, pd.DatetimeIndex, pd.DatetimeIndex]],
+    variable: str,
+) -> tuple[dict[str, xr.DataArray], dict[str, xr.Dataset]]:
+    """
+    Extract every requested glacier's series from one scalar file.
+
+    Opens the file once and pulls the annual mass-change rate for every id in
+    *rgi_ids* and the seasonal surface-flux balances for every id in
+    *seasonal_specs*, so a run directory is read once per file rather than
+    twice per glacier. Runs in worker processes via
+    :func:`pism_terra.glacier.usgs.map_files`.
+
+    Parameters
+    ----------
+    file : pathlib.Path
+        Post-processed per-glacier scalar file.
+    rgi_ids : sequence of str
+        RGI ``-G-`` identifiers whose annual series are wanted.
+    seasonal_specs : dict
+        Season dates per RGI id from :func:`_season_spec`.
+    variable : str
+        Model variable the seasonal balances integrate.
+
+    Returns
+    -------
+    tuple of dict
+        ``(annual, seasonal)``, each keyed by RGI id; ids the file does not
+        cover are absent.
+    """
+    annual: dict[str, xr.DataArray] = {}
+    seasonal: dict[str, xr.Dataset] = {}
+    with open_pism(file) as ds:
+        spacing = grid_spacing(ds)
+        ds = with_region_labels(ds.drop_vars("pism_config", errors="ignore"))
+        names = ds[REGION_DIM].values
+        if names.dtype.kind == "S":
+            ds = ds.assign_coords({REGION_DIM: names.astype(str)})
+        present = set(ds[REGION_DIM].values.tolist())
+        if MODEL_VAR in ds:
+            for rgi_id in rgi_ids:
+                if rgi_id in present:
+                    annual[rgi_id] = _annual_from_ds(ds, rgi_id, spacing)
+        monthly = is_monthly(ds["time"].values)
+        if seasonal_specs and variable in ds and not monthly:
+            logger.info("%s is not monthly; no modelled seasons from it", file.name)
+        if monthly and variable in ds:
+            for rgi_id, spec in seasonal_specs.items():
+                if rgi_id not in present:
+                    continue
+                one = _seasonal_from_ds(ds, rgi_id, spacing, spec, variable)
+                if one is not None:
+                    seasonal[rgi_id] = one
+    return annual, seasonal
+
+
+def load_model_data(
+    files: Sequence[Path | str],
+    rgi_ids: Sequence[str],
+    seasonal_specs: dict[str, tuple[np.ndarray, pd.DatetimeIndex, pd.DatetimeIndex]],
+    root: Path | str | None = None,
+    variable: str = MODEL_SEASONAL_VAR,
+    n_jobs: int = 1,
+) -> tuple[dict[str, xr.DataArray], dict[str, xr.Dataset]]:
+    """
+    Collect every glacier's annual and seasonal series in one sweep over the files.
+
+    Each file is opened exactly once (in parallel for ``n_jobs > 1``) and all
+    glaciers are extracted from it together; per glacier the runs keep the
+    order of *files*, so the result matches per-glacier scans exactly.
+
+    Parameters
+    ----------
+    files : sequence of Path or str
+        Post-processed per-glacier scalar files.
+    rgi_ids : sequence of str
+        RGI ``-G-`` identifiers whose annual ``tendency_of_ice_mass`` is
+        wanted.
+    seasonal_specs : dict
+        Season dates per RGI id (see :func:`_season_spec`) for the glaciers
+        whose seasonal balances are wanted.
+    root : Path or str or None, optional
+        Run directory the ``run`` labels are made relative to.
+    variable : str, optional
+        Model variable the seasonal balances integrate. Defaults to
+        :data:`MODEL_SEASONAL_VAR`.
+    n_jobs : int, optional
+        Worker processes used to read the files (see
+        :func:`pism_terra.glacier.usgs.map_files`).
+
+    Returns
+    -------
+    tuple of dict
+        ``(annual, seasonal)`` keyed by RGI id: annual rates in Gt/yr on
+        ``(run, time)`` (see :func:`load_model_series`) and seasonal balances
+        in Gt (see :func:`model_seasonal_balances`). Glaciers no file covers
+        are absent.
+    """
+    results = map_files(
+        _extract_one_file, files, list(rgi_ids), seasonal_specs, variable, n_jobs=n_jobs, desc="Reading model files"
+    )
+    annual_series: dict[str, list[xr.DataArray]] = {}
+    annual_labels: dict[str, list[str]] = {}
+    seasonal_series: dict[str, list[xr.Dataset]] = {}
+    seasonal_labels: dict[str, list[str]] = {}
+    for file, (file_annual, file_seasonal) in zip(files, results):
+        label = run_label(Path(file), root)
+        for rgi_id, da in file_annual.items():
+            annual_series.setdefault(rgi_id, []).append(da)
+            annual_labels.setdefault(rgi_id, []).append(label)
+            logger.info("%s found in %s", rgi_id, label)
+        for rgi_id, one in file_seasonal.items():
+            seasonal_series.setdefault(rgi_id, []).append(one)
+            seasonal_labels.setdefault(rgi_id, []).append(label)
+            logger.info("%s: %d modelled seasons from %s", rgi_id, one.sizes["time"], label)
+
+    annual: dict[str, xr.DataArray] = {}
+    for rgi_id, series in annual_series.items():
+        model = xr.concat(series, dim=pd.Index(annual_labels[rgi_id], name="run"), join="outer").sortby("time")
+        model.attrs = {"units": "Gt year^-1", "long_name": "rate of change of the ice mass"}
+        model.name = MODEL_VAR
+        annual[rgi_id] = model
+    seasonal: dict[str, xr.Dataset] = {}
+    for rgi_id, per_run in seasonal_series.items():
+        out = xr.concat(per_run, dim=pd.Index(seasonal_labels[rgi_id], name="run"), join="outer").sortby("time")
+        out["Ba"] = out["Bw"] + out["Bs"]
+        for var, season in BALANCE_VARS.items():
+            out[var].attrs = {
+                "units": "Gt year^-1",
+                "long_name": f"modelled {season} surface mass balance",
+                "source_variable": variable,
+            }
+        seasonal[rgi_id] = out
+    return annual, seasonal
+
+
+def load_model_series(
+    files: Sequence[Path | str], rgi_id: str, root: Path | str | None = None, n_jobs: int = 1
+) -> xr.DataArray | None:
     """
     Collect a glacier's annual ``tendency_of_ice_mass`` from every file that has it.
+
+    A convenience wrapper around :func:`load_model_data` for one glacier; the
+    pipeline extracts all glaciers in a single sweep instead.
 
     Parameters
     ----------
@@ -267,6 +549,9 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
         RGI ``-G-`` identifier to select.
     root : Path or str or None, optional
         Run directory the ``run`` labels are made relative to.
+    n_jobs : int, optional
+        Worker processes used to read the files (see
+        :func:`pism_terra.glacier.usgs.map_files`).
 
     Returns
     -------
@@ -275,38 +560,8 @@ def load_model_series(files: Sequence[Path | str], rgi_id: str, root: Path | str
         carrying the year's mean ice area (m²) as the ``area`` coordinate
         (NaN for files without one); None when no file contains the glacier.
     """
-    series: list[xr.DataArray] = []
-    labels: list[str] = []
-    for file in files:
-        file = Path(file)
-        with open_pism(file) as ds:
-            spacing = grid_spacing(ds)
-            ds = with_region_labels(ds.drop_vars("pism_config", errors="ignore"))
-            names = ds[REGION_DIM].values
-            if names.dtype.kind == "S":
-                ds = ds.assign_coords({REGION_DIM: names.astype(str)})
-            if MODEL_VAR not in ds or rgi_id not in set(ds[REGION_DIM].values.tolist()):
-                continue
-            da = ds[MODEL_VAR].sel({REGION_DIM: rgi_id}).pint.quantify().pint.to("Gt/year").pint.dequantify().load()
-            years = mean_years(ds)
-            area = ice_area(ds, rgi_id, spacing)
-            if area is None:
-                area = xr.full_like(ds["time"], np.nan, dtype=float)
-            da = da.assign_coords(year=("time", years)).swap_dims({"time": "year"}).drop_vars("time")
-            da = da.groupby("year").mean("year").rename({"year": "time"})
-            area = area.assign_coords(year=("time", years)).swap_dims({"time": "year"}).drop_vars("time")
-            area = area.groupby("year").mean("year").rename({"year": "time"})
-            da = da.assign_coords(area=("time", area.values)).drop_vars(REGION_DIM, errors="ignore")
-        label = run_label(file, root)
-        series.append(da)
-        labels.append(label)
-        logger.info("%s found in %s", rgi_id, label)
-    if not series:
-        return None
-    model = xr.concat(series, dim=pd.Index(labels, name="run"), join="outer").sortby("time")
-    model.attrs = {"units": "Gt year^-1", "long_name": "rate of change of the ice mass"}
-    model.name = MODEL_VAR
-    return model
+    annual, _ = load_model_data(files, [rgi_id], {}, root=root, n_jobs=n_jobs)
+    return annual.get(rgi_id)
 
 
 def model_seasonal_balances(
@@ -315,6 +570,7 @@ def model_seasonal_balances(
     obs: xr.Dataset,
     root: Path | str | None = None,
     variable: str = MODEL_SEASONAL_VAR,
+    n_jobs: int = 1,
 ) -> xr.Dataset | None:
     """
     Integrate the modelled surface mass flux over each measured season.
@@ -328,7 +584,9 @@ def model_seasonal_balances(
     exactly the interval its observation does.
 
     Requires monthly model output; annual files carry no seasonal information
-    and yield ``None``.
+    and yield ``None``. A convenience wrapper around :func:`load_model_data`
+    for one glacier; the pipeline extracts all glaciers in a single sweep
+    instead.
 
     Parameters
     ----------
@@ -344,6 +602,9 @@ def model_seasonal_balances(
     variable : str, optional
         Model variable to integrate. Defaults to
         :data:`MODEL_SEASONAL_VAR`.
+    n_jobs : int, optional
+        Worker processes used to read the files (see
+        :func:`pism_terra.glacier.usgs.map_files`).
 
     Returns
     -------
@@ -352,99 +613,12 @@ def model_seasonal_balances(
         derived annual ``Ba``. None when no file has monthly output for the
         glacier, or the release dates no season.
     """
-    if not all(column in obs for column in SEASON_DATE_COLUMNS):
+    spec = _season_spec(obs)
+    if spec is None:
         logger.info("%s: release gives no season dates; no modelled seasons", rgi_id)
         return None
-
-    years = obs["time"].values.astype(int)
-    bw_dates = pd.to_datetime(obs["Bw_Date"].values)
-    ba_dates = pd.to_datetime(obs["Ba_Date"].values)
-    # Winter starts at the previous balance year's minimum, so a year needs its
-    # own two dates and its predecessor's ``Ba_Date``.
-    previous = {int(y): ba for y, ba in zip(years, ba_dates)}
-
-    per_run: list[xr.Dataset] = []
-    labels: list[str] = []
-    for file in files:
-        file = Path(file)
-        with open_pism(file) as ds:
-            spacing = grid_spacing(ds)
-            ds = with_region_labels(ds.drop_vars("pism_config", errors="ignore"))
-            names = ds[REGION_DIM].values
-            if names.dtype.kind == "S":
-                ds = ds.assign_coords({REGION_DIM: names.astype(str)})
-            if variable not in ds or rgi_id not in set(ds[REGION_DIM].values.tolist()):
-                continue
-            if not is_monthly(ds["time"].values):
-                logger.info("%s: %s is not monthly; no modelled seasons from it", rgi_id, file.name)
-                continue
-            area = ice_area(ds, rgi_id, spacing)
-            area_by_year = (
-                None
-                if area is None
-                else area.assign_coords(year=("time", mean_years(ds)))
-                .swap_dims({"time": "year"})
-                .groupby("year")
-                .mean("year")
-            )
-            rate = (
-                ds[variable]
-                .sel({REGION_DIM: rgi_id})
-                .pint.quantify()
-                .pint.to("Gt/year")
-                .pint.dequantify()
-                .load()
-                .drop_vars(REGION_DIM, errors="ignore")
-            )
-            starts, ends = interval_edges(ds)
-            rate = rate.assign_coords(month_start=("time", starts), month_end=("time", ends))
-
-        winter, summer, areas, kept = [], [], [], []
-        for year, bw_date, ba_date in zip(years, bw_dates, ba_dates):
-            year_start = previous.get(int(year) - 1)
-            if pd.isna(bw_date) or pd.isna(ba_date) or year_start is None or pd.isna(year_start):
-                continue
-            b_w = integrate_rate(rate, year_start, bw_date)
-            b_s = integrate_rate(rate, bw_date, ba_date)
-            if np.isnan(b_w) and np.isnan(b_s):
-                continue
-            winter.append(b_w)
-            summer.append(b_s)
-            # the year's mean ice area, for the conversion to metres water equivalent
-            areas.append(
-                float(area_by_year.sel(year=int(year)))
-                if area_by_year is not None and int(year) in area_by_year["year"].values
-                else np.nan
-            )
-            kept.append(int(year))
-
-        if not kept:
-            continue
-        per_run.append(
-            xr.Dataset(
-                {
-                    "Bw": ("time", np.array(winter)),
-                    "Bs": ("time", np.array(summer)),
-                    "area": ("time", np.array(areas), {"units": "m^2", "long_name": "ice-covered area"}),
-                },
-                coords={"time": np.array(kept)},
-            )
-        )
-        labels.append(run_label(file, root))
-        logger.info("%s: %d modelled seasons from %s", rgi_id, len(kept), labels[-1])
-
-    if not per_run:
-        return None
-
-    out = xr.concat(per_run, dim=pd.Index(labels, name="run"), join="outer").sortby("time")
-    out["Ba"] = out["Bw"] + out["Bs"]
-    for var, season in BALANCE_VARS.items():
-        out[var].attrs = {
-            "units": "Gt year^-1",
-            "long_name": f"modelled {season} surface mass balance",
-            "source_variable": variable,
-        }
-    return out
+    _, seasonal = load_model_data(files, [], {rgi_id: spec}, root=root, variable=variable, n_jobs=n_jobs)
+    return seasonal.get(rgi_id)
 
 
 def skill_scores(obs: xr.Dataset, model: xr.DataArray | None = None, seasons: xr.Dataset | None = None) -> pd.DataFrame:
@@ -660,6 +834,7 @@ def run_pipeline(
     output_dir: Path | str = ".",
     rgi_file: Path | str | None = None,
     uncertainty: float | None = None,
+    n_jobs: int = 1,
     force_overwrite: bool = False,
 ) -> pd.DataFrame:
     """
@@ -680,6 +855,9 @@ def run_pipeline(
     uncertainty : float or None, optional
         Constant one-sigma uncertainty in m w.e. applied to every balance
         when the CSV carries none.
+    n_jobs : int, optional
+        Worker processes used to read the model files (see
+        :func:`pism_terra.glacier.usgs.map_files`).
     force_overwrite : bool, default False
         Re-download the archives.
 
@@ -700,19 +878,18 @@ def run_pipeline(
     model_files = find_model_files(run_dir) if run_dir is not None else []
     logger.info("%d scalar_G files under %s", len(model_files), run_dir)
 
-    figures: list[str | None] = []
-    n_runs: list[int] = []
-    skills: list[pd.DataFrame] = []
+    # Pass 1: the observations for every matched glacier, so a single sweep
+    # over the model files can extract every glacier at once.
+    observations: dict[str, xr.Dataset] = {}
+    rates: dict[str, xr.Dataset] = {}
+    seasonal_specs: dict[str, tuple[np.ndarray, pd.DatetimeIndex, pd.DatetimeIndex]] = {}
+    rgi_ids: list[str] = []
     for row in matches.itertuples(index=False):
         if pd.isna(row.rgi_id):
-            figures.append(None)
-            n_runs.append(0)
             continue
         obs = load_glacier_wide(paths["data"], row.glacier, fallback_area_km2=row.area_km2)
         if obs is None:
             logger.info("%s: point data only, no glacier-wide balances; skipping", row.glacier)
-            figures.append(None)
-            n_runs.append(0)
             continue
         if uncertainty is not None:
             for var in BALANCE_VARS:
@@ -722,9 +899,37 @@ def run_pipeline(
                         "units": "m year^-1",
                         "long_name": f"assumed uncertainty of {var} (m w.e.)",
                     }
-        rate = to_mass_rate(obs)
-        model = load_model_series(model_files, row.rgi_id, root=run_dir) if model_files else None
-        seasons = model_seasonal_balances(model_files, row.rgi_id, rate, root=run_dir) if model_files else None
+        observations[row.glacier] = obs
+        rates[row.glacier] = to_mass_rate(obs)
+        rgi_ids.append(row.rgi_id)
+        spec = _season_spec(obs)
+        if spec is None:
+            logger.info("%s: release gives no season dates; no modelled seasons", row.rgi_id)
+        else:
+            seasonal_specs[row.rgi_id] = spec
+
+    # One sweep: every scalar file is opened once, yielding every glacier's
+    # annual series and seasonal balances together.
+    annual_by_id: dict[str, xr.DataArray] = {}
+    seasonal_by_id: dict[str, xr.Dataset] = {}
+    if model_files:
+        annual_by_id, seasonal_by_id = load_model_data(
+            model_files, rgi_ids, seasonal_specs, root=run_dir, n_jobs=n_jobs
+        )
+
+    # Pass 2: score, plot and write each glacier from the collected series.
+    figures: list[str | None] = []
+    n_runs: list[int] = []
+    skills: list[pd.DataFrame] = []
+    for row in tqdm(matches.itertuples(index=False), total=len(matches), desc="Benchmark glaciers", unit="glacier"):
+        if pd.isna(row.rgi_id) or row.glacier not in observations:
+            figures.append(None)
+            n_runs.append(0)
+            continue
+        obs = observations[row.glacier]
+        rate = rates[row.glacier]
+        model = annual_by_id.get(row.rgi_id)
+        seasons = seasonal_by_id.get(row.rgi_id)
         model_mwe, seasons_mwe = to_specific_balances(model, seasons, obs)
         skill = skill_scores(obs, model_mwe, seasons_mwe)
         if not skill.empty:
@@ -816,6 +1021,12 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         default=None,
         help="Constant one-sigma uncertainty (m w.e.) to draw as error bars when the CSVs carry none.",
     )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=4,
+        help="Worker processes for reading the model files; 1 runs serially.",
+    )
     parser.add_argument("--force-overwrite", action="store_true", default=False, help="Re-download the archives.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -829,6 +1040,7 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         output_dir=output_dir,
         rgi_file=args.rgi_glacier_file,
         uncertainty=args.uncertainty,
+        n_jobs=args.n_jobs,
         force_overwrite=args.force_overwrite,
     )
     print(matches.to_string(index=False))
