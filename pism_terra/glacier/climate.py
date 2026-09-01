@@ -34,6 +34,7 @@ from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
 from pathlib import Path
+from typing import Any
 
 import cf_xarray
 import cftime
@@ -50,6 +51,7 @@ from cdo import Cdo
 from dask.diagnostics import ProgressBar
 from pyproj import Transformer
 from rasterio.enums import Resampling
+from scipy.spatial import cKDTree
 from tqdm.auto import tqdm
 
 from pism_terra.aws import project_prefix
@@ -89,6 +91,10 @@ CARRA2_PROJ = (
     "+x_0=172840.374543307 +y_0=645049.059394855 "
     "+R=6371229 +units=m +no_defs"
 )
+
+# Store chunking: the whole record along time so a per-glacier clip reads one
+# chunk per tile and variable; ``-1`` = single chunk.
+CARRA2_ZARR_CHUNKS = {"time": -1, "y": 256, "x": 256}
 
 
 def _finalize_pism_crs(ds: xr.Dataset, crs_wkt: str) -> xr.Dataset:
@@ -353,10 +359,12 @@ def prepare_carra2(
     Notes
     -----
     - Output variables:
+
       - ``air_temp`` (K) from CARRA ``t2m``.
       - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
-      - ``albedo`` (1) derived as ``1 - SW_net / SW_down`` from the surface
+      - ``surface_albedo`` (1) derived as ``1 - SW_net / SW_down`` from the surface
         shortwave radiation budget (NaN where ``SW_down == 0``).
+
     - ``time_bounds`` are added for CF-style climatological metadata.
     - If missing values are detected in the regional subset, the function
       patches them from the global reanalysis (same period).
@@ -564,7 +572,9 @@ def prepare_carra2(
     )
 
     grid = str(carra2_grid_path.resolve())
-    cdo = Cdo()
+    # Scratch next to the batches: the default is ``$TMPDIR``/``/tmp``, which
+    # on a workstation is often a RAM-backed tmpfs far too small for CARRA2.
+    cdo = Cdo(tempdir=str(path))
     cdo.debug = True
 
     # --- Step 1: per-year batches (setgrid, settaxis, monmean/monstd) ---
@@ -667,14 +677,26 @@ def prepare_carra2(
 
     batch_files = sorted(b[4] for b in batches)
 
-    # --- Step 2: mergetime all year batches  ---
+    # --- Step 2: concatenate all year batches  ---
     if (not check_xr_lazy(carra2_filename)) or force_overwrite:
-        logger.info("CDO: merging %d year batches...", len(batch_files))
-        ds = cdo.mergetime(
-            input=" ".join(batch_files),
-            options=f"-f nc4 -z zip_2 -P {max_workers}",
-            returnXDataset=True,
+        logger.info("Concatenating %d year batches...", len(batch_files))
+        # Lazily, straight from the batches into the Zarr below. ``cdo
+        # mergetime`` used to write the whole record (tens of GB) to a
+        # temporary NetCDF first, which overflowed a tmpfs ``/tmp`` with
+        # ``NetCDF: HDF error`` and doubled the bytes written.
+        ds = xr.open_mfdataset(
+            batch_files,
+            combine="nested",
+            concat_dim="time",
+            data_vars="minimal",
+            coords="minimal",
+            compat="override",
         )
+        # NetCDF chunk hints from the batches must not leak into the Zarr
+        # encoding; the store is chunked explicitly below.
+        for var in ds.variables:
+            for key in ("chunks", "chunksizes", "preferred_chunks", "contiguous", "zlib", "complevel", "shuffle"):
+                ds[var].encoding.pop(key, None)
 
         # Attach CARRA's static orography (single-step single-level field).
         # ``setgrid`` re-labels the native CARRA grid using the same descriptor
@@ -719,20 +741,23 @@ def prepare_carra2(
                 "units": "1",
             }
         )
-        ds["albedo"] = albedo
+        ds["surface_albedo"] = albedo
         ds = ds.drop_vars([sw_down_var, sw_net_var])
 
-        ds = ds.chunk({"time": -1, "y": 256, "x": 256})  # -1 = single chunk along time
+        ds = ds.chunk(CARRA2_ZARR_CHUNKS)
         ds = (
             ds.rio.write_crs(CARRA2_PROJ, inplace=True)
             .rio.write_grid_mapping("spatial_ref", inplace=True)
             .rio.write_coordinate_system(inplace=True)
         )
 
-        ds.to_zarr(
+        # One band of rows at a time: the batches are chunked per time step
+        # while the store keeps the full record in one chunk, so writing the
+        # whole domain in one go is a rechunk of the entire record that
+        # spills far beyond RAM. A band bounds that to a few GB.
+        write_zarr_in_bands(
+            ds,
             carra2_filename,
-            mode="w",
-            consolidated=True,
             encoding={
                 "time": {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00"},
                 "time_bnds": {
@@ -741,8 +766,68 @@ def prepare_carra2(
                 },
                 "crs": {"dtype": "int32"},
             },
+            dim="y",
+            band_size=3 * CARRA2_ZARR_CHUNKS["y"],
         )
     return carra2_filename
+
+
+def write_zarr_in_bands(
+    ds: xr.Dataset,
+    store: Path | str,
+    encoding: dict[str, dict[str, Any]] | None = None,
+    dim: str = "y",
+    band_size: int = 768,
+) -> Path:
+    """
+    Write a dask-backed dataset to a Zarr store one band of ``dim`` at a time.
+
+    The store's layout is created up front (``compute=False``) together with
+    every variable that lacks ``dim`` — coordinates, bounds, grid mappings —
+    and the remaining variables are then written with ``region`` writes over
+    consecutive slabs of ``dim``. Each slab is a separate dask compute, so
+    peak memory is that of one band rather than of the rechunk of the whole
+    dataset.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset already chunked the way the store should be.
+    store : Path or str
+        Zarr store to create.
+    encoding : dict or None, optional
+        Per-variable encoding, applied when the store is created.
+    dim : str, default "y"
+        Dimension to slab along.
+    band_size : int, default 768
+        Rows per slab. Should be a multiple of the store's chunk size along
+        ``dim`` so that region writes do not straddle chunks.
+
+    Returns
+    -------
+    Path
+        The store written.
+    """
+    store = Path(store)
+    chunk = ds.chunksizes.get(dim)
+    if chunk and band_size % chunk[0]:
+        raise ValueError(f"band_size {band_size} is not a multiple of the {dim!r} chunk size {chunk[0]}")
+
+    ds = ds.copy()
+    static = [str(name) for name in ds.variables if dim not in ds[name].dims]
+    for name in static:
+        if name in ds.coords:
+            ds.coords[name] = ds[name].load()
+        else:
+            ds[name] = ds[name].load()
+    ds.to_zarr(store, mode="w", compute=False, consolidated=True, encoding=encoding or {})
+
+    size = ds.sizes[dim]
+    for start in tqdm(range(0, size, band_size), desc=f"Writing {store.name}", unit="band"):
+        region = slice(start, min(start + band_size, size))
+        band = ds.isel({dim: region}).drop_vars(static)
+        band.to_zarr(store, mode="r+", region={dim: region}, consolidated=True)
+    return store
 
 
 CARRA2_CLIMATOLOGY_YEARS = range(1990, 2020)
@@ -1823,9 +1908,9 @@ def carra2(
     -----
     - Output variables and their units are inherited from the source CARRA2
       Zarr store (typically ``air_temp`` in K, ``precipitation`` in
-      kg m^-2 day^-1, and dimensionless ``albedo``).
+      kg m^-2 day^-1, and dimensionless ``surface_albedo``).
     - Floating-point variables have NaNs filled with 0 for PISM; for
-      ``albedo`` this only affects polar-night months (no insolation), where
+      ``surface_albedo`` this only affects polar-night months (no insolation), where
       the value is irrelevant.
     - Compression: zlib level 2 + shuffle.
     """
@@ -2101,6 +2186,309 @@ def carra2(
     return carra2_filename
 
 
+GLOBAL_ERA5_DATASET = "reanalysis-era5-single-levels-monthly-means"
+
+
+def pad_area(area: Sequence[float], pad: float = 1.0) -> list[float]:
+    """
+    Grow a CDS bounding box outwards by ``pad`` degrees.
+
+    Slots 0 and 2 hold latitudes and slots 1 and 3 hold longitudes, which is
+    true for both the ``[North, West, South, East]`` order CDS documents and
+    the ``[South, West, North, East]`` order that a latitude-first
+    ``Transformer.transform_bounds`` produces, so the caller's slot order is
+    preserved.
+
+    Parameters
+    ----------
+    area : sequence of float
+        Bounding box with latitudes in slots 0/2 and longitudes in slots 1/3.
+    pad : float, default 1.0
+        Margin in degrees added on every side.
+
+    Returns
+    -------
+    list of float
+        Padded box in the same slot order, latitudes clipped to [-90, 90] and
+        longitudes to [-180, 180].
+
+    Notes
+    -----
+    The margin exists so that a coarse source (ERA5 single levels is 0.25°)
+    still has data *beyond* every edge of the fine target grid. Without it,
+    bilinear ``reproject_match`` cannot interpolate the outermost target rows
+    and columns and leaves them NaN.
+    """
+    lat_a, lon_west, lat_b, lon_east = (float(v) for v in area)
+
+    lat_lo, lat_hi = sorted((lat_a, lat_b))
+    lat_lo = max(-90.0, lat_lo - pad)
+    lat_hi = min(90.0, lat_hi + pad)
+    lat_first, lat_second = (lat_lo, lat_hi) if lat_a <= lat_b else (lat_hi, lat_lo)
+
+    # Slot 1 is always the western edge and slot 3 the eastern one, so West
+    # moves down and East moves up even for a box crossing the antimeridian.
+    lon_west = max(-180.0, lon_west - pad)
+    lon_east = min(180.0, lon_east + pad)
+
+    return [lat_first, lon_west, lat_second, lon_east]
+
+
+def _extrapolate_nearest(ds: xr.Dataset, names: Iterable[str]) -> tuple[xr.Dataset, int]:
+    """
+    Fill any remaining NaN cells from the nearest valid cell of the same field.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset on a ``latitude``/``longitude`` grid.
+    names : iterable of str
+        Variables to repair.
+
+    Returns
+    -------
+    tuple of (xarray.Dataset, int)
+        The repaired dataset and the number of (variable, cell) pairs that had
+        to be extrapolated.
+
+    Notes
+    -----
+    This is a last-resort safety net: ERA5-Land's ocean mask is static in time,
+    so the hole pattern is computed once per variable from the 2-D union of all
+    NaNs and every time slice is patched with the same nearest-neighbour map.
+    """
+    lat = ds["latitude"].values
+    lon = ds["longitude"].values
+    lon2d, lat2d = np.meshgrid(lon, lat)
+    repaired = 0
+
+    for name in names:
+        da = ds[name]
+        if "latitude" not in da.dims or "longitude" not in da.dims:
+            continue
+        values = da.transpose(..., "latitude", "longitude").values
+        holes = np.isnan(values)
+        if not holes.any():
+            continue
+        # Static mask: a cell is bad if it is NaN at any time.
+        bad2d = holes.reshape(-1, *holes.shape[-2:]).any(axis=0)
+        good2d = ~bad2d
+        if not good2d.any():
+            raise ValueError(f"'{name}' is entirely missing; nothing to extrapolate from")
+
+        tree = cKDTree(np.column_stack([lat2d[good2d], lon2d[good2d]]))
+        _, nearest = tree.query(np.column_stack([lat2d[bad2d], lon2d[bad2d]]))
+
+        flat = values.reshape(-1, *values.shape[-2:])
+        for slab in flat:
+            slab[bad2d] = slab[good2d][nearest]
+        repaired += int(bad2d.sum())
+
+        ds[name] = da.copy(data=flat.reshape(values.shape).astype(da.dtype)).transpose(*da.dims)
+
+    return ds, repaired
+
+
+def _drop_time_dim(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Remove the time dimension from a time-invariant field.
+
+    CDS returns static fields such as geopotential with a length-1 ``time``
+    (ERA5-Land) or with one entry per requested month on ``valid_time``
+    (ERA5 single levels). Either way the values are identical, so keep the
+    first step and drop the coordinate.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with an optional ``time`` or ``valid_time`` dimension.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset without a time dimension or coordinate.
+    """
+    for dim in ("time", "valid_time"):
+        if dim in ds.dims:
+            ds = ds.isel({dim: 0}, drop=True)
+        ds = ds.drop_vars(dim, errors="ignore")
+    return ds
+
+
+def _patch_from_global(ds: xr.Dataset, ds_global: xr.Dataset) -> xr.Dataset:
+    """
+    Replace missing values in ``ds`` with values from a coarser global dataset.
+
+    ``ds_global`` is reprojected onto the grid of ``ds`` with bilinear
+    resampling and used to patch NaNs in every variable both datasets share.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Regional dataset on a ``latitude``/``longitude`` grid; may contain NaNs.
+    ds_global : xarray.Dataset
+        Global (or larger-extent) dataset covering the region.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``ds`` with NaNs filled wherever ``ds_global`` provides data, and a
+        per-variable report of how many cells were filled.
+    """
+    ds_global_ = (
+        ds_global.rio.write_crs("EPSG:4326")
+        .rio.reproject_match(ds, resampling=Resampling.bilinear)
+        .rename({"x": "longitude", "y": "latitude"})
+        # reproject_match recomputes the coordinates from the target's affine
+        # transform, so re-attach the originals: xarray aligns on exact float
+        # equality and a 1-ulp drift would silently drop cells.
+        .assign_coords(longitude=ds["longitude"], latitude=ds["latitude"])
+    )
+    for name in sorted(set(map(str, ds.data_vars)) & set(map(str, ds_global_.data_vars))):
+        n_before = int(ds[name].isnull().sum().item())
+        if not n_before:
+            continue
+        ds[name] = ds[name].where(ds[name].notnull(), ds_global_[name])
+        n_after = int(ds[name].isnull().sum().item())
+        tail = "" if n_after == 0 else f" ({n_after} still missing)"
+        print(f"  {name}: filled {n_before - n_after} of {n_before} missing values{tail}")
+    return ds
+
+
+def fill_from_global_era5(
+    ds: xr.Dataset,
+    ds_geo: xr.Dataset,
+    area: Sequence[float],
+    years: Sequence[int],
+    path: Path | str,
+    rgi_id: str,
+    pad: float = 1.0,
+    **kwargs,
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """
+    Patch ERA5-Land's masked cells with the global ERA5 single-level reanalysis.
+
+    ERA5-Land is undefined over water, so a coastal glacier's bounding box
+    comes back with NaN holes in both the time-varying fields and the
+    invariant geopotential. Those cells are replaced by the corresponding
+    values from ERA5 single levels, which is defined everywhere.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        ERA5-Land subset holding the time-varying fields (``t2m``, ``tp``) on
+        ``latitude``/``longitude`` coordinates with an EPSG:4326 CRS.
+    ds_geo : xarray.Dataset
+        ERA5-Land geopotential already reprojected onto the grid of ``ds``.
+    area : sequence of float
+        Bounding box of ``ds`` as handed to :func:`download_request`.
+    years : sequence of int
+        Years to request from the global product.
+    path : str or pathlib.Path
+        Directory for the ``_tmp_3``/``_tmp_4`` download caches.
+    rgi_id : str
+        Glacier identifier, used in the cache filenames.
+    pad : float, default 1.0
+        Degrees of margin added to ``area`` for the global requests. Must be
+        larger than the global product's grid spacing (0.25°) so that bilinear
+        resampling has data past every edge of ``ds``.
+    **kwargs
+        Forwarded to :func:`download_request`.
+
+    Returns
+    -------
+    tuple of (xarray.Dataset, xarray.Dataset)
+        ``ds`` and ``ds_geo`` with their missing values filled. Both are
+        returned unchanged when neither holds a NaN.
+
+    See Also
+    --------
+    pad_area : Builds the enlarged request box.
+    ensure_no_missing : Final sweep over the merged dataset.
+    download_request : Performs the CDS query.
+
+    Notes
+    -----
+    The global request needs its own, larger box: CDS returns only the 0.25°
+    grid points inside the requested area, so re-using the ERA5-Land box would
+    leave the coarse cell centres short of the fine domain edges and bilinear
+    reprojection could not fill the outermost rows and columns.
+    """
+    path = Path(path)
+    ds_missing = bool(ds.to_array().isnull().any().item())
+    geo_missing = bool(ds_geo.to_array().isnull().any().item())
+    if not (ds_missing or geo_missing):
+        return ds, ds_geo
+
+    print("Missing values detected, filling with global reanalysis")
+    padded = pad_area(area, pad)
+    print(f"Global bounding box {padded}")
+
+    if ds_missing:
+        ds_global = download_request(
+            GLOBAL_ERA5_DATASET,
+            padded,
+            years,
+            file_path=path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc"),
+            **kwargs,
+        )
+        ds = _patch_from_global(ds, ds_global)
+
+    if geo_missing:
+        ds_geo_global = download_request(
+            GLOBAL_ERA5_DATASET,
+            padded,
+            [2013],
+            variable=["geopotential"],
+            file_path=path / Path(f"era5_wgs84_{rgi_id}_tmp_4.nc"),
+            **kwargs,
+        )
+        ds_geo = _patch_from_global(ds_geo, _drop_time_dim(ds_geo_global))
+
+    return ds, ds_geo
+
+
+def ensure_no_missing(ds: xr.Dataset, context: str = "") -> xr.Dataset:
+    """
+    Guarantee that a gridded dataset carries no missing values.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset on a ``latitude``/``longitude`` grid.
+    context : str, default ""
+        Label used in the report, e.g. the variable's origin.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``ds`` with every remaining NaN filled from its nearest valid neighbour.
+
+    See Also
+    --------
+    fill_from_global_era5 : Fills ERA5-Land's ocean mask from the global product.
+
+    Notes
+    -----
+    ERA5-Land's invariant fields (geopotential in particular) are merged in
+    after the global patch, so this final sweep is what keeps their mask from
+    reaching the forcing file.
+    """
+    names = [
+        str(name)
+        for name, da in ds.data_vars.items()
+        if da.dtype.kind == "f" and "latitude" in da.dims and "longitude" in da.dims
+    ]
+    holed = [name for name in names if bool(ds[name].isnull().any().item())]
+    if not holed:
+        return ds
+
+    ds, repaired = _extrapolate_nearest(ds, holed)
+    label = f" {context}" if context else ""
+    print(f"Filled {repaired} residual missing cell(s) in{label} {holed} from the nearest valid neighbour")
+    return ds
+
+
 def era5(
     target_grid: xr.Dataset,
     rgi_id: str,
@@ -2220,27 +2608,10 @@ def era5(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
-        print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+    ds, ds_geo_ = fill_from_global_era5(ds, ds_geo_, area, years, path, rgi_id, **kwargs)
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
+    ds = ensure_no_missing(ds, "the merged ERA5 fields")
     ds = ds.rename({"valid_time": "time"})
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
@@ -2383,27 +2754,10 @@ def era5_mean(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
-        print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+    ds, ds_geo_ = fill_from_global_era5(ds, ds_geo_, area, years, path, rgi_id, **kwargs)
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
+    ds = ensure_no_missing(ds, "the merged ERA5 fields")
     # Time-mean snapshot, but preserve a length-1 ``time`` dim anchored at the
     # midpoint of the source range. ERA5 monthly stamps are first-of-month, so
     # the climatology covers ``[min(src), max(src) + 1 month)``.
@@ -2613,27 +2967,10 @@ def era5_monthly_mean(
     lon_attrs = ds["longitude"].attrs
     lat_attrs = ds["latitude"].attrs
 
-    if bool(ds.to_array().isnull().any().item()):
-        print("Missing values detected, filling with global reanalysis")
-        era5_filename_3 = path / Path(f"era5_wgs84_{rgi_id}_tmp_3.nc")
-        era5_files.append(era5_filename_3)
-        ds_global = download_request(
-            "reanalysis-era5-single-levels-monthly-means",
-            area,
-            years,
-            file_path=era5_filename_3,
-            **kwargs,
-        )
-        ds_global_ = (
-            ds_global.rio.write_crs("EPSG:4326")
-            .rio.reproject_match(ds, resampling=Resampling.bilinear)
-            .rename({"x": "longitude", "y": "latitude"})
-        )
-        common_vars = list(set(ds.data_vars) & set(ds_global_.data_vars))
-        for v in common_vars:
-            ds[v] = xr.where(np.isnan(ds[v]), ds_global_[v], ds[v])
+    ds, ds_geo_ = fill_from_global_era5(ds, ds_geo_, area, years, path, rgi_id, **kwargs)
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
+    ds = ensure_no_missing(ds, "the merged ERA5 fields")
     # Time-mean snapshot, but preserve a length-1 ``time`` dim anchored at the
     # midpoint of the source range. ERA5 monthly stamps are first-of-month, so
     # the climatology covers ``[min(src), max(src) + 1 month)``.

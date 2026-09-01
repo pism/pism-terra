@@ -327,12 +327,13 @@ class UQConfig(BaseModel):
     Uncertainty specification as a flat dotted-key map with sampling metadata.
 
     This model holds:
-      1) the number of ensemble ``samples`` (an integer),
-      2) an optional column name ``mapping`` (e.g., to map categorical draws to
-         filenames later), and
-      3) a ``tree`` mapping from **dotted variable names** (e.g.,
-         ``"surface.pdd.factor_ice"``) to :class:`DistSpec` entries that describe
-         the probability distribution for each variable.
+
+    1. the number of ensemble ``samples`` (an integer),
+    2. an optional column name ``mapping`` (e.g., to map categorical draws to
+       filenames later), and
+    3. a ``tree`` mapping from **dotted variable names** (e.g.,
+       ``"surface.pdd.factor_ice"``) to :class:`DistSpec` entries that describe
+       the probability distribution for each variable.
 
     Input TOML can be either *nested* (hierarchical tables) or already *flat*
     (quoted dotted-table keys). A ``model_validator(mode="before")`` flattens
@@ -358,10 +359,9 @@ class UQConfig(BaseModel):
 
     Notes
     -----
-    - The *before* validator accepts either:
-        * top-level leaves (possibly nested tables), or
-        * a block under the key ``"tree"``.
-      In both cases, it extracts leaf specs and assigns them to ``tree``.
+    - The *before* validator accepts either top-level leaves (possibly nested
+      tables) or a block under the key ``"tree"``. In both cases, it extracts
+      leaf specs and assigns them to ``tree``.
     - The presence of a key named ``"distribution"`` is used to detect leaves,
       deferring detailed parameter validation to :class:`DistSpec`.
 
@@ -1635,6 +1635,12 @@ class CampaignConfig(BaseModel):
         ``"carra2-monthly-mean"``). Lets a run spin up on a climatology and
         then continue on the transient forcing named by ``climate``. When
         unset the init leg reuses ``climate``.
+    init_surface_model : str or None
+        Surface model used for the init leg only, naming a key of the config's
+        ``[surface.options.*]`` tables (e.g. ``"debm_enhanced_forcing"``). Lets
+        the spin-up run a different surface scheme — typically one adding
+        ``forcing`` to hold the geometry — before the run of interest continues
+        with ``[surface] model``. When unset the init leg keeps that model.
     init_start : str or None
         Start of the inverse-workflow init (prior) leg as ``YYYY-MM-DD``
         (e.g. ``"2006-01-01"``); required by
@@ -1684,6 +1690,7 @@ class CampaignConfig(BaseModel):
     rgi_complex_file: str | None = Field(default=None)
     rgi_glacier_file: str | None = Field(default=None)
     init_climate: str | None = Field(default=None)
+    init_surface_model: str | None = Field(default=None)
     init_start: str | None = Field(default=None)
     init_end: str | None = Field(default=None)
     historical_start_year: str | float | None = Field(default=None)

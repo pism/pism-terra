@@ -30,7 +30,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
@@ -47,6 +46,7 @@ from pism_terra.workflow import (
     dict2str,
     filter_overrides_by_config,
     normalize_row,
+    postprocess_ntasks,
     sort_dict_by_key,
     validate_pism_options,
 )
@@ -66,6 +66,55 @@ CLIMATE_FILE_OPTIONS = (
 )
 
 
+def _postprocess_commands(
+    spatial_file: Path,
+    output_path: Path,
+    outline_c_file: str,
+    outline_g_file: str,
+    config_cli: dict,
+) -> str:
+    """
+    Build the per-run post-processing commands.
+
+    A glacier run is reduced twice: once against the complex outline (``-C``,
+    one region — the whole glacier complex) and once against the per-glacier
+    outlines (``-G``, one region per glacier). Both read the same spatial file,
+    so the outputs are named for the outline type to keep them apart.
+
+    Parameters
+    ----------
+    spatial_file : pathlib.Path
+        The run's spatial output, the input to both reductions.
+    output_path : pathlib.Path
+        The run's ``output/`` directory; the results go in
+        ``processed_scalar/`` beneath it.
+    outline_c_file, outline_g_file : str
+        Complex and glacier outline paths, or ``"none"`` when the run was
+        staged without outlines.
+    config_cli : dict
+        CLI overrides; only ``"ntasks"`` is consulted, to size the Dask
+        cluster the reduction runs on.
+
+    Returns
+    -------
+    str
+        Newline-separated commands, or an empty string when no outline is
+        available to reduce over.
+    """
+    stem = spatial_file.name
+    stem = stem[len("spatial_") :] if stem.startswith("spatial_") else stem
+    scalar_dir = output_path / "processed_scalar"
+    ntasks = postprocess_ntasks(config_cli)
+
+    commands = []
+    for kind, outline in (("C", outline_c_file), ("G", outline_g_file)):
+        if outline == "none":
+            continue
+        outfile = scalar_dir / f"scalar_{kind}_{stem}"
+        commands.append(f"pism-postprocess-scalar {spatial_file.resolve()} {outfile.resolve()} {outline}{ntasks}")
+    return "\n".join(commands)
+
+
 def _build_init_leg(
     cfg,
     run: Mapping[str, object],
@@ -76,11 +125,12 @@ def _build_init_leg(
     resolution: str,
     name_options: str,
     init_climate_file: str | Path | None,
+    init_surface_model: str | None = None,
     state_path: Path,
     scalar_path: Path,
     spatial_path: Path,
     pism_config_cdl: str | Path | None,
-) -> tuple[str, Path]:
+) -> tuple[str, Path, str]:
     """
     Build the optional init leg that the main run restarts from.
 
@@ -109,6 +159,10 @@ def _build_init_leg(
     init_climate_file : str or pathlib.Path or None
         Forcing staged for ``campaign.init_climate``. When ``None`` the init
         leg keeps the main leg's climate.
+    init_surface_model : str or None, optional
+        Key of ``cfg.surface.options`` selecting a surface model for this leg
+        only, from ``campaign.init_surface_model``. When ``None`` the init leg
+        keeps the main leg's surface model.
     state_path, scalar_path, spatial_path : pathlib.Path
         Output directories.
     pism_config_cdl : str or pathlib.Path or None
@@ -116,15 +170,37 @@ def _build_init_leg(
 
     Returns
     -------
-    tuple of (str, pathlib.Path)
-        The rendered command line and the state file the next leg restarts
-        from.
+    tuple of (str, pathlib.Path, str)
+        ``(run_init_str, state_init, init_tag)`` — the rendered command line,
+        the state file the next leg restarts from, and the
+        ``g<res>_<rgi_id>_<opts>_<init_start>_<init_end>`` filename tag (used
+        e.g. to name the inversion output).
+
+    Raises
+    ------
+    ValueError
+        If ``init_surface_model`` names no ``[surface.options.*]`` table.
     """
-    _ = cfg
     run_init = dict(run)
     run_init.pop("time.start", None)
     run_init.pop("time.end", None)
     run_init.update({"time.start": init_start, "time.end": init_end})
+
+    if init_surface_model is not None:
+        if init_surface_model not in cfg.surface.options:
+            raise ValueError(
+                f"campaign.init_surface_model = {init_surface_model!r} names no [surface.options.*] "
+                f"table in the config; available: {sorted(cfg.surface.options)}"
+            )
+        # Drop the main leg's surface options wholesale, then lay down the init
+        # model's. A bare ``"none"`` is the placeholder staging fills in, so
+        # keep whatever the main leg resolved it to rather than reverting the
+        # forcing files to unset.
+        for option in cfg.surface.selected():
+            run_init.pop(option, None)
+        for option, value in cfg.surface.options[init_surface_model].items():
+            placeholder = isinstance(value, str) and value.strip().lower() == "none"
+            run_init[option] = run[option] if placeholder and option in run else value
 
     if init_climate_file is not None:
         # Only re-point the options the main leg actually carries: which of
@@ -146,7 +222,7 @@ def _build_init_leg(
     if pism_config_cdl is not None:
         validate_pism_options(run_init, pism_config_cdl)
 
-    return dict2str(sort_dict_by_key(run_init)), state_init
+    return dict2str(sort_dict_by_key(run_init)), state_init, init_tag
 
 
 def _render_inverse_run(
@@ -164,13 +240,28 @@ def _render_inverse_run(
     pism_config_cdl: str | Path | None = None,
 ):
     """
-    Configure and generate a PISM inverse job script for a single glacier (ensemble-ready).
+    Configure and generate a chained PISM inverse job script for a single glacier (ensemble-ready).
 
     Reads a TOML configuration, merges optional ensemble overrides (``uq``),
     renders a submission script from a Jinja2 template, and writes both the
     script and a companion TOML describing the resolved run parameters.
     Also emits a command-line string of PISM flags derived from the config and
     overrides.
+
+    The generated script runs three legs, in this order:
+
+    1. **Init/prior** (``run_init_str``): a bootstrap forward run spanning
+       ``campaign.init_start``..``campaign.init_end`` (required config
+       fields), optionally forced by ``campaign.init_climate``, using the
+       config's Mohr-Coulomb yield stress.
+    2. **Inversion** (``inv_str``): the pismi call, restarting from the init
+       leg's state file and writing the inverted ``tauc`` to
+       ``output/inverse/``.
+    3. **Main run** (``run_str``): the run of interest over
+       ``time.start``..``time.end``, restarting from the init leg's state (no
+       bootstrap), regridding ``tauc`` from the inversion output with
+       ``basal_yield_stress.model = "constant"`` (the
+       ``basal_yield_stress.mohr_coulomb.*`` options are dropped).
 
     Parameters
     ----------
@@ -213,7 +304,7 @@ def _render_inverse_run(
         filenames use a descriptive ``surface/energy/stress_balance`` suffix.
     init_climate_file : str or pathlib.Path or None, optional
         Forcing staged for ``campaign.init_climate``, used by the init leg
-        only. Ignored when the campaign config declares no init bounds.
+        only. When ``None`` the init leg keeps the main leg's climate.
     pism_config_cdl : str or Path or None, optional
         Path to a PISM CDL master config file. If provided, all run options
         are validated against it before generating the command line.
@@ -223,6 +314,9 @@ def _render_inverse_run(
     ValueError
         If configuration validation fails upstream (e.g., via Pydantic models),
         or if provided overrides are of incompatible types.
+    SystemExit
+        If ``campaign.init_start`` / ``campaign.init_end`` are missing — the
+        inversion has no prior state to restart from without them.
 
     Notes
     -----
@@ -269,6 +363,19 @@ def _render_inverse_run(
     else:
         outline_c_file = outline_g_file = "none"
     cfg = load_config(config_file)
+
+    # The inverse chain is init -> pismi -> main run: pismi inverts on the
+    # init leg's state file, so the init bounds are required here (unlike the
+    # forward chain, where the init leg is optional).
+    init_start = cfg.campaign.init_start
+    init_end = cfg.campaign.init_end
+    if not init_start or not init_end:
+        raise SystemExit(
+            "run-inverse requires [campaign] init_start and init_end (e.g. "
+            'init_start = "0001-01-01", init_end = "0021-01-01") to bound the '
+            "init/prior leg the inversion restarts from; add them to the "
+            "campaign section of the config TOML."
+        )
 
     config_cli = config_cli or {}
     resolution = config_cli.get("resolution")
@@ -417,43 +524,53 @@ def _render_inverse_run(
         }
     )
 
-    # Optional init leg: when the campaign config carries init_start/init_end,
-    # render a short bootstrap run first and restart the main leg from its
-    # state instead of bootstrapping directly. ``campaign.init_climate`` swaps
-    # the forcing for that leg only — typically a climatology, which PISM
-    # cycles. Without the campaign fields the main leg bootstraps as before.
-    init_start = cfg.campaign.init_start
-    init_end = cfg.campaign.init_end
-    run_init_str = ""
-    if init_start and init_end:
-        run_init_str, state_init = _build_init_leg(
-            cfg,
-            run,
-            rgi_id=rgi_id,
-            init_start=init_start,
-            init_end=init_end,
-            resolution=resolution,
-            name_options=name_options,
-            init_climate_file=init_climate_file,
-            state_path=state_path,
-            scalar_path=scalar_path,
-            spatial_path=spatial_path,
-            pism_config_cdl=pism_config_cdl,
-        )
-        run["input.file"] = state_init.resolve()
-        run.pop("input.bootstrap", None)
+    # Leg 1 (init/prior): a short bootstrap run over
+    # ``campaign.init_start``..``campaign.init_end``. It is built from ``run``
+    # *before* the tauc wiring below, so the prior is produced with the
+    # config's Mohr-Coulomb yield stress. ``campaign.init_climate`` swaps the
+    # forcing for that leg only — typically a climatology, which PISM cycles.
+    # The chain is init -> pismi -> main run, so unlike the forward chain the
+    # init leg is mandatory here: pismi needs a state file to invert on.
+    run_init_str, state_init, init_tag = _build_init_leg(
+        cfg,
+        run,
+        rgi_id=rgi_id,
+        init_start=init_start,
+        init_end=init_end,
+        resolution=resolution,
+        name_options=name_options,
+        init_climate_file=init_climate_file,
+        init_surface_model=cfg.campaign.init_surface_model,
+        state_path=state_path,
+        scalar_path=scalar_path,
+        spatial_path=spatial_path,
+        pism_config_cdl=pism_config_cdl,
+    )
+
+    # Leg 2 (inversion): pismi restarts from the init leg's state and writes
+    # the inverted ``tauc``.
+    inv_file = inv_path / Path(f"inv_{init_tag}.nc")
+    inv.update({"input.file": state_init.resolve()})
+    # inverse output file
+    inv.update({"o": inv_file.resolve()})
+    inv_str = dict2str(sort_dict_by_key(inv))
+
+    # Leg 3 (main run): restart from the init state (no bootstrap) and regrid
+    # the inverted tauc, held fixed by the constant yield-stress model. The
+    # ``basal_yield_stress.mohr_coulomb.*`` options only apply to legs 1/2,
+    # which produced the tauc field being read back here. Applied after the uq
+    # overrides so this wiring always wins.
+    run["input.file"] = state_init.resolve()
+    run.pop("input.bootstrap", None)
+    run.update({"input.regrid.file": inv_file.resolve(), "input.regrid.vars": "tauc"})
+    run["basal_yield_stress.model"] = "constant"
+    for key in [k for k in run if k.startswith("basal_yield_stress.mohr_coulomb.")]:
+        run.pop(key)
 
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
 
     run_str = dict2str(sort_dict_by_key(run))
-
-    inv_file = inv_path / Path(f"inv_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
-    # Feed the forward run's state file into pismi as its input.
-    inv.update({"input.file": state_file.resolve()})
-    # inverse output file
-    inv.update({"o": inv_file.resolve()})
-    inv_str = dict2str(sort_dict_by_key(inv))
 
     job_opts = JobConfig(**cfg.job.model_dump())
 
@@ -476,27 +593,16 @@ def _render_inverse_run(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
-    run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline_c": outline_c_file, "outline_g": outline_g_file},
-        "output": {
-            "spatial": str(spatial_file.resolve()),
-            "scalar.file": scalar_file.resolve(),
-            "state": str(state_file.resolve()),
-        },
-        "config": run,
-    }
-    post_path = output_path / Path("post_processing")
-    post_path.mkdir(parents=True, exist_ok=True)
-
-    post_file = post_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
-    with open(post_file, "w", encoding="utf-8") as toml_file:
-        toml.dump(run_toml, toml_file)
-
     params.update({"run_init_str": run_init_str})
     params.update({"run_str": run_str})
     params.update({"inv_str": inv_str})
-    params.update({"post_script": "pism-glacier-postprocess"})
-    params.update({"post_file": post_file})
+    params.update(
+        {
+            "post_process_str": _postprocess_commands(
+                spatial_file, output_path, outline_c_file, outline_g_file, config_cli
+            )
+        }
+    )
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
@@ -508,7 +614,6 @@ def _render_inverse_run(
     run_script.write_text(rendered_script)
 
     print(f"\nSLURM script written to {run_script.resolve()}\n")
-    print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
 def _render_forward_run(
@@ -760,7 +865,7 @@ def _render_forward_run(
     init_end = cfg.campaign.init_end
     run_init_str = ""
     if init_start and init_end:
-        run_init_str, state_init = _build_init_leg(
+        run_init_str, state_init, _ = _build_init_leg(
             cfg,
             run,
             rgi_id=rgi_id,
@@ -769,6 +874,7 @@ def _render_forward_run(
             resolution=resolution,
             name_options=name_options,
             init_climate_file=init_climate_file,
+            init_surface_model=cfg.campaign.init_surface_model,
             state_path=state_path,
             scalar_path=scalar_path,
             spatial_path=spatial_path,
@@ -803,26 +909,15 @@ def _render_forward_run(
     if job_kwargs:
         params.update(JobConfig(**job_kwargs).as_params())
 
-    run_toml = {
-        "rgi": {"rgi_id": rgi_id, "outline_c": outline_c_file, "outline_g": outline_g_file},
-        "output": {
-            "spatial": str(spatial_file.resolve()),
-            "scalar.file": scalar_file.resolve(),
-            "state": str(state_file.resolve()),
-        },
-        "config": run,
-    }
-    post_path = output_path / Path("post_processing")
-    post_path.mkdir(parents=True, exist_ok=True)
-
-    post_file = post_path / Path(f"g{resolution}_{rgi_id}_{name_options}_{start}_{end}.toml")
-    with open(post_file, "w", encoding="utf-8") as toml_file:
-        toml.dump(run_toml, toml_file)
-
     params.update({"run_init_str": run_init_str})
     params.update({"run_str": run_str})
-    params.update({"post_script": "pism-glacier-postprocess"})
-    params.update({"post_file": post_file})
+    params.update(
+        {
+            "post_process_str": _postprocess_commands(
+                spatial_file, output_path, outline_c_file, outline_g_file, config_cli
+            )
+        }
+    )
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
@@ -834,7 +929,6 @@ def _render_forward_run(
     run_script.write_text(rendered_script)
 
     print(f"\nSLURM script written to {run_script.resolve()}\n")
-    print(f"Postprocessing script written to {post_file.resolve()}\n")
 
 
 def _nullable_string(argument_string: str) -> str | None:
@@ -932,6 +1026,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         default=None,
         help="CSV file of posterior parameter distributions to sample from (ensemble mode only).",
     )
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=None,
+        help="Override the number of samples in the UQ file (ensemble mode only).",
+    )
     if supports_execute:
         parser.add_argument(
             "--execute",
@@ -969,6 +1069,7 @@ def _build_ensemble_df(
     output_path: Path,
     posterior_file: str | Path | None,
     seed: int = 42,
+    samples: int | None = None,
 ) -> pd.DataFrame:
     """
     Build the per-member DataFrame for an ensemble run.
@@ -991,6 +1092,9 @@ def _build_ensemble_df(
         UQ samples with.
     seed : int, default 42
         Seed for sampling (and posterior row choice).
+    samples : int or None, optional
+        Number of ensemble members to draw; overrides the ``samples`` entry
+        of the UQ file when given.
 
     Returns
     -------
@@ -1000,7 +1104,7 @@ def _build_ensemble_df(
     """
     rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
-    n_samples = uq.samples
+    n_samples = samples if samples is not None else uq.samples
 
     uq_df = generate_samples(uq.to_flat(), n_samples=n_samples, method=uq.method, seed=seed)
 
@@ -1100,10 +1204,13 @@ def _run(*, kind: str) -> None:
         path=input_path,
         staging_path=staging_path,
         force_overwrite=force_overwrite,
+        # One copy of the project's RGI outlines for every glacier staged
+        # under this data path, not one per glacier.
+        rgi_cache_path=in_base,
     )
 
     if uq_file is not None:
-        rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
+        rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file, samples=options.samples)
         header = f"Generate Ensemble Runs for Glacier {rgi_id}"
     else:
         rows_df = df

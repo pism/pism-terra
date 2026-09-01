@@ -44,12 +44,14 @@ from pism_terra.workflow import (
     dict2str,
     filter_overrides_by_config,
     normalize_row,
+    postprocess_ntasks,
     sort_dict_by_key,
     validate_pism_options,
 )
 
 # one Jinja environment for all renders
 _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
+
 
 # Upper bound on Dask workers for the per-basin post-processing step. The run's
 # ``ntasks`` sizes the PISM *MPI* decomposition (40+ on Chinook); handing that
@@ -58,33 +60,6 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 # ``OSError: [Errno 24] Too many open files`` before any work starts. The
 # post-processing is a per-basin clip + field sum, so a handful of workers is
 # plenty regardless of how wide the PISM run was.
-_POSTPROCESS_MAX_WORKERS = 8
-
-
-def _postprocess_ntasks(config_cli: dict) -> str:
-    """
-    Build the ``--ntasks`` flag for the post-processing command.
-
-    Clamps the run's MPI task count to :data:`_POSTPROCESS_MAX_WORKERS` so a
-    wide PISM decomposition does not translate into an unusable number of Dask
-    worker processes.
-
-    Parameters
-    ----------
-    config_cli : dict
-        CLI overrides; only ``"ntasks"`` is consulted.
-
-    Returns
-    -------
-    str
-        ``" --ntasks N"`` when a task count is set, else an empty string.
-    """
-    ntasks = config_cli.get("ntasks")
-    if not ntasks:
-        return ""
-    return f" --ntasks {min(int(ntasks), _POSTPROCESS_MAX_WORKERS)}"
-
-
 def _make_output_paths(path: str | Path, *, inverse: bool = False) -> dict[str, Path]:
     """
     Create the run's output directory tree and return the paths.
@@ -485,7 +460,7 @@ def _build_forward_legs(
         # Clip the (combined) spatial output to basins and write per-basin
         # scalar sums. Needs a real outline; skip if none was supplied.
         if outline_file != "none":
-            _nt = _postprocess_ntasks(config_cli)
+            _nt = postprocess_ntasks(config_cli)
             post_process_str = (
                 f"pism-postprocess-scalar "
                 f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file} "
@@ -898,10 +873,11 @@ def _render_inverse_run(
         the ``[campaign]`` section must carry ``init_start``/``init_end``).
     template_file : str or pathlib.Path
         Path to a Jinja2 submission template. The context includes
-        ``run_init_str`` (init pism call, also aliased as ``run_str`` for
-        the generic inverse templates), ``inv_str`` (pismi call), and the
-        forward-leg slots ``run_hist_str``/``run_proj_str`` plus the
-        post-processing strings shared with the forward template.
+        ``run_init_str`` (init pism call), ``inv_str`` (pismi call), and
+        the forward-leg slots ``run_hist_str``/``run_proj_str`` plus the
+        post-processing strings shared with the forward template. There is
+        no ``run_str`` slot: use an ISMIP7 inverse template (e.g.
+        ``debug-ismip7-inverse.j2``), not the generic glacier one.
     outline_file : str or pathlib.Path or None
         Path to a geopandas file with the basin outline used by
         post-processing. Pass ``None`` to record it as the literal string
@@ -1136,9 +1112,6 @@ def _render_inverse_run(
         params.update(JobConfig(**job_kwargs).as_params())
 
     params.update({"run_init_str": run_init_str})
-    # The generic (non-ISMIP7) inverse templates name the pism prior slot
-    # ``run_str``; keep them usable as init+pismi-only scripts.
-    params.update({"run_str": run_init_str})
     params.update({"inv_str": inv_str})
     # ``run_hist_str`` / ``run_proj_str`` and the post-processing strings now
     # carry the forward (tauc) legs, matching the forward template semantics.
@@ -1243,6 +1216,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         default=None,
         help="CSV file of posterior parameter distributions to sample from (ensemble mode only).",
     )
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=None,
+        help="Override the number of samples in the UQ file (ensemble mode only).",
+    )
     if supports_execute:
         parser.add_argument(
             "--execute",
@@ -1279,6 +1258,7 @@ def _build_ensemble_df(
     output_path: Path,
     posterior_file: str | Path | None,
     seed: int = 42,
+    samples: int | None = None,
 ) -> pd.DataFrame:
     """
     Build the per-member DataFrame for an ensemble run.
@@ -1301,6 +1281,9 @@ def _build_ensemble_df(
         UQ samples with.
     seed : int, default 42
         Seed for sampling (and posterior row choice).
+    samples : int or None, optional
+        Number of ensemble members to draw; overrides the ``samples`` entry
+        of the UQ file when given.
 
     Returns
     -------
@@ -1310,7 +1293,7 @@ def _build_ensemble_df(
     """
     rng = np.random.default_rng(seed=seed)
     uq = load_uq(uq_file)
-    n_samples = uq.samples
+    n_samples = samples if samples is not None else uq.samples
 
     uq_df = generate_samples(uq.to_flat(), n_samples=n_samples, method=uq.method, seed=seed)
 
@@ -1407,7 +1390,7 @@ def _run(*, kind: str) -> None:
     )
 
     if uq_file is not None:
-        rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file)
+        rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file, samples=options.samples)
         header = f"Generate Ensemble {kind.capitalize()} Runs for ISMIP7 Greenland"
     else:
         rows_df = df

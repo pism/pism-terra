@@ -54,6 +54,30 @@ pism-glacier-stage \
 
 ## Running the inverse model
 
+`pism-glacier-run-inverse` renders one script holding three PISM calls:
+
+1. an **init** run, which bootstraps and spins the glacier up over
+   `campaign.init_start`..`campaign.init_end`;
+2. the **inversion** (`pismi`), which restarts from that state and solves for
+   the basal yield stress `tauc`, writing it to `output/inverse/`;
+3. the **main run** over the `[time]` span, restarting from the init state
+   with the inverted `tauc` regridded in and held fixed
+   (`basal_yield_stress.model = "constant"`).
+
+The init bounds are what leg 2 inverts on, so the config has to declare them.
+The three configs below spin up for five model years, invert on that state, and
+then run one year with the inverted `tauc`:
+
+```toml
+[campaign]
+init_start = "0001-01-01"
+init_end = "0006-01-01"
+
+[time]
+'time.start' = "0006-01-01"
+'time.end' =  "0007-01-01"
+```
+
 Prepare the run script for the Frank dataset
 
 ```bash
@@ -61,7 +85,7 @@ pism-glacier-run-inverse \
     --output-path frank_inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_inverse_gpbld_frank.toml \
-    pism_terra/templates/debug-inverse.j2
+    pism_terra/templates/debug.j2
 ```
 
 and then for the Maffezzoli dataset:
@@ -71,7 +95,7 @@ pism-glacier-run-inverse \
     --output-path maffezzoli_inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_inverse_gpbld_maffezzoli.toml \
-    pism_terra/templates/debug-inverse.j2
+    pism_terra/templates/debug.j2
 ```
 
 and finally for the Millan dataset:
@@ -81,19 +105,27 @@ pism-glacier-run-inverse \
     --output-path millan_inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/rgi_inverse_gpbld_millan.toml \
-    pism_terra/templates/debug-inverse.j2
+    pism_terra/templates/debug.j2
 ```
 
-Now you can run the models. It will first to a forward simulation to prepare an initial state and then run the inverse model.
-
-```bash
-. frank_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0021-02-01.sh
-```
-
-```bash
-. maffezzoli_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0021-02-01.sh
-```
+Now you can run the models. Each script spins the glacier up, inverts for
+`tauc`, and then runs forward with the inverted field. The script's name
+carries the resolution, the RGI ID and the `[time]` span, so let the shell find
+it rather than typing it out. Run them with `bash`, not `.` — the scripts carry
+`set -e` so that a failing leg stops the ones after it, and sourcing would
+leave that switched on in your own shell:
 
 ```bash
-. millan_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0021-02-01.sh
+bash frank_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
 ```
+
+```bash
+bash maffezzoli_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
+```
+
+```bash
+bash millan_inverse/RGI2000-v7.0-C-01-04374/run_scripts/submit_*.sh
+```
+
+The inversion writes one `output/inverse/inv_*.nc` per glacier; that file is
+what the three thickness datasets are compared through.

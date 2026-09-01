@@ -812,6 +812,36 @@ def stamp_grid_mapping(ds: xr.Dataset, name: str = "spatial_ref") -> xr.Dataset:
     return ds
 
 
+#: Upper bound on Dask workers for post-processing. A PISM run can use a very
+#: wide MPI decomposition; translating that straight into worker *processes*
+#: would thrash a single node, and the reduction is I/O bound well before then.
+POSTPROCESS_MAX_WORKERS = 8
+
+
+def postprocess_ntasks(config_cli: dict) -> str:
+    """
+    Build the ``--ntasks`` flag for a post-processing command.
+
+    Clamps the run's MPI task count to :data:`POSTPROCESS_MAX_WORKERS` so a
+    wide PISM decomposition does not translate into an unusable number of Dask
+    worker processes.
+
+    Parameters
+    ----------
+    config_cli : dict
+        CLI overrides; only ``"ntasks"`` is consulted.
+
+    Returns
+    -------
+    str
+        ``" --ntasks N"`` when a task count is set, else an empty string.
+    """
+    ntasks = config_cli.get("ntasks")
+    if not ntasks:
+        return ""
+    return f" --ntasks {min(int(ntasks), POSTPROCESS_MAX_WORKERS)}"
+
+
 def compressed_encoding(ds: xr.Dataset, complevel: int = 2, **extra: Any) -> dict[str, dict[str, Any]]:
     """
     Build a per-variable NetCDF encoding that keeps the CF grid mapping.
@@ -1316,6 +1346,52 @@ def pism_config_value(ds: xr.Dataset, key: str, default: Any = None) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def dataset_crs(ds: xr.Dataset, crs: str | None = None) -> str:
+    """
+    Determine the CRS of a PISM output file.
+
+    PISM writes a CF grid-mapping variable (``mapping``, or ``spatial_ref``
+    once a file has round-tripped through rioxarray) carrying ``crs_wkt``,
+    so the projection can be read from the file itself. That matters because
+    the projection is campaign-specific — polar stereographic for Greenland,
+    a UTM zone for an Alaskan glacier — and a hard-coded default would
+    silently misplace one of them.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset as opened from disk, before the grid-mapping variable is
+        dropped.
+    crs : str or None, optional
+        Explicit override (e.g. ``"EPSG:3413"``). When given it wins, which
+        is the escape hatch for files that carry no usable grid mapping.
+
+    Returns
+    -------
+    str
+        CRS as WKT or as the given override string.
+
+    Raises
+    ------
+    ValueError
+        If no override was given and the file has no grid-mapping variable
+        with ``crs_wkt``.
+    """
+    if crs is not None:
+        return crs
+
+    grid_mapping = ds.rio.grid_mapping
+    if grid_mapping in ds.variables:
+        crs_wkt = ds[grid_mapping].attrs.get("crs_wkt")
+        if crs_wkt:
+            logger.info("Using CRS from '%s'", grid_mapping)
+            return str(crs_wkt)
+
+    raise ValueError(
+        "input file carries no grid-mapping variable with 'crs_wkt'; pass --crs explicitly (e.g. --crs EPSG:3413)"
+    )
 
 
 # CF grid-mapping variables written by PISM, CDO and rioxarray.

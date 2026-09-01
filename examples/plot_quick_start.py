@@ -1,6 +1,4 @@
 """
-Quickstart.
-
 Quick start
 ===========
 

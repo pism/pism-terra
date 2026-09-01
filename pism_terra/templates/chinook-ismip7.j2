@@ -8,12 +8,18 @@
 #SBATCH --mail-type=FAIL
 #SBATCH --output="{{ output_path }}/pism.%j"
 
+# Abort on the first failing leg. Without this a leg that dies still leaves
+# the next one to start on a missing input file — and pismi, whose Python
+# driver has no top-level catch, then deadlocks in MPI_Finalize and holds
+# the nodes until the job is cancelled.
+set -e
+
 umask 007
 
 cd $SLURM_SUBMIT_DIR
 
-ulimit -l unlimited
-ulimit -s unlimited
+ulimit -l unlimited || true
+ulimit -s unlimited || true
 ulimit
 
 {% if run_init_str %}

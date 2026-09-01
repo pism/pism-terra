@@ -40,7 +40,7 @@ import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Point, Polygon, box
 
-from pism_terra.aws import download_from_s3, local_to_s3, project_prefix
+from pism_terra.aws import local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import (
@@ -50,6 +50,7 @@ from pism_terra.glacier.climate import (
     snap,
 )
 from pism_terra.glacier.dem import boot_file_from_grid
+from pism_terra.glacier.stage import staged_rgi_outlines
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import (
     get_glacier_from_rgi_id,
@@ -103,6 +104,11 @@ def main():
         default=False,
     )
     parser.add_argument(
+        "RGI_ID",
+        help="RGI ID.",
+        nargs=1,
+    )
+    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -112,6 +118,7 @@ def main():
     path = options.output_path
     data_path = options.data_path
     config_file = options.CONFIG_FILE[0]
+    rgi_id = options.RGI_ID[0]
     force_overwrite = options.force_overwrite
 
     path.mkdir(parents=True, exist_ok=True)
@@ -124,36 +131,33 @@ def main():
     config = cfg.campaign.as_params()
 
     print("RGI Database")
-    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
-    rgi_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_complex_file"]}"""
-    rgi_local = path / config["rgi_complex_file"]
-    if not rgi_local.exists():
-        print(f"Downloading {rgi_s3_uri} -> {rgi_local}")
-        download_from_s3(rgi_s3_uri, rgi_local)
-    else:
-        print(f"Using cached {rgi_local}")
+    # Same cache the per-glacier staging below reads from, so the outlines are
+    # fetched once for the whole planning run rather than copied into the
+    # output tree as well.
+    rgi_local, _ = staged_rgi_outlines(config, staging_base)
     rgi = gpd.read_file(rgi_local)
 
     rgi_cloud = path / config["rgi_complex_file"].replace("gpkg", "fgb")
     rgi.to_file(rgi_cloud)
 
     all_nc_files: list[Path] = []
-    for rgi_id in rgi.rgi_id:
-        glacier_path = path / Path(rgi_id)
-        glacier_path.mkdir(parents=True, exist_ok=True)
 
-        input_path = glacier_path / Path("input")
-        input_path.mkdir(parents=True, exist_ok=True)
-        staging_path = staging_base / Path(rgi_id) / Path("staging")
-        staging_path.mkdir(parents=True, exist_ok=True)
-        glacier_boot_files = s4f_glacier(
-            config,
-            rgi_id,
-            path=input_path,
-            staging_path=staging_path,
-            force_overwrite=force_overwrite,
-        )
-        all_nc_files.extend(Path(p) for p in glacier_boot_files.values() if Path(p).suffix == ".nc")
+    glacier_path = path / Path(rgi_id)
+    glacier_path.mkdir(parents=True, exist_ok=True)
+
+    input_path = glacier_path / Path("input")
+    input_path.mkdir(parents=True, exist_ok=True)
+    staging_path = staging_base / Path(rgi_id) / Path("staging")
+    staging_path.mkdir(parents=True, exist_ok=True)
+    glacier_boot_files = s4f_glacier(
+        config,
+        rgi_id,
+        path=input_path,
+        staging_path=staging_path,
+        force_overwrite=force_overwrite,
+        rgi_cache_path=staging_base,
+    )
+    all_nc_files.extend(Path(p) for p in glacier_boot_files.values() if Path(p).suffix == ".nc")
 
     total_bytes = sum(p.stat().st_size for p in all_nc_files if p.exists())
     if total_bytes >= 1 << 30:
@@ -170,6 +174,40 @@ def main():
     print(f"""aws s3 sync {path} s3://{bucket}/{prefix}/planning --exclude "*/staging/*" """)
 
 
+def cog_profile(da: xr.DataArray) -> dict:
+    """
+    Creation options for a Cloud Optimized GeoTIFF that is quick to stream.
+
+    Lossless ZSTD with a predictor: plain DEFLATE barely compresses float32
+    elevations (a surface tile came out *larger* than raw once overviews
+    were added), while the floating-point predictor cuts a quarter of the
+    bytes and ZSTD decodes about twice as fast, which is what a viewer
+    spends per tile. Statistics are written into the file so QGIS need not
+    compute a stretch on first open. Overviews are cubic for continuous
+    fields and nearest for integer masks, so mask overviews stay 0/1.
+
+    Parameters
+    ----------
+    da : xarray.DataArray
+        Array about to be written; only its dtype matters.
+
+    Returns
+    -------
+    dict
+        Keyword arguments for :meth:`rioxarray.raster_array.RasterArray.to_raster`.
+    """
+    is_float = np.issubdtype(da.dtype, np.floating)
+    return {
+        "driver": "COG",
+        "compress": "ZSTD",
+        "predictor": 3 if is_float else 2,
+        "overview_resampling": "cubic" if is_float else "nearest",
+        "statistics": "YES",
+        "num_threads": "ALL_CPUS",
+        "bigtiff": "IF_SAFER",
+    }
+
+
 def s4f_glacier(
     config: dict,
     rgi_id: str,
@@ -177,6 +215,7 @@ def s4f_glacier(
     staging_path: str | Path | None = None,
     resolution: float = 100.0,
     force_overwrite: bool = False,
+    rgi_cache_path: str | Path | None = None,
 ) -> dict:
     """
     Stage glacier inputs (boot dataset and Cloud Optimized GeoTIFFs).
@@ -219,6 +258,11 @@ def s4f_glacier(
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist (e.g., passed to :func:`boot_file_from_grid`).
+    rgi_cache_path : str or pathlib.Path or None, optional
+        Directory the project's RGI GeoPackages are cached in. Planning walks
+        every glacier in the project, so pointing this at a shared root fetches
+        the (large) outlines once instead of once per glacier. Defaults to
+        ``staging_path``.
 
     Returns
     -------
@@ -265,22 +309,11 @@ def s4f_glacier(
     staging_path.mkdir(parents=True, exist_ok=True)
 
     print("RGI Database")
-    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
-    rgi_complex_local = staging_path / config["rgi_complex_file"]
-    if not rgi_complex_local.exists():
-        rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_complex_file"]}"""
-        print(f"Downloading {rgi_complex_s3_uri} -> {rgi_complex_local}")
-        download_from_s3(rgi_complex_s3_uri, rgi_complex_local)
-    else:
-        print(f"Using cached {rgi_complex_local}")
-
-    rgi_glacier_local = staging_path / config["rgi_glacier_file"]
-    if not rgi_glacier_local.exists():
-        rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_glacier_file"]}"""
-        print(f"Downloading {rgi_glacier_s3_uri} -> {rgi_glacier_local}")
-        download_from_s3(rgi_glacier_s3_uri, rgi_glacier_local)
-    else:
-        print(f"Using cached {rgi_glacier_local}")
+    # Planning walks every glacier in the project, so the outlines -- one file
+    # pair for all of them -- are cached once instead of per glacier.
+    rgi_complex_local, rgi_glacier_local = staged_rgi_outlines(
+        config, rgi_cache_path if rgi_cache_path is not None else staging_path
+    )
 
     # NOTE: gpd.read_file/to_file corrupts the heap on some envs and crashes the
     # next libgdal allocation (e.g. inside dem_stitcher). Use pyogrio directly.
@@ -336,13 +369,13 @@ def s4f_glacier(
         m_id = f"{rgi_id}_{var}"
         cog_path = path / f"{m_id}.tif"
         out = da.astype("uint8") if da.dtype == bool else da
-        out.rio.to_raster(cog_path, driver="COG", compress="DEFLATE")
+        out.rio.to_raster(cog_path, **cog_profile(out))
         print(cog_path)
         boot_files[m_id] = cog_path
         if var == "surface":
             cog_clipped_path = path / f"{m_id}_clipped.tif"
             out_clipped = out.rio.clip(glacier_projected.geometry, drop=False)
-            out_clipped.rio.to_raster(cog_clipped_path, driver="COG", compress="DEFLATE")
+            out_clipped.rio.to_raster(cog_clipped_path, **cog_profile(out_clipped))
             print(cog_clipped_path)
         if var == "bed":
             encoding = {var: {"zlib": True, "complevel": 2, "shuffle": True}}

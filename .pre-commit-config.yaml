@@ -33,7 +33,9 @@ repos:
     rev: v1.11.0rc0
     hooks:
       - id: numpydoc-validation
-        exclude: ^(pism_terra/kitp/writer\.py|docs/source/conf\.py)$
+        # sphinx-gallery examples open with an RST title, not a numpydoc
+        # summary — the title is what the gallery hangs its label on.
+        exclude: ^(docs/source/conf\.py|examples/.*\.py)$
 
   # Can run individually with `pre-commit run mypy --all-files`
   - repo: https://github.com/pre-commit/mirrors-mypy
@@ -41,7 +43,6 @@ repos:
     hooks:
       - id: mypy
         args: ["--config-file", "pyproject.toml", "--ignore-missing-imports"]
-        exclude: ^pism_terra/kitp/writer\.py$
         additional_dependencies: [types-toml, types-requests]
 
 
@@ -58,7 +59,6 @@ repos:
         language: system
         types: [python]
         require_serial: true
-        exclude: ^pism_terra/kitp/writer\.py$
         args:
           [
             "-rn", # Only display messages

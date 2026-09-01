@@ -151,7 +151,7 @@ pism-glacier-run-forward \
 Now you can execute the run script
 
 ```bash
-. frank/RGI2000-v7.0-C-01-04374/run_scripts/submit_g400m_RGI2000-v7.0-C-01-04374_id_0_1980-01-01_1985-01-01.sh
+bash frank/RGI2000-v7.0-C-01-04374/run_scripts/submit_g400m_RGI2000-v7.0-C-01-04374_id_0_1980-01-01_1985-01-01.sh
 ```
 
 This takes about 30min on a M2 Macbook Pro with 8 cores. Now postprocess with
@@ -164,7 +164,7 @@ pism-glacier-postprocess \
 Do the same with the Maffezzoli dataset:
 
 ```bash
-. maffezzoli/RGI2000-v7.0-C-01-04374/run_scripts/submit_g400m_RGI2000-v7.0-C-01-04374_id_0_1980-01-01_1985-01-01.sh
+bash maffezzoli/RGI2000-v7.0-C-01-04374/run_scripts/submit_g400m_RGI2000-v7.0-C-01-04374_id_0_1980-01-01_1985-01-01.sh
 
 pism-glacier-postprocess \
     maffezzoli/RGI2000-v7.0-C-01-04374/output/post_processing/g500m_RGI2000-v7.0-C-01-04374_id_0_0001-01-01_0006-01-01.toml

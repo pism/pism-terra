@@ -84,6 +84,47 @@ MODIFIER: Mapping[str, Callable] = {
 }
 
 
+def staged_rgi_outlines(config: Mapping, cache_path: Path | str) -> tuple[Path, Path]:
+    """
+    Fetch the project's RGI GeoPackages into a shared cache.
+
+    The complex and glacier outline files describe the whole project, not one
+    glacier, so they belong in a directory shared by every glacier rather than
+    under each glacier's own staging tree. They are large — the S4F pair is
+    309 MB — and staging a region's worth of glaciers into per-glacier
+    directories re-downloads and re-stores them once per glacier.
+
+    Parameters
+    ----------
+    config : Mapping
+        Campaign parameters: ``bucket``, ``prefix``, ``project_directory``,
+        ``rgi_complex_file`` and ``rgi_glacier_file``.
+    cache_path : str or pathlib.Path
+        Directory the files are cached in, created if needed. Pass the shared
+        data root so every glacier hits the same copy.
+
+    Returns
+    -------
+    tuple of pathlib.Path
+        ``(complex_file, glacier_file)``, both present on disk.
+    """
+    cache_path = Path(cache_path)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
+
+    staged = []
+    for key in ("rgi_complex_file", "rgi_glacier_file"):
+        local = cache_path / config[key]
+        if local.exists():
+            print(f"Using cached {local}")
+        else:
+            uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config[key]}"""
+            print(f"Downloading {uri} -> {local}")
+            download_from_s3(uri, local)
+        staged.append(local)
+    return staged[0], staged[1]
+
+
 def _build_climate(
     name: str,
     grid_ds,
@@ -169,6 +210,7 @@ def stage_glacier(
     staging_path: str | Path | None = None,
     resolution: float = 100.0,
     force_overwrite: bool = False,
+    rgi_cache_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """
     Stage glacier inputs (boot, grid, outline, climate) and return a file index.
@@ -185,6 +227,7 @@ def stage_glacier(
     ----------
     config : dict
         Configuration mapping. Must contain at least:
+
         - ``"dem"`` : str
             DEM source passed to :func:`boot_file_from_grid`.
         - ``"climate"`` : str
@@ -208,6 +251,11 @@ def stage_glacier(
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist (e.g., passed to :func:`boot_file_from_grid`
         and to the selected climate builder via :data:`CLIMATE`).
+    rgi_cache_path : str or pathlib.Path or None, optional
+        Directory the project's RGI GeoPackages are cached in. They are the
+        same file for every glacier and run to hundreds of megabytes, so point
+        this at a shared root to fetch and store them once. Defaults to
+        ``staging_path``, i.e. one copy per glacier.
 
     Returns
     -------
@@ -254,22 +302,11 @@ def stage_glacier(
     staging_path.mkdir(parents=True, exist_ok=True)
 
     print("RGI Database")
-    data_prefix = project_prefix(config["prefix"], config.get("project_directory"))
-    rgi_glacier_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_glacier_file"]}"""
-    rgi_glacier_local = staging_path / config["rgi_glacier_file"]
-    if not rgi_glacier_local.exists():
-        print(f"Downloading {rgi_glacier_s3_uri} -> {rgi_glacier_local}")
-        download_from_s3(rgi_glacier_s3_uri, rgi_glacier_local)
-    else:
-        print(f"Using cached {rgi_glacier_local}")
-
-    rgi_complex_s3_uri = f"""s3://{config["bucket"]}/{data_prefix}/rgi/{config["rgi_complex_file"]}"""
-    rgi_complex_local = staging_path / config["rgi_complex_file"]
-    if not rgi_complex_local.exists():
-        print(f"Downloading {rgi_complex_s3_uri} -> {rgi_complex_local}")
-        download_from_s3(rgi_complex_s3_uri, rgi_complex_local)
-    else:
-        print(f"Using cached {rgi_complex_local}")
+    # The outlines describe the whole project, so they are cached once for
+    # every glacier rather than under each glacier's staging dir.
+    rgi_complex_local, rgi_glacier_local = staged_rgi_outlines(
+        config, rgi_cache_path if rgi_cache_path is not None else staging_path
+    )
 
     # NOTE: gpd.read_file/to_file (via pyogrio's geopandas wrapper) corrupts the
     # heap on some envs and crashes the next libgdal allocation (e.g. inside
@@ -352,7 +389,7 @@ def stage_glacier(
     grid_ds.to_netcdf(grid_file, engine="h5netcdf")
     check_xr_fully(grid_file)
 
-    _ = glacier_velocities_from_grid(grid_ds, glacier_projected.geometry, path=obs_file)
+    _ = glacier_velocities_from_grid(grid_ds, glacier_projected.geometry, path=obs_file, rgi_id=rgi_id)
     check_xr_fully(obs_file)
 
     # Save domain extent polygon as a GPKG (intermediate, used for sanity checks)

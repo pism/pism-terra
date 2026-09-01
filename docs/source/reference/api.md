@@ -60,11 +60,14 @@ no `:toctree:` so the field descriptions are registered in exactly one place
 
 ### Staging entrypoints
 
-```{note}
-``pism_terra.glacier.stage`` is documented as a CLI in {doc}`./cli`. It's
-excluded from autosummary because it currently has an import-time error
-(references `pmip4` from `pism_terra.glacier.climate`, which doesn't exist).
-Re-add ``main`` and ``stage_glacier`` here when the upstream import is fixed.
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.stage
+
+.. autosummary::
+    :toctree: generated/
+
+    stage_glacier
+    main
 ```
 
 ### DEM
@@ -95,6 +98,7 @@ Re-add ``main`` and ``stage_glacier`` here when the upstream import is fixed.
     prepare_carra2
     prepare_carra2_for_group
     prepare_carra2_monthly_mean
+    write_zarr_in_bands
 ```
 
 ### Ice thickness
@@ -125,13 +129,90 @@ Re-add ``main`` and ``stage_glacier`` here when the upstream import is fixed.
     bathymetry_from_grid
 ```
 
+### USGS benchmark glaciers
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs
+
+.. autosummary::
+    :toctree: generated/
+
+    load_sites
+    load_glacier_wide
+    parse_dates
+    load_measurements
+    load_rgi_glaciers
+    match_rgi_ids
+    rgi_output_dir
+    find_model_files
+    open_pism
+    grid_spacing
+    run_label
+    interval_edges
+    is_monthly
+    integrate_rate
+    score
+    format_skill
+```
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs_benchmark_glaciers
+
+.. autosummary::
+    :toctree: generated/
+
+    to_mass_rate
+    load_model_series
+    model_seasonal_balances
+    ice_area
+    specific_balance
+    to_specific_balances
+    skill_scores
+    plot_glacier
+    run_pipeline
+```
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs_benchmark_stakes
+
+.. autosummary::
+    :toctree: generated/
+
+    find_spatial_files
+    stake_points
+    sample_points
+    point_smb_rate
+    stake_balances
+    stake_skill
+    plot_stakes
+    plot_scatter
+    fit_gradient
+    gradient_fits
+    plot_gradient
+    to_dataset
+    run_pipeline
+```
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs_generate_geopackage
+
+.. autosummary::
+    :toctree: generated/
+
+    build_stake_layers
+    write_stake_geopackage
+```
+
 ### Run generation & post-processing
 
-```{note}
-``pism_terra.glacier.run`` is documented as a CLI in {doc}`./cli`. It's
-excluded from autosummary because of an outstanding import-time error
-(`pmip4` missing from `pism_terra.glacier.climate`); add it back here when
-that's resolved.
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.run
+
+.. autosummary::
+    :toctree: generated/
+
+    run_forward
+    run_inverse
 ```
 
 ```{eval-rst}
@@ -184,12 +265,6 @@ that's resolved.
     forcing
 ```
 
-```{note}
-``pism_terra.kitp.writer`` is documented as a CLI in
-{doc}`./cli` but excluded from autosummary because it imports the optional
-`yac` dependency, which is not installed in the docs build environment.
-```
-
 ## Infrastructure
 
 ```{eval-rst}
@@ -214,6 +289,7 @@ that's resolved.
     extract_archive
     download_request
     carra_download_request
+    download_usgs_benchmark
 ```
 
 ```{eval-rst}

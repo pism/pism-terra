@@ -114,8 +114,10 @@ pism-kitp-prepare = "pism_terra.kitp.prepare:cli"
 pism-kitp-run = "pism_terra.kitp.run:run_single"
 pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
 pism-kitp-stage = "pism_terra.kitp.stage:main"
-pism-kitp-writer = "pism_terra.kitp.writer:cli"
 pism-glacier-mip4 = "pism_terra.glacier.glaciermip4:cli"
+pism-glacier-usgs-benchmark-glaciers = "pism_terra.glacier.usgs_benchmark_glaciers:cli"
+pism-glacier-usgs-benchmark-stakes = "pism_terra.glacier.usgs_benchmark_stakes:cli"
+pism-glacier-usgs-generate-geopackage = "pism_terra.glacier.usgs_generate_geopackage:cli"
 pism-s4f-planning = "pism_terra.glacier.s4f:main"
 pism-validate = "pism_terra.validate:main"
 
@@ -177,6 +179,12 @@ exclude = [
 
 [tool.mypy]
 python_version = 3.11
+# tests/ and tests/glacier/ each have a conftest.py; without package bases
+# mypy maps both to a module named "conftest" and aborts with a duplicate-
+# module error. Explicit package bases name them tests.conftest and
+# tests.glacier.conftest instead (mypy docs' recommended fix).
+explicit_package_bases = "True"
+mypy_path = "."
 check_untyped_defs = "True"
 ignore_missing_imports = "True"
 warn_unused_ignores = "True"

@@ -22,6 +22,8 @@ Module for downloading data.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -38,6 +40,7 @@ from urllib.parse import urlparse
 import boto3
 import earthaccess
 import numpy as np
+import pandas as pd
 import requests
 import xarray as xr
 from ecmwf.datastores import Client as _DatastoresClient
@@ -266,6 +269,108 @@ def extract_archive(
     return extracted_files
 
 
+def _unify_valid_time(ds: xr.Dataset, monthly: bool, source: Path | str = "") -> xr.Dataset:
+    """
+    Put all variables of a CDS download onto one common ``valid_time`` axis.
+
+    CDS ships instantaneous (e.g. ``2m_temperature``) and accumulated
+    (e.g. ``total_precipitation``) variables as separate files whose
+    timestamps differ by a few hours or a day. Merging them with
+    ``join="outer"`` yields twice as many timestamps as expected, each
+    holding only one of the two variables. This normalises the timestamps
+    (month start for monthly means, day start otherwise) and collapses the
+    split rows by taking the first non-missing value per timestamp.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset as read from a CDS NetCDF file.
+    monthly : bool
+        If True, snap timestamps to the first of the month; otherwise to
+        the start of the day.
+    source : Path or str, default ""
+        Origin of ``ds``; only used in the log message.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with a unique, sorted ``valid_time`` coordinate. Returned
+        unchanged if it has no ``valid_time`` coordinate.
+    """
+    if "valid_time" not in ds.coords:
+        return ds
+
+    vt = ds["valid_time"]
+    if monthly:
+        vt_new = xr.DataArray(
+            pd.to_datetime({"year": vt.dt.year.values, "month": vt.dt.month.values, "day": 1}).values,
+            dims=vt.dims,
+            attrs=vt.attrs,
+        )
+    else:
+        vt_new = vt.dt.floor("D")
+    ds = ds.assign_coords(valid_time=vt_new)
+
+    if "valid_time" not in ds.dims:
+        return ds
+
+    n_dup = int(ds.indexes["valid_time"].duplicated().sum())
+    if n_dup:
+        logging.getLogger(__name__).info(
+            "%s: collapsing %d split 'valid_time' entries onto a common time axis", source, n_dup
+        )
+        ds = ds.groupby("valid_time").first()
+    return ds.sortby("valid_time")
+
+
+def _request_key(request: dict) -> str:
+    """
+    Build a short, stable digest of a CDS request.
+
+    The digest covers every request key except ``year`` (which is varied per
+    cache file anyway). It is what makes cached downloads sensitive to the
+    requested ``area``: without it, widening a bounding box silently re-uses
+    the narrower download that is already on disk.
+
+    Parameters
+    ----------
+    request : dict
+        CDS request dict.
+
+    Returns
+    -------
+    str
+        Eight hex characters derived from the canonicalised request.
+    """
+    payload = {k: v for k, v in request.items() if k != "year"}
+    canonical = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha1(canonical.encode()).hexdigest()[:8]
+
+
+def _cache_key_matches(file_path: Path, cache_key: str) -> bool:
+    """
+    Check whether a cached NetCDF was produced by the request we are about to make.
+
+    Parameters
+    ----------
+    file_path : pathlib.Path
+        Cached NetCDF written by :func:`download_request`.
+    cache_key : str
+        Digest of the current request, from :func:`_request_key`.
+
+    Returns
+    -------
+    bool
+        ``True`` if the file records the same request digest. Files written
+        before request digests existed return ``False`` and are re-downloaded.
+    """
+    try:
+        with xr.open_dataset(file_path, decode_times=False) as cached:
+            return cached.attrs.get("cds_request_key") == cache_key
+    except Exception:
+        return False
+
+
 def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suffix: str = ".nc") -> Path:
     """
     Build a collision-resistant cache filename for a per-year CDS download.
@@ -275,9 +380,10 @@ def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suf
     dataset : str
         CDS dataset identifier (used in the filename).
     request : dict
-        CDS request dict; only ``request["variable"]`` is read, to avoid
-        cache collisions when different variables are requested for the
-        same dataset/year.
+        CDS request dict. ``request["variable"]`` goes into the filename
+        verbatim and the remaining keys (notably ``area``) are folded into a
+        short digest, so a changed bounding box gets its own cache entry
+        instead of silently re-using the previous download.
     year : str
         Four-digit year string.
     dest : Path
@@ -290,10 +396,11 @@ def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suf
     Returns
     -------
     Path
-        Path of the form ``<dest>/_cds_<dataset>_<variables>_<year><suffix>``.
+        Path of the form
+        ``<dest>/_cds_<dataset>_<variables>_<request-digest>_<year><suffix>``.
     """
     var_key = "_".join(sorted(request.get("variable", [])))
-    return dest / f"_cds_{dataset}_{var_key}_{year}{suffix}"
+    return dest / f"_cds_{dataset}_{var_key}_{_request_key(request)}_{year}{suffix}"
 
 
 def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: Path) -> Path:
@@ -576,7 +683,9 @@ def download_request(
         CDS dataset identifier to retrieve.
     area : sequence of float or None, default ``(90, -90, 45, 90)``
         Geographic bounding box **[North, West, South, East]** in degrees (WGS84).
-        Ignored when ``request_override`` is provided.
+        The two latitude entries are re-ordered if given the other way round,
+        so a ``[South, West, North, East]`` box also works. Ignored when
+        ``request_override`` is provided.
 
     year : iterable of int, default ``range(1980, 2025)``
         Years to request. Ignored when ``request_override`` is provided.
@@ -636,11 +745,24 @@ def download_request(
             "download_format": "unarchived",
         }
         if area is not None:
-            request["area"] = list(area)
+            # CDS wants [North, West, South, East]. Callers that build the box
+            # with ``Transformer.transform_bounds`` hand us [South, West,
+            # North, East] because EPSG:4326 is latitude-first, so order the
+            # two latitude slots here. Longitudes are left alone: a box that
+            # crosses the antimeridian legitimately has West > East.
+            north, west, south, east = area
+            request["area"] = [max(north, south), west, min(north, south), east]
 
     time_coder = xr.coders.CFDatetimeCoder(use_cftime=False)
 
-    if (not check_xr_lazy(file_path)) or force_overwrite:
+    # Digest the whole request (bounding box included) so that changing e.g.
+    # ``area`` invalidates the cache instead of silently re-using a subset
+    # that no longer covers the domain.
+    cache_key = _request_key({**request, "_years": sorted(str(y) for y in request["year"])})
+
+    reuse_cache = (not force_overwrite) and check_xr_lazy(file_path) and _cache_key_matches(file_path, cache_key)
+
+    if not reuse_cache:
         client = _DatastoresClient()
 
         path = file_path.parent
@@ -662,11 +784,10 @@ def download_request(
         dss = []
         for nc in sorted(downloaded):
             ds_part = xr.open_dataset(nc, decode_times=time_coder, decode_timedelta=True)
-            if "valid_time" in ds_part.coords:
-                ds_part["valid_time"] = ds_part["valid_time"].dt.floor("D")
+            ds_part = _unify_valid_time(ds_part, monthly="monthly" in dataset, source=nc)
             dss.append(ds_part)
 
-        ds = xr.merge(dss).drop_vars(["number", "expver"], errors="ignore")
+        ds = xr.merge(dss, join="outer", compat="no_conflicts").drop_vars(["number", "expver"], errors="ignore")
 
         if "latitude" in ds.coords:
             ds = ds.sortby("latitude")
@@ -674,6 +795,7 @@ def download_request(
             ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
             ds.rio.write_crs("EPSG:4326", inplace=True)
 
+        ds.attrs["cds_request_key"] = cache_key
         ds.to_netcdf(file_path)
     else:
         ds = xr.open_dataset(file_path, decode_times=time_coder, decode_timedelta=True)
@@ -1124,3 +1246,80 @@ def download_hirham(
                 print(f"An error occurred: {e}")
 
     return responses
+
+
+# --- USGS benchmark glaciers (ScienceBase) -----------------------------------
+
+SCIENCEBASE_API = "https://www.sciencebase.gov/catalog"
+#: ScienceBase item of *Compiled Input Data and Glacier-Wide Mass Balances*
+#: (https://doi.org/10.5066/F7HD7SRF).
+SCIENCEBASE_ITEM = "6441de03d34ee8d4ade7d2a5"
+USGS_DATA_ARCHIVE = "glacier_massBalance_data.zip"
+USGS_SITES_ARCHIVE = "Glacier_Mass_Balance_Sites.zip"
+
+_usgs_logger = logging.getLogger("pism_terra.download.usgs")
+
+
+def sciencebase_file_urls(item_id: str = SCIENCEBASE_ITEM) -> dict[str, str]:
+    """
+    Resolve the download URL of every file attached to a ScienceBase item.
+
+    The file URLs embed a content hash that changes whenever USGS posts a
+    new version, so they are looked up by file name at run time rather than
+    hard-coded.
+
+    Parameters
+    ----------
+    item_id : str, optional
+        ScienceBase item identifier.
+
+    Returns
+    -------
+    dict of str to str
+        Mapping from attached file name to its download URL.
+    """
+    response = requests.get(f"{SCIENCEBASE_API}/item/{item_id}", params={"format": "json"}, timeout=30)
+    response.raise_for_status()
+    return {entry["name"]: entry["url"] for entry in response.json().get("files", [])}
+
+
+def download_usgs_benchmark(data_dir: Path | str, force_overwrite: bool = False) -> dict[str, Path]:
+    """
+    Fetch and extract the mass-balance and site archives of the USGS benchmark-glacier release.
+
+    Parameters
+    ----------
+    data_dir : Path or str
+        Directory the archives are downloaded to and extracted under.
+    force_overwrite : bool, default False
+        Re-download and re-extract even when the files already exist.
+
+    Returns
+    -------
+    dict of str to Path
+        ``"data"`` — directory with one sub-directory per glacier;
+        ``"sites"`` — directory with the measurement-site CSV.
+    """
+    data_dir = Path(data_dir).expanduser()
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    urls: dict[str, str] | None = None
+    result: dict[str, Path] = {}
+    for key, name in (("data", USGS_DATA_ARCHIVE), ("sites", USGS_SITES_ARCHIVE)):
+        archive = data_dir / name
+        extract_to = data_dir / Path(name).stem
+        if archive.exists() and extract_to.exists() and not force_overwrite:
+            _usgs_logger.info("Using cached %s", extract_to)
+            result[key] = extract_to
+            continue
+        if not archive.exists() or force_overwrite:
+            if urls is None:
+                urls = sciencebase_file_urls()
+            if name not in urls:
+                raise KeyError(f"{name} is not attached to ScienceBase item {SCIENCEBASE_ITEM}")
+            _usgs_logger.info("Downloading %s", name)
+            download_archive(urls[name], dest=archive, force_overwrite=force_overwrite, verbose=False)
+        _usgs_logger.info("Extracting %s to %s", name, extract_to)
+        extract_archive(archive, extract_to, force_overwrite=force_overwrite, verbose=False)
+        result[key] = extract_to
+    return result
