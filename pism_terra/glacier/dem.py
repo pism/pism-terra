@@ -434,7 +434,12 @@ def boot_file_from_grid(
 
     tillwat = xr.zeros_like(bed)
     tillwat.name = "tillwat"
-    tillwat.attrs.update({"units": "m"})
+    # zeros_like copies bed's attrs, standard_name "bedrock_altitude" included.
+    # Replace them wholesale: PISM refuses a boot file where two variables
+    # share a standard_name (it looks topg up by standard name). The clash
+    # only ships when velocity is "none" — with a velocity dataset the
+    # xr.where() below replaces the variable and drops the attrs.
+    tillwat.attrs = {"units": "m"}
 
     ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat], compat="no_conflicts")
     if velocity_dataset not in ("none", None):
