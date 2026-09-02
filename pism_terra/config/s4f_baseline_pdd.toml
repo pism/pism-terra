@@ -141,7 +141,7 @@ model = "pdd"
 'surface.pdd.factor_ice' = 0.00879120879120879
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
-'surface.pdd.refreeze_ice_melt' = "yes"
+'surface.pdd.refreeze_ice_melt' = "no"
 'surface.pdd.std_dev.file' = "none"
 'surface.pdd.std_dev.periodic' = "yes"
 
@@ -153,7 +153,7 @@ model = "pdd"
 'surface.pdd.factor_ice' = 0.00879120879120879
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
-'surface.pdd.refreeze_ice_melt' = "yes"
+'surface.pdd.refreeze_ice_melt' = "no"
 'surface.pdd.std_dev.file' = "none"
 'surface.pdd.std_dev.periodic' = "yes"
 
