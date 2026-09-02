@@ -71,6 +71,7 @@ dependencies:
   # conda-forge tops out at pytest-codeblocks 0.17.0, which still uses the
   # pytest_collect_file(path=...) hook removed in pytest 9.1. Only 0.18.0
   # (PyPI-only) switched to the new file_path signature, so install via pip.
+  # ISMIP7
+  - isschecker
   - pip:
       - pytest-codeblocks>=0.18
-      - git+https://github.com/ismip/ISM_SimulationChecker.git
