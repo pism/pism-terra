@@ -260,7 +260,7 @@ def assemble_debris(
         "source": _SOURCE,
     }
     melt_factor = _assemble_variable(tifs.get("debris_melt_factor", []), target_grid, geometries, fill_value=1.0)
-    melt_factor = melt_factor.where(thickness == 0, 1)
+    melt_factor = melt_factor.where(thickness > 0, 1)
     melt_factor.attrs = {
         "units": "1",
         "long_name": "sub-debris melt enhancement factor",
