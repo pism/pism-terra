@@ -54,6 +54,7 @@ from pism_terra.glacier.climate import (
     era5_monthly_mean,
     snap,
 )
+from pism_terra.glacier.debris import debris_from_grid
 from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.glacier.observations import glacier_velocities_from_grid
 from pism_terra.heatflux import heatflux_from_grid
@@ -262,7 +263,9 @@ def stage_glacier(
     pandas.DataFrame
         One row per produced **climate** file, with absolute-path columns:
         ``rgi_id``, ``outline_file`` (GPKG), ``boot_file`` (NetCDF),
-        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF), and ``sample`` (int).
+        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF), ``debris_file``
+        (NetCDF or ``None`` unless the campaign sets ``debris``), and
+        ``sample`` (int).
 
     Raises
     ------
@@ -392,6 +395,23 @@ def stage_glacier(
     _ = glacier_velocities_from_grid(grid_ds, glacier_projected.geometry, path=obs_file, rgi_id=rgi_id)
     check_xr_fully(obs_file)
 
+    # Debris thickness is opt-in: campaigns without a ``debris`` key stage
+    # exactly as before. ``as_params()`` drops unset fields, hence ``.get``.
+    debris = config.get("debris", "none")
+    debris_file: Path | None = None
+    if debris and debris != "none":
+        debris_file = path / f"debris_{rgi_id}.nc"
+        _ = debris_from_grid(
+            grid_ds,
+            glacier_projected.geometry,
+            rgi_id=rgi_id,
+            dataset=debris,
+            path=debris_file,
+            staging_path=staging_path,
+            force_overwrite=force_overwrite,
+        )
+        check_xr_fully(debris_file)
+
     # Save domain extent polygon as a GPKG (intermediate, used for sanity checks)
     x_point_list = [
         grid_ds.x_bnds[0][0],
@@ -461,6 +481,7 @@ def stage_glacier(
         "grid_file": grid_file.resolve(),
         "heatflux_file": bheatflux_file.resolve(),
         "obs_file": obs_file.resolve(),
+        "debris_file": debris_file.resolve() if debris_file else None,
         "init_climate_file": init_climate_file.resolve() if init_climate_file else None,
     }
     dfs: list[pd.DataFrame] = []

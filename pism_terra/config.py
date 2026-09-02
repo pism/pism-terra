@@ -1578,6 +1578,10 @@ class CampaignConfig(BaseModel):
         Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
     climatology : str or None
         Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
+    debris : str or None
+        Debris-thickness data source identifier (e.g., ``"rounce"`` for the
+        NSIDC HMA_DTE v1 global estimates). Omit or set ``"none"`` to skip
+        staging a debris file.
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
     forcing_mask : str or None
@@ -1667,6 +1671,7 @@ class CampaignConfig(BaseModel):
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
     climatology: str | None = Field(default=None)
+    debris: str | None = Field(default=None)
     dem: str | None = Field(default=None)
     forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
