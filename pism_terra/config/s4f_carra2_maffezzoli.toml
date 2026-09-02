@@ -22,6 +22,7 @@ project_directory = "s4f"
 rgi_complex_file = "s4f_c.gpkg"
 rgi_glacier_file = "s4f_g.gpkg"
 velocity = "its_live"
+debris = "rounce"
 
 [time]
 
@@ -63,7 +64,7 @@ velocity = "its_live"
 
 [grid]
 
-resolution = "500m"
+resolution = "250m"
 'grid.file' = "none"
 'grid.Lbz' = 0
 'grid.Lz' = 2500

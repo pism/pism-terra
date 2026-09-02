@@ -27,6 +27,7 @@ decision. Everything runs offline.
 
 from pathlib import Path
 
+import pytest
 import toml
 
 from pism_terra.ismip7.greenland import forcing
@@ -117,6 +118,61 @@ def test_forcing_tasks_pathway_overrides_and_legacy_short_hand():
     assert by_key[("CESM2-WACCM", "historical", "climate")] == ("v2", "SDBN1-1000m", None)
     # No source entry and no legacy short_hand: the segment is absent.
     assert by_key[("CESM2-WACCM", "historical", "ocean")] == ("v2", "none", None)
+
+
+def test_fetch_one_retries_transient_failures(tmp_path, monkeypatch):
+    """
+    A flaky download is retried with backoff and still lands atomically.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to silence the backoff sleep.
+    """
+    monkeypatch.setattr(forcing.time, "sleep", lambda _s: None)
+    local = tmp_path / "acabf_GrIS_CESM2-WACCM_historical_SDBN1-1000m_v3_1917.nc"
+    remote = {"ETag": '"abc"', "size": 4, "LastModified": "2026-08-29"}
+    calls = {"n": 0}
+
+    class _FlakyFS:
+        """Fake filesystem that times out twice before succeeding."""
+
+        def get_file(self, _rkey, lpath):
+            """
+            Write the file on the third attempt only.
+
+            Parameters
+            ----------
+            _rkey : str
+                Ignored remote key.
+            lpath : str
+                Local destination path.
+
+            Raises
+            ------
+            TimeoutError
+                On the first two attempts.
+            """
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise TimeoutError("socket starved")
+            Path(lpath).write_bytes(b"data")
+
+    result = forcing._fetch_one(_FlakyFS(), "bucket/key.nc", local, remote)
+    assert result == local
+    assert calls["n"] == 3
+    assert local.read_bytes() == b"data"
+    assert not local.with_suffix(".nc.part").exists()
+    assert forcing._meta_path(local).exists()
+
+    # A permanently failing download re-raises after the last attempt.
+    calls["n"] = -100
+    local2 = tmp_path / "always_fails.nc"
+    with pytest.raises(TimeoutError):
+        forcing._fetch_one(_FlakyFS(), "bucket/key2.nc", local2, remote, attempts=2)
+    assert not local2.exists()
 
 
 def test_needs_download_decisions(tmp_path):
