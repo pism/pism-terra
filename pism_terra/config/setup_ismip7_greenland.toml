@@ -11,13 +11,21 @@ x_bounds = [-750650.0, 977350.0]
 y_bounds = [-3412550.0, -604550.0]
 resolution = "450m"
 
+# ``source`` maps each forcing to the directory subpath between the pathway
+# slot and the variable directory of the source.coop tree
+# (https://source.coop/ismip/ismip7-gris-forcing). The slash form used by OCX
+# names a reanalysis-forced tree: {gcm}/{first segment}/{second segment}/{var}.
+# ``version`` only labels the merged output filenames — the cloud mirror
+# carries just the newest version of every file, discovered by listing.
+# Both keys sit at the GCM level and may be overridden per pathway.
+
 [gcms]
 
-'CESM2-WACCM' = {historical = {start = 1900, end = 2014, version = 2}, ssp126 = {start = 2015, end = 2300, version = 2 }, ssp370 = {start = 2015, end = 2100, version = 2 }, ssp585 = {start = 2015, end = 2300, version = 2 } }
-'MRI-ESM2-0' = {historical = {start = 1900, end = 2014, version = 1}, ssp126 = {start = 2015, end = 2300, version = 1 }, ssp370 = {start = 2015, end = 2100, version = 1 }, ssp585 = {start = 2015, end = 2300, version = 1 } }
-'OCX' = {historical = {start = 1958, end = 2024, version = 1, source = {climate = "RACMO2.3p2-ERA", ocean = "EN4"}}}
+'CESM2-WACCM' = {historical = {start = 1900, end = 2014}, ssp126 = {start = 2015, end = 2300}, ssp370 = {start = 2015, end = 2100}, ssp585 = {start = 2015, end = 2300}, source = {climate = "SDBN1-1000m", ocean = "ocean-1000m"}, version = 3}
+'MRI-ESM2-0' = {historical = {start = 1900, end = 2014}, ssp126 = {start = 2015, end = 2300}, ssp370 = {start = 2015, end = 2100}, ssp585 = {start = 2015, end = 2300}, source = {climate = "GEMB-SDBN1-1000m", ocean = "ocean-1000m"}, version = 2}
+'OCX' = {historical = {start = 1958, end = 2024}, source = {climate = "RACMO2.3p2-ERA/SDBN1-1000m", ocean = "EN4/ocean-1000m"}, version = 1}
 
 [forcing]
 
-climate = {fields = ["acabf", "dacabfdz", "mrro", "ts", "dmrrodz", "dtsdz"], short_hand = "SDBN1-1000m"}
-ocean = {fields = ["tf", "so"], short_hand = "ocean-1000m"}
+climate = {fields = ["acabf", "dacabfdz", "mrro", "ts", "dmrrodz", "dtsdz"]}
+ocean = {fields = ["tf", "so"]}

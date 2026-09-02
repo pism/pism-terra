@@ -105,6 +105,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     parser.add_argument(
         "--data-path", help="Path to ISMIP7 data folder. If not None, use local folder instead of remote.", default=None
     )
+    parser.add_argument(
+        "--cache-path",
+        help="Directory the source.coop forcing files are cached in (reused across runs; "
+        "only files that changed upstream are re-downloaded). Defaults to <OUTPUT_PATH>/cloud_cache.",
+        default=None,
+    )
     add_include_argument(parser, ISMIP7_DATASETS)
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
@@ -115,6 +121,10 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     data_path = Path(args.data_path) if args.data_path else None
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
+    # Original per-year forcing files synced from source.coop land here and
+    # survive across runs; a rerun re-downloads only what changed upstream.
+    cache_path = Path(args.cache_path) if args.cache_path else output_path / "cloud_cache"
+    cache_path.mkdir(parents=True, exist_ok=True)
     # Intermediate scratch (cdo tmps, per-epoch hist/proj) goes here so the
     # final ``output_path`` only carries the merged files we actually ship.
     # Matches the ``staging`` convention used by ``pism-glacier-stage``.
@@ -207,10 +217,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         logger.info("-" * 120)
         logger.info("Forcings")
         logger.info("-" * 120)
-        base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
         forcing_files = list(
             prepare_ismip7_forcing(
-                base_url,
+                cache_path,
                 output_path,
                 config,
                 data_path=data_path,
