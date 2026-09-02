@@ -23,7 +23,13 @@ from pathlib import Path
 
 import pytest
 
-from pism_terra.glacier.run import _nullable_string, _postprocess_commands
+from pism_terra.glacier.run import (
+    DH_END,
+    DH_START,
+    _dh_command,
+    _nullable_string,
+    _postprocess_commands,
+)
 
 
 @pytest.mark.parametrize(
@@ -92,3 +98,33 @@ def test_no_outline_means_no_command():
     assert _postprocess_commands(SPATIAL, Path("/out"), "none", "none", {}) == ""
     only_c = _postprocess_commands(SPATIAL, Path("/out"), OUTLINE_C, "none", {})
     assert len(only_c.splitlines()) == 1 and OUTLINE_C in only_c
+
+
+def test_dh_command_extracts_the_hugonnet_interval():
+    """
+    One dh call over 2000-2020, all variables, into ``output/dh/``.
+
+    Unlike the scalar reductions the extraction needs no outline, so the
+    command carries only the interval, the spatial file, and the output path.
+    """
+    command = _dh_command(SPATIAL, Path("/out"), "RGI2000-v7.0-C-01-04374", "id_0")
+
+    assert command.startswith("pism-glacier-postprocess-dh ")
+    assert f"--start {DH_START} --end {DH_END}" in command
+    assert "--vars" not in command
+    assert str(SPATIAL.resolve()) in command
+    assert command.endswith(f"/out/dh/dh_RGI2000-v7.0-C-01-04374_id_0_{DH_START}_{DH_END}.nc")
+
+
+def test_dh_filenames_stay_apart_across_ensemble_members():
+    """
+    The sample/uq tag is part of the dh filename.
+
+    All members of an ensemble share ``output/dh/``; without the tag the
+    members would overwrite one another's file.
+    """
+    member_0 = _dh_command(SPATIAL, Path("/out"), "RGI2000-v7.0-C-01-04374", "id_0_uq_0")
+    member_1 = _dh_command(SPATIAL, Path("/out"), "RGI2000-v7.0-C-01-04374", "id_0_uq_1")
+
+    assert member_0.endswith(f"/out/dh/dh_RGI2000-v7.0-C-01-04374_id_0_uq_0_{DH_START}_{DH_END}.nc")
+    assert member_0.rsplit(" ", 1)[-1] != member_1.rsplit(" ", 1)[-1]
