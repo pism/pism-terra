@@ -28,7 +28,7 @@ prefix = "ismip7/greenland/input"
 projection_end_year = "2300"
 projection_start_year = "2015"
 regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
-retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
+retreat_file = "pism_g450m_frontretreat_calfin_1985.nc"
 version = "v3"
 
 [time]

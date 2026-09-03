@@ -13,24 +13,23 @@
 
 [campaign]
 
+boot_file = "boot_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
 bucket = "pism-cloud-data"
-prefix = "ismip7/greenland/input"
-version = "v2"
-historical_start_year = "1978"
-historical_end_year = "2014"
-projection_start_year = "2015"
-projection_end_year = "2300"
-boot_file = "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
-heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "mouginot_basins_w_shelves.gpkg"
-obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
-retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
-gcms = "CESM2-WACCM"
-pathway = "historical"
-init_start = "1980-01-01"
+heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
+historical_end_year = "2014"
+historical_start_year = "1985"
 init_end = "1985-01-01"
+init_start = "1980-01-01"
+init_surface_model = "ismip7_forcing"
+obs_file = "obs_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
+outline_file = "mouginot_basins_w_shelves.gpkg"
+prefix = "ismip7/greenland/input"
+projection_end_year = "2300"
+projection_start_year = "2015"
+regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
+retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
+version = "v3"
 
 [time]
 
@@ -47,7 +46,7 @@ init_end = "1985-01-01"
 ['geometry']
 
 'geometry.front_retreat.prescribed.file' = "none"
-'geometry.front_retreat.prescribed.periodic' = "no"
+'geometry.front_retreat.prescribed.periodic' = "yes"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
@@ -194,7 +193,7 @@ model = "picop_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.add_fresh_water_melt' = "no"
+'ocean.picop.add_fresh_water_melt' = "yes"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
 'ocean.picop.drag_coefficient' = 0.0015
