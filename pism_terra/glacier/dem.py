@@ -274,6 +274,7 @@ def boot_file_from_grid(
     forcing_mask: Literal["none", "all", "glacier"] | None,
     ocean_moat: Literal["no", "yes"] | bool | None = "no",
     path: str | Path = "input_files",
+    variables: collections.abc.Sequence[str] | None = None,
     **kwargs,
 ) -> xr.Dataset:
     """
@@ -313,6 +314,15 @@ def boot_file_from_grid(
         leaves the perimeter untouched.
     path : str or pathlib.Path, default ``"input_files"``
         Working directory used by helper routines to cache/write intermediate rasters/grids.
+    variables : sequence of str or None, optional
+        Data variables to keep in the returned dataset (``"bed"``,
+        ``"surface"``, ``"thickness"``, ``"land_ice_area_fraction_retreat"``,
+        ``"ftt_mask"``, ``"tillwat"``, ``"v"``). ``None`` (default) keeps all
+        of them. Fields not requested are never built, which matters on very
+        large domains (e.g. an S4F aggregate at 100 m): every skipped field
+        saves several full-grid arrays of peak memory. ``surface``,
+        ``thickness`` and ``bed`` are always computed internally (bed is
+        derived from the other two) but only shipped when requested.
     **kwargs
         Forwarded to :func:`prepare_surface` (e.g., ``force_overwrite=True``) and any
         downstream helpers it calls. Does not alter variable naming/semantics.
@@ -405,44 +415,74 @@ def boot_file_from_grid(
         bed.name = "bed"
         bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
 
-    liafr = surface.rio.clip(geometries, drop=False)
-    liafr = xr.where(liafr.isnull(), 0, 1)
-    liafr.name = "land_ice_area_fraction_retreat"
-    liafr.attrs.update({"units": "1"})
-    liafr = liafr.astype("bool")
+    # ``variables=None`` keeps everything; otherwise only the requested
+    # fields are built and merged — each skipped field saves several
+    # full-grid arrays of peak memory on very large domains.
+    want = set(variables) if variables is not None else None
 
-    if forcing_mask == "glacier":
-        print("Forcing mask: 1 outside 0 inside glacier")
-        # rio.clip leaves the surface elevation inside the polygon and NaN
-        # outside. Without the xr.where, the subsequent .astype("bool") would
-        # turn both real elevations AND NaN into True (1 everywhere). Map
-        # NaN -> 1 (outside) and any value -> 0 (inside) explicitly.
-        ftt_mask = surface.rio.clip(geometries, drop=False)
-        ftt_mask = xr.where(ftt_mask.isnull(), 1, 0)
-    elif forcing_mask == "all":
-        print("Forcing mask: 1 everywhere")
-        ftt_mask = xr.ones_like(liafr)
-    else:
-        print("Forcing mask: 0 everywhere")
-        ftt_mask = xr.zeros_like(liafr)
-    ftt_mask.name = "ftt_mask"
-    ftt_mask.attrs.update({"units": "1"})
-    if "standard_name" in ftt_mask.attrs:
-        del ftt_mask.attrs["standard_name"]
+    def _wanted(name: str) -> bool:
+        """
+        Whether a field should be built and shipped.
 
-    ftt_mask = ftt_mask.astype("bool")
+        Parameters
+        ----------
+        name : str
+            Data variable name.
 
-    tillwat = xr.zeros_like(bed)
-    tillwat.name = "tillwat"
-    # zeros_like copies bed's attrs, standard_name "bedrock_altitude" included.
-    # Replace them wholesale: PISM refuses a boot file where two variables
-    # share a standard_name (it looks topg up by standard name). The clash
-    # only ships when velocity is "none" — with a velocity dataset the
-    # xr.where() below replaces the variable and drops the attrs.
-    tillwat.attrs = {"units": "m"}
+        Returns
+        -------
+        bool
+            ``True`` when no subset was requested or *name* is in it.
+        """
+        return want is None or name in want
 
-    ds = xr.merge([bed, surface, ice_thickness, liafr, ftt_mask, tillwat], compat="no_conflicts")
-    if velocity_dataset not in ("none", None):
+    merge_list = [
+        da for name, da in (("bed", bed), ("surface", surface), ("thickness", ice_thickness)) if _wanted(name)
+    ]
+
+    if _wanted("land_ice_area_fraction_retreat"):
+        liafr = surface.rio.clip(geometries, drop=False)
+        liafr = xr.where(liafr.isnull(), 0, 1)
+        liafr.name = "land_ice_area_fraction_retreat"
+        liafr.attrs.update({"units": "1"})
+        liafr = liafr.astype("bool")
+        merge_list.append(liafr)
+
+    if _wanted("ftt_mask"):
+        if forcing_mask == "glacier":
+            print("Forcing mask: 1 outside 0 inside glacier")
+            # rio.clip leaves the surface elevation inside the polygon and NaN
+            # outside. Without the xr.where, the subsequent .astype("bool") would
+            # turn both real elevations AND NaN into True (1 everywhere). Map
+            # NaN -> 1 (outside) and any value -> 0 (inside) explicitly.
+            ftt_mask = surface.rio.clip(geometries, drop=False)
+            ftt_mask = xr.where(ftt_mask.isnull(), 1, 0)
+        elif forcing_mask == "all":
+            print("Forcing mask: 1 everywhere")
+            ftt_mask = xr.ones_like(surface)
+        else:
+            print("Forcing mask: 0 everywhere")
+            ftt_mask = xr.zeros_like(surface)
+        ftt_mask.name = "ftt_mask"
+        # Replace the template's attrs wholesale (a surface-derived template
+        # carries surface_altitude metadata).
+        ftt_mask.attrs = {"units": "1"}
+        ftt_mask = ftt_mask.astype("bool")
+        merge_list.append(ftt_mask)
+
+    if _wanted("tillwat"):
+        tillwat = xr.zeros_like(bed)
+        tillwat.name = "tillwat"
+        # zeros_like copies bed's attrs, standard_name "bedrock_altitude" included.
+        # Replace them wholesale: PISM refuses a boot file where two variables
+        # share a standard_name (it looks topg up by standard name). The clash
+        # only ships when velocity is "none" — with a velocity dataset the
+        # xr.where() below replaces the variable and drops the attrs.
+        tillwat.attrs = {"units": "m"}
+        merge_list.append(tillwat)
+
+    ds = xr.merge(merge_list, compat="no_conflicts")
+    if velocity_dataset not in ("none", None) and (_wanted("v") or _wanted("tillwat")):
         v_filename = path / Path(f"obs_{rgi_id}.nc")
         v = glacier_velocities_from_grid(target_grid, geometries, path=v_filename, rgi_id=rgi_id)
         _v = v["v"].fillna(0)
