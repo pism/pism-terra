@@ -50,6 +50,7 @@ from pism_terra.glacier.climate import (
     snap,
 )
 from pism_terra.glacier.dem import boot_file_from_grid
+from pism_terra.glacier.observations import dh_from_tif, fetch_dh_raster
 from pism_terra.glacier.stage import staged_rgi_outlines
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import (
@@ -104,6 +105,14 @@ def main():
         default=False,
     )
     parser.add_argument(
+        "--variables",
+        help="Comma-separated products to write (boot variable names plus 'surface_clipped' and 'dh'); "
+        "default: all. On aggregate-sized domains restrict to e.g. 'bed,surface,surface_clipped,dh' "
+        "to keep peak memory down.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "RGI_ID",
         help="RGI ID.",
         nargs=1,
@@ -156,6 +165,7 @@ def main():
         staging_path=staging_path,
         force_overwrite=force_overwrite,
         rgi_cache_path=staging_base,
+        variables=options.variables.split(",") if options.variables else None,
     )
     all_nc_files.extend(Path(p) for p in glacier_boot_files.values() if Path(p).suffix == ".nc")
 
@@ -208,6 +218,79 @@ def cog_profile(da: xr.DataArray) -> dict:
     }
 
 
+def write_dh_cogs(
+    config: dict,
+    rgi_id: str,
+    grid_ds: xr.Dataset,
+    geometries,
+    path: Path,
+    staging_path: Path,
+    force_overwrite: bool = False,
+) -> dict[str, Path]:
+    """
+    Write COGs of the observed 2000-2020 elevation change for one complex.
+
+    Fetches the pre-clipped per-complex raster (see
+    :func:`pism_terra.glacier.observations.prepare_dh_hugonnet`), aligns it
+    to the planning grid, and writes ``{rgi_id}_dh.tif`` and
+    ``{rgi_id}_dh_err.tif`` beside the boot COGs. Opt-in like staging: a
+    campaign without a ``dh`` key writes nothing, and a complex without a
+    prepared raster (outside the observed tiles) is skipped with a warning.
+
+    Parameters
+    ----------
+    config : dict
+        Campaign configuration; ``"dh"`` selects the product, and
+        ``"bucket"``/``"prefix"``/``"project_directory"`` locate the
+        prepared rasters.
+    rgi_id : str
+        Glacier complex identifier.
+    grid_ds : xarray.Dataset
+        Planning grid (with a projected CRS) the fields are aligned to.
+    geometries : iterable of shapely geometries
+        Glacier outline(s) in the grid's CRS; cells outside stay NaN.
+    path : pathlib.Path
+        Output directory for the COGs.
+    staging_path : pathlib.Path
+        Cache directory for the fetched raster.
+    force_overwrite : bool, default ``False``
+        Re-fetch the raster even when a cached copy exists.
+
+    Returns
+    -------
+    dict[str, pathlib.Path]
+        Mapping from ``f"{rgi_id}_{var}"`` to the written COG paths; empty
+        when dh is not configured or not available for this complex.
+    """
+    dh = config.get("dh", "none")
+    if not dh or dh == "none":
+        return {}
+
+    local_tif = fetch_dh_raster(
+        rgi_id,
+        staging_path,
+        dataset=dh,
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        project_directory=config.get("project_directory"),
+        force_overwrite=force_overwrite,
+    )
+    if local_tif is None:
+        return {}
+
+    ds_dh = dh_from_tif(local_tif, grid_ds, geometries)
+    written: dict[str, Path] = {}
+    for var in ds_dh.data_vars:
+        m_id = f"{rgi_id}_{var}"
+        cog_path = path / f"{m_id}.tif"
+        # Declare the NaN fill as nodata so viewers mask the unobserved cells.
+        da = ds_dh[var].rio.write_nodata(np.nan)
+        da.rio.to_raster(cog_path, **cog_profile(da))
+        print(cog_path)
+        written[m_id] = cog_path
+    return written
+
+
 def s4f_glacier(
     config: dict,
     rgi_id: str,
@@ -216,6 +299,7 @@ def s4f_glacier(
     resolution: float = 100.0,
     force_overwrite: bool = False,
     rgi_cache_path: str | Path | None = None,
+    variables: list[str] | None = None,
 ) -> dict:
     """
     Stage glacier inputs (boot dataset and Cloud Optimized GeoTIFFs).
@@ -228,6 +312,8 @@ def s4f_glacier(
     (3) creates a target model grid,
     (4) writes one Cloud Optimized GeoTIFF per spatial variable in the boot
         dataset (plus a NetCDF copy of ``bed`` and a clipped surface tif),
+        and — when the campaign sets ``dh`` — COGs of the observed 2000-2020
+        elevation change and its error (see :func:`write_dh_cogs`),
     and (5) returns a mapping of variable identifiers to written file paths.
 
     Parameters
@@ -263,6 +349,13 @@ def s4f_glacier(
         every glacier in the project, so pointing this at a shared root fetches
         the (large) outlines once instead of once per glacier. Defaults to
         ``staging_path``.
+    variables : list of str or None, optional
+        Products to write (boot variable names plus ``"surface_clipped"``
+        and ``"dh"``). ``None`` (default) writes everything. On very large
+        domains (an S4F aggregate at 100 m) restricting to e.g.
+        ``["bed", "surface", "surface_clipped", "dh"]`` skips the mask and
+        till fields entirely, cutting peak memory by several full-grid
+        arrays.
 
     Returns
     -------
@@ -340,6 +433,18 @@ def s4f_glacier(
     x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=2_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
 
+    # Restricting the product list keeps unneeded full-grid fields (masks,
+    # tillwat) from ever being built — the difference between fitting in
+    # memory and an OOM kill on an aggregate-sized 100 m domain.
+    # ``surface_clipped``/``dh`` are planning-level products; the rest are
+    # boot variables (``surface_clipped`` needs ``surface`` built).
+    boot_variables: list[str] | None = None
+    if variables is not None:
+        boot_wanted = {v for v in variables if v not in ("surface_clipped", "dh")}
+        if "surface_clipped" in variables:
+            boot_wanted.add("surface")
+        boot_variables = sorted(boot_wanted)
+
     # Build boot dataset (DEM/thickness/bed) — caches go to staging
     boot_ds = boot_file_from_grid(
         grid_ds,
@@ -356,6 +461,7 @@ def s4f_glacier(
         bucket=config["bucket"],
         prefix=config["prefix"],
         project_directory=config.get("project_directory"),
+        variables=boot_variables,
     )
 
     print("")
@@ -367,22 +473,39 @@ def s4f_glacier(
         if not {"x", "y"}.issubset(set(da.dims)):
             continue
         m_id = f"{rgi_id}_{var}"
-        cog_path = path / f"{m_id}.tif"
         out = da.astype("uint8") if da.dtype == bool else da
-        out.rio.to_raster(cog_path, **cog_profile(out))
-        print(cog_path)
-        boot_files[m_id] = cog_path
-        if var == "surface":
+        # A variable can be present only as the input of a derived product
+        # (surface for surface_clipped); ship it only when itself requested.
+        if variables is None or var in variables:
+            cog_path = path / f"{m_id}.tif"
+            out.rio.to_raster(cog_path, **cog_profile(out))
+            print(cog_path)
+            boot_files[m_id] = cog_path
+        if var == "surface" and (variables is None or "surface_clipped" in variables):
             cog_clipped_path = path / f"{m_id}_clipped.tif"
             out_clipped = out.rio.clip(glacier_projected.geometry, drop=False)
             out_clipped.rio.to_raster(cog_clipped_path, **cog_profile(out_clipped))
             print(cog_clipped_path)
-        if var == "bed":
+            boot_files[f"{m_id}_clipped"] = cog_clipped_path
+        if var == "bed" and (variables is None or "bed" in variables):
             encoding = {var: {"zlib": True, "complevel": 2, "shuffle": True}}
             nc_path = path / f"{m_id}.nc"
             out.to_netcdf(nc_path, encoding=encoding, engine="h5netcdf")
             print(nc_path)
             boot_files[m_id] = nc_path
+
+    if variables is None or "dh" in variables:
+        boot_files.update(
+            write_dh_cogs(
+                config,
+                rgi_id,
+                grid_ds,
+                glacier_projected.geometry,
+                path,
+                staging_path,
+                force_overwrite=force_overwrite,
+            )
+        )
     return boot_files
 
 

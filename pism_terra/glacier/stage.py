@@ -56,7 +56,10 @@ from pism_terra.glacier.climate import (
 )
 from pism_terra.glacier.debris import debris_from_grid
 from pism_terra.glacier.dem import boot_file_from_grid
-from pism_terra.glacier.observations import glacier_velocities_from_grid
+from pism_terra.glacier.observations import (
+    add_dh_observations,
+    glacier_velocities_from_grid,
+)
 from pism_terra.heatflux import heatflux_from_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id, glaciers_in_complex
@@ -394,6 +397,26 @@ def stage_glacier(
 
     _ = glacier_velocities_from_grid(grid_ds, glacier_projected.geometry, path=obs_file, rgi_id=rgi_id)
     check_xr_fully(obs_file)
+
+    # Observed 2000-2020 elevation change is opt-in like debris: campaigns
+    # without a ``dh`` key stage exactly as before. The pre-clipped raster
+    # comes from the cloud (see ``prepare_dh_hugonnet``) and the variables are
+    # merged into the obs file, where the calibration reads them.
+    dh = config.get("dh", "none")
+    if dh and dh != "none":
+        _ = add_dh_observations(
+            obs_file,
+            grid_ds,
+            glacier_projected.geometry,
+            rgi_id=rgi_id,
+            dataset=dh,
+            staging_path=staging_path,
+            bucket=config["bucket"],
+            prefix=config["prefix"],
+            project_directory=config.get("project_directory"),
+            force_overwrite=force_overwrite,
+        )
+        check_xr_fully(obs_file)
 
     # Debris thickness is opt-in: campaigns without a ``debris`` key stage
     # exactly as before. ``as_params()`` drops unset fields, hence ``.get``.

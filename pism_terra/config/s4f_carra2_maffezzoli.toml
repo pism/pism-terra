@@ -23,6 +23,7 @@ rgi_complex_file = "s4f_c.gpkg"
 rgi_glacier_file = "s4f_g.gpkg"
 velocity = "its_live"
 debris = "rounce"
+dh = "hugonnet"
 
 [time]
 

@@ -120,6 +120,31 @@ def download_from_s3(s3_uri: str, dest: str | Path) -> Path:
     return dest
 
 
+def list_s3_keys(bucket: str, prefix: str) -> list[str]:
+    """
+    List every object key under a bucket prefix.
+
+    Parameters
+    ----------
+    bucket : str
+        Bucket name.
+    prefix : str
+        Key prefix to list under (no leading slash).
+
+    Returns
+    -------
+    list of str
+        Full object keys, paginated through completely.
+    """
+    bucket_region = boto3.client("s3").get_bucket_location(Bucket=bucket).get("LocationConstraint") or "us-west-2"
+    s3 = boto3.client("s3", region_name=bucket_region)
+    keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix.strip("/") + "/"):
+        keys.extend(obj["Key"] for obj in page.get("Contents", []))
+    return keys
+
+
 def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
     """
     Compute the hexadecimal MD5 of a local file.

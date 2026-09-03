@@ -38,6 +38,7 @@ from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.download import file_localizer
 from pism_terra.glacier.climate import create_offset_file
 from pism_terra.glacier.execute import find_first_and_execute
+from pism_terra.glacier.observations import DH_END, DH_START
 from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
@@ -67,9 +68,8 @@ CLIMATE_FILE_OPTIONS = (
 
 
 #: Interval of the per-run elevation/mass-change extraction, matching the
-#: Hugonnet et al. (2021) observational record the output is compared against.
-DH_START = "2000-01-01"
-DH_END = "2020-01-01"
+#: Hugonnet et al. (2021) observational record the output is compared against
+#: (re-exported from the observations module, which stages that record).
 
 
 def _dh_command(spatial_file: Path, output_path: Path, rgi_id: str, name_options: str) -> str:
