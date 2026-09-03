@@ -92,7 +92,10 @@ def _legs(script: str) -> list[str]:
 
 def _c003_with_init(tmp_path: Path) -> Path:
     """
-    Write a copy of the C003 config with init bounds added to [campaign].
+    Write a copy of the C003 config with the init leg re-timed to 1985-1986.
+
+    The counter configs ship with ``init_start``/``init_end`` (1980-1985);
+    the counter tests use a one-year leg starting at the historical epoch.
 
     Parameters
     ----------
@@ -105,11 +108,8 @@ def _c003_with_init(tmp_path: Path) -> Path:
         Path to the modified config.
     """
     text = C003.read_text()
-    text = text.replace(
-        "[campaign]",
-        '[campaign]\n\ninit_start = "1985-01-01"\ninit_end = "1986-01-01"',
-        1,
-    )
+    text = text.replace('init_start = "1980-01-01"', 'init_start = "1985-01-01"', 1)
+    text = text.replace('init_end = "1985-01-01"', 'init_end = "1986-01-01"', 1)
     cfg = tmp_path / "c003_init.toml"
     cfg.write_text(text)
     return cfg
@@ -363,6 +363,61 @@ def test_forward_init_leg_single_pathway(tmp_path):
     assert "-basal_yield_stress.model mohr_coulomb" in fwd
     assert "-time.start 2007-01-01" in fwd
     assert "-time.end 2015-01-01" in fwd
+
+
+def test_forward_init_leg_surface_model(tmp_path):
+    """
+    ``campaign.init_surface_model`` swaps the surface model on the init leg only.
+
+    The init leg runs the named ``[surface.options.*]`` table (here
+    ``ismip7_forcing`` with force-to-thickness), with its file placeholders
+    filled from the staged/UQ overrides; the forward leg keeps the main
+    surface model untouched.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    text = FREE_HY.read_text().replace(
+        'init_start = "2006-01-01"',
+        'init_surface_model = "ismip7_forcing"\ninit_start = "2006-01-01"',
+        1,
+    )
+    text += (
+        "\n[surface.options.ismip7_forcing]\n\n"
+        "'surface.models' = \"ismip7\"\n"
+        "'surface.ismip7.file' = \"none\"\n"
+        "'surface.ismip7.gradient.file' = \"none\"\n"
+        "'surface.ismip7.reference.file' = \"none\"\n"
+        "'surface.force_to_thickness.file' = \"none\"\n"
+        "'surface.force_to_thickness.alpha' = 0.95\n"
+    )
+    cfg = tmp_path / "free_init_surface.toml"
+    cfg.write_text(text)
+
+    script = _render_forward(
+        tmp_path,
+        cfg,
+        uq={
+            "surface.ismip7.file": "climate_hist.nc",
+            "surface.force_to_thickness.file": "boot.nc",
+        },
+    )
+    init, fwd = _legs(script)
+
+    # Init leg: the swapped model's options, placeholders filled from overrides.
+    assert "-surface.force_to_thickness.file boot.nc" in init
+    assert "-surface.force_to_thickness.alpha 0.95" in init
+    assert "-surface.ismip7.file climate_hist.nc" in init
+    assert "-time.start 2006-01-01" in init
+    assert "-time.end 2007-01-01" in init
+
+    # Forward leg: main surface model untouched, restarts from the init state.
+    assert "force_to_thickness" not in fwd
+    assert "-surface.ismip7.file climate_hist.nc" in fwd
+    init_state = _search(r"-output\.file (\S+state_\S+2006-01-01_2007-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in fwd
 
 
 def test_forward_init_leg_counter(tmp_path):

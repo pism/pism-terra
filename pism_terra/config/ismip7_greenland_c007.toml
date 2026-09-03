@@ -13,20 +13,23 @@
 
 [campaign]
 
-bucket = "pism-cloud-data"
-prefix = "ismip7/greenland/input"
-version = "v2"
-historical_start_year = "1978"
-historical_end_year = "2014"
-projection_start_year = "2015"
-projection_end_year = "2300"
 boot_file = "boot_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
+bucket = "pism-cloud-data"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
-outline_file = "mouginot_basins_w_shelves.gpkg"
+historical_end_year = "2014"
+historical_start_year = "1900"
+init_end = "1985-01-01"
+init_start = "1980-01-01"
+init_surface_model = "ismip7_forcing"
 obs_file = "obs_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
+outline_file = "mouginot_basins_w_shelves.gpkg"
+prefix = "ismip7/greenland/input"
+projection_end_year = "2300"
+projection_start_year = "2015"
+regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
+version = "v3"
 
 [time]
 
@@ -66,7 +69,7 @@ retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
 'output.spatial.times' = "yearly"
 'output.spatial.vars' = "ismip"
 'output.scalar.times' = "yearly"
-'output.scalar.file' = "none"
+'output.scalar.file' = "yearly"
 'output.checkpoint.interval' = 24
 'output.spatial.stop_missing' = 'no'
 'output.ISMIP' = "yes"
@@ -106,7 +109,7 @@ model = 'hybrid'
 'stress_balance.blatter.coarsening_factor' = 3
 'stress_balance.blatter.use_eta_transform' = "yes"
 'stress_balance.calving_front_stress_bc' = "yes"
-'time_stepping.adaptive_ratio' = 1000
+'time_stepping.adaptive_ratio' = 250
 
 [stress_balance.options.hybrid]
 
@@ -146,6 +149,17 @@ model = "ismip7"
 
 'surface.models' = "given"
 'surface.given.file' = "none"
+
+[surface.options.ismip7_forcing]
+
+'surface.models' = "ismip7"
+'surface.ismip7.file' = "none"
+'surface.ismip7.gradient.file' = "none"
+'surface.ismip7.reference.file' = "none"
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
+
 
 [calving]
 
@@ -225,6 +239,7 @@ model = "routing"
 'frontal_melt.routing.file' = "none"
 'frontal_melt.routing.parameter_a' = 4.89e-4
 'frontal_melt.routing.parameter_b' = 0.25
+'frontal_melt.include_floating_ice' = "no"
 
 [hydrology]
 

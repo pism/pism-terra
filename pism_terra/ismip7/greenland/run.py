@@ -147,6 +147,7 @@ def _build_init_leg(
     *,
     init_start: str,
     init_end: str,
+    init_surface_model: str | None = None,
     resolution: str,
     name_options_init: str,
     overrides: Mapping[str, object],
@@ -170,6 +171,11 @@ def _build_init_leg(
         must already be applied).
     init_start, init_end : str
         Time bounds of the init leg as ``YYYY-MM-DD``.
+    init_surface_model : str or None, optional
+        Key of ``cfg.surface.options`` selecting a surface model for this
+        leg only, from ``campaign.init_surface_model`` (e.g. an
+        ``ismip7_forcing`` table adding force-to-thickness nudging). When
+        ``None`` the init leg keeps the main leg's surface model.
     resolution : str
         Grid resolution tag (e.g. ``"900m"``), for filenames.
     name_options_init : str
@@ -191,11 +197,32 @@ def _build_init_leg(
         line, the absolute state-file path the next leg restarts from, and
         the ``g<res>_<opts>_<start>_<end>`` filename tag (used e.g. for the
         inversion output).
+
+    Raises
+    ------
+    ValueError
+        If ``init_surface_model`` names no ``[surface.options.*]`` table.
     """
     run_init = _base_run_dict(cfg, bed_deformation=False)
     run_init.pop("time.start", None)
     run_init.pop("time.end", None)
     run_init.update({"time.start": init_start, "time.end": init_end})
+
+    if init_surface_model is not None:
+        if init_surface_model not in cfg.surface.options:
+            raise ValueError(
+                f"campaign.init_surface_model = {init_surface_model!r} names no [surface.options.*] "
+                f"table in the config; available: {sorted(cfg.surface.options)}"
+            )
+        # Swap the main leg's surface model for this leg only: drop the
+        # selected model's options wholesale, then lay down the init model's.
+        # File-path placeholders ("none") are resolved by the staged-file /
+        # UQ overrides below — they are filtered against the *swapped* key
+        # set, so e.g. surface.force_to_thickness.file survives here even
+        # though the forward legs drop it.
+        for option in cfg.surface.selected():
+            run_init.pop(option, None)
+        run_init.update(cfg.surface.options[init_surface_model])
 
     init_overrides, _ = filter_overrides_by_config(dict(overrides), run_init.keys())
     run_init.update(init_overrides)
@@ -596,8 +623,10 @@ def _render_forward_run(
     When the campaign config defines ``init_start``/``init_end``, a short
     init/prior leg (``run_init_str``) is rendered first — the same leg 1 the
     inverse workflow uses — and the forward leg(s) restart from its state
-    file instead of bootstrapping. Without those fields the forward leg
-    bootstraps directly, as before.
+    file instead of bootstrapping. ``campaign.init_surface_model`` optionally
+    swaps the surface model for that leg only (e.g. ``ismip7_forcing``, which
+    adds force-to-thickness nudging toward the boot geometry). Without the
+    init bounds the forward leg bootstraps directly, as before.
 
     Parameters
     ----------
@@ -735,8 +764,15 @@ def _render_forward_run(
 
     # Remove 'sample' from flag overrides; drop any key not in the config-derived
     # run_hist dict (e.g., surface.debm_simple.std_dev.file when surface.model == "pdd").
-    overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
-    overrides, skipped = filter_overrides_by_config(overrides, run_hist.keys())
+    all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
+    # The init leg may run a different surface model
+    # (campaign.init_surface_model), so overrides only its option table knows
+    # (e.g. surface.force_to_thickness.file) are not "skipped" —
+    # _build_init_leg filters them against the swapped key set itself.
+    init_surface_model = cfg.campaign.init_surface_model
+    init_surface_keys = set(cfg.surface.options.get(init_surface_model) or ()) if init_surface_model else set()
+    overrides, skipped = filter_overrides_by_config(all_overrides, run_hist.keys())
+    skipped = [k for k in skipped if k not in init_surface_keys]
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
@@ -756,9 +792,10 @@ def _render_forward_run(
             cfg,
             init_start=init_start,
             init_end=init_end,
+            init_surface_model=init_surface_model,
             resolution=resolution,
             name_options_init=name_options_init,
-            overrides=overrides,
+            overrides=all_overrides,
             state_path=state_path,
             scalar_path=scalar_path,
             spatial_path=spatial_path,
@@ -1033,9 +1070,13 @@ def _render_inverse_run(
     # nobody knows it (e.g. surface.debm_simple.std_dev.file when
     # surface.model == "pdd").
     all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
+    # Keys only the init leg's surface model knows (campaign.init_surface_model)
+    # are consumed by _build_init_leg below, so they are not "skipped".
+    init_surface_model = cfg.campaign.init_surface_model
+    init_surface_keys = set(cfg.surface.options.get(init_surface_model) or ()) if init_surface_model else set()
     inv_overrides, _ = filter_overrides_by_config(all_overrides, inv.keys())
     fwd_overrides, _ = filter_overrides_by_config(all_overrides, run_fwd.keys())
-    skipped = [k for k in all_overrides if k not in inv and k not in run_fwd]
+    skipped = [k for k in all_overrides if k not in inv and k not in run_fwd and k not in init_surface_keys]
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
     inv.update(inv_overrides)
@@ -1046,6 +1087,7 @@ def _render_inverse_run(
         cfg,
         init_start=init_start,
         init_end=init_end,
+        init_surface_model=init_surface_model,
         resolution=resolution,
         name_options_init=name_options_init,
         overrides=all_overrides,
@@ -1438,6 +1480,7 @@ def _run(*, kind: str) -> None:
                 "grid.file": row["grid_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
                 "surface.ismip7.reference.file": row["boot_file"],
+                "surface.force_to_thickness.file": row["boot_file"],
                 "atmosphere.given.file": row["climate_hist_file"],
                 "surface.given.file": row["climate_hist_file"],
                 "surface.ismip7.file": row["climate_hist_file"],
