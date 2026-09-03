@@ -1584,6 +1584,11 @@ class CampaignConfig(BaseModel):
         staging a debris file.
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
+    dh : str or None
+        Observed surface-elevation-change data source identifier (e.g.,
+        ``"hugonnet"`` for the Hugonnet et al. (2021) 2000-2020 maps). When
+        set, staging adds ``dh``/``dh_err`` to the observations file. Omit or
+        set ``"none"`` to skip.
     forcing_mask : str or None
         Forcing mask ("all", "glacier", "none").
     velocity : str or None
@@ -1673,6 +1678,7 @@ class CampaignConfig(BaseModel):
     climatology: str | None = Field(default=None)
     debris: str | None = Field(default=None)
     dem: str | None = Field(default=None)
+    dh: str | None = Field(default=None)
     forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
     heatflux: str | None = Field(default=None)

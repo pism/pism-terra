@@ -50,6 +50,7 @@ from pism_terra.glacier.climate import (
     snap,
 )
 from pism_terra.glacier.dem import boot_file_from_grid
+from pism_terra.glacier.observations import dh_from_tif, fetch_dh_raster
 from pism_terra.glacier.stage import staged_rgi_outlines
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import (
@@ -208,6 +209,79 @@ def cog_profile(da: xr.DataArray) -> dict:
     }
 
 
+def write_dh_cogs(
+    config: dict,
+    rgi_id: str,
+    grid_ds: xr.Dataset,
+    geometries,
+    path: Path,
+    staging_path: Path,
+    force_overwrite: bool = False,
+) -> dict[str, Path]:
+    """
+    Write COGs of the observed 2000-2020 elevation change for one complex.
+
+    Fetches the pre-clipped per-complex raster (see
+    :func:`pism_terra.glacier.observations.prepare_dh_hugonnet`), aligns it
+    to the planning grid, and writes ``{rgi_id}_dh.tif`` and
+    ``{rgi_id}_dh_err.tif`` beside the boot COGs. Opt-in like staging: a
+    campaign without a ``dh`` key writes nothing, and a complex without a
+    prepared raster (outside the observed tiles) is skipped with a warning.
+
+    Parameters
+    ----------
+    config : dict
+        Campaign configuration; ``"dh"`` selects the product, and
+        ``"bucket"``/``"prefix"``/``"project_directory"`` locate the
+        prepared rasters.
+    rgi_id : str
+        Glacier complex identifier.
+    grid_ds : xarray.Dataset
+        Planning grid (with a projected CRS) the fields are aligned to.
+    geometries : iterable of shapely geometries
+        Glacier outline(s) in the grid's CRS; cells outside stay NaN.
+    path : pathlib.Path
+        Output directory for the COGs.
+    staging_path : pathlib.Path
+        Cache directory for the fetched raster.
+    force_overwrite : bool, default ``False``
+        Re-fetch the raster even when a cached copy exists.
+
+    Returns
+    -------
+    dict[str, pathlib.Path]
+        Mapping from ``f"{rgi_id}_{var}"`` to the written COG paths; empty
+        when dh is not configured or not available for this complex.
+    """
+    dh = config.get("dh", "none")
+    if not dh or dh == "none":
+        return {}
+
+    local_tif = fetch_dh_raster(
+        rgi_id,
+        staging_path,
+        dataset=dh,
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        project_directory=config.get("project_directory"),
+        force_overwrite=force_overwrite,
+    )
+    if local_tif is None:
+        return {}
+
+    ds_dh = dh_from_tif(local_tif, grid_ds, geometries)
+    written: dict[str, Path] = {}
+    for var in ds_dh.data_vars:
+        m_id = f"{rgi_id}_{var}"
+        cog_path = path / f"{m_id}.tif"
+        # Declare the NaN fill as nodata so viewers mask the unobserved cells.
+        da = ds_dh[var].rio.write_nodata(np.nan)
+        da.rio.to_raster(cog_path, **cog_profile(da))
+        print(cog_path)
+        written[m_id] = cog_path
+    return written
+
+
 def s4f_glacier(
     config: dict,
     rgi_id: str,
@@ -228,6 +302,8 @@ def s4f_glacier(
     (3) creates a target model grid,
     (4) writes one Cloud Optimized GeoTIFF per spatial variable in the boot
         dataset (plus a NetCDF copy of ``bed`` and a clipped surface tif),
+        and — when the campaign sets ``dh`` — COGs of the observed 2000-2020
+        elevation change and its error (see :func:`write_dh_cogs`),
     and (5) returns a mapping of variable identifiers to written file paths.
 
     Parameters
@@ -383,6 +459,18 @@ def s4f_glacier(
             out.to_netcdf(nc_path, encoding=encoding, engine="h5netcdf")
             print(nc_path)
             boot_files[m_id] = nc_path
+
+    boot_files.update(
+        write_dh_cogs(
+            config,
+            rgi_id,
+            grid_ds,
+            glacier_projected.geometry,
+            path,
+            staging_path,
+            force_overwrite=force_overwrite,
+        )
+    )
     return boot_files
 
 
