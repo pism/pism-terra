@@ -591,7 +591,12 @@ def _process_single_forcing(
     cdo = Cdo()
     cdo.debug = True
 
-    grid_file = file_localizer("s3://pism-cloud-data/ismip7_extra/grid.txt", dest=output_path)
+    # The cdo grid description is scratch, not a shipped product; keep it out
+    # of the output directory so that stays 1:1 syncable to S3.
+    grid_file = file_localizer(
+        "s3://pism-cloud-data/ismip7_extra/grid.txt",
+        dest=staging_path if staging_path is not None else output_path,
+    )
     tas_replace = ""
 
     output_files = []
