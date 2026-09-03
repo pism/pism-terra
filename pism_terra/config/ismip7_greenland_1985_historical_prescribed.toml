@@ -153,6 +153,16 @@ model = "ismip7"
 'surface.models' = "given"
 'surface.given.file' = "none"
 
+[surface.options.ismip7_forcing]
+
+'surface.models' = "ismip7"
+'surface.ismip7.file' = "none"
+'surface.ismip7.gradient.file' = "none"
+'surface.ismip7.reference.file' = "none"
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.alpha' = 0.95
+'surface.force_to_thickness.ice_free_alpha_factor' = 10
+
 [calving]
 
 'calving.methods' = 'vonmises_calving,thickness_calving'
