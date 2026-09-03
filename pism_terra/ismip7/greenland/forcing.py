@@ -131,7 +131,19 @@ def _cloud_fs() -> s3fs.S3FileSystem:
     s3fs.S3FileSystem
         Anonymous filesystem rooted at the source.coop S3 endpoint.
     """
-    return s3fs.S3FileSystem(anon=True, endpoint_url=SOURCE_COOP_ENDPOINT, skip_instance_cache=True)
+    # Generous read timeout: a dozen parallel ~76 MB streams (several dask
+    # tasks x download threads) can starve an individual socket well past
+    # botocore's 60 s default, which shows up as AioReadTimeoutError.
+    return s3fs.S3FileSystem(
+        anon=True,
+        endpoint_url=SOURCE_COOP_ENDPOINT,
+        skip_instance_cache=True,
+        config_kwargs={
+            "connect_timeout": 60,
+            "read_timeout": 300,
+            "retries": {"max_attempts": 5, "mode": "adaptive"},
+        },
+    )
 
 
 def _remote_var_dir(gcm: str, pathway: str, short_hand: str, m_var: str, source: str | None = None) -> str:
@@ -238,9 +250,13 @@ def _needs_download(local: Path, remote: dict) -> bool:
     return True
 
 
-def _fetch_one(fs: s3fs.S3FileSystem, rkey: str, local: Path, remote: dict) -> Path:
+def _fetch_one(fs: s3fs.S3FileSystem, rkey: str, local: Path, remote: dict, attempts: int = 4) -> Path:
     """
     Download one object to the cache, atomically, and stamp its sidecar.
+
+    Transient network failures (socket read timeouts, dropped connections)
+    are retried with exponential backoff instead of aborting the whole sync;
+    a bad ``.part`` file is discarded before each retry.
 
     Parameters
     ----------
@@ -252,6 +268,8 @@ def _fetch_one(fs: s3fs.S3FileSystem, rkey: str, local: Path, remote: dict) -> P
         Cache destination.
     remote : dict
         S3 listing entry for the object (recorded in the sidecar).
+    attempts : int, default 4
+        Total tries before the last error is re-raised.
 
     Returns
     -------
@@ -260,7 +278,25 @@ def _fetch_one(fs: s3fs.S3FileSystem, rkey: str, local: Path, remote: dict) -> P
     """
     local.parent.mkdir(parents=True, exist_ok=True)
     tmp = local.with_suffix(local.suffix + ".part")
-    fs.get_file(rkey, str(tmp))
+    for attempt in range(1, attempts + 1):
+        try:
+            fs.get_file(rkey, str(tmp))
+            break
+        except Exception as exc:
+            tmp.unlink(missing_ok=True)
+            if attempt == attempts:
+                raise
+            wait = 2**attempt
+            logger.warning(
+                "Download %s failed (%s: %s); retry %d/%d in %ds",
+                rkey.rsplit("/", 1)[-1],
+                type(exc).__name__,
+                exc,
+                attempt,
+                attempts - 1,
+                wait,
+            )
+            time.sleep(wait)
     tmp.replace(local)
     _write_meta(local, remote)
     return local
