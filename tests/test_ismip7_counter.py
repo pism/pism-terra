@@ -39,7 +39,7 @@ from pism_terra.ismip7.naming import ISMIP7Names
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "pism_terra" / "config"
 
-ALL_COUNTERS = [f"C{n:03d}" for n in range(1, 9)]
+ALL_COUNTERS = [f"C{n:03d}" for n in range(1, 9)] + ["C011"]
 
 
 @pytest.mark.parametrize("counter", ALL_COUNTERS)
@@ -59,6 +59,8 @@ def test_config_expands_counter(counter):
     assert cfg.run_info.experiment == spec.experiment_id
     assert cfg.campaign.pathway == spec.pathway
     assert cfg.campaign.gcms == [spec.esm_id]
+    assert cfg.campaign.climate_version == spec.climate_version
+    assert cfg.campaign.ocean_version == spec.ocean_version
     assert cfg.time.time_end == f"{spec.proj_end_year}-01-01"
 
 
@@ -76,8 +78,30 @@ def test_forcing_filename_from_expanded_fields(counter):
     cfg = load_config(CONFIG_DIR / f"ismip7_greenland_{counter.lower()}.toml")
     assert isinstance(cfg.campaign.gcms, list)
     gcm = cfg.campaign.gcms[0]
-    expected = f"ismip7_greenland_climate_{spec.pathway}_{spec.esm_id}_{cfg.campaign.version}.nc"
-    assert f"ismip7_greenland_climate_{cfg.campaign.pathway}_{gcm}_{cfg.campaign.version}.nc" == expected
+    # The filename version tags are the per-ESM, per-forcing versions (from
+    # the counter), not campaign.version (which names the S3 directory) —
+    # climate and ocean are published on independent version tracks.
+    expected_climate = f"ismip7_greenland_climate_{spec.pathway}_{spec.esm_id}_{spec.climate_version}.nc"
+    expected_ocean = f"ismip7_greenland_ocean_{spec.pathway}_{spec.esm_id}_{spec.ocean_version}.nc"
+    assert (
+        f"ismip7_greenland_climate_{cfg.campaign.pathway}_{gcm}_{cfg.campaign.climate_version}.nc" == expected_climate
+    )
+    assert f"ismip7_greenland_ocean_{cfg.campaign.pathway}_{gcm}_{cfg.campaign.ocean_version}.nc" == expected_ocean
+
+
+def test_ocx_counter():
+    """C011 (OCX) runs reanalysis forcing to 2025 with no projection staging."""
+    spec = CORE_EXPERIMENTS["C011"]
+    assert spec.experiment_id == "OCX"
+    assert spec.pathway == "historical"
+    assert spec.esm_id == "OCX"
+    assert spec.proj_end_year == 2025
+    assert spec.product_leg == "projection"
+    assert spec.climate_version == "v1"
+    assert spec.ocean_version == "v1"
+    assert spec.has_projection_forcing is False
+    # The other counters all carry a stageable projection forcing.
+    assert all(s.has_projection_forcing for c, s in CORE_EXPERIMENTS.items() if c != "C011")
 
 
 def test_resolve_counter_unknown_raises():

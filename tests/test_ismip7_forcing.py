@@ -74,9 +74,13 @@ def test_forcing_tasks_from_shipped_config():
     # 2 standard GCMs x 4 pathways x 2 forcings + OCX historical x 2 forcings
     assert len(tasks) == 2 * 4 * 2 + 2
 
+    # Climate and ocean are published on independent version tracks (per-
+    # forcing ``version`` inside the source spec), matching the newest
+    # upstream tags on source.coop as of 2026-09-03.
     assert by_key[("CESM2-WACCM", "historical", "climate")] == ("v3", 1900, 2014, "SDBN1-1000m", None)
-    assert by_key[("CESM2-WACCM", "ssp585", "ocean")] == ("v3", 2015, 2300, "ocean-1000m", None)
+    assert by_key[("CESM2-WACCM", "ssp585", "ocean")] == ("v2", 2015, 2300, "ocean-1000m", None)
     assert by_key[("MRI-ESM2-0", "ssp126", "climate")] == ("v2", 2015, 2300, "GEMB-SDBN1-1000m", None)
+    assert by_key[("MRI-ESM2-0", "historical", "ocean")] == ("v1", 1900, 2014, "ocean-1000m", None)
     assert by_key[("OCX", "historical", "climate")] == ("v1", 1958, 2024, "SDBN1-1000m", "RACMO2.3p2-ERA")
     assert by_key[("OCX", "historical", "ocean")] == ("v1", 1958, 2024, "ocean-1000m", "EN4")
 

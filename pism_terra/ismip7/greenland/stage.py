@@ -74,7 +74,10 @@ def stage(
         - ``"gcms"`` : str or list[str]
             GCM model name(s).
         - ``"version"`` : str
-            Dataset version.
+            Dataset version, naming the S3 directory (``<prefix>/<version>/``).
+        - ``"climate_version"`` / ``"ocean_version"`` : str, optional
+            Per-ESM, per-forcing version tags inside the forcing filenames
+            (each falls back to ``version``).
         - ``"historical_start_year"`` : int
             First year of the historical forcing file.
         - ``"historical_end_year"`` : int
@@ -148,6 +151,15 @@ def stage(
     gcms = config["gcms"]
     gcms = [gcms] if isinstance(gcms, str) else gcms
     version = config["version"]
+    # Version tags inside the forcing *filenames* are per-ESM and
+    # per-forcing (see CoreExperiment.climate_version / ocean_version);
+    # ``version`` only names the S3 directory. Non-counter configs fall
+    # back to the directory version.
+    forcing_versions = {
+        "climate": config.get("climate_version") or version,
+        "climate_gradient": config.get("climate_version") or version,
+        "ocean": config.get("ocean_version") or version,
+    }
     # Historical and projection year ranges. End years are inclusive per
     # the campaign-config convention (see CampaignConfig). Projection years are
     # only needed when the projection epoch is staged (forward runs).
@@ -195,7 +207,10 @@ def stage(
     for gcm in gcms:
         for epoch_pathway, ep_start, ep_end, _ in epoch_specs:
             for forcing in ("climate", "climate_gradient", "ocean"):
-                rel = f"ismip7_greenland_{forcing}_{epoch_pathway}_{gcm}_{version}_{ep_start}_{ep_end}.nc"
+                rel = (
+                    f"ismip7_greenland_{forcing}_{epoch_pathway}_{gcm}_"
+                    f"{forcing_versions[forcing]}_{ep_start}_{ep_end}.nc"
+                )
                 required_files.append((rel, input_path / rel))
 
     # Skip files that already exist locally unless force_overwrite is set.
@@ -282,7 +297,9 @@ def stage(
         pathlib.Path
             Absolute path to the forcing file under ``input_path``.
         """
-        return input_path / Path(f"ismip7_greenland_{forcing}_{epoch_pathway}_{gcm}_{version}_{ep_start}_{ep_end}.nc")
+        return input_path / Path(
+            f"ismip7_greenland_{forcing}_{epoch_pathway}_{gcm}_{forcing_versions[forcing]}_{ep_start}_{ep_end}.nc"
+        )
 
     forcing_paths: dict[tuple[str, str, str], Path] = {}
     for gcm in gcms:

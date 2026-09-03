@@ -41,6 +41,7 @@ TEMPLATE_DIR = REPO / "pism_terra" / "templates"
 
 FREE_HY = CONFIG_DIR / "ismip7_greenland_2007_historical_free.toml"
 C003 = CONFIG_DIR / "ismip7_greenland_c003.toml"
+C011 = CONFIG_DIR / "ismip7_greenland_c011.toml"
 
 
 def _render_inverse(tmp_path: Path, config_file: Path, **kwargs) -> str:
@@ -418,6 +419,57 @@ def test_forward_init_leg_surface_model(tmp_path):
     assert "-surface.ismip7.file climate_hist.nc" in fwd
     init_state = _search(r"-output\.file (\S+state_\S+2006-01-01_2007-01-01\.nc)", init)
     assert f"-input.file {init_state}" in fwd
+
+
+def test_forward_c011_ocx(tmp_path):
+    """
+    C011 (OCX) renders init -> hist -> OCX product leg on shared forcing.
+
+    The init leg spins up 1980..1990 with ``ismip7_forcing``; the historical
+    leg runs 1990..2015 (flat names); the OCX leg continues 2015..2025 as the
+    ISMIP7 product, reusing the historical reanalysis forcing (no separate
+    projection file exists, so no ``proj_overrides`` are passed).
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(
+        tmp_path,
+        C011,
+        sample="OCX",
+        uq={
+            "surface.ismip7.file": "ocx_climate.nc",
+            "surface.force_to_thickness.file": "boot.nc",
+        },
+    )
+    legs = _legs(script)
+    assert [leg.split()[0] for leg in legs] == ["pism", "pism", "pism"]
+    init, hist, proj = legs
+
+    # Init leg: 1980..1990 with the swapped ismip7_forcing surface model.
+    assert "-time.start 1980-01-01" in init
+    assert "-time.end 1990-01-01" in init
+    assert "-surface.force_to_thickness.file boot.nc" in init
+    assert "-surface.ismip7.file ocx_climate.nc" in init
+
+    # Historical leg: restarts from the init state, 1990 to the 2015 split.
+    init_state = _search(r"-output\.file (\S+state_\S+1980-01-01_1990-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in hist
+    assert "-time.start 1990-01-01" in hist
+    assert "-time.end 2015-01-01" in hist
+    assert '-run_info.experiment "historical"' in hist
+    assert "force_to_thickness" not in hist
+
+    # OCX product leg: 2015..2025, same forcing file as the historical leg.
+    hist_state = _search(r"-output\.file (\S+state_\S+1990-01-01_2015-01-01\.nc)", hist)
+    assert f"-input.file {hist_state}" in proj
+    assert "-time.start 2015-01-01" in proj
+    assert "-time.end 2025-01-01" in proj
+    assert '-run_info.experiment "OCX"' in proj
+    assert "-surface.ismip7.file ocx_climate.nc" in proj
+    assert "force_to_thickness" not in proj
 
 
 def test_forward_init_leg_counter(tmp_path):

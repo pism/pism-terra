@@ -1417,8 +1417,12 @@ def _run(*, kind: str) -> None:
     pathway = str(campaign_config.get("pathway") or "").strip().lower()
     if counter:
         # Counter-driven ISMIP7 protocol run: historical experiments (C001/C002)
-        # are historical-only; the rest continue into a projection leg.
-        include_projection = resolve_counter(counter).product_leg != "historical"
+        # are historical-only; the rest continue into a projection leg. OCX
+        # (C011) runs a projection leg but has no separate projection forcing —
+        # its single historical-epoch reanalysis file drives both legs, so
+        # nothing extra is staged (and run_proj reuses the historical files).
+        spec = resolve_counter(counter)
+        include_projection = spec.product_leg != "historical" and spec.has_projection_forcing
     else:
         # Single-pathway run: only stage projection forcing when the pathway is
         # itself a projection (a historical run needs no projection continuation).

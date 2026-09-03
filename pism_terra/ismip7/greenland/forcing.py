@@ -1385,13 +1385,16 @@ def _forcing_tasks(config: dict) -> list[tuple]:
 
     ``source`` and ``version`` may sit at the GCM level (defaults for every
     pathway) with optional per-pathway overrides. ``source`` maps each
-    forcing to the directory subpath between the pathway slot and the
-    variable dir — e.g. ``{climate = "SDBN1-1000m"}`` for a standard tree,
-    or the slash form ``{climate = "RACMO2.3p2-ERA/SDBN1-1000m"}`` for a
+    forcing to its subtree and (optionally) a per-forcing version label:
+    the table form ``{climate = {dataset = "SDBN1-1000m", version = 3}}``
+    carries both, while a plain string (``{climate = "SDBN1-1000m"}``)
+    names just the subtree and takes the pathway/GCM-level ``version``.
+    The dataset is the directory subpath between the pathway slot and the
+    variable dir; the slash form (``"RACMO2.3p2-ERA/SDBN1-1000m"``) names a
     reanalysis-forced tree like OCX (see :func:`_split_source_spec`).
     ``version`` labels the merged output filenames only; the cloud sync
     discovers the actual per-field file versions by listing the
-    source.coop tree.
+    source.coop tree (which tags versions per variable).
 
     Parameters
     ----------
@@ -1407,7 +1410,8 @@ def _forcing_tasks(config: dict) -> list[tuple]:
     Raises
     ------
     ValueError
-        When a pathway has no ``version`` at either level.
+        When a forcing has no ``version`` at the forcing, pathway, or GCM
+        level.
     """
     tasks = []
     for gcm, _gcm_config in config["gcms"].items():
@@ -1418,10 +1422,7 @@ def _forcing_tasks(config: dict) -> list[tuple]:
                 # GCM-level keys (``source``, ``version``) are not pathways.
                 continue
             ice_sheet = config["ice_sheet"]
-            version_value = _pathway_config.get("version", gcm_version)
-            if version_value is None:
-                raise ValueError(f"[gcms] {gcm}/{pathway}: no 'version' at the pathway or GCM level")
-            version = "v" + str(version_value)
+            pathway_version = _pathway_config.get("version", gcm_version)
             start_year = int(_pathway_config["start"])
             end_year = int(_pathway_config["end"])
             sources = {**gcm_sources, **_pathway_config.get("source", {})}
@@ -1430,6 +1431,20 @@ def _forcing_tasks(config: dict) -> list[tuple]:
                 # Fall back to a legacy global ``[forcing] short_hand`` so
                 # older setup TOMLs keep working.
                 spec = sources.get(forcing, forcing_dict.get("short_hand", "none"))
+                # Table form: {dataset = ..., version = ...} carries a
+                # per-forcing version (climate and ocean are published on
+                # independent version tracks); a plain string falls back to
+                # the pathway/GCM-level version.
+                spec_version = None
+                if isinstance(spec, dict):
+                    spec_version = spec.get("version")
+                    spec = spec.get("dataset")
+                version_value = spec_version if spec_version is not None else pathway_version
+                if version_value is None:
+                    raise ValueError(
+                        f"[gcms] {gcm}/{pathway}/{forcing}: no 'version' at the forcing, pathway, or GCM level"
+                    )
+                version = "v" + str(version_value)
                 source, short_hand = _split_source_spec(spec)
                 tasks.append(
                     (

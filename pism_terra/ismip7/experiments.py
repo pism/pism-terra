@@ -36,8 +36,13 @@ the projection leg is an internal continuation (flat filenames). For C003–C008
 **projection** leg is the ISMIP7 product and the historical spin-up leg is kept but
 written with flat filenames.
 
-C009–C011 (CTRL2015 control run and OCX observationally-constrained experiment)
-need distinct forcing/time handling and are intentionally omitted for now.
+C011 (OCX, the Observationally Constrained Experiment) is included: a
+reanalysis-forced run (RACMO2.3p2-ERA atmosphere, EN4 ocean, staged under the
+pseudo-GCM ``"OCX"``) that behaves like a projection ending in 2025 — the
+2015..2025 leg is the ISMIP7 product and there is no separate projection
+forcing file (the single historical-epoch file spans the whole run).
+C009/C010 (CTRL2015 control runs) need distinct forcing/time handling and are
+intentionally omitted for now.
 
 This module is deliberately dependency-free (it must not import
 :mod:`pism_terra.config`) so it can be imported from the config resolver without
@@ -50,7 +55,7 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class CoreExperiment:
+class CoreExperiment:  # pylint: disable=too-many-instance-attributes
     """
     Resolved identity of one ISMIP7 Core experiment.
 
@@ -73,6 +78,21 @@ class CoreExperiment:
         Which of the two forward legs is the ISMIP7 submission product, either
         ``"historical"`` or ``"projection"``. The other leg is written with flat
         (non-ISMIP7) filenames.
+    climate_version : str
+        Version tag embedded in the published climate (and climate-gradient)
+        forcing *filenames* for this ESM (e.g. ``"v2"`` in
+        ``ismip7_greenland_climate_historical_MRI-ESM2-0_v2_1900_2014.nc``).
+        Matches the per-forcing ``version`` in ``setup_ismip7_greenland.toml``;
+        it is independent of ``campaign.version``, which names the S3
+        *directory* the files are published under.
+    ocean_version : str
+        Same as ``climate_version`` for the ocean forcing filenames — the
+        climate and ocean datasets are published on independent version
+        tracks (e.g. CESM2-WACCM climate ``"v3"`` vs ocean ``"v2"``).
+    has_projection_forcing : bool
+        Whether a separate projection-epoch forcing file exists and needs
+        staging. ``False`` for OCX (C011): its single historical-epoch
+        reanalysis file drives both forward legs.
     """
 
     experiment_id: str
@@ -80,18 +100,25 @@ class CoreExperiment:
     esm_id: str
     proj_end_year: int
     product_leg: str
+    climate_version: str
+    ocean_version: str
+    has_projection_forcing: bool = True
 
 
 # Core Experiment Overview (ISMIP7 Protocol Overview, updated 2026-06-29), C001–C008.
 CORE_EXPERIMENTS: dict[str, CoreExperiment] = {
-    "C001": CoreExperiment("historical", "ssp585", "CESM2-WACCM", 2100, "historical"),
-    "C002": CoreExperiment("historical", "ssp585", "MRI-ESM2-0", 2100, "historical"),
-    "C003": CoreExperiment("ssp370", "ssp370", "CESM2-WACCM", 2100, "projection"),
-    "C004": CoreExperiment("ssp370", "ssp370", "MRI-ESM2-0", 2100, "projection"),
-    "C005": CoreExperiment("ssp126", "ssp126", "CESM2-WACCM", 2300, "projection"),
-    "C006": CoreExperiment("ssp126", "ssp126", "MRI-ESM2-0", 2300, "projection"),
-    "C007": CoreExperiment("ssp585", "ssp585", "CESM2-WACCM", 2300, "projection"),
-    "C008": CoreExperiment("ssp585", "ssp585", "MRI-ESM2-0", 2300, "projection"),
+    "C001": CoreExperiment("historical", "ssp585", "CESM2-WACCM", 2100, "historical", "v3", "v2"),
+    "C002": CoreExperiment("historical", "ssp585", "MRI-ESM2-0", 2100, "historical", "v2", "v1"),
+    "C003": CoreExperiment("ssp370", "ssp370", "CESM2-WACCM", 2100, "projection", "v3", "v2"),
+    "C004": CoreExperiment("ssp370", "ssp370", "MRI-ESM2-0", 2100, "projection", "v2", "v1"),
+    "C005": CoreExperiment("ssp126", "ssp126", "CESM2-WACCM", 2300, "projection", "v3", "v2"),
+    "C006": CoreExperiment("ssp126", "ssp126", "MRI-ESM2-0", 2300, "projection", "v2", "v1"),
+    "C007": CoreExperiment("ssp585", "ssp585", "CESM2-WACCM", 2300, "projection", "v3", "v2"),
+    "C008": CoreExperiment("ssp585", "ssp585", "MRI-ESM2-0", 2300, "projection", "v2", "v1"),
+    # OCX (Observationally Constrained Experiment): reanalysis forcing staged
+    # as pseudo-GCM "OCX" (single historical-epoch file, 1958-2024); runs like
+    # a projection ending 2025 with the 2015..2025 leg as the ISMIP7 product.
+    "C011": CoreExperiment("OCX", "historical", "OCX", 2025, "projection", "v1", "v1", has_projection_forcing=False),
 }
 
 

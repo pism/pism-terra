@@ -1,5 +1,5 @@
 ismip7_to_pism = {"acabf" = "climatic_mass_balance", "dacabfdz" = "climatic_mass_balance_gradient", "mrro" = "runoff_rate", "dmrrodz" = "runoff_rate_gradient", "ts" = "ice_surface_temp", "dtsdz" = "ice_surface_temp_gradient", "tf" = "theta_ocean", "so" = "salinity_ocean", "geothermal_heat_flux1" = "bheatflx"}
-version = "v2"
+version = "v3"
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
 ice_sheet = "GrIS"
@@ -11,19 +11,55 @@ x_bounds = [-750650.0, 977350.0]
 y_bounds = [-3412550.0, -604550.0]
 resolution = "450m"
 
-# ``source`` maps each forcing to the directory subpath between the pathway
-# slot and the variable directory of the source.coop tree
+# ``source`` maps each forcing to its source.coop subtree and the version
+# label of the merged output filename: {dataset = <subpath>, version = <int>}.
+# ``dataset`` is the directory subpath between the pathway slot and the
+# variable directory of the source.coop tree
 # (https://source.coop/ismip/ismip7-gris-forcing). The slash form used by OCX
 # names a reanalysis-forced tree: {gcm}/{first segment}/{second segment}/{var}.
 # ``version`` only labels the merged output filenames — the cloud mirror
 # carries just the newest version of every file, discovered by listing.
-# Both keys sit at the GCM level and may be overridden per pathway.
+# (Upstream tags versions per *variable*; e.g. the CESM2-WACCM climate mixes
+# v3 [acabf, dacabfdz, mrro, dmrrodz] and v2 [ts, dtsdz] as of 2026-09-03 —
+# the label below tracks the newest.) A plain string dataset (with the
+# version at the GCM/pathway level) is still accepted.
+# ``source`` sits at the GCM level and may be overridden per pathway.
 
-[gcms]
+# (Sub-tables rather than one inline table per GCM: the ``toml`` 0.x parser
+# used by prepare.py cannot handle inline tables nested two levels deep.)
 
-'CESM2-WACCM' = {historical = {start = 1900, end = 2014}, ssp126 = {start = 2015, end = 2300}, ssp370 = {start = 2015, end = 2100}, ssp585 = {start = 2015, end = 2300}, source = {climate = "SDBN1-1000m", ocean = "ocean-1000m"}, version = 3}
-'MRI-ESM2-0' = {historical = {start = 1900, end = 2014}, ssp126 = {start = 2015, end = 2300}, ssp370 = {start = 2015, end = 2100}, ssp585 = {start = 2015, end = 2300}, source = {climate = "GEMB-SDBN1-1000m", ocean = "ocean-1000m"}, version = 2}
-'OCX' = {historical = {start = 1958, end = 2024}, source = {climate = "RACMO2.3p2-ERA/SDBN1-1000m", ocean = "EN4/ocean-1000m"}, version = 1}
+[gcms.CESM2-WACCM]
+
+historical = {start = 1900, end = 2014}
+ssp126 = {start = 2015, end = 2300}
+ssp370 = {start = 2015, end = 2100}
+ssp585 = {start = 2015, end = 2300}
+
+[gcms.CESM2-WACCM.source]
+
+climate = {dataset = "SDBN1-1000m", version = 3}
+ocean = {dataset = "ocean-1000m", version = 2}
+
+[gcms.MRI-ESM2-0]
+
+historical = {start = 1900, end = 2014}
+ssp126 = {start = 2015, end = 2300}
+ssp370 = {start = 2015, end = 2100}
+ssp585 = {start = 2015, end = 2300}
+
+[gcms.MRI-ESM2-0.source]
+
+climate = {dataset = "GEMB-SDBN1-1000m", version = 2}
+ocean = {dataset = "ocean-1000m", version = 1}
+
+[gcms.OCX]
+
+historical = {start = 1958, end = 2024}
+
+[gcms.OCX.source]
+
+climate = {dataset = "RACMO2.3p2-ERA/SDBN1-1000m", version = 1}
+ocean = {dataset = "EN4/ocean-1000m", version = 1}
 
 [forcing]
 
