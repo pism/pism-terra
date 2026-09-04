@@ -56,6 +56,8 @@ dependencies:
   - xarray
   - xarray-regrid
   - zarr
+  # for notebooks and convenience
+  - seaborn
   # pism-cloud Voila app (notebooks/pism_cloud_app.ipynb)
   - hyp3_sdk
   - ipywidgets
