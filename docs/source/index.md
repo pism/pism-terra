@@ -104,6 +104,7 @@ examples/index
 :hidden:
 
 developer/documentation
+developer/ensemble_output_store
 ```
 
 ```{toctree}
