@@ -21,10 +21,11 @@
 Staging.
 """
 
+import re
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -35,20 +36,78 @@ import rioxarray
 import xarray as xr
 from pyfiglet import Figlet
 from shapely.geometry import Polygon
+from tqdm.auto import tqdm
 
-from pism_terra.aws import local_to_s3, s3_to_local
+from pism_terra.aws import download_from_s3, list_s3_keys, local_to_s3
 from pism_terra.config import load_config
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
 
 
+def resolve_forcing_name(
+    candidates: set[str],
+    forcing: str,
+    pathway: str,
+    gcm: str,
+    start_year: int,
+    end_year: int,
+    fallback_version: str,
+) -> str:
+    """
+    Pick the actual filename of one (forcing, pathway, gcm, epoch) product.
+
+    Forcing filenames carry the *forcing product's* per-GCM version (set in
+    the prepare setup TOML, e.g. ``_v2_`` for MRI-ESM2-0 while CESM2-WACCM
+    ships ``_v3_``), which is independent of the campaign ``version`` that
+    selects the S3 subdirectory. The name is therefore discovered from what
+    actually exists rather than assumed; when several versions of one file
+    are present, the newest wins.
+
+    Parameters
+    ----------
+    candidates : set of str
+        Available filenames (locally staged files plus the bucket listing).
+    forcing : str
+        ``"climate"``, ``"climate_gradient"``, or ``"ocean"``.
+    pathway : str
+        ``"historical"`` or the projection pathway (e.g. ``"ssp370"``).
+    gcm : str
+        GCM name (e.g. ``"MRI-ESM2-0"``).
+    start_year, end_year : int
+        Inclusive year range embedded in the filename.
+    fallback_version : str
+        Expected version tag (e.g. ``"v2"``) used to build the conventional
+        name when no candidate matches — the caller passes the per-forcing
+        ``campaign.climate_version`` / ``ocean_version`` (which fall back to
+        the campaign ``version``); the later download then fails with that
+        name in the message.
+
+    Returns
+    -------
+    str
+        The resolved (or fallback) filename.
+    """
+    pattern = re.compile(
+        rf"^ismip7_greenland_{re.escape(forcing)}_{re.escape(pathway)}_{re.escape(gcm)}"
+        rf"_v(\d+)_{start_year}_{end_year}\.nc$"
+    )
+    best, best_version = None, -1
+    for name in candidates:
+        match = pattern.match(name)
+        if match and int(match.group(1)) > best_version:
+            best, best_version = name, int(match.group(1))
+    if best is None:
+        return f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{fallback_version}_{start_year}_{end_year}.nc"
+    return best
+
+
 def stage(
     config: dict,
     path: str | Path = "input_files",
-    bucket: str = "pism-cloud-data",
-    prefix: str = "ismip7_greenland_input",
     force_overwrite: bool = False,
+    include_projection: bool = True,
+    data_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """
     Stage ISMIP7 Greenland inputs and return a file index.
@@ -61,6 +120,7 @@ def stage(
     ----------
     config : dict
         Configuration mapping. Must contain at least:
+
         - ``"grid_file"`` : str
             Path to the grid NetCDF file relative to the input directory.
         - ``"boot_file"`` : str
@@ -69,77 +129,209 @@ def stage(
             Path to the heatflux NetCDF file relative to the input directory.
         - ``"regrid_file"`` : str
             Path to the regrid NetCDF file relative to the input directory.
-        - ``"retreat_file"`` : str
-            Path to the retreat NetCDF file relative to the input directory.
+        - ``"gcms"`` : str or list[str]
+            GCM model name(s).
+        - ``"version"`` : str
+            Dataset version, naming the S3 directory (``<prefix>/<version>/``).
+        - ``"climate_version"`` / ``"ocean_version"`` : str, optional
+            Per-ESM, per-forcing version tags inside the forcing filenames
+            (each falls back to ``version``).
+        - ``"historical_start_year"`` : int
+            First year of the historical forcing file.
+        - ``"historical_end_year"`` : int
+            Last (inclusive) year of the historical forcing file.
+
+        The following are required only when ``include_projection`` is ``True``
+        (forward runs); an inverse/calibration config may omit them:
+
         - ``"pathway"`` : str
             ISMIP7 pathway identifier.
-        - ``"gcm"`` : str
-            GCM model name.
-        - ``"version"`` : str
-            Dataset version.
-        - ``"start_year"`` : int
-            Start year of the forcing period.
-        - ``"end_year"`` : int
-            End year of the forcing period.
+        - ``"projection_start_year"`` : int
+            First year of the projection forcing file.
+        - ``"projection_end_year"`` : int
+            Last (inclusive) year of the projection forcing file
+            (differs per pathway — 2100 for ssp370, 2300 for ssp126/585).
     path : str or pathlib.Path, default ``"input_files"``
         Output directory. Created if missing. All staged artifacts are written here.
-    bucket : str, default ``"pism-cloud-data"``
-        AWS S3 bucket name to sync ISMIP7 input data from.
-    prefix : str, default ``"ismip7_greenland_input"``
-        S3 key prefix (folder path within the bucket).
     force_overwrite : bool, default ``False``
         If ``True``, downstream helpers may regenerate intermediate/final artifacts
         even if cache files exist.
+    include_projection : bool, default ``True``
+        If ``True``, stage both the historical and the projection (pathway) forcing
+        epochs. If ``False``, stage only the historical epoch and omit the ``*_proj_*``
+        columns from the returned index. Historical(-only) runs pass ``False`` because
+        they never run a projection continuation, so the (large) projection files
+        never need to be downloaded.
+    data_path : str or pathlib.Path or None, default ``None``
+        Directory where the staged input data is written. When given, all inputs go
+        here (a shared location that multiple experiment output directories can
+        reuse to save disk); when ``None``, they go to ``<path>/input`` as before.
+        Files already present are not re-downloaded, so pointing several runs at the
+        same ``data_path`` stages the data once.
 
     Returns
     -------
     pandas.DataFrame
-        Single-row DataFrame with absolute-path columns including
+        DataFrame with one row per GCM and absolute-path columns including
         ``boot_file``, ``grid_file``, ``heatflux_file``, ``regrid_file``,
-        ``retreat_file``, ``climate_file``, ``ocean_file``,
-        ``surface_input_file``, and ``frontal_melt_file``.
+        ``outline_file``, ``climate_file``, ``ocean_file``,
+        ``surface_input_file``, ``frontal_melt_file``, and ``sample``.
     """
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
-    print("=" * 80)
+    print("=" * 120)
     print(banner)
-    print("=" * 80)
+    print("=" * 120)
     print("Stage ISMIP7 Greenland")
-    print("-" * 80)
+    print("-" * 120)
     print("")
 
     # Outputs dir
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
-    input_path = path / Path("input")
+    # Input data goes to a shared ``data_path`` when given (so several experiment
+    # output dirs can reuse one staged copy), otherwise to ``<output-path>/input``.
+    input_path = Path(data_path) if data_path is not None else path / Path("input")
     if force_overwrite:
         input_path.unlink(missing_ok=True)
     input_path.mkdir(parents=True, exist_ok=True)
 
-    s3_to_local(bucket, prefix=prefix, dest=input_path)
+    bucket = config["bucket"]
+    # ``prefix`` is a plain string in CampaignConfig; build the S3-side
+    # prefix with f-string concatenation rather than Path division (Path /
+    # str would TypeError on the leading str, and S3 keys aren't filesystem
+    # paths anyway). Include ``version`` so the URL resolves to the layout
+    # ``prepare`` writes, e.g. ``s3://…/ismip7/greenland/input/v2/…``.
+    prefix = f"{config['prefix']}/{config['version']}"
+
+    gcms = config["gcms"]
+    gcms = [gcms] if isinstance(gcms, str) else gcms
+    version = config["version"]
+    # Version tags inside the forcing *filenames* are per-ESM and
+    # per-forcing (see CoreExperiment.climate_version / ocean_version);
+    # ``version`` only names the S3 directory. Non-counter configs fall
+    # back to the directory version.
+    forcing_versions = {
+        "climate": config.get("climate_version") or version,
+        "climate_gradient": config.get("climate_version") or version,
+        "ocean": config.get("ocean_version") or version,
+    }
+    # Historical and projection year ranges. End years are inclusive per
+    # the campaign-config convention (see CampaignConfig). Projection years are
+    # only needed when the projection epoch is staged (forward runs).
+    hist_start = int(config["historical_start_year"])
+    hist_end = int(config["historical_end_year"])
 
     grid_file = input_path / Path(config["grid_file"])
+    boot_file = input_path / Path(config["boot_file"])
+    heatflux_file = input_path / Path(config["heatflux_file"])
+    regrid_file = input_path / Path(config["regrid_file"])
+    retreat_file = input_path / Path(config["retreat_file"])
+    outline_file = input_path / Path(config["outline_file"])
+    obs_file = input_path / Path(config["obs_file"])
+
+    # Enumerate every S3 key we actually need so we don't bulk-sync the
+    # whole prefix (which carries per-GCM forcings for GCMs we aren't
+    # running, plus assorted bookkeeping files). ``required_files`` pairs
+    # the rel-key under ``prefix`` with its target local path.
+    required_files: list[tuple[str, Path]] = [
+        (config["grid_file"], grid_file),
+        (config["boot_file"], boot_file),
+        (config["heatflux_file"], heatflux_file),
+        (config["regrid_file"], regrid_file),
+        (config["retreat_file"], retreat_file),
+        (config["outline_file"], outline_file),
+        (config["obs_file"], obs_file),
+    ]
+    # ``prepare`` publishes one file per (epoch, gcm, forcing) — the
+    # historical span and each projection pathway live side-by-side.
+    # ``climate_gradient`` is the annual elevation-gradient companion of
+    # ``climate`` (see ``prepare_ismip7_forcing``); validation downstream
+    # expects all three per epoch.
+    #
+    # Per-epoch spec: (pathway_name, start_year, end_year, column_suffix)
+    epoch_specs = [
+        ("historical", hist_start, hist_end, "hist"),
+    ]
+    if include_projection:
+        # ``pathway`` and the projection year range are only needed for the
+        # projection epoch, so an inverse/calibration config need not set them.
+        pathway = config["pathway"]
+        proj_start = int(config["projection_start_year"])
+        proj_end = int(config["projection_end_year"])
+        epoch_specs.append((pathway, proj_start, proj_end, "proj"))
+    # Forcing filenames carry a per-GCM version independent of the campaign
+    # ``version`` (which only names the S3 subdirectory); resolve the actual
+    # names against what exists — locally staged files first, then the bucket
+    # (see :func:`resolve_forcing_name`).
+    candidates = {p.name for p in input_path.glob("ismip7_greenland_*.nc")}
+    try:
+        candidates |= {key.rsplit("/", 1)[-1] for key in list_s3_keys(bucket, prefix)}
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        print(
+            f"Could not list s3://{bucket}/{prefix} ({exc}); "
+            f"assuming {sorted(set(forcing_versions.values()))} forcing filenames"
+        )
+
+    forcing_names: dict[tuple[str, str, str], str] = {}
+    for gcm in gcms:
+        for epoch_pathway, ep_start, ep_end, _ in epoch_specs:
+            for forcing in ("climate", "climate_gradient", "ocean"):
+                rel = resolve_forcing_name(
+                    candidates, forcing, epoch_pathway, gcm, ep_start, ep_end, forcing_versions[forcing]
+                )
+                forcing_names[(gcm, epoch_pathway, forcing)] = rel
+                required_files.append((rel, input_path / rel))
+
+    # Skip files that already exist locally unless force_overwrite is set.
+    # We intentionally do not re-validate cached files here; the explicit
+    # validation passes below do that and surface failures.
+    to_download = [
+        (rel_key, local_path) for rel_key, local_path in required_files if force_overwrite or not local_path.exists()
+    ]
+
+    if to_download:
+        # boto3 clients are safe for concurrent ``download_from_s3``; the
+        # outer 4-way fan-out keeps the connection pool busy without
+        # interleaving the per-file tqdm bars too aggressively.
+        # Use a distinct name from the ``ProcessPoolExecutor`` blocks below
+        # so mypy doesn't narrow the variable's type across reuse.
+        with ThreadPoolExecutor(max_workers=4) as dl_executor:
+            futures = {
+                dl_executor.submit(
+                    download_from_s3,
+                    f"s3://{bucket}/{prefix}/{rel_key}",
+                    local_path,
+                ): rel_key
+                for rel_key, local_path in to_download
+            }
+            for dl_future in as_completed(futures):
+                try:
+                    dl_future.result()
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    print(f"Failed to download s3://{bucket}/{prefix}/{futures[dl_future]}: {exc}")
+
+    # Grid file gets the heavier full-load check; leave it sequential.
     check_xr_fully(grid_file)
 
-    boot_file = input_path / Path(config["boot_file"])
-    check_xr_lazy(boot_file)
-
-    heatflux_file = input_path / Path(config["heatflux_file"])
-    check_xr_lazy(heatflux_file)
-
-    regrid_file = input_path / Path(config["regrid_file"])
-    check_xr_lazy(regrid_file)
-
-    retreat_file = input_path / Path(config["retreat_file"])
-    check_xr_lazy(retreat_file)
-
-    pathway = config["pathway"]
-    gcm = config["gcm"]
-    version = config["version"]
-    start_year = config["start_year"]
-    end_year = config["end_year"]
+    # Validate the lazy-check inputs concurrently; only invalid files print.
+    input_lazy_files = [boot_file, heatflux_file, regrid_file]
+    # Processes (not threads): HDF5 isn't reliably thread-safe across all
+    # builds (Chinook segfaults), so each worker gets its own interpreter
+    # and HDF5 state.
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for p in input_lazy_files}
+        for future in tqdm(
+            as_completed(future_to_path),
+            total=len(future_to_path),
+            desc="Checking input files",
+            unit="file",
+        ):
+            p = future_to_path[future]
+            if not future.result():
+                print(f"{p.resolve()} is not valid ✗")
 
     # Build file index (one row per climate file)
     files_dict = {
@@ -148,30 +340,52 @@ def stage(
         "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
         "retreat_file": retreat_file.resolve(),
+        "outline_file": outline_file.resolve(),
+        "obs_file": obs_file.resolve(),
     }
-    for forcing in ["climate", "ocean"]:
-        forcing_file = input_path / Path(
-            f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-        )
-        check_xr_lazy(forcing_file)
-        files_dict[f"{forcing}_file"] = forcing_file.resolve()
 
-    forcing = "climate"
-    surface_input_file = input_path / Path(
-        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-    )
-    check_xr_lazy(surface_input_file)
-    files_dict["surface_input_file"] = surface_input_file.resolve()
+    # Per-GCM per-epoch forcing paths. Every forward run needs both a
+    # historical file and a projection file per (climate, climate_gradient,
+    # ocean); ``run.py`` wires them into ``run_hist`` and ``run_proj``
+    # respectively. Aliases keep the column names PISM's ISMIP6 module
+    # expects (``surface_input`` = climate, ``frontal_melt`` = ocean).
 
-    forcing = "ocean"
-    frontal_melt_file = input_path / Path(
-        f"ismip7_greenland_{forcing}_{pathway}_{gcm}_v{version}_{start_year}_{end_year}.nc"
-    )
-    check_xr_lazy(frontal_melt_file)
-    files_dict["frontal_melt_file"] = frontal_melt_file.resolve()
+    forcing_paths: dict[tuple[str, str, str], Path] = {}
+    for gcm in gcms:
+        for epoch_pathway, ep_start, ep_end, epoch_key in epoch_specs:
+            for forcing in ("climate", "climate_gradient", "ocean"):
+                forcing_paths[(gcm, epoch_key, forcing)] = input_path / forcing_names[(gcm, epoch_pathway, forcing)]
+
+    # Processes (not threads): HDF5 isn't reliably thread-safe across all
+    # builds (Chinook segfaults), so each worker gets its own interpreter
+    # and HDF5 state.
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        future_to_path = {executor.submit(check_xr_lazy, p, verbose=False): p for p in forcing_paths.values()}
+        for future in tqdm(
+            as_completed(future_to_path),
+            total=len(future_to_path),
+            desc="Checking forcing files",
+            unit="file",
+        ):
+            p = future_to_path[future]
+            if not future.result():
+                print(f"{p.resolve()} is not valid ✗")
 
     dfs: list[pd.DataFrame] = []
-    dfs.append(pd.DataFrame.from_dict([files_dict]))
+    epoch_keys = [key for *_, key in epoch_specs]
+    for gcm in gcms:
+        row = dict(files_dict)
+        for epoch_key in epoch_keys:
+            climate_f = forcing_paths[(gcm, epoch_key, "climate")]
+            climate_grad_f = forcing_paths[(gcm, epoch_key, "climate_gradient")]
+            ocean_f = forcing_paths[(gcm, epoch_key, "ocean")]
+            row[f"climate_{epoch_key}_file"] = climate_f.resolve()
+            row[f"climate_gradient_{epoch_key}_file"] = climate_grad_f.resolve()
+            row[f"ocean_{epoch_key}_file"] = ocean_f.resolve()
+            row[f"surface_input_{epoch_key}_file"] = climate_f.resolve()
+            row[f"frontal_melt_{epoch_key}_file"] = ocean_f.resolve()
+        row["sample"] = gcm
+        dfs.append(pd.DataFrame.from_dict([row]))
 
     df = pd.concat(dfs).reset_index(drop=True)
     return df
@@ -198,6 +412,12 @@ def main():
         default=Path("data/ismip7_greenland"),
     )
     parser.add_argument(
+        "--data-path",
+        help="Shared directory for staged input data (reused across runs). " "Defaults to <output-path>/input.",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
         action="store_true",
@@ -211,6 +431,7 @@ def main():
 
     options, unknown = parser.parse_known_args()
     path = options.output_path
+    data_path = options.data_path
     config_file = options.CONFIG_FILE[0]
     force_overwrite = options.force_overwrite
 
@@ -219,8 +440,9 @@ def main():
 
     path.mkdir(parents=True, exist_ok=True)
 
-    is_df = stage(config, path=path, force_overwrite=force_overwrite)
-    is_df.to_csv(path / Path("input") / Path("ismip7_greenland_files.csv"))
+    is_df = stage(config, path=path, force_overwrite=force_overwrite, data_path=data_path)
+    input_dir = Path(data_path) if data_path is not None else path / Path("input")
+    is_df.to_csv(input_dir / Path("ismip7_greenland_files.csv"))
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/ismip7_greenland" if options.bucket_prefix else "ismip7_greenland"

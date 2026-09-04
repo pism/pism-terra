@@ -1,0 +1,80 @@
+#!/bin/sh
+#SBATCH --partition={{ queue | default("t2small") }}
+#SBATCH --ntasks={{ ntasks | default(40) }}
+#SBATCH --tasks-per-node={{ tasks | default(40) }}
+#SBATCH --time={{ walltime | default("48:00:00") }}
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH --mail-type=FAIL
+#SBATCH --output="{{ output_path }}/pism.%j"
+
+# Abort on the first failing leg. Without this a leg that dies still leaves
+# the next one to start on a missing input file — and pismi, whose Python
+# driver has no top-level catch, then deadlocks in MPI_Finalize and holds
+# the nodes until the job is cancelled.
+set -e
+
+module purge
+module load intel-compilers/2023.1.0 impi/2021.9.0
+
+# Honour a container passed in from the submitting environment
+# (``container=/path/to/other.sif sbatch this_script.sh``); SLURM's default
+# --export=ALL carries it into the job. Falls back to the usual image.
+export container="${container:-$HOME/pism-ismip7.sif}"
+if [ ! -f "${container}" ]; then
+    echo "Container ${container} not found." >&2
+    echo "Override it with: container=/path/to/image.sif sbatch <this script>" >&2
+    exit 1
+fi
+echo "Using container ${container}"
+
+umask 007
+
+cd $SLURM_SUBMIT_DIR
+
+# conda's udunits2/libz activation hooks export host paths that are invalid
+# inside the apptainer container (=> "ut_read_xml() failed"). Drop them so the
+# container uses its own udunits2.xml. Keeps working even if the env is active.
+unset UDUNITS2_XML_PATH UDUNITS2_XML_DIR LD_PRELOAD
+
+ulimit -l unlimited || true
+ulimit -s unlimited || true
+ulimit
+
+pismtasks=$(( SLURM_NTASKS - 4 ))
+
+# ###############################################################################
+# INIT RUN
+# ###############################################################################
+
+{% if run_init_str %}
+mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pism {{ run_init_str }}
+{% endif %}
+
+# ###############################################################################
+# INVERSION RUN
+# ###############################################################################
+
+{% if inv_str %}
+mpirun -np  ${SLURM_NTASKS} apptainer run  ${container} pismi {{ inv_str }}
+{% endif %}
+
+# ###############################################################################
+# FORWARD RUN
+# ###############################################################################
+
+{% if run_hist_str %}
+mpiexec -n 1  apptainer run ${container} pism_ismip7_writer -r 1 : -n ${pismtasks} apptainer run ${container} pism {{ run_hist_str }} -output.asynchronous
+{% endif %}
+
+{% if run_proj_str %}
+mpiexec -n 1  apptainer run ${container} pism_ismip7_writer -r 1 : -n ${pismtasks} apptainer run ${container} pism {{ run_proj_str }} -output.asynchronous
+{% endif %}
+
+{{ post_scalar_str }}
+
+# ###############################################################################
+# COMPLIANCE CHECKER
+# ###############################################################################
+
+{{ ism_checker_str }}

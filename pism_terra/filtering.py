@@ -56,8 +56,8 @@ def sample_with_replacement(weights: np.ndarray, exp_id: np.ndarray, n_samples: 
     rng = np.random.default_rng(seed)
     try:
         ids = rng.choice(exp_id, size=n_samples, p=weights)
-    except:
-        ids = exp_id
+    except ValueError:
+        ids = rng.choice(exp_id, size=n_samples)
     return ids
 
 
@@ -89,14 +89,16 @@ def sample_with_replacement_xr(weights, n_samples: int = 100, seed: int = 0, dim
         vectorize=True,
         dask="parallelized",
         kwargs={
-            dim: weights[dim].to_numpy(),
+            # ``sample_with_replacement`` names its identifier argument ``exp_id``
+            # whatever dimension is being resampled.
+            "exp_id": weights[dim].to_numpy(),
             "n_samples": n_samples,
             "seed": seed,
         },
         dask_gufunc_kwargs={"output_sizes": {"sample": n_samples}},
     )
     da.name = dim + "_sampled"
-    return da.rename({"sample": dim})
+    return da
 
 
 def importance_sampling(
@@ -193,8 +195,9 @@ def importance_sampling(
     weights /= weights.sum(dim=dim)
     weights.name = "weights"
 
-    samples = sample_with_replacement_xr(weights, n_samples=n_samples, seed=seed)
-    ds = xr.merge([log_likes, weights, samples])
+    samples = sample_with_replacement_xr(weights, n_samples=n_samples, seed=seed, dim=dim)
+    ds = xr.merge([log_likes, weights])
+    ds[samples.name] = samples
 
     if compute:
         ds = ds.compute()

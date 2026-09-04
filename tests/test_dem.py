@@ -21,69 +21,15 @@ Test DEM functions.
 
 import geopandas as gpd
 import numpy as np
-import pytest
 import rasterio
-import xarray as xr
 from numpy.testing import assert_array_almost_equal
 from rasterio.io import MemoryFile
 from shapely.geometry import box
 
-from pism_terra.glacier.dem import (
-    boot_file_from_rgi_id,
+from pism_terra.raster import raster_overlaps_glacier
+from pism_terra.vector import (
     get_glacier_from_rgi_id,
 )
-from pism_terra.raster import raster_overlaps_glacier
-
-
-@pytest.mark.integration
-def test_boot_file_from_rgi_id(rgi, tmp_path):
-    """
-    Test ``boot_file_from_rgi_id`` for successful boot dataset creation.
-
-    This test verifies that a glacier "boot" dataset (surface, thickness, bed)
-    can be generated for a given RGI ID and RGI dataset. It checks that:
-
-    * the returned object is an :class:`xarray.Dataset`,
-    * expected core variables (``surface``, ``thickness``, ``bed``) are present, and
-    * the horizontal spacing of the x-coordinate matches the requested resolution.
-
-    Together, this implicitly exercises DEM stitching, reprojection, thickness
-    interpolation, and grid construction.
-
-    Parameters
-    ----------
-    rgi : geopandas.GeoDataFrame
-        Pre-loaded RGI dataset (typically provided by a pytest fixture) that
-        contains a feature with the test ``rgi_id``.
-    tmp_path : pathlib.Path
-        Pytest-provided temporary directory used to store intermediate and
-        output files during the test run.
-
-    Notes
-    -----
-    - This test is intended to run within a pytest test suite.
-    - The hard-coded RGI ID (``"RGI2000-v7.0-C-01-10853"``) must be present in
-      the ``rgi`` fixture for the test to be meaningful.
-    """
-    path = tmp_path / "test_boot_file_from_rgi_id"
-    path.mkdir(parents=True, exist_ok=True)
-
-    rgi_id = "RGI2000-v7.0-C-01-10853"
-    resolution = 100.0
-    ds = boot_file_from_rgi_id(
-        rgi_id,
-        rgi,
-        dem_dataset="glo_30",
-        ice_thickness_dataset="millan",
-        velocity_dataset="none",
-        resolution=resolution,
-        path=path,
-    )
-    assert isinstance(ds, xr.Dataset)
-    assert "surface" in ds
-    assert "thickness" in ds
-    assert "bed" in ds
-    assert abs(ds.x[0] - ds.x[1]) == resolution
 
 
 def test_get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame):

@@ -1,0 +1,548 @@
+# Copyright (C) 2026 Andy Aschwanden
+#
+# This file is part of pism-terra.
+#
+# PISM-TERRA is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3 of the License, or (at your option) any later
+# version.
+#
+# PISM-TERRA is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License
+# along with PISM; if not, write to the Free Software
+
+"""
+Tests for the ISMIP7 Greenland run-script renderers.
+
+Covers the chained inverse workflow (init/prior -> pismi inversion ->
+forward leg(s) with the inverted tauc), the forward workflow's optional
+init leg, and the refactor-invariants of the forward renderer. The
+renderers never open the data files they reference, so the tests render
+into ``tmp_path`` with the shipped debug templates and assert on the
+generated script text.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from pism_terra.ismip7.greenland.run import _render_forward_run, _render_inverse_run
+
+REPO = Path(__file__).resolve().parents[1]
+CONFIG_DIR = REPO / "pism_terra" / "config"
+TEMPLATE_DIR = REPO / "pism_terra" / "templates"
+
+FREE_HY = CONFIG_DIR / "ismip7_greenland_2007_historical_free.toml"
+C003 = CONFIG_DIR / "ismip7_greenland_c003.toml"
+C009 = CONFIG_DIR / "ismip7_greenland_c009.toml"
+C011 = CONFIG_DIR / "ismip7_greenland_c011.toml"
+
+
+def _render_inverse(tmp_path: Path, config_file: Path, **kwargs) -> str:
+    """
+    Render an inverse script into ``tmp_path`` and return the script text.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Output directory (pytest fixture).
+    config_file : pathlib.Path
+        PISM configuration TOML.
+    **kwargs
+        Forwarded to :func:`_render_inverse_run`.
+
+    Returns
+    -------
+    str
+        Content of the generated ``run_scripts/submit_*.sh``.
+    """
+    _render_inverse_run(
+        config_file,
+        TEMPLATE_DIR / "debug-ismip7-inverse.j2",
+        None,
+        path=tmp_path,
+        **kwargs,
+    )
+    (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
+    return script.read_text()
+
+
+def _legs(script: str) -> list[str]:
+    """
+    Split a rendered debug script into one chunk per mpirun invocation.
+
+    Parameters
+    ----------
+    script : str
+        Rendered script text.
+
+    Returns
+    -------
+    list of str
+        One entry per ``mpirun`` line, starting with the executable name.
+    """
+    chunks = script.split("mpirun -np")[1:]
+    return [re.sub(r"^\s*\d+\s+", "", c) for c in chunks]
+
+
+def _c003_with_init(tmp_path: Path) -> Path:
+    """
+    Write a copy of the C003 config with the init leg re-timed to 1985-1986.
+
+    The counter configs ship with ``init_start``/``init_end`` (1980-1985);
+    the counter tests use a one-year leg starting at the historical epoch.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write the modified TOML to.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the modified config.
+    """
+    text = C003.read_text()
+    text = text.replace('init_start = "1980-01-01"', 'init_start = "1985-01-01"', 1)
+    text = text.replace('init_end = "1985-01-01"', 'init_end = "1986-01-01"', 1)
+    cfg = tmp_path / "c003_init.toml"
+    cfg.write_text(text)
+    return cfg
+
+
+def _search(pattern: str, text: str) -> str:
+    """
+    Return the first capture group of ``pattern`` in ``text``.
+
+    Parameters
+    ----------
+    pattern : str
+        Regular expression with one capture group.
+    text : str
+        Text to search.
+
+    Returns
+    -------
+    str
+        The captured group.
+    """
+    match = re.search(pattern, text)
+    assert match is not None, pattern
+    return match.group(1)
+
+
+def test_inverse_chained_script_single_pathway(tmp_path):
+    """
+    A non-counter config renders init -> pismi -> single forward leg.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_inverse(tmp_path, FREE_HY)
+    legs = _legs(script)
+    assert [leg.split()[0] for leg in legs] == ["pism", "pismi", "pism"]
+    init, inv, fwd = legs
+
+    # Init leg: bootstrap over campaign.init_start..init_end with the staged regrid.
+    assert "-time.start 2006-01-01" in init
+    assert "-time.end 2007-01-01" in init
+    assert "-input.bootstrap yes" in init
+    assert "-input.regrid.vars litho_temp,enthalpy,age,tillwat" in init
+    assert "-basal_yield_stress.model mohr_coulomb" in init
+
+    # Inversion leg: restarts from the init state, writes into output/inverse/.
+    init_state = _search(r"-output\.file (\S+state_\S+2006-01-01_2007-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in inv
+    inv_file = _search(r"-o (\S+/inverse/inv_\S+2006-01-01_2007-01-01\.nc)", inv)
+    assert "mohr_coulomb" in inv
+
+    # Forward leg: restarts from the init state (no bootstrap), regrids the
+    # inverted tauc, and uses the constant yield-stress model.
+    assert f"-input.file {init_state}" in fwd
+    assert "-input.bootstrap" not in fwd
+    assert f"-input.regrid.file {inv_file}" in fwd
+    assert "-input.regrid.vars tauc" in fwd
+    assert "-basal_yield_stress.model constant" in fwd
+    assert "mohr_coulomb" not in fwd
+    assert "-time.start 2007-01-01" in fwd
+    assert "-time.end 2015-01-01" in fwd
+
+
+def test_inverse_missing_init_bounds_raises(tmp_path):
+    """
+    Missing campaign.init_start/init_end aborts with a clear message.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    text = "\n".join(
+        line for line in FREE_HY.read_text().splitlines() if not line.startswith(("init_start", "init_end"))
+    )
+    cfg = tmp_path / "no_init.toml"
+    cfg.write_text(text)
+    with pytest.raises(SystemExit, match="init_start"):
+        _render_inverse(tmp_path, cfg)
+
+
+def test_inverse_counter_adds_projection_leg(tmp_path):
+    """
+    A counter-driven config appends the projection continuation leg.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = _c003_with_init(tmp_path)
+    script = _render_inverse(
+        tmp_path,
+        cfg,
+        sample="MRI-ESM2-0",
+        proj_overrides={"atmosphere.given.file": "proj_climate.nc"},
+    )
+    legs = _legs(script)
+    assert [leg.split()[0] for leg in legs] == ["pism", "pismi", "pism", "pism"]
+    init, _, hist, proj = legs
+
+    assert "-time.start 1985-01-01" in init
+    assert "-time.end 1986-01-01" in init
+
+    # Historical leg stops at the ISMIP7 split; projection restarts from its state.
+    assert "-time.end 2015-01-01" in hist
+    hist_state = _search(r"-output\.file (\S+state_\S+1985-01-01_2015-01-01\.nc)", hist)
+    assert f"-input.file {hist_state}" in proj
+    assert "-time.start 2015-01-01" in proj
+    assert "-input.bootstrap" not in proj
+    assert "-input.regrid.file" not in proj
+
+    # Both tauc legs drop the mohr_coulomb options; proj forcing hits leg 4 only.
+    for leg in (hist, proj):
+        assert "-basal_yield_stress.model constant" in leg
+        assert "mohr_coulomb" not in leg
+    assert "-atmosphere.given.file proj_climate.nc" in proj
+    assert "-atmosphere.given.file proj_climate.nc" not in hist
+
+    # ISMIP7 product post-processing is emitted for the projection product leg.
+    assert "ismip7-compliance-checker" in script
+    assert "postprocess_ismip7_scalar.sh" in script
+
+
+def test_inverse_cli_start_applies_to_forward_leg_only(tmp_path):
+    """
+    --start/--end shift the forward legs; the init leg keeps its bounds.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_inverse(tmp_path, FREE_HY, config_cli={"start": "2008-01-01"})
+    init, _, fwd = _legs(script)
+    assert "-time.start 2006-01-01" in init
+    assert "-time.end 2007-01-01" in init
+    assert "-time.start 2008-01-01" in fwd
+
+
+def test_inverse_uq_routing(tmp_path):
+    """
+    UQ keys land only on the legs whose dicts own them.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_inverse(
+        tmp_path,
+        FREE_HY,
+        uq={
+            "inverse.file": "obs.nc",
+            "basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min": 5.0,
+        },
+    )
+    init, inv, fwd = _legs(script)
+    assert "-inverse.file obs.nc" in inv
+    assert "inverse.file" not in init
+    assert "inverse.file" not in fwd
+    # mohr_coulomb overrides reach the legs that use the model (1/2) and are
+    # purged from the tauc-driven forward leg.
+    assert "-basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min 5.0" in init
+    assert "-basal_yield_stress.mohr_coulomb.topg_to_phi.phi_min 5.0" in inv
+    assert "mohr_coulomb" not in fwd
+
+
+def _render_forward(tmp_path: Path, config_file: Path, **kwargs) -> str:
+    """
+    Render a forward script into ``tmp_path`` and return the script text.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Output directory (pytest fixture).
+    config_file : pathlib.Path
+        PISM configuration TOML.
+    **kwargs
+        Forwarded to :func:`_render_forward_run`.
+
+    Returns
+    -------
+    str
+        Content of the generated ``run_scripts/submit_*.sh``.
+    """
+    _render_forward_run(
+        config_file,
+        TEMPLATE_DIR / "debug-ismip7.j2",
+        None,
+        path=tmp_path,
+        **kwargs,
+    )
+    (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
+    return script.read_text()
+
+
+def test_forward_render_invariants_without_init(tmp_path):
+    """
+    Refactor guard: without init bounds the forward output shape is unchanged.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    text = "\n".join(
+        line for line in FREE_HY.read_text().splitlines() if not line.startswith(("init_start", "init_end"))
+    )
+    cfg = tmp_path / "no_init.toml"
+    cfg.write_text(text)
+    script = _render_forward(tmp_path, cfg)
+    legs = _legs(script)
+    assert [leg.split()[0] for leg in legs] == ["pism"]
+    (leg,) = legs
+    assert "-input.bootstrap yes" in leg
+    assert "-time.start 2007-01-01" in leg
+    assert "-time.end 2015-01-01" in leg
+    assert "-basal_yield_stress.model mohr_coulomb" in leg
+    assert '-run_info.experiment "historical"' in leg
+
+
+def test_forward_init_leg_single_pathway(tmp_path):
+    """
+    With init bounds the forward run renders init -> forward restart.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, FREE_HY)
+    legs = _legs(script)
+    assert [leg.split()[0] for leg in legs] == ["pism", "pism"]
+    init, fwd = legs
+
+    # Init leg: bootstrap over campaign.init_start..init_end with the staged regrid.
+    assert "-time.start 2006-01-01" in init
+    assert "-time.end 2007-01-01" in init
+    assert "-input.bootstrap yes" in init
+    assert "-input.regrid.vars litho_temp,enthalpy,age,tillwat" in init
+
+    # Forward leg: restarts from the init state — no bootstrap, no regrid,
+    # and (unlike the inverse chain) the basal model is untouched.
+    init_state = _search(r"-output\.file (\S+state_\S+2006-01-01_2007-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in fwd
+    assert "-input.bootstrap" not in fwd
+    assert "-input.regrid" not in fwd
+    assert "-basal_yield_stress.model mohr_coulomb" in fwd
+    assert "-time.start 2007-01-01" in fwd
+    assert "-time.end 2015-01-01" in fwd
+
+
+def test_forward_init_leg_surface_model(tmp_path):
+    """
+    ``campaign.init_surface_model`` swaps the surface model on the init leg only.
+
+    The init leg runs the named ``[surface.options.*]`` table (here
+    ``ismip7_forcing`` with force-to-thickness), with its file placeholders
+    filled from the staged/UQ overrides; the forward leg keeps the main
+    surface model untouched.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    text = FREE_HY.read_text().replace(
+        'init_start = "2006-01-01"',
+        'init_surface_model = "ismip7_forcing"\ninit_start = "2006-01-01"',
+        1,
+    )
+    text += (
+        "\n[surface.options.ismip7_forcing]\n\n"
+        "'surface.models' = \"ismip7\"\n"
+        "'surface.ismip7.file' = \"none\"\n"
+        "'surface.ismip7.gradient.file' = \"none\"\n"
+        "'surface.ismip7.reference.file' = \"none\"\n"
+        "'surface.force_to_thickness.file' = \"none\"\n"
+        "'surface.force_to_thickness.alpha' = 0.95\n"
+    )
+    cfg = tmp_path / "free_init_surface.toml"
+    cfg.write_text(text)
+
+    script = _render_forward(
+        tmp_path,
+        cfg,
+        uq={
+            "surface.ismip7.file": "climate_hist.nc",
+            "surface.force_to_thickness.file": "boot.nc",
+        },
+    )
+    init, fwd = _legs(script)
+
+    # Init leg: the swapped model's options, placeholders filled from overrides.
+    assert "-surface.force_to_thickness.file boot.nc" in init
+    assert "-surface.force_to_thickness.alpha 0.95" in init
+    assert "-surface.ismip7.file climate_hist.nc" in init
+    assert "-time.start 2006-01-01" in init
+    assert "-time.end 2007-01-01" in init
+
+    # Forward leg: main surface model untouched, restarts from the init state.
+    assert "force_to_thickness" not in fwd
+    assert "-surface.ismip7.file climate_hist.nc" in fwd
+    init_state = _search(r"-output\.file (\S+state_\S+2006-01-01_2007-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in fwd
+
+
+def test_forward_c011_ocx(tmp_path):
+    """
+    C011 (OCX) renders init -> hist -> OCX product leg on shared forcing.
+
+    The init leg spins up 1980..1990 with ``ismip7_forcing``; the historical
+    leg runs 1990..2015 (flat names); the OCX leg continues 2015..2025 as the
+    ISMIP7 product, reusing the historical reanalysis forcing (no separate
+    projection file exists, so no ``proj_overrides`` are passed).
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(
+        tmp_path,
+        C011,
+        sample="OCX",
+        uq={
+            "surface.ismip7.file": "ocx_climate.nc",
+            "surface.force_to_thickness.file": "boot.nc",
+        },
+    )
+    legs = _legs(script)
+    assert [leg.split()[0] for leg in legs] == ["pism", "pism", "pism"]
+    init, hist, proj = legs
+
+    # Init leg: 1980..1990 with the swapped ismip7_forcing surface model.
+    assert "-time.start 1980-01-01" in init
+    assert "-time.end 1990-01-01" in init
+    assert "-surface.force_to_thickness.file boot.nc" in init
+    assert "-surface.ismip7.file ocx_climate.nc" in init
+
+    # Historical leg: restarts from the init state, 1990 to the 2015 split.
+    init_state = _search(r"-output\.file (\S+state_\S+1980-01-01_1990-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in hist
+    assert "-time.start 1990-01-01" in hist
+    assert "-time.end 2015-01-01" in hist
+    assert '-run_info.experiment "historical"' in hist
+    assert "force_to_thickness" not in hist
+
+    # OCX product leg: 2015..2025, same forcing file as the historical leg.
+    hist_state = _search(r"-output\.file (\S+state_\S+1990-01-01_2015-01-01\.nc)", hist)
+    assert f"-input.file {hist_state}" in proj
+    assert "-time.start 2015-01-01" in proj
+    assert "-time.end 2025-01-01" in proj
+    assert '-run_info.experiment "OCX"' in proj
+    assert "-surface.ismip7.file ocx_climate.nc" in proj
+    assert "force_to_thickness" not in proj
+
+
+def test_forward_c009_ctrl(tmp_path):
+    """
+    C009 (CTRL2015) renders init -> hist -> ctrl product leg ending 2300.
+
+    The control run is set up like any other projection, so the only things
+    that distinguish it from C007 are the ``ctrl`` experiment id on the product
+    leg and the ctrl forcing files wired into it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(
+        tmp_path,
+        C009,
+        sample="CESM2-WACCM",
+        proj_overrides={"surface.ismip7.file": "ctrl_climate.nc"},
+    )
+    _init, hist, proj = _legs(script)
+
+    assert "-time.end 2015-01-01" in hist
+    assert '-run_info.experiment "historical"' in hist
+    assert "-surface.ismip7.file ctrl_climate.nc" not in hist
+
+    # Control leg: 2015..2300 on the ctrl forcing, submitted as experiment "ctrl".
+    hist_state = _search(r"-output\.file (\S+state_\S+_2015-01-01\.nc)", hist)
+    assert f"-input.file {hist_state}" in proj
+    assert "-time.start 2015-01-01" in proj
+    assert "-time.end 2300-01-01" in proj
+    assert '-run_info.experiment "ctrl"' in proj
+    assert "-surface.ismip7.file ctrl_climate.nc" in proj
+    # The ISMIP7 product leg writes into the C009 submission tree.
+    assert "GrIS/UAF/PISM/CORE/C009" in proj
+
+
+def test_forward_init_leg_counter(tmp_path):
+    """
+    A counter-driven config with init bounds renders init -> hist -> proj.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = _c003_with_init(tmp_path)
+    script = _render_forward(
+        tmp_path,
+        cfg,
+        sample="MRI-ESM2-0",
+        proj_overrides={"atmosphere.given.file": "proj_climate.nc"},
+    )
+    legs = _legs(script)
+    assert [leg.split()[0] for leg in legs] == ["pism", "pism", "pism"]
+    init, hist, proj = legs
+
+    assert "-time.start 1985-01-01" in init
+    assert "-time.end 1986-01-01" in init
+    assert "-input.bootstrap yes" in init
+
+    # Historical leg restarts from the init state and stops at the ISMIP7 split.
+    init_state = _search(r"-output\.file (\S+state_\S+1985-01-01_1986-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in hist
+    assert "-input.bootstrap" not in hist
+    assert "-input.regrid" not in hist
+    assert "-time.end 2015-01-01" in hist
+
+    # Projection leg restarts from the historical state with proj forcing.
+    hist_state = _search(r"-output\.file (\S+state_\S+1985-01-01_2015-01-01\.nc)", hist)
+    assert f"-input.file {hist_state}" in proj
+    assert "-time.start 2015-01-01" in proj
+    assert "-atmosphere.given.file proj_climate.nc" in proj
+    assert "-atmosphere.given.file proj_climate.nc" not in hist

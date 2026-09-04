@@ -23,13 +23,15 @@ Config.
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Any, ClassVar, Iterator
 
+import pandas as pd
 import scipy.stats as st
 import toml
-from jinja2 import Environment, StrictUndefined
+from jinja2 import Environment
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -38,8 +40,17 @@ from pydantic import (
     model_validator,
 )
 
+# Dependency-free (imports only the stdlib), so a top-level import here cannot
+# create a cycle back into this module.
+from pism_terra.ismip7.experiments import resolve_counter
+
 # one Jinja environment for all renders
-_JINJA = Environment(undefined=StrictUndefined, autoescape=False)
+_JINJA = Environment(autoescape=False)
+
+# Pseudo-distributions that draw from an explicit list of values instead of a
+# SciPy random variable. Shared with :mod:`pism_terra.sampling`, which turns the
+# unit-cube quantiles into category picks.
+CHOICE_DISTS = frozenset({"choices", "choice", "categorical"})
 
 
 def load_config(path: str | Path) -> PismConfig:
@@ -108,23 +119,47 @@ class DistSpec(BaseModel):
     (e.g., ``randint``, ``truncnorm``), required parameters differ and are
     validated accordingly.
 
+    In addition to the SciPy distributions, ``distribution`` may name a
+    **categorical** pseudo-distribution (``"choices"``, ``"choice"`` or
+    ``"categorical"``; see :data:`CHOICE_DISTS`), which draws from an explicit
+    list of values given by ``choices``.
+
     Attributes
     ----------
     distribution : str
         Name of the SciPy distribution in ``scipy.stats`` (case-insensitive),
-        e.g., ``"norm"``, ``"uniform"``, ``"truncnorm"``, ``"randint"``.
+        e.g., ``"norm"``, ``"uniform"``, ``"truncnorm"``, ``"randint"``, or one
+        of the categorical aliases in :data:`CHOICE_DISTS`.
     loc : float or None, default: 0.0
         Location parameter for continuous distributions. Optional to allow
-        discrete distributions that do not use it.
+        discrete distributions that do not use it. Ignored by categoricals.
     scale : float or None, default: 1.0
         Scale parameter for continuous distributions. Must be ``> 0`` when
         applicable; optional for discrete distributions that do not use it.
+        Ignored by categoricals.
 
     Notes
     -----
     This model validates *specification* only. Construction of a frozen SciPy
     RV (e.g., via ``stats.<dist>(...).ppf``) should be done by a helper such as
-    ``_make_frozen`` that interprets ``model_extra`` as needed.
+    ``_make_frozen`` that interprets ``model_extra`` as needed. Categorical
+    specs never produce a frozen RV; they are resolved by
+    ``pism_terra.sampling._transform_quantiles``.
+
+    Categorical specs carry two extra keys (both in ``model_extra``):
+
+    - ``choices``: non-empty list of values to draw from. Values are used
+      verbatim, so strings stay strings and numbers stay numbers.
+    - ``weights``: optional list of non-negative relative probabilities, one per
+      choice. Omitted means a uniform draw.
+
+    Examples
+    --------
+    .. code-block:: toml
+
+        ['inverse.state_func']
+        distribution = "choices"
+        choices = ["meansquare", "huber"]
     """
 
     model_config = ConfigDict(extra="allow")
@@ -161,6 +196,9 @@ class DistSpec(BaseModel):
         Ensures that the distribution exists in ``scipy.stats`` and that the
         required parameters are present:
 
+        - categoricals (:data:`CHOICE_DISTS`): must provide a non-empty
+          ``choices`` list and, if given, ``weights`` of matching length with
+          non-negative entries summing to more than zero.
         - ``randint``: must provide ``low`` and ``high`` in ``model_extra``.
         - ``truncnorm``: must provide either standardized bounds ``a``, ``b`` or
           raw bounds ``lower``, ``upper`` and must have ``scale > 0``.
@@ -181,6 +219,31 @@ class DistSpec(BaseModel):
         """
 
         name = self.distribution
+
+        # Categoricals are not SciPy distributions; validate and return before
+        # the scipy.stats lookup below would reject the name.
+        if name in CHOICE_DISTS:
+            extra = dict(getattr(self, "model_extra", {}) or {})
+            choices = extra.get("choices")
+            if not isinstance(choices, (list, tuple)) or len(choices) == 0:
+                raise ValueError(f"distribution '{name}' requires a non-empty 'choices' list")
+            weights = extra.get("weights")
+            if weights is not None:
+                if not isinstance(weights, (list, tuple)) or len(weights) != len(choices):
+                    raise ValueError(
+                        f"distribution '{name}' requires 'weights' to be a list of "
+                        f"{len(choices)} value(s), one per choice"
+                    )
+                try:
+                    w = [float(x) for x in weights]
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"distribution '{name}' requires numeric 'weights'") from exc
+                if any(x < 0 or not math.isfinite(x) for x in w):
+                    raise ValueError(f"distribution '{name}' requires non-negative, finite 'weights'")
+                if sum(w) <= 0:
+                    raise ValueError(f"distribution '{name}' requires 'weights' summing to > 0")
+            return self
+
         dist = getattr(st, name, None)
         if dist is None or not hasattr(dist, "rvs"):
             raise ValueError(f"unknown SciPy distribution: '{name}'")
@@ -223,17 +286,54 @@ class DistSpec(BaseModel):
         return self
 
 
+class DerivedSpec(BaseModel):
+    """
+    Specification for a parameter computed from another, not sampled.
+
+    Some PISM options are not independent: a mass-balance profile, for
+    instance, may shift as a unit, so its melt limits and ELA move together.
+    Sampling them separately decorrelates values that are physically locked,
+    and encoding that linkage as parallel ``choices`` lists only works if the
+    sampler happens to keep the lists aligned — which Latin Hypercube
+    deliberately does not.
+
+    A derived parameter names its base and a linear relation to it::
+
+        value = base * scale + offset
+
+    It is evaluated after sampling, so the base may be categorical or
+    continuous, and a derived parameter may itself serve as another's base.
+
+    Attributes
+    ----------
+    derived_from : str
+        Dotted name of the parameter this one follows. Must resolve to another
+        entry in the same UQ file, sampled or derived.
+    offset : float, default 0.0
+        Added after scaling.
+    scale : float, default 1.0
+        Multiplies the base before the offset.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    derived_from: str
+    offset: float = 0.0
+    scale: float = 1.0
+
+
 class UQConfig(BaseModel):
     """
     Uncertainty specification as a flat dotted-key map with sampling metadata.
 
     This model holds:
-      1) the number of ensemble ``samples`` (an integer),
-      2) an optional column name ``mapping`` (e.g., to map categorical draws to
-         filenames later), and
-      3) a ``tree`` mapping from **dotted variable names** (e.g.,
-         ``"surface.pdd.factor_ice"``) to :class:`DistSpec` entries that describe
-         the probability distribution for each variable.
+
+    1. the number of ensemble ``samples`` (an integer),
+    2. an optional column name ``mapping`` (e.g., to map categorical draws to
+       filenames later), and
+    3. a ``tree`` mapping from **dotted variable names** (e.g.,
+       ``"surface.pdd.factor_ice"``) to :class:`DistSpec` entries that describe
+       the probability distribution for each variable.
 
     Input TOML can be either *nested* (hierarchical tables) or already *flat*
     (quoted dotted-table keys). A ``model_validator(mode="before")`` flattens
@@ -244,20 +344,24 @@ class UQConfig(BaseModel):
     ----------
     samples : int, default=1
         Number of draws to use when generating ensemble samples. Must be > 0.
-    mapping : str or None, optional
-        Optional column name indicating a mapping key (e.g., to join against a
-        lookup table of file paths). Not interpreted by validation; simply
-        preserved for downstream use.
+        For ``method="factorial"`` this is the number of levels **per variable**
+        (total runs are ``samples ** n_variables``).
+    method : str or None, optional
+        Sampling strategy passed to :func:`pism_terra.sampling.generate_samples`.
+        ``None`` (default) or ``"lhs"`` selects Latin Hypercube; ``"factorial"``
+        selects the full-factorial grid.
+    mapping : dict or None, optional
+        Optional mapping (e.g., to join against a lookup table of file paths).
+        Not interpreted by validation; simply preserved for downstream use.
     tree : dict[str, DistSpec]
         Flat mapping from dotted variable names to validated :class:`DistSpec`
         objects.
 
     Notes
     -----
-    - The *before* validator accepts either:
-        * top-level leaves (possibly nested tables), or
-        * a block under the key ``"tree"``.
-      In both cases, it extracts leaf specs and assigns them to ``tree``.
+    - The *before* validator accepts either top-level leaves (possibly nested
+      tables) or a block under the key ``"tree"``. In both cases, it extracts
+      leaf specs and assigns them to ``tree``.
     - The presence of a key named ``"distribution"`` is used to detect leaves,
       deferring detailed parameter validation to :class:`DistSpec`.
 
@@ -276,6 +380,14 @@ class UQConfig(BaseModel):
         a = -1
         b =  1
 
+    Categorical parameters draw from an explicit list instead:
+
+    .. code-block:: toml
+
+        ['inverse.state_func']
+        distribution = "choices"
+        choices = ["meansquare", "huber"]
+
     After parsing:
 
     >>> uq = UQConfig.model_validate(parsed_toml)
@@ -288,8 +400,49 @@ class UQConfig(BaseModel):
     """
 
     samples: int = Field(default=1, gt=0)
+    method: str | None = Field(default=None)
     mapping: dict | None = None
     tree: dict[str, "DistSpec"]  # values parsed as DistSpec after 'before' validator
+    derived: dict[str, "DerivedSpec"] = {}
+
+    @field_validator("method")
+    @classmethod
+    def _normalize_method(cls, v: Any) -> str | None:
+        """
+        Normalize and validate the sampling ``method`` name.
+
+        Parameters
+        ----------
+        v : Any
+            Raw method value (any case, may contain surrounding spaces) or
+            ``None``.
+
+        Returns
+        -------
+        str or None
+            Lower-cased, stripped method name, or ``None`` when unset (which
+            downstream treats as Latin Hypercube).
+
+        Raises
+        ------
+        ValueError
+            If the method is not a recognized Latin Hypercube or factorial alias.
+        """
+        if v is None:
+            return None
+        m = str(v).strip().lower()
+        allowed = {
+            "lhs",
+            "latin",
+            "latin_hypercube",
+            "latinhypercube",
+            "factorial",
+            "grid",
+            "full_factorial",
+        }
+        if m not in allowed:
+            raise ValueError(f"unknown sampling method '{v}'; use 'lhs' or 'factorial'")
+        return m
 
     @staticmethod
     def _is_leaf(node: Any) -> bool:
@@ -319,6 +472,23 @@ class UQConfig(BaseModel):
         """
         # Be permissive: any dict with a 'distribution' key is a candidate leaf.
         return isinstance(node, dict) and ("distribution" in node)
+
+    @staticmethod
+    def _is_derived(node: Any) -> bool:
+        """
+        Return ``True`` if a node declares a derived parameter.
+
+        Parameters
+        ----------
+        node : Any
+            Arbitrary value encountered during flattening.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``node`` is a ``dict`` with a ``"derived_from"`` key.
+        """
+        return isinstance(node, dict) and ("derived_from" in node)
 
     @classmethod
     def _flatten_leaves(cls, node: Any, prefix: str = "") -> dict[str, dict[str, Any]]:
@@ -353,7 +523,7 @@ class UQConfig(BaseModel):
         if isinstance(node, dict):
             for k, v in node.items():
                 key = f"{prefix}.{k}" if prefix else k
-                if cls._is_leaf(v):
+                if cls._is_leaf(v) or cls._is_derived(v):
                     flat[key] = v
                 elif isinstance(v, dict):
                     flat.update(cls._flatten_leaves(v, key))
@@ -402,7 +572,9 @@ class UQConfig(BaseModel):
 
         # Pull top-level fields if present
         samples = v.get("samples")
+        method = v.get("method")
         mapping = v.get("mapping")
+        explicit_derived = v.get("derived")
 
         # Where the specs live: either under 'tree' or at top level
         raw = v.get("tree", v)
@@ -410,34 +582,199 @@ class UQConfig(BaseModel):
             outv: dict[str, Any] = {"tree": {}}
             if samples is not None:
                 outv["samples"] = samples
+            if method is not None:
+                outv["method"] = method
             if mapping is not None:
                 outv["mapping"] = mapping
             return outv
 
         raw = dict(raw)  # shallow copy so we can pop safely
 
-        # Allow samples/mapping inside the raw block too
+        # Allow samples/method/mapping inside the raw block too
         if samples is None and "samples" in raw:
             samples = raw.pop("samples")
+        if method is None and "method" in raw:
+            method = raw.pop("method")
         if mapping is None and "mapping" in raw:
             mapping = raw.pop("mapping")
+        if explicit_derived is None and "derived" in raw:
+            explicit_derived = raw.pop("derived")
 
         # Ensure these don't leak into tree
         raw.pop("samples", None)
+        raw.pop("method", None)
         raw.pop("mapping", None)
+        raw.pop("derived", None)
 
         # If keys are already dotted (['a.b.c']), keep only dict-valued items
         if any(isinstance(k, str) and "." in k for k in raw):
-            tree = {k: v for k, v in raw.items() if isinstance(v, dict)}
+            entries = {k: v for k, v in raw.items() if isinstance(v, dict)}
         else:
-            # Nested TOML tables -> flatten by finding leaves (by 'distribution' key)
-            tree = cls._flatten_leaves(raw)
+            # Nested TOML tables -> flatten by finding leaves
+            entries = cls._flatten_leaves(raw)
 
-        out: dict[str, Any] = {"tree": tree}
+        # An entry either draws from a distribution or follows another entry.
+        both = sorted(k for k, v in entries.items() if cls._is_leaf(v) and cls._is_derived(v))
+        if both:
+            raise ValueError(
+                f"UQ entries declare both 'distribution' and 'derived_from': {both}. "
+                "A parameter is either sampled or derived, not both."
+            )
+        tree = {k: v for k, v in entries.items() if cls._is_leaf(v)}
+        derived = {k: v for k, v in entries.items() if cls._is_derived(v)}
+        unknown = sorted(set(entries) - set(tree) - set(derived))
+        if unknown:
+            raise ValueError(
+                f"UQ entries declare neither 'distribution' nor 'derived_from': {unknown}. "
+                "Sampled parameters need a distribution; parameters computed from another "
+                "need derived_from."
+            )
+
+        if isinstance(explicit_derived, dict):
+            derived = {**derived, **explicit_derived}
+
+        out: dict[str, Any] = {"tree": tree, "derived": derived}
         if samples is not None:
             out["samples"] = samples
+        if method is not None:
+            out["method"] = method
         if mapping is not None:
             out["mapping"] = mapping
+        return out
+
+    @model_validator(mode="after")
+    def _check_derived(self) -> "UQConfig":
+        """
+        Check that every derived parameter resolves and that none form a cycle.
+
+        Catching this at load time matters: an unresolvable base would
+        otherwise surface much later as a missing column, after the ensemble
+        has already been staged.
+
+        Returns
+        -------
+        UQConfig
+            The validated model.
+
+        Raises
+        ------
+        ValueError
+            If a name is both sampled and derived, if a base does not exist,
+            or if the derived parameters form a cycle.
+        """
+        both = sorted(set(self.tree) & set(self.derived))
+        if both:
+            raise ValueError(f"UQ parameters are both sampled and derived: {both}")
+
+        known = set(self.tree) | set(self.derived)
+        missing = sorted({spec.derived_from for spec in self.derived.values()} - known)
+        if missing:
+            raise ValueError(f"derived_from names no UQ parameter: {missing}; available: {sorted(known)}")
+
+        # Depth-first walk over derived -> base edges; sampled names terminate.
+        visiting: set[str] = set()
+        done: set[str] = set()
+
+        def visit(name: str, chain: list[str]) -> None:
+            """
+            Walk one derived parameter's chain of bases.
+
+            Parameters
+            ----------
+            name : str
+                Parameter to resolve.
+            chain : list of str
+                Names visited so far, for the error message.
+
+            Raises
+            ------
+            ValueError
+                If the walk revisits a name still being resolved.
+            """
+            if name in done or name not in self.derived:
+                return
+            if name in visiting:
+                raise ValueError("derived parameters form a cycle: " + " -> ".join(chain + [name]))
+            visiting.add(name)
+            visit(self.derived[name].derived_from, chain + [name])
+            visiting.discard(name)
+            done.add(name)
+
+        for name in self.derived:
+            visit(name, [])
+        return self
+
+    def derived_order(self) -> list[str]:
+        """
+        Return derived parameter names, bases before the parameters that use them.
+
+        Returns
+        -------
+        list of str
+            Names in an order safe to evaluate sequentially.
+        """
+        order: list[str] = []
+        seen: set[str] = set()
+
+        def emit(name: str) -> None:
+            """
+            Append one derived parameter after its base.
+
+            Parameters
+            ----------
+            name : str
+                Parameter to emit.
+            """
+            if name in seen or name not in self.derived:
+                return
+            seen.add(name)
+            emit(self.derived[name].derived_from)
+            order.append(name)
+
+        for name in self.derived:
+            emit(name)
+        return order
+
+    def apply_derived(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add the derived parameters as columns of a sampled DataFrame.
+
+        Each is computed as ``base * scale + offset``. When the base, the scale
+        and the offset are all whole numbers the result is written as an
+        integer, so an elevation stays ``1750`` rather than ``1750.0``.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Output of :func:`pism_terra.sampling.generate_samples`, carrying one
+            column per sampled parameter.
+
+        Returns
+        -------
+        pandas.DataFrame
+            A copy with one added column per derived parameter.
+
+        Raises
+        ------
+        KeyError
+            If a base column is missing from *df*.
+        """
+        out = df.copy()
+        for name in self.derived_order():
+            spec = self.derived[name]
+            if spec.derived_from not in out.columns:
+                raise KeyError(
+                    f"derived parameter {name!r} needs column {spec.derived_from!r}, "
+                    f"which the sample does not carry: {sorted(out.columns)}"
+                )
+            base = pd.to_numeric(out[spec.derived_from])
+            values = base * spec.scale + spec.offset
+            whole = (
+                float(spec.scale).is_integer()
+                and float(spec.offset).is_integer()
+                and bool((base == base.round()).all())
+            )
+            out[name] = values.round().astype("int64") if whole else values
         return out
 
     # helpers
@@ -579,95 +916,6 @@ class BaseModelWithDot(BaseModel):
         return out
 
 
-class RunConfig(BaseModel):
-    """
-    Execution settings for a PISM run.
-
-    Provides executable/launcher options and a helper to export parameters
-    for templating. String fields that contain Jinja expressions (e.g.,
-    ``"mpirun -np {{ ntasks }}"``) are rendered using the model values.
-
-    Attributes
-    ----------
-    mpi : str
-        MPI launcher template, e.g., ``"mpirun -np {{ ntasks }}"``.
-        Defaults to ``"mpirun"``.
-    executable : str
-        Path to the PISM executable, or command name. Defaults to ``"pism"``.
-    ntasks : int
-        Total number of MPI ranks. Must be >= 1.
-
-    Notes
-    -----
-    The :meth:`as_params` method returns only non-empty fields and renders any
-    string value containing Jinja delimiters ``{{ ... }}`` using the current
-    field values (plus any extra context provided).
-
-    Examples
-    --------
-    >>> rc = RunConfig(mpi="mpirun -np {{ ntasks }}", executable="/path/pism", ntasks=56)
-    >>> rc.as_params()["mpi"]
-    'mpirun -np 56'
-    """
-
-    mpi: str = Field(default="mpirun")
-    executable: str = Field(default="pism")
-    ntasks: int = Field(ge=1)
-    writer: str | None = None
-
-    def as_params(self, **extra: Any) -> dict[str, Any]:
-        """
-        Export non-empty parameters and render templated strings.
-
-        Any string field containing Jinja expressions is rendered using a
-        context composed of the model's own values plus ``extra``.
-
-        Parameters
-        ----------
-        **extra
-            Additional key/value pairs to inject into the Jinja render
-            context (these do not mutate the model).
-
-        Returns
-        -------
-        dict of str to Any
-            Dictionary of parameters suitable for template rendering.
-            Fields with ``None``/unset/default values are omitted; templated
-            strings (e.g., ``mpi``) are rendered to plain strings.
-        """
-        params = self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
-        ctx = {**params, **extra}
-
-        def _render(v: Any) -> Any:
-            """
-            Render templated strings using the current context.
-
-            Parameters
-            ----------
-            v : Any
-                Candidate value to render. If `v` is a string containing Jinja
-                delimiters (``{{ ... }}``), it is rendered using the closure
-                context ``ctx``; otherwise it is returned unchanged.
-
-            Returns
-            -------
-            Any
-                The rendered string when `v` is a templated string; otherwise the
-                original value.
-
-            Raises
-            ------
-            jinja2.UndefinedError
-                If the template references an undefined variable and the Jinja
-                environment uses ``StrictUndefined``.
-            """
-            if isinstance(v, str) and "{{" in v:
-                return _JINJA.from_string(v).render(ctx)
-            return v
-
-        return {k: _render(v) for k, v in params.items()}
-
-
 class JobConfig(BaseModelWithDot):
     """
     Scheduler job options parsed from configuration.
@@ -698,16 +946,18 @@ class JobConfig(BaseModelWithDot):
 
     model_config = ConfigDict()
 
-    queue: str | None = None
-    walltime: str | None = None
+    ntasks: int | None = None
     nodes: int | None = Field(default=None, ge=1)
     output_path: str | Path | None = None
+    queue: str | None = None
+    walltime: str | None = None
+    tasks: int | None = None
 
     @field_validator("walltime")
     @classmethod
     def _hhmmss(cls, v: str | None) -> str | None:
         """
-        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS``.
+        Validate that ``walltime`` matches ``H:MM:SS`` or ``HH:MM:SS`` or ``HHH:MM:SS``.
 
         Parameters
         ----------
@@ -755,9 +1005,10 @@ class PismConfig(BaseModelWithDot):
 
     Attributes
     ----------
-    run : RunConfig
-        Execution settings (launcher template, executable path/name,
-        number of MPI ranks) with support for rendering Jinja placeholders.
+    campaign : CampaignConfig
+        Campaign-level metadata (data sources, forcing scenario, file references).
+    run_info : InfoConfig
+        Run metadata such as institution and title.
     job : JobConfig
         Scheduler options such as queue/partition, walltime, and number of
         nodes. Unknown keys are forbidden in this section.
@@ -772,27 +1023,37 @@ class PismConfig(BaseModelWithDot):
     grid : GridConfig
         Horizontal/vertical grid settings and registration. Derives
         ``grid.dx``/``grid.dy`` from ``resolution`` when not explicitly set.
-    atmosphere : dict of str to Any, optional
-        Additional atmosphere-related options to pass through (keys are
-        typically dotted, e.g., ``"atmosphere.given.file"``). Defaults to ``{}``.
+    atmosphere : AtmosphereConfig
+        Atmosphere model selection and its option set.
+    ocean : OceanConfig
+        Ocean model selection and its option set.
+    surface : SurfaceConfig
+        Surface model selection and its option set.
+    frontal_melt : FrontalMeltConfig
+        Frontal melt model selection and its option set.
+    hydrology : HydrologyConfig
+        Hydrology model selection and its option set.
     geometry : dict of str to Any, optional
         Geometry-related options to pass through. Defaults to ``{}``.
-    ocean : dict of str to Any, optional
-        Ocean-related options to pass through. Defaults to ``{}``.
+    bed_deformation : BedDeformationConfig
+        Bed deformation model selection and its option set.
     calving : dict of str to Any, optional
         Calving-related options to pass through. Defaults to ``{}``.
     iceflow : dict of str to Any, optional
         Ice-flow-related options to pass through. Defaults to ``{}``.
-    frontal_melt : dict of str to Any, optional
-        Frontal melt-related options to pass through. Defaults to ``{}``.
-    hydrology : dict of str to Any, optional
-        Hydrology-related options to pass through. Defaults to ``{}``.
-    surface : dict of str to Any, optional
-        Surface-related options to pass through. Defaults to ``{}``.
     reporting : dict of str to Any, optional
         Reporting/output options to pass through. Defaults to ``{}``.
     input : dict of str to Any, optional
         Input file options to pass through. Defaults to ``{}``.
+    time_stepping : dict of str to Any, optional
+        Time-stepping-related options to pass through. Defaults to ``{}``.
+    inverse : dict of str to Any, optional
+        Inverse options to pass through. Defaults to ``{}``.
+    solver : dict of str to Any, optional
+        PETSc/Blatter solver knobs split by run kind, with ``forward`` and
+        ``inverse`` sub-tables (``[solver.forward]`` / ``[solver.inverse]``).
+        The ``forward`` half is injected into the forward ``pism`` command and
+        the ``inverse`` half into the ``pismi`` command. Defaults to ``{}``.
 
     Notes
     -----
@@ -813,24 +1074,68 @@ class PismConfig(BaseModelWithDot):
     """
 
     campaign: CampaignConfig
-    run: RunConfig
     run_info: InfoConfig
-    job: JobConfig
+    job: JobConfig = Field(default_factory=JobConfig)
     time: TimeConfig
     energy: EnergyConfig
     stress_balance: StressBalanceConfig
     grid: GridConfig
     atmosphere: AtmosphereConfig
+    ocean: OceanConfig
     surface: SurfaceConfig
-    frontal_melt: FrontalMeltConfig
+    # Optional: a run that does not model them omits the section entirely and
+    # PISM keeps its defaults. Both are read only by the ISMIP7 and KITP
+    # runners, whose configs declare them.
+    frontal_melt: FrontalMeltConfig = Field(default_factory=lambda: _no_model(FrontalMeltConfig))
+    bed_deformation: BedDeformationConfig = Field(default_factory=lambda: _no_model(BedDeformationConfig))
     hydrology: HydrologyConfig
     geometry: dict[str, Any] = {}
-    ocean: dict[str, Any] = {}
     calving: dict[str, Any] = {}
     iceflow: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
     input: dict[str, Any] = {}
     time_stepping: dict[str, Any] = {}
+    inverse: dict[str, Any] = {}
+    solver: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def _expand_ismip7_counter(self) -> "PismConfig":
+        """
+        Expand ``run_info.counter`` into the derived experiment fields.
+
+        When an ISMIP7 Core Experiment counter (e.g. ``"C003"``) is set, it is the
+        single source of truth for the experiment identity: it fills
+        ``run_info.experiment``, ``campaign.pathway``, ``campaign.gcms``,
+        ``campaign.climate_version`` / ``campaign.ocean_version`` (kept if
+        explicitly set), and the projection end (``time.end``) from
+        :data:`pism_terra.ismip7.experiments.CORE_EXPERIMENTS`. This runs for both
+        the staging and running entry points (both call :func:`load_config`), so a
+        single field drives the whole ISMIP7 pipeline. Non-counter (legacy) configs
+        are left untouched.
+
+        Returns
+        -------
+        PismConfig
+            The same instance, with counter-derived fields populated.
+        """
+        if not self.run_info.counter:
+            if self.time.time_end is None:
+                raise ValueError("time.end is required unless run_info.counter is set")
+            return self
+        spec = resolve_counter(self.run_info.counter)
+        self.run_info.experiment = spec.experiment_id
+        self.campaign.pathway = spec.pathway
+        self.campaign.gcms = [spec.esm_id]
+        self.time.time_end = f"{spec.proj_end_year}-01-01"
+        # Filename version tags of the published forcing (per-ESM and
+        # per-forcing, decoupled from campaign.version which names the S3
+        # directory). Explicit config values win, e.g. to point at a
+        # re-published forcing set.
+        if self.campaign.climate_version is None:
+            self.campaign.climate_version = spec.climate_version
+        if self.campaign.ocean_version is None:
+            self.campaign.ocean_version = spec.ocean_version
+        return self
 
 
 class RestartConfig(BaseModelWithDot):
@@ -854,7 +1159,7 @@ class InfoConfig(BaseModelWithDot):
     """
 
     SECTION = "run_info"
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    model_config = ConfigDict(populate_by_name=True)
 
     institution: str = Field(
         default="University of Alaska Fairbanks",
@@ -864,6 +1169,22 @@ class InfoConfig(BaseModelWithDot):
         default="PISM Campaign",
         alias="run_info.title",
     )
+    # Forwarded to PISM as run_info.* options (written as output global
+    # attributes, ISMIP7 section 5) AND used for submission naming (section 8).
+    group: str | None = Field(default=None, alias="run_info.group")
+    model: str | None = Field(default=None, alias="run_info.model")
+    contact_name: str | None = Field(default=None, alias="run_info.contact_name")
+    contact_email: str | None = Field(default=None, alias="run_info.contact_email")
+    # pism-terra-only ISMIP7 naming metadata (section 8); NOT PISM options, so
+    # they are kept out of the run command and consumed by the naming logic.
+    domain: str | None = Field(default=None, alias="run_info.domain")
+    set_id: str | None = Field(default=None, alias="run_info.set")
+    ism: str | None = Field(default=None, alias="run_info.ism")
+    experiment: str | None = Field(default=None, alias="run_info.experiment")
+    # ISMIP7 Core Experiment counter (e.g. "C003"). When set, PismConfig expands it
+    # into experiment/pathway/gcms/time.end (see PismConfig's counter resolver and
+    # pism_terra.ismip7.experiments). Naming-only, so kept out of _PISM_FIELDS.
+    counter: str | None = Field(default=None, alias="run_info.counter")
 
     @staticmethod
     def _quote(v: Any) -> str:
@@ -887,19 +1208,38 @@ class InfoConfig(BaseModelWithDot):
         s = s.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{s}"'
 
+    # Fields PISM recognizes as run_info.* options (written as output global
+    # attributes). The ISMIP7 naming-only fields (domain/set/ism/experiment)
+    # are intentionally excluded so they don't reach the PISM command.
+    _PISM_FIELDS: ClassVar[tuple[str, ...]] = (
+        "institution",
+        "title",
+        "group",
+        "model",
+        "contact_name",
+        "contact_email",
+    )
+
     def as_params(self) -> dict[str, Any]:
         """
-        Export run-info parameters with dotted aliases and quoted string values.
+        Export PISM run-info parameters with dotted aliases and quoted string values.
+
+        Emits only the fields PISM understands (``institution``, ``title``,
+        ``group``, ``model``, ``contact_name``, ``contact_email``), which it
+        writes as output global attributes. The ISMIP7 naming-only fields
+        (``domain``, ``set``, ``ism``, ``experiment``) are kept out of the PISM
+        command and consumed by the naming logic instead.
 
         Returns
         -------
         dict[str, Any]
-            Dictionary like ``{'run_info.institution': '\"Foo\"', 'run_info.title': '\"Bar\"'}``.
+            Dictionary like ``{'run_info.institution': '\"Foo\"', 'run_info.group': '\"UAF\"'}``.
         """
-        out = self.model_dump(by_alias=True, exclude_none=True)
-        for key in ("run_info.institution", "run_info.title"):
-            if key in out and out[key] is not None:
-                out[key] = self._quote(out[key])
+        out = {}
+        for name in self._PISM_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                out[f"run_info.{name}"] = self._quote(value)
         return out
 
 
@@ -919,6 +1259,7 @@ class GridConfig(BaseModelWithDot):
     Mz: int | None = Field(default=None, alias="grid.Mz")
     extrapolation: str | None = Field(default=None, alias="grid.allow_extrapolation")
     registration: str | None = Field(default=None, alias="grid.registration")
+    file: str | None = Field(default=None, alias="grid.file")
 
     # derived / optionally provided:
     dx: str | None = Field(default=None, alias="grid.dx")
@@ -1053,8 +1394,10 @@ class TimeConfig(BaseModelWithDot):
     ----------
     time_start : str
         Simulation start time (alias: ``"time.start"``).
-    time_end : str
-        Simulation end time (alias: ``"time.end"``).
+    time_end : str or None
+        Simulation end time (alias: ``"time.end"``). May be omitted when the run
+        is ISMIP7 counter-driven, in which case ``PismConfig`` fills it from the
+        Core Experiment's projection end year.
     calendar : str or None
         Calendar name (alias: ``"time.calendar"``), e.g., ``"standard"``.
     reference_date : str or None
@@ -1065,7 +1408,7 @@ class TimeConfig(BaseModelWithDot):
     model_config = ConfigDict(populate_by_name=True)
 
     time_start: str = Field(alias="time.start")
-    time_end: str = Field(alias="time.end")
+    time_end: str | None = Field(default=None, alias="time.end")
     calendar: str | None = Field(default=None, alias="time.calendar")
     reference_date: str | None = Field(default=None, alias="time.reference_date")
 
@@ -1134,6 +1477,16 @@ class AtmosphereConfig(ModelWithOptions):
     SECTION = "atmosphere"
 
 
+class OceanConfig(ModelWithOptions):
+    """
+    Ocean model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "ocean"
+
+
 class SurfaceConfig(ModelWithOptions):
     """
     Surface model configuration.
@@ -1164,6 +1517,16 @@ class HydrologyConfig(ModelWithOptions):
     SECTION = "hydrology"
 
 
+class BedDeformationConfig(ModelWithOptions):
+    """
+    Bed deformation model configuration.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "bed_deformation"
+
+
 class FrontalMeltConfig(ModelWithOptions):
     """
     Frontal melt model configuration.
@@ -1172,6 +1535,27 @@ class FrontalMeltConfig(ModelWithOptions):
     """
 
     SECTION = "frontal_melt"
+
+
+def _no_model(cls: type) -> Any:
+    """
+    Build an empty "no model selected" section.
+
+    Used as the default for optional sub-sections: ``selected()`` then returns
+    an empty option dict, so a config that omits the section simply adds no
+    flags and PISM keeps its own defaults.
+
+    Parameters
+    ----------
+    cls : type
+        A :class:`ModelWithOptions` subclass.
+
+    Returns
+    -------
+    ModelWithOptions
+        Instance with ``model = "none"`` and a single empty option table.
+    """
+    return cls(model="none", options={"none": {}})
 
 
 class StressBalanceConfig(ModelWithOptions):
@@ -1195,64 +1579,156 @@ class CampaignConfig(BaseModel):
 
     Attributes
     ----------
-    boot_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
-    outline_file : str or None
-        Path to GPKG basin file (relative to the input directory).
+    bathymetry : str or None
+        bathymetry data source identifier (e.g., ``"gebco"``).
     bucket : str or None
         S3 bucket (e.g., ``"pism-cloud7-data"``).
     climate : str or None
         Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
+    climatology : str or None
+        Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
+    debris : str or None
+        Debris-thickness data source identifier (e.g., ``"rounce"`` for the
+        NSIDC HMA_DTE v1 global estimates). Omit or set ``"none"`` to skip
+        staging a debris file.
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
-    end_year : str, float, or None
-        End year of the forcing period.
+    dh : str or None
+        Observed surface-elevation-change data source identifier (e.g.,
+        ``"hugonnet"`` for the Hugonnet et al. (2021) 2000-2020 maps). When
+        set, staging adds ``dh``/``dh_err`` to the observations file. Omit or
+        set ``"none"`` to skip.
+    forcing_mask : str or None
+        Forcing mask ("all", "glacier", "none").
     velocity : str or None
         Velocity data source identifier (e.g., ``"its_live"``).
-    gcm : str, list, or None
+    heatflux : str or None
+        Heat-flow data source identifier (e.g., ``"lucazeau"``).
+    gcms : str, list, dict, or None
         GCM model name(s) used for climate forcing.
     boot_file : str or None
-        Path to the grid NetCDF boot (relative to the input directory).
+        Path to the boot NetCDF file (relative to the input directory).
+    outline_file : str or None
+        Path to GPKG basin file (relative to the input directory).
     grid_file : str or None
         Path to the grid NetCDF file (relative to the input directory).
     heatflux_file : str or None
-        Path to the boot NetCDF file (relative to the input directory).
+        Path to the heat flux NetCDF file (relative to the input directory).
     ice_thickness : str or None
         Ice thickness data source identifier (e.g., ``"millan2022"``).
     name : str or None
         Human-readable campaign name.
+    ocean_moat : str or None
+        Whether to surround the domain with a 4 km ocean "moat" (bedrock
+        ``-2000`` m, surface ``0`` m, thickness ``0`` m). ``"yes"`` enables it;
+        ``"no"`` (default) leaves the perimeter untouched.
+    ocean_file : str or None
+        Ocean forcing file name.
+    obs_file : str or None
+        Observations file name.
     pathway : str or None
         Forcing pathway or scenario identifier (e.g., ``"ssp585"``).
     prefix : str or None
-        path to data in bucket (e.g., ``"ismip7_greenland_input"``).
+        path to data in bucket (e.g., ``"ismip7_greenland_input"``). Addresses
+        the datasets shared by every project (GEBCO, heat flux, SNAP, the
+        merged CARRA2 store).
+    project_directory : str or None
+        Project subdirectory under ``prefix`` holding the datasets that depend
+        on the project's CRS overrides (RGI outlines, ice thickness, per-group
+        climate), e.g. ``"s4f"``. Leave unset for campaigns whose input tree is
+        not split by project.
+    present_day_forcings : str, list, or None
+        Present-day forcing identifier(s).
+    regrid_file : str or None
+        Path to a file used for regridding (relative to the input directory).
     retreat_file : str or None
         Path to the retreat NetCDF file (relative to the input directory).
-    start_year : str, float, or None
-        Start year of the forcing period.
+    rgi_complex_file : str or None
+        Filename of the RGI glacier-complex ("-C") outlines in the bucket.
+    rgi_glacier_file : str or None
+        Filename of the RGI glacier ("-G") outlines in the bucket.
+    init_climate : str or None
+        Climate builder used for the init leg only, as a key of
+        ``pism_terra.glacier.stage.CLIMATE`` (e.g.
+        ``"carra2-monthly-mean"``). Lets a run spin up on a climatology and
+        then continue on the transient forcing named by ``climate``. When
+        unset the init leg reuses ``climate``.
+    init_surface_model : str or None
+        Surface model used for the init leg only, naming a key of the config's
+        ``[surface.options.*]`` tables (e.g. ``"debm_enhanced_forcing"``). Lets
+        the spin-up run a different surface scheme — typically one adding
+        ``forcing`` to hold the geometry — before the run of interest continues
+        with ``[surface] model``. When unset the init leg keeps that model.
+    init_start : str or None
+        Start of the inverse-workflow init (prior) leg as ``YYYY-MM-DD``
+        (e.g. ``"2006-01-01"``); required by
+        ``pism-ismip7-greenland-run-inverse``.
+    init_end : str or None
+        End of the inverse-workflow init (prior) leg as ``YYYY-MM-DD``
+        (e.g. ``"2007-01-01"``); required by
+        ``pism-ismip7-greenland-run-inverse``.
+    historical_start_year : str, float, or None
+        First year of the historical forcing file.
+    historical_end_year : str, float, or None
+        Last (inclusive) year of the historical forcing file (e.g. 2014
+        under the ISMIP7 convention where projections start in 2015).
+    projection_start_year : str, float, or None
+        First year of the projection forcing file (e.g. 2015 for ISMIP7).
+    projection_end_year : str, float, or None
+        Last (inclusive) year of the projection forcing file. This value
+        differs per pathway (e.g. 2100 for ssp370, 2300 for ssp585).
     version : str or None
-        Dataset or experiment version string.
+        Dataset or experiment version string; for ISMIP7 campaigns it names
+        the S3 directory (``<prefix>/<version>/``) the staged inputs live in.
+    climate_version : str or None
+        Version tag embedded in the ISMIP7 climate (and climate-gradient)
+        forcing *filenames* (per-ESM, e.g. ``"v2"`` for MRI-ESM2-0). Filled
+        from the Core Experiment counter when unset; falls back to
+        ``version`` for non-counter configs.
+    ocean_version : str or None
+        Same as ``climate_version`` for the ocean forcing filenames — the
+        two datasets are published on independent version tracks.
     """
 
+    bathymetry: str | None = Field(default=None)
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
+    climatology: str | None = Field(default=None)
+    debris: str | None = Field(default=None)
     dem: str | None = Field(default=None)
+    dh: str | None = Field(default=None)
+    forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
-    gcms: str | list | None = Field(default=None)
-    present_day_forcings: str | list | None = Field(default=None)
-    future_forcings: str | list | None = Field(default=None)
+    heatflux: str | None = Field(default=None)
+    gcms: str | list | dict | None = Field(default=None)
     boot_file: str | None = Field(default=None)
     outline_file: str | None = Field(default=None)
     grid_file: str | None = Field(default=None)
     heatflux_file: str | None = Field(default=None)
     ice_thickness: str | None = Field(default=None)
     name: str | None = Field(default=None)
+    obs_file: str | None = Field(default=None)
+    ocean_moat: str | None = Field(default="no")
+    ocean_file: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)
+    project_directory: str | None = Field(default=None)
+    present_day_forcings: str | list | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)
-    rgi_file: str | None = Field(default=None)
-    start_year: str | float | None = Field(default=None)
+    rgi_complex_file: str | None = Field(default=None)
+    rgi_glacier_file: str | None = Field(default=None)
+    init_climate: str | None = Field(default=None)
+    init_surface_model: str | None = Field(default=None)
+    init_start: str | None = Field(default=None)
+    init_end: str | None = Field(default=None)
+    historical_start_year: str | float | None = Field(default=None)
+    historical_end_year: str | float | None = Field(default=None)
+    projection_start_year: str | float | None = Field(default=None)
+    projection_end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
+    climate_version: str | None = Field(default=None)
+    ocean_version: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """
@@ -1293,12 +1769,6 @@ class CampaignConfig(BaseModel):
             Any
                 The rendered string when `v` is a templated string; otherwise the
                 original value.
-
-            Raises
-            ------
-            jinja2.UndefinedError
-                If the template references an undefined variable and the Jinja
-                environment uses ``StrictUndefined``.
             """
             if isinstance(v, str) and "{{" in v:
                 return _JINJA.from_string(v).render(ctx)

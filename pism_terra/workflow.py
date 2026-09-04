@@ -24,6 +24,11 @@ Workflow management.
 from __future__ import annotations
 
 import contextlib
+import logging
+import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable, TypeVar
 
@@ -36,7 +41,63 @@ import xarray as xr
 from pydantic import BaseModel
 from tqdm.auto import tqdm
 
+logger = logging.getLogger(__name__)
+
 T = TypeVar("T", bound=BaseModel)
+
+
+def parse_cdl_options(cdl_file: str | Path) -> set[str]:
+    """
+    Parse a PISM CDL file and return the set of valid configuration parameter names.
+
+    Extracts names from lines matching ``pism_config:<name> = ...``, ignoring
+    metadata suffixes (``_doc``, ``_type``, ``_units``, ``_option``, ``_choices``,
+    ``_valid_min``, ``_valid_max``).
+
+    Parameters
+    ----------
+    cdl_file : str or Path
+        Path to the CDL file (e.g., ``pism_config.cdl``).
+
+    Returns
+    -------
+    set of str
+        Valid PISM configuration parameter names.
+    """
+    pattern = re.compile(r"^\s*pism_config:(\S+)\s*=")
+    suffixes = ("_doc", "_type", "_units", "_option", "_choices", "_valid_min", "_valid_max")
+    options: set[str] = set()
+    with open(cdl_file, encoding="utf-8") as fh:
+        for line in fh:
+            m = pattern.match(line)
+            if m:
+                name = m.group(1).rstrip(";")
+                if not any(name.endswith(s) for s in suffixes):
+                    options.add(name)
+    return options
+
+
+def validate_pism_options(run: dict[str, Any], cdl_file: str | Path) -> None:
+    """
+    Validate that all keys in a PISM run dictionary are recognized config parameters.
+
+    Prints a warning for each key not found in the master CDL file.
+
+    Parameters
+    ----------
+    run : dict
+        Dictionary of PISM run options (dotted keys like ``"surface.pdd.factor_ice"``).
+    cdl_file : str or Path
+        Path to the PISM CDL master config file.
+    """
+    valid = parse_cdl_options(cdl_file)
+    invalid = sorted(k for k in run if k not in valid)
+    if invalid:
+        logger.warning("%d unrecognized PISM option(s):", len(invalid))
+        for k in invalid:
+            logger.warning("  - %s", k)
+    else:
+        logger.info("All %d PISM options are valid.", len(run))
 
 
 def merge_model(base_model: T, **overrides: Any) -> T:
@@ -239,6 +300,51 @@ def dict2str(d: dict) -> str:
      -b 2'
     """
     return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
+
+
+def filter_overrides_by_config(
+    overrides: dict[str, Any], allowed_keys: Iterable[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """
+    Restrict UQ overrides to keys the selected config exposes.
+
+    Drops any entry in ``overrides`` whose key is not in ``allowed_keys``.
+    Returned alongside the kept dict is a sorted list of dropped keys so the
+    caller can surface what was filtered.
+
+    Parameters
+    ----------
+    overrides : dict[str, Any]
+        Candidate dotted PISM-flag overrides (typically the merged uq.toml
+        sample row plus any hardcoded file-path defaults).
+    allowed_keys : Iterable[str]
+        Keys present in the config-derived run dict. Only the selected model's
+        options block contributes here, so an override for a non-selected model
+        (e.g. ``surface.debm_simple.std_dev.file`` when ``surface.model == "pdd"``)
+        is correctly dropped.
+
+    Returns
+    -------
+    kept : dict[str, Any]
+        ``overrides`` filtered to keys present in ``allowed_keys``.
+    skipped : list[str]
+        Keys from ``overrides`` that were not in ``allowed_keys``, sorted.
+
+    Examples
+    --------
+    >>> overrides = {"surface.force_to_thickness.file": "/tmp/boot.nc",
+    ...              "surface.debm_simple.std_dev.file": "/tmp/clim.nc"}
+    >>> allowed = {"surface.force_to_thickness.file", "input.file"}
+    >>> kept, skipped = filter_overrides_by_config(overrides, allowed)
+    >>> kept
+    {'surface.force_to_thickness.file': '/tmp/boot.nc'}
+    >>> skipped
+    ['surface.debm_simple.std_dev.file']
+    """
+    allowed = set(allowed_keys)
+    kept = {k: v for k, v in overrides.items() if k in allowed}
+    skipped = sorted(k for k in overrides if k not in allowed)
+    return kept, skipped
 
 
 def apply_choice_mapping(uq_df: pd.DataFrame, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
@@ -477,7 +583,7 @@ def check_dataset_lazy(
 
     # coord monotonicity
     for xd in ("x", "lon"):
-        if xd in ds.coords:
+        if xd in ds.dims:
             xv = ds[xd].values
             if xv.size < 2:
                 raise ValueError(f"Coordinate '{xd}' has <1 elements")
@@ -485,7 +591,7 @@ def check_dataset_lazy(
                 raise ValueError(f"Coordinate '{xd}' is not strictly monotonic")
 
     for yd in ("y", "lat"):
-        if yd in ds.coords:
+        if yd in ds.dims:
             yv = ds[yd].values
             if yv.size < 2:
                 raise ValueError(f"Coordinate '{yd}' has <1 elements")
@@ -496,13 +602,10 @@ def check_dataset_lazy(
     if "time" in ds.coords:
         _ = xr.decode_cf(ds[["time"]])  # raises if invalid CF time
 
-    # CRS (if rioxarray is available)
+    # CRS (if rioxarray is available) — skip silently on any error
     try:
-        _crs = getattr(ds.rio, "crs", None)
-        if _crs is None:
-            raise ValueError("Dataset has no CRS (.rio.crs is None)")
+        _crs = ds.rio.crs
     except Exception:
-        # If rioxarray not present, skip CRS check
         pass
 
     def nbytes_est(da: xr.DataArray) -> int:
@@ -558,8 +661,10 @@ def check_dataset_lazy(
 
     # Optional: quick global metadata sanity
     if ds.attrs.get("Conventions", "").lower().startswith("cf"):
-        # try writing minimal in-memory netcdf header/coords only (super light)
-        _ = xr.Dataset(coords={k: ds[k].isel({k: slice(0, 1)}) for k in ds.coords})
+        # Try slicing each *dim* coord. Non-dim coords (e.g. ``crs`` /
+        # ``spatial_ref`` grid-mapping placeholders) are 0-D scalars and can't
+        # be isel'd by their own name — skip them.
+        _ = xr.Dataset(coords={k: ds[k].isel({k: slice(0, 1)}) for k in ds.coords if k in ds[k].dims})
 
     # If we reached here, the dataset is healthy enough for downstream steps.
 
@@ -587,6 +692,192 @@ def check_dataset_fully(ds: xr.Dataset) -> None:
     modify the dataset.
     """
     _ = ds.load()
+
+
+def drop_geotransform_attr(ds: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
+    """
+    Drop the ``GeoTransform`` attribute from the grid-mapping variable.
+
+    rioxarray writes a ``GeoTransform`` on ``spatial_ref`` whose ``dy`` follows
+    the in-memory y-axis order. With CF-ordered (ascending) y this means
+    ``dy > 0``, which GDAL prefers over the y coordinate variable and so
+    renders the raster upside-down in QGIS. Dropping the attribute makes GDAL
+    fall back to deriving the transform from the y coordinate (top-down).
+
+    Parameters
+    ----------
+    ds : xarray.Dataset or xarray.DataArray
+        Object whose grid-mapping variable/coordinate is modified in place. A
+        ``DataArray`` carries the grid mapping as the ``spatial_ref`` coordinate.
+
+    Returns
+    -------
+    xarray.Dataset or xarray.DataArray
+        The same object, for chaining.
+    """
+    container = ds.coords if isinstance(ds, xr.DataArray) else ds.variables
+    for name in ("spatial_ref", "crs"):
+        if name in container and "GeoTransform" in ds[name].attrs:
+            del ds[name].attrs["GeoTransform"]
+    return ds
+
+
+def stamp_grid_mapping(ds: xr.Dataset, name: str = "spatial_ref") -> xr.Dataset:
+    """
+    Canonicalize the CF grid mapping and drop stray ``coordinates`` attributes.
+
+    The CRS is advertised by the CF ``grid_mapping`` attribute, which names the
+    grid-mapping variable (``spatial_ref``). PISM, GDAL, and QGIS all follow that
+    attribute to read the projection. rioxarray records it in each variable's
+    *encoding*, but operations such as ``concat``/``fillna`` drop encoding, so it
+    can go missing on write — and consumers then fail to find the CRS.
+
+    This finds the real CRS variable (the one carrying a projection WKT or a CF
+    ``grid_mapping_name``), renames it to ``name``, and drops any other CRS
+    variable. Source datasets often ship their own grid mapping (ITS_LIVE names it
+    ``mapping``) that rides through reprojection; an older pipeline could even leave
+    a dangling ``grid_mapping = "spatial_ref"`` pointing at a variable that is
+    actually named ``mapping``. Keying off the metadata rather than the (possibly
+    wrong) attribute fixes both.
+
+    It then re-asserts ``grid_mapping`` on every spatial data variable and strips
+    every grid-mapping name from any ``coordinates`` attribute: ``coordinates`` is
+    for auxiliary coordinate variables (e.g. 2-D lat/lon), and listing the CRS
+    variable there is a CF misuse that confuses PISM (it treats the CRS variable as
+    a data coordinate rather than the projection).
+
+    Stale *empty* grid mappings are also removed. A leftover scalar coordinate (an
+    old ``mapping`` with no projection metadata) survives metadata-based detection,
+    and because it stays attached as a coordinate xarray keeps re-emitting
+    ``coordinates = "mapping"`` on write. Any scalar (0-D) non-dimension coordinate
+    other than the canonical CRS variable is dropped — genuine auxiliary coordinates
+    (lat/lon) are multi-dimensional, so this only catches grid-mapping debris.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset carrying a CRS variable written by rioxarray (or an upstream
+        source). Not modified in place; callers must use the returned dataset.
+    name : str, default ``"spatial_ref"``
+        Canonical name for the grid-mapping variable.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with a single CRS variable named ``name``, ``grid_mapping``
+        re-asserted on every spatial variable, and no CRS name left in any
+        ``coordinates`` attribute.
+    """
+    # Every variable that looks like a CF grid mapping (carries a projection WKT or
+    # a CF ``grid_mapping_name``) — the real CRS carriers, by name or otherwise.
+    gm_vars = {n for n in ds.variables if "crs_wkt" in ds[n].attrs or "grid_mapping_name" in ds[n].attrs}
+    if not gm_vars:
+        return ds
+
+    # Pick the source CRS variable: the canonical name if it already carries the
+    # metadata, otherwise any real one (e.g. ITS_LIVE's ``mapping``).
+    src = name if name in gm_vars else sorted(gm_vars)[0]
+    if src != name:
+        if name in ds.variables:  # a dangling/empty target by the canonical name
+            ds = ds.drop_vars(name)
+        ds = ds.rename({src: name})
+
+    # Drop other real CRS variables and stale empty scalar grid-mapping coordinates.
+    stale = {s for s in gm_vars if s != name}
+    stale |= {c for c in ds.coords if c != name and c not in ds.dims and ds[c].ndim == 0}
+    stale &= set(ds.variables)
+    if stale:
+        ds = ds.drop_vars(list(stale))
+    ds = ds.set_coords(name)
+
+    # Names that must never appear in a ``coordinates`` attribute.
+    crs_names = gm_vars | stale | {name}
+    for var in list(ds.data_vars) + list(ds.coords):
+        if var == name:
+            continue
+        if var in ds.data_vars:
+            ds[var].encoding["grid_mapping"] = name
+            ds[var].attrs.pop("grid_mapping", None)  # keep it in encoding only
+        # Strip every grid-mapping name from ``coordinates``, keeping legitimate
+        # auxiliary coordinates if present.
+        for store in (ds[var].attrs, ds[var].encoding):
+            coords = store.get("coordinates")
+            if not coords:
+                continue
+            kept = [c for c in coords.split() if c not in crs_names]
+            if kept:
+                store["coordinates"] = " ".join(kept)
+            else:
+                store.pop("coordinates", None)
+    return ds
+
+
+#: Upper bound on Dask workers for post-processing. A PISM run can use a very
+#: wide MPI decomposition; translating that straight into worker *processes*
+#: would thrash a single node, and the reduction is I/O bound well before then.
+POSTPROCESS_MAX_WORKERS = 8
+
+
+def postprocess_ntasks(config_cli: dict) -> str:
+    """
+    Build the ``--ntasks`` flag for a post-processing command.
+
+    Clamps the run's MPI task count to :data:`POSTPROCESS_MAX_WORKERS` so a
+    wide PISM decomposition does not translate into an unusable number of Dask
+    worker processes.
+
+    Parameters
+    ----------
+    config_cli : dict
+        CLI overrides; only ``"ntasks"`` is consulted.
+
+    Returns
+    -------
+    str
+        ``" --ntasks N"`` when a task count is set, else an empty string.
+    """
+    ntasks = config_cli.get("ntasks")
+    if not ntasks:
+        return ""
+    return f" --ntasks {min(int(ntasks), POSTPROCESS_MAX_WORKERS)}"
+
+
+def compressed_encoding(ds: xr.Dataset, complevel: int = 2, **extra: Any) -> dict[str, dict[str, Any]]:
+    """
+    Build a per-variable NetCDF encoding that keeps the CF grid mapping.
+
+    Passing an ``encoding`` dict to ``to_netcdf`` *replaces* a variable's
+    encoding rather than merging into it. rioxarray and
+    :func:`stamp_grid_mapping` record ``grid_mapping`` in encoding, so asking
+    for compression the obvious way silently drops the pointer to the CRS
+    variable and the written file has no discoverable projection — PISM then
+    falls back to comparing raw x/y and rejects the forcing whenever the model
+    grid uses a different projection.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset about to be written, after its grid mapping has been stamped.
+    complevel : int, default 2
+        Compression level passed to zlib.
+    **extra
+        Additional encoding entries applied to every data variable.
+
+    Returns
+    -------
+    dict[str, dict]
+        Encoding suitable for ``ds.to_netcdf(encoding=...)``, carrying each
+        variable's existing ``grid_mapping`` through.
+    """
+    encoding: dict[str, dict[str, Any]] = {}
+    for name in ds.data_vars:
+        entry: dict[str, Any] = {"zlib": True, "complevel": complevel, "shuffle": True}
+        entry.update(extra)
+        grid_mapping = ds[name].encoding.get("grid_mapping")
+        if grid_mapping:
+            entry["grid_mapping"] = grid_mapping
+        encoding[name] = entry
+    return encoding
 
 
 def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
@@ -627,8 +918,10 @@ def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     p = Path(path).resolve()
     is_ok: bool
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
     try:
-        ds = xr.open_dataset(p)
+        ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_lazy(ds)  # your sampled checker
         if verbose:
             print(f"{p} is valid ✓")
@@ -670,14 +963,16 @@ def check_xr_fully(path: Path | str) -> bool:
 
     Notes
     -----
-    Prefer :func:`check_xr_sampled` for very large datasets to avoid
+    Prefer :func:`check_xr_lazy` for very large datasets to avoid
     out-of-memory errors. This variant is useful when the dataset is expected
     to fit comfortably in memory and you want a strong integrity check.
     """
     p = Path(path).resolve()
     is_ok: bool
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    delta_coder = xr.coders.CFTimedeltaCoder()
     try:
-        ds = xr.open_dataset(p)
+        ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_fully(ds)  # your full-load checker
         print(f"{p} is valid ✓")
         is_ok = True
@@ -780,3 +1075,355 @@ def tqdm_joblib(tqdm_object):
     finally:
         joblib.parallel.BatchCompletionCallBack = old_batch_callback
         tqdm_object.close()
+
+
+def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = None) -> xr.Dataset:
+    """
+    Rewrite a per-region scalar dataset into a form CDO can open.
+
+    The per-region scalar files this package writes are built by stacking
+    ``expand_dims``-ed reductions, which leaves them unreadable by CDO for two
+    separate reasons:
+
+    1. ``expand_dims`` puts the new dimension first, giving ``(region, time)``.
+       CDO reads the leading dimension as the record dimension and skips every
+       variable that does not lead with time::
+
+           Time must be the first dimension! ... skipped variable ice_mass!
+
+    2. The region coordinate holds strings (basin names, RGI IDs). CDO reads the
+       trailing dimension as an x-axis and cannot represent a character
+       coordinate, so it drops every variable and then fails to open the file::
+
+           Unsupported x-coordinate type (char/string), skipped variable ice_mass!
+           No data arrays found!
+
+    So move time to the front and replace the string coordinate with a plain
+    integer index, keeping the labels alongside in ``name_var``. Label-based
+    selection is one call away for xarray users::
+
+        ds.set_index(basin="basin_name").sel(basin="GIS")
+
+    Both steps are skipped when they do not apply, so calling this on an
+    already-numeric or time-less dataset is a no-op.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset carrying ``label_dim`` and, usually, ``time``.
+    label_dim : str
+        Name of the region dimension, e.g. ``"basin"`` or ``"RGIid"``.
+    name_var : str or None, optional
+        Name for the companion label coordinate. Defaults to
+        ``f"{label_dim}_name"``.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with time leading and ``label_dim`` as an integer index.
+    """
+    if label_dim in ds.dims and label_dim in ds.coords:
+        labels = ds[label_dim].values
+        if labels.dtype.kind in {"U", "S", "O"}:
+            name_var = name_var or f"{label_dim}_name"
+            attrs = dict(ds[label_dim].attrs)
+            ds = ds.assign_coords({label_dim: np.arange(ds.sizes[label_dim], dtype="int32")})
+            ds[label_dim].attrs = {
+                **attrs,
+                "long_name": f"{label_dim} index",
+                "description": f"positional index; labels are in '{name_var}'",
+            }
+            ds = ds.assign_coords({name_var: (label_dim, labels.astype(str))})
+            ds[name_var].attrs = {"long_name": f"{label_dim} name"}
+            # Write the labels as a NetCDF char array rather than the
+            # variable-length NC_STRING xarray would choose by default.
+            # NC_STRING is netCDF-4 only and tools that read every variable
+            # numerically choke on it — ncview reports "netcdf_fi_get_data:
+            # error on nc_get_vara_float call ... Not a valid data type".
+            # A char array is what NetCDF-3 always used for text, and it
+            # round-trips back to strings unchanged.
+            ds[name_var].encoding["dtype"] = "S1"
+
+    if "time" in ds.dims:
+        ds = ds.transpose("time", ...)
+
+    return ds
+
+
+def git_provenance(repo: Path | str | None = None) -> str:
+    """
+    Describe the git checkout that provides ``pism_terra``.
+
+    Parameters
+    ----------
+    repo : str or pathlib.Path or None, optional
+        Directory inside the repository to interrogate. Defaults to the
+        directory holding this module, so the answer reflects the code that
+        is actually running rather than the current working directory.
+
+    Returns
+    -------
+    str
+        The ``commit``/``Author``/``Date`` header of the most recent commit,
+        followed by a ``Tree`` line stating whether tracked files had
+        uncommitted edits. Empty when git is unavailable or the code was
+        installed outside a checkout.
+    """
+    root = Path(repo) if repo is not None else Path(__file__).resolve().parent
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "log",
+                "-1",
+                "--decorate",
+                "--pretty=format:commit %H%d%nAuthor: %an <%ae>%nDate:   %ad",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    lines = [completed.stdout.strip()]
+    tree = git_tree_state(root)
+    if tree:
+        lines.append(f"Tree:   {tree}")
+    return "\n".join(lines)
+
+
+def git_tree_state(repo: Path | str | None = None) -> str:
+    """
+    Report whether tracked files differ from the checked-out commit.
+
+    Untracked files are ignored: a working directory full of model output
+    says nothing about which code ran, whereas an edited tracked file means
+    the recorded commit does not fully describe it.
+
+    Parameters
+    ----------
+    repo : str or pathlib.Path or None, optional
+        Directory inside the repository to interrogate. Defaults to the
+        directory holding this module.
+
+    Returns
+    -------
+    str
+        ``"clean"``, or ``"dirty (N tracked file(s) modified)"``. Empty when
+        the state could not be determined, so an unknown state is never
+        reported as clean.
+    """
+    root = Path(repo) if repo is not None else Path(__file__).resolve().parent
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    modified = [line for line in completed.stdout.splitlines() if line.strip()]
+    if not modified:
+        return "clean"
+    plural = "" if len(modified) == 1 else "s"
+    return f"dirty ({len(modified)} tracked file{plural} modified)"
+
+
+def provenance_comment(command: Iterable[str] | None = None, repo: Path | str | None = None) -> str:
+    """
+    Build the shell-comment block recording how a run script was generated.
+
+    Parameters
+    ----------
+    command : iterable of str or None, optional
+        Argument vector to record. Defaults to :data:`sys.argv`; only the
+        base name of the program is kept, so the block does not depend on
+        where the console script happens to live.
+    repo : str or pathlib.Path or None, optional
+        Passed through to :func:`git_provenance`.
+
+    Returns
+    -------
+    str
+        Comment block, ending in a newline.
+    """
+    argv = list(sys.argv) if command is None else list(command)
+    lines: list[str] = []
+
+    git = git_provenance(repo)
+    if git:
+        lines.append("# Git")
+        lines.extend(f"# {line}" for line in git.splitlines())
+        lines.append("")
+
+    lines.append("# Command")
+    lines.append(f"# {shlex.join([Path(argv[0]).name, *argv[1:]])}" if argv else "# unknown")
+
+    return "\n".join(lines) + "\n"
+
+
+def add_provenance(script: str, command: Iterable[str] | None = None, repo: Path | str | None = None) -> str:
+    """
+    Insert the provenance block into a rendered submission script.
+
+    The block goes directly below the batch-scheduler header (shebang and
+    ``#SBATCH``/``#PBS``/``#BSUB`` directives) so that the directives stay
+    contiguous at the top of the file, where schedulers expect them.
+
+    Parameters
+    ----------
+    script : str
+        Rendered submission script. An empty script (debug mode) is returned
+        unchanged.
+    command : iterable of str or None, optional
+        Passed through to :func:`provenance_comment`.
+    repo : str or pathlib.Path or None, optional
+        Passed through to :func:`git_provenance`.
+
+    Returns
+    -------
+    str
+        The script with the provenance comment inserted.
+    """
+    if not script.strip():
+        return script
+
+    lines = script.splitlines()
+    insert_at = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#!") or stripped.startswith(("#SBATCH", "#PBS", "#BSUB")):
+            insert_at = idx + 1
+        elif stripped and not stripped.startswith("#"):
+            break
+
+    block = provenance_comment(command=command, repo=repo).splitlines()
+    tail = lines[insert_at:]
+    if tail and tail[0].strip():
+        block.append("")
+    merged = [*lines[:insert_at], "", *block, *tail]
+    return "\n".join(merged) + ("\n" if script.endswith("\n") else "")
+
+
+def pism_config_value(ds: xr.Dataset, key: str, default: Any = None) -> Any:
+    """
+    Read one PISM configuration parameter from a model output file.
+
+    PISM writes its full configuration as attributes on a scalar
+    ``pism_config`` variable, which is the authoritative record of what the
+    run actually used. Reading a threshold from there keeps post-processing
+    consistent with the simulation instead of restating a default that the
+    config may have overridden.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset opened from PISM output. A missing ``pism_config`` variable
+        is not an error; ``default`` is returned.
+    key : str
+        Configuration parameter name, e.g.
+        ``"output.ice_free_thickness_standard"``.
+    default : any, optional
+        Value to return when the variable or the parameter is absent.
+
+    Returns
+    -------
+    any
+        The parameter value, converted from NumPy to a plain Python scalar,
+        or ``default``.
+    """
+    if "pism_config" not in ds.variables:
+        return default
+
+    value = ds["pism_config"].attrs.get(key, default)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def dataset_crs(ds: xr.Dataset, crs: str | None = None) -> str:
+    """
+    Determine the CRS of a PISM output file.
+
+    PISM writes a CF grid-mapping variable (``mapping``, or ``spatial_ref``
+    once a file has round-tripped through rioxarray) carrying ``crs_wkt``,
+    so the projection can be read from the file itself. That matters because
+    the projection is campaign-specific — polar stereographic for Greenland,
+    a UTM zone for an Alaskan glacier — and a hard-coded default would
+    silently misplace one of them.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset as opened from disk, before the grid-mapping variable is
+        dropped.
+    crs : str or None, optional
+        Explicit override (e.g. ``"EPSG:3413"``). When given it wins, which
+        is the escape hatch for files that carry no usable grid mapping.
+
+    Returns
+    -------
+    str
+        CRS as WKT or as the given override string.
+
+    Raises
+    ------
+    ValueError
+        If no override was given and the file has no grid-mapping variable
+        with ``crs_wkt``.
+    """
+    if crs is not None:
+        return crs
+
+    grid_mapping = ds.rio.grid_mapping
+    if grid_mapping in ds.variables:
+        crs_wkt = ds[grid_mapping].attrs.get("crs_wkt")
+        if crs_wkt:
+            logger.info("Using CRS from '%s'", grid_mapping)
+            return str(crs_wkt)
+
+    raise ValueError(
+        "input file carries no grid-mapping variable with 'crs_wkt'; pass --crs explicitly (e.g. --crs EPSG:3413)"
+    )
+
+
+# CF grid-mapping variables written by PISM, CDO and rioxarray.
+GRID_MAPPING_VARS = ("mapping", "spatial_ref", "crs", "polar_stereographic")
+
+
+def drop_grid_mapping(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Strip the CF grid mapping from a dataset that no longer has a grid.
+
+    Reducing over ``x``/``y`` leaves per-region scalars, but the grid-mapping
+    variable is dimensionless and survives the reduction, so it rides along
+    into the output and every variable keeps pointing at it through its
+    ``coordinates`` attribute. A projection describes a grid, and a summed
+    timeseries has none, so it is dropped along with the references to it.
+
+    Dropping the variable before the reduction is not enough: ``rio.write_crs``
+    recreates it from the dataset's own grid-mapping name, which is how it
+    reappears as ``mapping`` on PISM output.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset whose spatial dimensions have already been reduced away.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset without grid-mapping variables or references to them.
+    """
+    ds = ds.drop_vars([name for name in GRID_MAPPING_VARS if name in ds.variables], errors="ignore")
+    for var in ds.variables.values():
+        var.attrs.pop("grid_mapping", None)
+        var.encoding.pop("grid_mapping", None)
+    return ds
