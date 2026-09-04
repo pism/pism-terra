@@ -17,3 +17,5 @@ mpirun -np  {{ ntasks | default(32) }} /opt/pism/bin/python -m PISM.pismi {{ inv
 mpirun -np  {{ ntasks | default(32) }} pism {{ run_str }}
 
 {{ post_process_str }}
+
+{{ dh_str }}

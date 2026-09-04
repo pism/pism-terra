@@ -16,7 +16,7 @@
 # along with PISM; if not, write to the Free Software
 
 """
-Tests for :func:`pism_terra.processing.integrate_rate`.
+Tests for :mod:`pism_terra.processing`.
 
 Covers:
 - Hand-computable integrals for m^2/day on an irregular axis, kg/s, and W -> J.
@@ -24,9 +24,13 @@ Covers:
 - Explicit ``days_in_month`` widths, which include the final sample that ``diff`` drops.
 - Unit detection: quantified input, ``attrs["units"]`` input, and rejection of non-rates.
 - Independence from the time coordinate's datetime64 resolution.
+- Identifier extraction in ``preprocess_netcdf`` for the glacier, ice sheet and
+  GCM-forced output naming conventions.
 """
 
 from __future__ import annotations
+
+import json
 
 import numpy as np
 import pandas as pd
@@ -34,7 +38,7 @@ import pint_xarray  # pylint: disable=unused-import
 import pytest
 import xarray as xr
 
-from pism_terra.processing import integrate_rate
+from pism_terra.processing import integrate_rate, preprocess_netcdf
 
 # pint defines year as the Julian year; conversions out of Gt/yr use this.
 JULIAN_YEAR_DAYS = 365.25
@@ -475,3 +479,124 @@ def test_preserves_long_name(monthly_mb):
 
     assert result.name == "cumulative_MB"
     assert result.attrs["long_name"] == "Cumulative Mass balance"
+
+
+def _write_run(tmp_path, name, command=""):
+    """
+    Write a minimal PISM-like output file and return its path.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write into.
+    name : str
+        File name encoding the run identifiers.
+    command : str, optional
+        Value of the ``command`` attribute, by default "".
+
+    Returns
+    -------
+    pathlib.Path
+        Path of the written file.
+    """
+    ds = xr.Dataset(
+        {"thk": ("time", [1.0, 2.0]), "pism_config": ((), 0)},
+        coords={"time": [0.0, 1.0]},
+        attrs={"command": command},
+    )
+    ds["pism_config"].attrs = {"grid.dx": "1200", "grid.dx_doc": "ignored"}
+    path = tmp_path / name
+    ds.to_netcdf(path)
+    return path
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        (
+            "dh_RGI2000-v7.0-C-01-03383_id_0_uq_1_2000-01-01_2020-01-01.nc",
+            {"rgi_id": "RGI2000-v7.0-C-01-03383", "uq_id": "1", "exp_id": "0"},
+        ),
+        (
+            "spatial_GIS_g1200m_id_HIRHAM5-ERA5_YMM_1990_2019_uq_0_0001-01-01_0002-01-01.nc",
+            {"uq_id": "0", "exp_id": "HIRHAM5-ERA5_YMM_1990_2019"},
+        ),
+        (
+            "basin_g1200m_id_gcm_CESM2_exp_pdSST-futArcSIC_pdSST-pdSIC_0001-01-01_0301-01-01.nc",
+            {"gcm_id": "CESM2", "exp_id": "gcm"},
+        ),
+    ],
+)
+def test_preprocess_ids_from_filename(tmp_path, name, expected):
+    """
+    Check the identifiers extracted from the three output-naming conventions.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    name : str
+        Output file name to parse.
+    expected : dict
+        Identifier dimensions and values the file name encodes. Dimensions absent
+        from it must not be added.
+    """
+    path = _write_run(tmp_path, name)
+
+    ds = preprocess_netcdf(xr.open_dataset(path), process_config=False)
+
+    assert {d: str(ds[d].values[0]) for d in ("rgi_id", "gcm_id", "uq_id", "exp_id") if d in ds.dims} == expected
+
+
+def test_preprocess_rgi_id_falls_back_to_command(tmp_path):
+    """
+    Check the RGI identifier is taken from ``command`` when the file name lacks it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    path = _write_run(
+        tmp_path,
+        "spatial_g100m_id_0_uq_2_2000-01-01_2020-01-01.nc",
+        command="pism -atmosphere.given.file /in/RGI2000-v7.0-C-01-03383/carra2.nc",
+    )
+
+    ds = preprocess_netcdf(xr.open_dataset(path), process_config=False)
+
+    assert ds["rgi_id"].values.tolist() == ["RGI2000-v7.0-C-01-03383"]
+
+
+def test_preprocess_config_matches_id_dims(tmp_path):
+    """
+    Check ``pism_config`` is stored over exactly the identifier dimensions added.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    path = _write_run(tmp_path, "dh_RGI2000-v7.0-C-01-03383_id_0_uq_1_2000-01-01_2020-01-01.nc")
+
+    ds = preprocess_netcdf(xr.open_dataset(path))
+
+    assert ds["pism_config"].dims == ("rgi_id", "uq_id", "exp_id")
+    config = json.loads(ds["pism_config"].values.reshape(-1)[0])
+    # ``_doc`` and friends are dropped; the retreat file is defaulted in.
+    assert config == {"geometry.front_retreat.prescribed.file": "false", "grid.dx": "1200"}
+
+
+def test_preprocess_unmatched_exp_regexp_raises(tmp_path):
+    """
+    Check an experiment pattern that matches nothing is reported, not asserted.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    path = _write_run(tmp_path, "spatial_no_identifiers_here.nc")
+
+    with pytest.raises(ValueError, match="does not match"):
+        preprocess_netcdf(xr.open_dataset(path), process_config=False)

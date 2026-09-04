@@ -24,7 +24,6 @@ Prepare ISMIP7 Greenland data sets.
 import logging
 import os
 import re
-import shutil
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -105,6 +104,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     parser.add_argument(
         "--data-path", help="Path to ISMIP7 data folder. If not None, use local folder instead of remote.", default=None
     )
+    parser.add_argument(
+        "--cache-path",
+        help="Directory the source.coop forcing files are cached in (reused across runs; "
+        "only files that changed upstream are re-downloaded). Defaults to <OUTPUT_PATH>/cloud_cache.",
+        default=None,
+    )
     add_include_argument(parser, ISMIP7_DATASETS)
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
@@ -115,8 +120,19 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     data_path = Path(args.data_path) if args.data_path else None
     output_path = Path(args.OUTPUT_PATH[0])
     output_path.mkdir(parents=True, exist_ok=True)
-    # Intermediate scratch (cdo tmps, per-epoch hist/proj) goes here so the
-    # final ``output_path`` only carries the merged files we actually ship.
+    # Everything we ship goes into ``input/`` and nothing else does, so the
+    # upload is a plain 1:1 sync with no excludes:
+    #   aws s3 sync <OUTPUT_PATH>/input s3://{bucket}/{prefix}/{version}
+    # Intermediates (cloud_cache, staging, obs, calfin, prepare.log) stay
+    # beside it under OUTPUT_PATH.
+    input_path = output_path / "input"
+    input_path.mkdir(parents=True, exist_ok=True)
+    # Original per-year forcing files synced from source.coop land here and
+    # survive across runs; a rerun re-downloads only what changed upstream.
+    cache_path = Path(args.cache_path) if args.cache_path else output_path / "cloud_cache"
+    cache_path.mkdir(parents=True, exist_ok=True)
+    # Intermediate scratch (cdo tmps, per-epoch hist/proj) goes here so
+    # ``input/`` only carries the merged files we actually ship.
     # Matches the ``staging`` convention used by ``pism-glacier-stage``.
     staging_path = output_path / "staging"
     staging_path.mkdir(parents=True, exist_ok=True)
@@ -144,7 +160,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     resolution, _ = int(match.group(1)), match.group(2)
 
     # --- Grid (a dependency of the observations target grid) ---
-    grid_file = output_path / Path("pism_bedmachine_greenland_grid.nc")
+    grid_file = input_path / Path("pism_bedmachine_greenland_grid.nc")
     grid_ds = None
     if {"grid", "observations"} & set(selected):
         logger.info("-" * 120)
@@ -181,7 +197,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         obs_files_1985 = prepare_observations(
             obs_url,
             obs_input_path,
-            output_path,
+            input_path,
             config,
             surface_dem=surface_dem,
             target_grid=grid_ds,
@@ -193,7 +209,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         obs_files_2007 = prepare_observations(
             obs_url,
             obs_input_path,
-            output_path,
+            input_path,
             config,
             target_grid=grid_ds,
             force_overwrite=force_overwrite,
@@ -207,11 +223,10 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         logger.info("-" * 120)
         logger.info("Forcings")
         logger.info("-" * 120)
-        base_url = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/GrIS/"
         forcing_files = list(
             prepare_ismip7_forcing(
-                base_url,
-                output_path,
+                cache_path,
+                input_path,
                 config,
                 data_path=data_path,
                 staging_path=staging_path,
@@ -226,29 +241,21 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         logger.info("Calfin Glacier Fronts File")
         logger.info("-" * 120)
         retreat_file = prepare_calfin(
-            output_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
+            input_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
         )
 
-    # Ship only the outputs produced by the selected datasets.
-    input_files: list = []
-    if "grid" in selected:
-        input_files.append(grid_file)
-    # Both calls return the same key set; the heat-flux file is not year-tagged and
-    # is therefore identical between them, so de-duplicate while keeping order.
-    input_files += list(dict.fromkeys(list(obs_files_1985.values()) + list(obs_files_2007.values())))
-    if retreat_file is not None:
-        input_files.append(retreat_file)
-    input_files += list(forcing_files)
-
-    s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
-    s3_output_path.mkdir(parents=True, exist_ok=True)
+    # Every shipped product was written into ``input/`` directly, so the
+    # upload is a plain 1:1 sync — no excludes, no duplicated copy on disk.
     logger.info("-" * 120)
-    logger.info("Copying input files to %s", s3_output_path)
+    logger.info("Now run")
+    logger.info(
+        "aws s3 sync %s s3://%s/%s/%s",
+        input_path.resolve(),
+        config["bucket"],
+        config["prefix"],
+        config["version"],
+    )
     logger.info("-" * 120)
-    for f in input_files:
-        dest = s3_output_path / Path(f).name
-        shutil.copy2(f, dest)
-        logger.info("  %s", dest)
 
     return {
         "config": config,

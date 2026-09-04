@@ -73,10 +73,12 @@ from pism_terra.glacier.ice_thickness import (
     prepare_ice_thickness_frank,
     prepare_ice_thickness_maffezzoli,
 )
+from pism_terra.glacier.observations import prepare_dh_hugonnet
 from pism_terra.glacier.rgi import prepare_rgi
 from pism_terra.heatflux import prepare_heatflux_lucazeau
 from pism_terra.log import setup_logging
 from pism_terra.prepare_select import add_include_argument, select_datasets
+from pism_terra.raster import write_cog
 from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
 
@@ -90,6 +92,7 @@ PREPARE_DATASETS = [
     "rgi",
     "ice_thickness_frank",
     "ice_thickness_maffezzoli",
+    "dh_hugonnet",
     "gebco",
     "heatflux_lucazeau",
     "snap",
@@ -142,6 +145,7 @@ def prepare_paths(output_path: Path | str, project_directory: str) -> dict[str, 
         "ice_thickness": project_path / "ice_thickness",
         "ice_thickness_frank": project_path / "ice_thickness" / "frank",
         "ice_thickness_maffezzoli": project_path / "ice_thickness" / "maffezzoli",
+        "dh_hugonnet": project_path / "dh" / "hugonnet",
         "project_climate": project_path / "climate",
         # Shared across projects.
         "gebco": input_path / "gebco",
@@ -151,6 +155,7 @@ def prepare_paths(output_path: Path | str, project_directory: str) -> dict[str, 
         "staging": staging_path,
         "staging_rgi": staging_path / "rgi",
         "staging_ice_thickness": staging_path / "ice_thickness",
+        "staging_dh": staging_path / "dh",
         "staging_gebco": staging_path / "gebco",
         "staging_heatflux": staging_path / "heatflux",
         "staging_snap": staging_path / "snap",
@@ -331,7 +336,7 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
         )
 
     # Load the RGI outlines once if any consumer needs them.
-    need_outlines = bool({"ice_thickness_frank", "ice_thickness_maffezzoli"} & set(selected)) or (
+    need_outlines = bool({"ice_thickness_frank", "ice_thickness_maffezzoli", "dh_hugonnet"} & set(selected)) or (
         "carra2" in selected and bool(glacier_groups)
     )
     complexes = gpd.read_file(rgi_files["rgi_complexes"]) if need_outlines else None
@@ -365,6 +370,17 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 ntasks=ntasks,
             )
 
+    # --- Observed elevation change (Hugonnet 2021) ---
+    if "dh_hugonnet" in selected:
+        assert complexes is not None  # loaded above (need_outlines)
+        prepare_dh_hugonnet(
+            complexes,
+            output_path=ensure_dir(paths["dh_hugonnet"]),
+            extract_path=ensure_dir(paths["staging_dh"]),
+            ntasks=ntasks,
+            force_overwrite=force_overwrite,
+        )
+
     # --- GEBCO ---
     if "gebco" in selected:
         # Source NetCDF download lands in staging; only the COG goes to input/.
@@ -380,9 +396,9 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
         if da.rio.crs is None:
             da = da.rio.write_crs("EPSG:4326")
         predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
-        da.rio.to_raster(
+        write_cog(
+            da,
             cog_gebco_p,
-            driver="COG",
             compress="DEFLATE",
             predictor=predictor,
             blocksize=512,

@@ -1,5 +1,6 @@
 [MASTER]
 jobs=4 #number of processes to use
+extension-pkg-allow-list=netCDF4 #C extensions pylint may import to introspect
 [BASIC]
 good-names=nameOfYourProject #names to be considered ok
 [pre-commit-hook]

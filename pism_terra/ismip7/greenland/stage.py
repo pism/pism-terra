@@ -21,6 +21,7 @@
 Staging.
 """
 
+import re
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
@@ -37,11 +38,68 @@ from pyfiglet import Figlet
 from shapely.geometry import Polygon
 from tqdm.auto import tqdm
 
-from pism_terra.aws import download_from_s3, local_to_s3
+from pism_terra.aws import download_from_s3, list_s3_keys, local_to_s3
 from pism_terra.config import load_config
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+
+def resolve_forcing_name(
+    candidates: set[str],
+    forcing: str,
+    pathway: str,
+    gcm: str,
+    start_year: int,
+    end_year: int,
+    fallback_version: str,
+) -> str:
+    """
+    Pick the actual filename of one (forcing, pathway, gcm, epoch) product.
+
+    Forcing filenames carry the *forcing product's* per-GCM version (set in
+    the prepare setup TOML, e.g. ``_v2_`` for MRI-ESM2-0 while CESM2-WACCM
+    ships ``_v3_``), which is independent of the campaign ``version`` that
+    selects the S3 subdirectory. The name is therefore discovered from what
+    actually exists rather than assumed; when several versions of one file
+    are present, the newest wins.
+
+    Parameters
+    ----------
+    candidates : set of str
+        Available filenames (locally staged files plus the bucket listing).
+    forcing : str
+        ``"climate"``, ``"climate_gradient"``, or ``"ocean"``.
+    pathway : str
+        ``"historical"`` or the projection pathway (e.g. ``"ssp370"``).
+    gcm : str
+        GCM name (e.g. ``"MRI-ESM2-0"``).
+    start_year, end_year : int
+        Inclusive year range embedded in the filename.
+    fallback_version : str
+        Expected version tag (e.g. ``"v2"``) used to build the conventional
+        name when no candidate matches — the caller passes the per-forcing
+        ``campaign.climate_version`` / ``ocean_version`` (which fall back to
+        the campaign ``version``); the later download then fails with that
+        name in the message.
+
+    Returns
+    -------
+    str
+        The resolved (or fallback) filename.
+    """
+    pattern = re.compile(
+        rf"^ismip7_greenland_{re.escape(forcing)}_{re.escape(pathway)}_{re.escape(gcm)}"
+        rf"_v(\d+)_{start_year}_{end_year}\.nc$"
+    )
+    best, best_version = None, -1
+    for name in candidates:
+        match = pattern.match(name)
+        if match and int(match.group(1)) > best_version:
+            best, best_version = name, int(match.group(1))
+    if best is None:
+        return f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{fallback_version}_{start_year}_{end_year}.nc"
+    return best
 
 
 def stage(
@@ -74,7 +132,10 @@ def stage(
         - ``"gcms"`` : str or list[str]
             GCM model name(s).
         - ``"version"`` : str
-            Dataset version.
+            Dataset version, naming the S3 directory (``<prefix>/<version>/``).
+        - ``"climate_version"`` / ``"ocean_version"`` : str, optional
+            Per-ESM, per-forcing version tags inside the forcing filenames
+            (each falls back to ``version``).
         - ``"historical_start_year"`` : int
             First year of the historical forcing file.
         - ``"historical_end_year"`` : int
@@ -148,6 +209,15 @@ def stage(
     gcms = config["gcms"]
     gcms = [gcms] if isinstance(gcms, str) else gcms
     version = config["version"]
+    # Version tags inside the forcing *filenames* are per-ESM and
+    # per-forcing (see CoreExperiment.climate_version / ocean_version);
+    # ``version`` only names the S3 directory. Non-counter configs fall
+    # back to the directory version.
+    forcing_versions = {
+        "climate": config.get("climate_version") or version,
+        "climate_gradient": config.get("climate_version") or version,
+        "ocean": config.get("ocean_version") or version,
+    }
     # Historical and projection year ranges. End years are inclusive per
     # the campaign-config convention (see CampaignConfig). Projection years are
     # only needed when the projection epoch is staged (forward runs).
@@ -192,10 +262,27 @@ def stage(
         proj_start = int(config["projection_start_year"])
         proj_end = int(config["projection_end_year"])
         epoch_specs.append((pathway, proj_start, proj_end, "proj"))
+    # Forcing filenames carry a per-GCM version independent of the campaign
+    # ``version`` (which only names the S3 subdirectory); resolve the actual
+    # names against what exists — locally staged files first, then the bucket
+    # (see :func:`resolve_forcing_name`).
+    candidates = {p.name for p in input_path.glob("ismip7_greenland_*.nc")}
+    try:
+        candidates |= {key.rsplit("/", 1)[-1] for key in list_s3_keys(bucket, prefix)}
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        print(
+            f"Could not list s3://{bucket}/{prefix} ({exc}); "
+            f"assuming {sorted(set(forcing_versions.values()))} forcing filenames"
+        )
+
+    forcing_names: dict[tuple[str, str, str], str] = {}
     for gcm in gcms:
         for epoch_pathway, ep_start, ep_end, _ in epoch_specs:
             for forcing in ("climate", "climate_gradient", "ocean"):
-                rel = f"ismip7_greenland_{forcing}_{epoch_pathway}_{gcm}_{version}_{ep_start}_{ep_end}.nc"
+                rel = resolve_forcing_name(
+                    candidates, forcing, epoch_pathway, gcm, ep_start, ep_end, forcing_versions[forcing]
+                )
+                forcing_names[(gcm, epoch_pathway, forcing)] = rel
                 required_files.append((rel, input_path / rel))
 
     # Skip files that already exist locally unless force_overwrite is set.
@@ -262,33 +349,12 @@ def stage(
     # ocean); ``run.py`` wires them into ``run_hist`` and ``run_proj``
     # respectively. Aliases keep the column names PISM's ISMIP6 module
     # expects (``surface_input`` = climate, ``frontal_melt`` = ocean).
-    def _forcing_path(forcing: str, gcm: str, epoch_pathway: str, ep_start: int, ep_end: int) -> Path:
-        """
-        Build the local path for one (epoch, forcing, gcm) NetCDF.
-
-        Parameters
-        ----------
-        forcing : str
-            ``"climate"``, ``"climate_gradient"``, or ``"ocean"``.
-        gcm : str
-            GCM name (e.g. ``"CESM2-WACCM"``).
-        epoch_pathway : str
-            ``"historical"`` or the projection pathway (e.g. ``"ssp370"``).
-        ep_start, ep_end : int
-            Inclusive year range embedded in the filename.
-
-        Returns
-        -------
-        pathlib.Path
-            Absolute path to the forcing file under ``input_path``.
-        """
-        return input_path / Path(f"ismip7_greenland_{forcing}_{epoch_pathway}_{gcm}_{version}_{ep_start}_{ep_end}.nc")
 
     forcing_paths: dict[tuple[str, str, str], Path] = {}
     for gcm in gcms:
         for epoch_pathway, ep_start, ep_end, epoch_key in epoch_specs:
             for forcing in ("climate", "climate_gradient", "ocean"):
-                forcing_paths[(gcm, epoch_key, forcing)] = _forcing_path(forcing, gcm, epoch_pathway, ep_start, ep_end)
+                forcing_paths[(gcm, epoch_key, forcing)] = input_path / forcing_names[(gcm, epoch_pathway, forcing)]
 
     # Processes (not threads): HDF5 isn't reliably thread-safe across all
     # builds (Chinook segfaults), so each worker gets its own interpreter

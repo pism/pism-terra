@@ -1105,8 +1105,9 @@ class PismConfig(BaseModelWithDot):
 
         When an ISMIP7 Core Experiment counter (e.g. ``"C003"``) is set, it is the
         single source of truth for the experiment identity: it fills
-        ``run_info.experiment``, ``campaign.pathway``, ``campaign.gcms``, and the
-        projection end (``time.end``) from
+        ``run_info.experiment``, ``campaign.pathway``, ``campaign.gcms``,
+        ``campaign.climate_version`` / ``campaign.ocean_version`` (kept if
+        explicitly set), and the projection end (``time.end``) from
         :data:`pism_terra.ismip7.experiments.CORE_EXPERIMENTS`. This runs for both
         the staging and running entry points (both call :func:`load_config`), so a
         single field drives the whole ISMIP7 pipeline. Non-counter (legacy) configs
@@ -1126,6 +1127,14 @@ class PismConfig(BaseModelWithDot):
         self.campaign.pathway = spec.pathway
         self.campaign.gcms = [spec.esm_id]
         self.time.time_end = f"{spec.proj_end_year}-01-01"
+        # Filename version tags of the published forcing (per-ESM and
+        # per-forcing, decoupled from campaign.version which names the S3
+        # directory). Explicit config values win, e.g. to point at a
+        # re-published forcing set.
+        if self.campaign.climate_version is None:
+            self.campaign.climate_version = spec.climate_version
+        if self.campaign.ocean_version is None:
+            self.campaign.ocean_version = spec.ocean_version
         return self
 
 
@@ -1578,8 +1587,17 @@ class CampaignConfig(BaseModel):
         Climate forcing source identifier (e.g., ``"era5"``, ``"pmip4"``).
     climatology : str or None
         Climate forcing source identifier (e.g., ``"HIRHAM5-ERA5_YMM_1990_2019"``, ``"CARRA2_YMM"``).
+    debris : str or None
+        Debris-thickness data source identifier (e.g., ``"rounce"`` for the
+        NSIDC HMA_DTE v1 global estimates). Omit or set ``"none"`` to skip
+        staging a debris file.
     dem : str or None
         DEM data source identifier (e.g., ``"copernicus"``).
+    dh : str or None
+        Observed surface-elevation-change data source identifier (e.g.,
+        ``"hugonnet"`` for the Hugonnet et al. (2021) 2000-2020 maps). When
+        set, staging adds ``dh``/``dh_err`` to the observations file. Omit or
+        set ``"none"`` to skip.
     forcing_mask : str or None
         Forcing mask ("all", "glacier", "none").
     velocity : str or None
@@ -1660,14 +1678,25 @@ class CampaignConfig(BaseModel):
         Last (inclusive) year of the projection forcing file. This value
         differs per pathway (e.g. 2100 for ssp370, 2300 for ssp585).
     version : str or None
-        Dataset or experiment version string.
+        Dataset or experiment version string; for ISMIP7 campaigns it names
+        the S3 directory (``<prefix>/<version>/``) the staged inputs live in.
+    climate_version : str or None
+        Version tag embedded in the ISMIP7 climate (and climate-gradient)
+        forcing *filenames* (per-ESM, e.g. ``"v2"`` for MRI-ESM2-0). Filled
+        from the Core Experiment counter when unset; falls back to
+        ``version`` for non-counter configs.
+    ocean_version : str or None
+        Same as ``climate_version`` for the ocean forcing filenames — the
+        two datasets are published on independent version tracks.
     """
 
     bathymetry: str | None = Field(default=None)
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
     climatology: str | None = Field(default=None)
+    debris: str | None = Field(default=None)
     dem: str | None = Field(default=None)
+    dh: str | None = Field(default=None)
     forcing_mask: str | None = Field(default=None)
     velocity: str | None = Field(default=None)
     heatflux: str | None = Field(default=None)
@@ -1698,6 +1727,8 @@ class CampaignConfig(BaseModel):
     projection_start_year: str | float | None = Field(default=None)
     projection_end_year: str | float | None = Field(default=None)
     version: str | None = Field(default=None)
+    climate_version: str | None = Field(default=None)
+    ocean_version: str | None = Field(default=None)
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """

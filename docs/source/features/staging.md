@@ -14,6 +14,7 @@ PISM-ready NetCDF inputs a run needs. The work is driven by
 | Ice thickness | Maffezzoli (Zenodo) or Frank (Figshare) | {py:mod}`pism_terra.glacier.ice_thickness` |
 | Climate forcing | ERA5 / PMIP4 / CARRA2 / SNAP | {py:mod}`pism_terra.glacier.climate` |
 | Velocities | ITS_LIVE v2.1 per-region COG | {py:mod}`pism_terra.glacier.observations` |
+| Debris thickness | NSIDC HMA_DTE v1 (Rounce et al.), via Earthdata Cloud; opt-in with `debris = "rounce"` | {py:mod}`pism_terra.glacier.debris` |
 
 ## Output layout
 

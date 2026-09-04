@@ -97,6 +97,7 @@ dependencies:
   # pism-cloud Voila app (notebooks/pism_cloud_app.ipynb)
   - ipywidgets
   - voila
+  # ISMIP7
+  - isschecker
   - pip:
       - pytest-codeblocks>=0.18
-      - git+https://github.com/ismip/ISM_SimulationChecker.git

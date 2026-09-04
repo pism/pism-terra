@@ -320,6 +320,7 @@ def test_dataset_list_is_the_execution_order():
         "rgi",
         "ice_thickness_frank",
         "ice_thickness_maffezzoli",
+        "dh_hugonnet",
         "gebco",
         "heatflux_lucazeau",
         "snap",

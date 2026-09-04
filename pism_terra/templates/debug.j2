@@ -17,3 +17,5 @@ mpirun -np  {{ ntasks | default(8) }} pism {{ run_str }}
 {% endif %}
 
 {{ post_process_str }}
+
+{{ dh_str }}

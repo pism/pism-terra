@@ -15,8 +15,8 @@
 
 bucket = "pism-cloud-data"
 prefix = "ismip7/greenland/input"
-version = "v2"
-historical_start_year = "1978"
+version = "v3"
+historical_start_year = "1900"
 historical_end_year = "2014"
 projection_start_year = "2015"
 projection_end_year = "2300"

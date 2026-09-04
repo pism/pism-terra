@@ -46,16 +46,18 @@ from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import (
     carra2,
     carra2_monthly_mean,
-    create_offset_file,
-    create_step_file,
     elevation_dependent,
     era5,
     era5_mean,
     era5_monthly_mean,
     snap,
 )
+from pism_terra.glacier.debris import debris_from_grid
 from pism_terra.glacier.dem import boot_file_from_grid
-from pism_terra.glacier.observations import glacier_velocities_from_grid
+from pism_terra.glacier.observations import (
+    add_dh_observations,
+    glacier_velocities_from_grid,
+)
 from pism_terra.heatflux import heatflux_from_grid
 from pism_terra.raster import apply_perimeter_band
 from pism_terra.vector import get_glacier_from_rgi_id, glaciers_in_complex
@@ -77,10 +79,6 @@ CLIMATE: Mapping[str, Callable] = {
     "era5-mean": era5_mean,
     "era5-monthly-mean": era5_monthly_mean,
     "snap-monthly-mean": snap,
-}
-MODIFIER: Mapping[str, Callable] = {
-    "era5": create_offset_file,
-    "snap": create_offset_file,
 }
 
 
@@ -262,7 +260,9 @@ def stage_glacier(
     pandas.DataFrame
         One row per produced **climate** file, with absolute-path columns:
         ``rgi_id``, ``outline_file`` (GPKG), ``boot_file`` (NetCDF),
-        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF), and ``sample`` (int).
+        ``grid_file`` (NetCDF), ``climate_file`` (NetCDF), ``debris_file``
+        (NetCDF or ``None`` unless the campaign sets ``debris``), and
+        ``sample`` (int).
 
     Raises
     ------
@@ -392,6 +392,43 @@ def stage_glacier(
     _ = glacier_velocities_from_grid(grid_ds, glacier_projected.geometry, path=obs_file, rgi_id=rgi_id)
     check_xr_fully(obs_file)
 
+    # Observed 2000-2020 elevation change is opt-in like debris: campaigns
+    # without a ``dh`` key stage exactly as before. The pre-clipped raster
+    # comes from the cloud (see ``prepare_dh_hugonnet``) and the variables are
+    # merged into the obs file, where the calibration reads them.
+    dh = config.get("dh", "none")
+    if dh and dh != "none":
+        _ = add_dh_observations(
+            obs_file,
+            grid_ds,
+            glacier_projected.geometry,
+            rgi_id=rgi_id,
+            dataset=dh,
+            staging_path=staging_path,
+            bucket=config["bucket"],
+            prefix=config["prefix"],
+            project_directory=config.get("project_directory"),
+            force_overwrite=force_overwrite,
+        )
+        check_xr_fully(obs_file)
+
+    # Debris thickness is opt-in: campaigns without a ``debris`` key stage
+    # exactly as before. ``as_params()`` drops unset fields, hence ``.get``.
+    debris = config.get("debris", "none")
+    debris_file: Path | None = None
+    if debris and debris != "none":
+        debris_file = path / f"debris_{rgi_id}.nc"
+        _ = debris_from_grid(
+            grid_ds,
+            glacier_projected.geometry,
+            rgi_id=rgi_id,
+            dataset=debris,
+            path=debris_file,
+            staging_path=staging_path,
+            force_overwrite=force_overwrite,
+        )
+        check_xr_fully(debris_file)
+
     # Save domain extent polygon as a GPKG (intermediate, used for sanity checks)
     x_point_list = [
         grid_ds.x_bnds[0][0],
@@ -461,6 +498,7 @@ def stage_glacier(
         "grid_file": grid_file.resolve(),
         "heatflux_file": bheatflux_file.resolve(),
         "obs_file": obs_file.resolve(),
+        "debris_file": debris_file.resolve() if debris_file else None,
         "init_climate_file": init_climate_file.resolve() if init_climate_file else None,
     }
     dfs: list[pd.DataFrame] = []

@@ -23,12 +23,15 @@ Provide raster functions.
 """
 
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
+import rasterio.shutil
 import rioxarray as rxr
 import xarray as xr
 from geocube.api.core import make_geocube
@@ -472,3 +475,115 @@ def local_scale_factor(
 
     k = np.sqrt(det)
     return float(k) if np.isscalar(x) and np.isscalar(y) else k
+
+
+# COG creation options that the GTiff driver understands too. Only these reach the
+# staging GeoTIFF; the rest (blocksize, overview_resampling, statistics, level, ...)
+# are COG-specific and belong to the CreateCopy step.
+_GTIFF_STAGING_OPTIONS = ("compress", "predictor", "num_threads", "bigtiff")
+
+
+def geotiff_to_cog(geotiff: str | Path, cog: str | Path, **creation_options) -> Path:
+    """
+    Copy a GeoTIFF into a Cloud Optimized GeoTIFF through GDAL's CreateCopy.
+
+    Every COG in this package goes through here rather than through
+    ``rasterio.open(..., "w", driver="COG")``. GDAL 3.13 added a ``Create()``
+    entry point to the COG driver, so from then on rasterio (and rioxarray's
+    ``to_raster``) hand "w"-mode COG writes to it instead of the buffered
+    CreateCopy path -- and that entry point drops band descriptions and writes
+    NaN nodata pixels as 0 (rasterio 1.5.1 / GDAL 3.13.3). CreateCopy from a
+    finished GeoTIFF is the documented route and behaves on every GDAL.
+
+    Parameters
+    ----------
+    geotiff : str or pathlib.Path
+        Source GeoTIFF.
+    cog : str or pathlib.Path
+        Output path; parent directories are created.
+    **creation_options
+        COG driver creation options (``compress``, ``predictor``,
+        ``blocksize``, ``overview_resampling``, ``num_threads``, ...).
+
+    Returns
+    -------
+    pathlib.Path
+        The written COG.
+    """
+    cog = Path(cog)
+    cog.parent.mkdir(parents=True, exist_ok=True)
+    rasterio.shutil.copy(  # pylint: disable=c-extension-no-member
+        str(geotiff), str(cog), driver="COG", **creation_options
+    )
+    return cog
+
+
+@contextmanager
+def cog_writer(path: str | Path, profile: dict, **creation_options) -> Iterator[rasterio.io.DatasetWriter]:
+    """
+    Open a dataset for writing whose contents become the COG at ``path`` on exit.
+
+    Bands, descriptions and tags are written to a tiled staging GeoTIFF next to
+    ``path``; leaving the block copies it into the COG (see
+    :func:`geotiff_to_cog`) and removes the staging file, also on error.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Output COG.
+    profile : dict
+        Rasterio creation profile (``dtype``, ``count``, ``width``, ``height``,
+        ``crs``, ``transform``, ``nodata``); a ``driver`` entry is ignored.
+    **creation_options
+        COG driver creation options; the ones GTiff shares are applied to the
+        staging file as well.
+
+    Yields
+    ------
+    rasterio.io.DatasetWriter
+        The staging dataset to write into.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f"{path.stem}.staging.tif")
+    gtiff = {k: v for k, v in profile.items() if k != "driver"}
+    gtiff.update({k: v for k, v in creation_options.items() if k.lower() in _GTIFF_STAGING_OPTIONS})
+    try:
+        with rasterio.open(staging, "w", driver="GTiff", tiled=True, **gtiff) as dst:
+            yield dst
+        geotiff_to_cog(staging, path, **creation_options)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def write_cog(da: xr.DataArray, path: str | Path, **creation_options) -> Path:
+    """
+    Write a georeferenced DataArray as a Cloud Optimized GeoTIFF.
+
+    ``da.rio.to_raster`` writes a tiled staging GeoTIFF next to ``path`` (so a
+    Dask-backed array streams block by block instead of being held in memory),
+    which is then copied into the COG (see :func:`geotiff_to_cog`).
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Array carrying rioxarray CRS and spatial dimensions.
+    path : str or pathlib.Path
+        Output COG.
+    **creation_options
+        COG driver creation options.
+
+    Returns
+    -------
+    pathlib.Path
+        The written COG.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f"{path.stem}.staging.tif")
+    gtiff = {k: v for k, v in creation_options.items() if k.lower() in _GTIFF_STAGING_OPTIONS}
+    try:
+        da.rio.to_raster(staging, driver="GTiff", tiled=True, **gtiff)
+        return geotiff_to_cog(staging, path, **creation_options)
+    finally:
+        staging.unlink(missing_ok=True)

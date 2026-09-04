@@ -41,6 +41,8 @@ TEMPLATE_DIR = REPO / "pism_terra" / "templates"
 
 FREE_HY = CONFIG_DIR / "ismip7_greenland_2007_historical_free.toml"
 C003 = CONFIG_DIR / "ismip7_greenland_c003.toml"
+C009 = CONFIG_DIR / "ismip7_greenland_c009.toml"
+C011 = CONFIG_DIR / "ismip7_greenland_c011.toml"
 
 
 def _render_inverse(tmp_path: Path, config_file: Path, **kwargs) -> str:
@@ -92,7 +94,10 @@ def _legs(script: str) -> list[str]:
 
 def _c003_with_init(tmp_path: Path) -> Path:
     """
-    Write a copy of the C003 config with init bounds added to [campaign].
+    Write a copy of the C003 config with the init leg re-timed to 1985-1986.
+
+    The counter configs ship with ``init_start``/``init_end`` (1980-1985);
+    the counter tests use a one-year leg starting at the historical epoch.
 
     Parameters
     ----------
@@ -105,11 +110,8 @@ def _c003_with_init(tmp_path: Path) -> Path:
         Path to the modified config.
     """
     text = C003.read_text()
-    text = text.replace(
-        "[campaign]",
-        '[campaign]\n\ninit_start = "1985-01-01"\ninit_end = "1986-01-01"',
-        1,
-    )
+    text = text.replace('init_start = "1980-01-01"', 'init_start = "1985-01-01"', 1)
+    text = text.replace('init_end = "1985-01-01"', 'init_end = "1986-01-01"', 1)
     cfg = tmp_path / "c003_init.toml"
     cfg.write_text(text)
     return cfg
@@ -363,6 +365,148 @@ def test_forward_init_leg_single_pathway(tmp_path):
     assert "-basal_yield_stress.model mohr_coulomb" in fwd
     assert "-time.start 2007-01-01" in fwd
     assert "-time.end 2015-01-01" in fwd
+
+
+def test_forward_init_leg_surface_model(tmp_path):
+    """
+    ``campaign.init_surface_model`` swaps the surface model on the init leg only.
+
+    The init leg runs the named ``[surface.options.*]`` table (here
+    ``ismip7_forcing`` with force-to-thickness), with its file placeholders
+    filled from the staged/UQ overrides; the forward leg keeps the main
+    surface model untouched.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    text = FREE_HY.read_text().replace(
+        'init_start = "2006-01-01"',
+        'init_surface_model = "ismip7_forcing"\ninit_start = "2006-01-01"',
+        1,
+    )
+    text += (
+        "\n[surface.options.ismip7_forcing]\n\n"
+        "'surface.models' = \"ismip7\"\n"
+        "'surface.ismip7.file' = \"none\"\n"
+        "'surface.ismip7.gradient.file' = \"none\"\n"
+        "'surface.ismip7.reference.file' = \"none\"\n"
+        "'surface.force_to_thickness.file' = \"none\"\n"
+        "'surface.force_to_thickness.alpha' = 0.95\n"
+    )
+    cfg = tmp_path / "free_init_surface.toml"
+    cfg.write_text(text)
+
+    script = _render_forward(
+        tmp_path,
+        cfg,
+        uq={
+            "surface.ismip7.file": "climate_hist.nc",
+            "surface.force_to_thickness.file": "boot.nc",
+        },
+    )
+    init, fwd = _legs(script)
+
+    # Init leg: the swapped model's options, placeholders filled from overrides.
+    assert "-surface.force_to_thickness.file boot.nc" in init
+    assert "-surface.force_to_thickness.alpha 0.95" in init
+    assert "-surface.ismip7.file climate_hist.nc" in init
+    assert "-time.start 2006-01-01" in init
+    assert "-time.end 2007-01-01" in init
+
+    # Forward leg: main surface model untouched, restarts from the init state.
+    assert "force_to_thickness" not in fwd
+    assert "-surface.ismip7.file climate_hist.nc" in fwd
+    init_state = _search(r"-output\.file (\S+state_\S+2006-01-01_2007-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in fwd
+
+
+def test_forward_c011_ocx(tmp_path):
+    """
+    C011 (OCX) renders init -> hist -> OCX product leg on shared forcing.
+
+    The init leg spins up 1980..1990 with ``ismip7_forcing``; the historical
+    leg runs 1990..2015 (flat names); the OCX leg continues 2015..2025 as the
+    ISMIP7 product, reusing the historical reanalysis forcing (no separate
+    projection file exists, so no ``proj_overrides`` are passed).
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(
+        tmp_path,
+        C011,
+        sample="OCX",
+        uq={
+            "surface.ismip7.file": "ocx_climate.nc",
+            "surface.force_to_thickness.file": "boot.nc",
+        },
+    )
+    legs = _legs(script)
+    assert [leg.split()[0] for leg in legs] == ["pism", "pism", "pism"]
+    init, hist, proj = legs
+
+    # Init leg: 1980..1990 with the swapped ismip7_forcing surface model.
+    assert "-time.start 1980-01-01" in init
+    assert "-time.end 1990-01-01" in init
+    assert "-surface.force_to_thickness.file boot.nc" in init
+    assert "-surface.ismip7.file ocx_climate.nc" in init
+
+    # Historical leg: restarts from the init state, 1990 to the 2015 split.
+    init_state = _search(r"-output\.file (\S+state_\S+1980-01-01_1990-01-01\.nc)", init)
+    assert f"-input.file {init_state}" in hist
+    assert "-time.start 1990-01-01" in hist
+    assert "-time.end 2015-01-01" in hist
+    assert '-run_info.experiment "historical"' in hist
+    assert "force_to_thickness" not in hist
+
+    # OCX product leg: 2015..2025, same forcing file as the historical leg.
+    hist_state = _search(r"-output\.file (\S+state_\S+1990-01-01_2015-01-01\.nc)", hist)
+    assert f"-input.file {hist_state}" in proj
+    assert "-time.start 2015-01-01" in proj
+    assert "-time.end 2025-01-01" in proj
+    assert '-run_info.experiment "OCX"' in proj
+    assert "-surface.ismip7.file ocx_climate.nc" in proj
+    assert "force_to_thickness" not in proj
+
+
+def test_forward_c009_ctrl(tmp_path):
+    """
+    C009 (CTRL2015) renders init -> hist -> ctrl product leg ending 2300.
+
+    The control run is set up like any other projection, so the only things
+    that distinguish it from C007 are the ``ctrl`` experiment id on the product
+    leg and the ctrl forcing files wired into it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(
+        tmp_path,
+        C009,
+        sample="CESM2-WACCM",
+        proj_overrides={"surface.ismip7.file": "ctrl_climate.nc"},
+    )
+    _init, hist, proj = _legs(script)
+
+    assert "-time.end 2015-01-01" in hist
+    assert '-run_info.experiment "historical"' in hist
+    assert "-surface.ismip7.file ctrl_climate.nc" not in hist
+
+    # Control leg: 2015..2300 on the ctrl forcing, submitted as experiment "ctrl".
+    hist_state = _search(r"-output\.file (\S+state_\S+_2015-01-01\.nc)", hist)
+    assert f"-input.file {hist_state}" in proj
+    assert "-time.start 2015-01-01" in proj
+    assert "-time.end 2300-01-01" in proj
+    assert '-run_info.experiment "ctrl"' in proj
+    assert "-surface.ismip7.file ctrl_climate.nc" in proj
+    # The ISMIP7 product leg writes into the C009 submission tree.
+    assert "GrIS/UAF/PISM/CORE/C009" in proj
 
 
 def test_forward_init_leg_counter(tmp_path):

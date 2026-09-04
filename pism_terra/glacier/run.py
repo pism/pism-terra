@@ -36,8 +36,8 @@ from pyfiglet import Figlet
 from pism_terra.aws import local_to_s3
 from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.download import file_localizer
-from pism_terra.glacier.climate import create_offset_file
 from pism_terra.glacier.execute import find_first_and_execute
+from pism_terra.glacier.observations import DH_END, DH_START
 from pism_terra.glacier.stage import stage_glacier
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
@@ -64,6 +64,48 @@ CLIMATE_FILE_OPTIONS = (
     "surface.debm_simple.std_dev.file",
     "surface.pdd.std_dev.file",
 )
+
+
+#: Interval of the per-run elevation/mass-change extraction, matching the
+#: Hugonnet et al. (2021) observational record the output is compared against
+#: (re-exported from the observations module, which stages that record).
+
+
+def _dh_command(spatial_file: Path, output_path: Path, rgi_id: str, name_options: str) -> str:
+    """
+    Build the per-run change-extraction (dh) command.
+
+    Renders a ``pism-glacier-postprocess-dh`` call that reduces the run's
+    spatial output to the difference of all spatial variables between
+    :data:`DH_START` and :data:`DH_END` (the Hugonnet et al. (2021) record),
+    written to ``output/dh/``. Unlike the scalar reductions this needs no
+    outline, so a command is always emitted.
+
+    Parameters
+    ----------
+    spatial_file : pathlib.Path
+        The run's spatial output, the input to the extraction.
+    output_path : pathlib.Path
+        The run's ``output/`` directory; the result goes in ``dh/`` beneath
+        it (created by the tool).
+    rgi_id : str
+        Glacier identifier, for the output filename.
+    name_options : str
+        Filename stem chunk shared with the run outputs (``id_<sample>``,
+        with the ``_uq_<n>`` suffix for ensemble members, or the descriptive
+        fallback). Keeps members of one ensemble from overwriting each
+        other's dh file.
+
+    Returns
+    -------
+    str
+        The command line.
+    """
+    outfile = output_path / "dh" / f"dh_{rgi_id}_{name_options}_{DH_START}_{DH_END}.nc"
+    return (
+        f"pism-glacier-postprocess-dh --start {DH_START} --end {DH_END} "
+        f"{spatial_file.resolve()} {outfile.resolve()}"
+    )
 
 
 def _postprocess_commands(
@@ -603,6 +645,7 @@ def _render_inverse_run(
             )
         }
     )
+    params.update({"dh_str": _dh_command(spatial_file, output_path, rgi_id, name_options)})
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
@@ -918,6 +961,7 @@ def _render_forward_run(
             )
         }
     )
+    params.update({"dh_str": _dh_command(spatial_file, output_path, rgi_id, name_options)})
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
@@ -1238,11 +1282,6 @@ def _run(*, kind: str) -> None:
     }
 
     for idx, row in rows_df.iterrows():
-        delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
-        frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
-        create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-
         if is_ensemble:
             # Drop the staged-glacier columns and the composite sample id;
             # whatever remains is a row of UQ overrides to forward to PISM.
@@ -1254,9 +1293,7 @@ def _run(*, kind: str) -> None:
             {
                 "input.file": row["boot_file"],
                 "grid.file": row["grid_file"],
-                "atmosphere.delta_T.file": scalar_offset_file,
                 "atmosphere.elevation_change.file": row["boot_file"],
-                "atmosphere.precip_scaling.file": scalar_offset_file,
                 "atmosphere.given.file": row["climate_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
                 "surface.debm_simple.albedo_input.file": row["climate_file"],

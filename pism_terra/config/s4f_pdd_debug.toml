@@ -12,22 +12,18 @@ dem = "glo_90"
 forcing_mask = "glacier"
 heatflux = "lucazeau"
 ice_thickness = "maffezzoli"
-init_climate = "carra2-monthly-mean"
-init_surface_model = "debm_enhanced_forcing"
-init_end = "0011-01-01"
-init_start = "0001-01-01"
 name = "Hindcast"
 prefix = "glacier/input"
 project_directory = "s4f"
 rgi_complex_file = "s4f_c.gpkg"
 rgi_glacier_file = "s4f_g.gpkg"
 velocity = "none"
-dh = "hugonnet"
+debris = "rounce"
 
 [time]
 
-'time.start' = "1986-01-01"
-'time.end' =  "2025-01-01"
+'time.start' = "2016-01-01"
+'time.end' =  "2017-01-01"
 'time.calendar' =  "standard"
 'time.reference_date' = "1980-01-01"
 
@@ -41,6 +37,7 @@ dh = "hugonnet"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
+'geometry.update.enabled' = "no"
 
 ['input']
 
@@ -64,7 +61,7 @@ dh = "hugonnet"
 
 [grid]
 
-resolution = "500m"
+resolution = "100m"
 'grid.file' = "none"
 'grid.Lbz' = 0
 'grid.Lz' = 2500
@@ -93,7 +90,7 @@ model = "none"
 
 [stress_balance]
 
-model = 'blatter'
+model = 'none'
 
 [stress_balance.options.none]
 
@@ -135,7 +132,31 @@ model = 'blatter'
 
 [surface]
 
-model = "debm_enhanced"
+model = "pdd"
+
+[surface.options.pdd]
+
+'surface.models' = "pdd"
+'surface.pdd.air_temp_all_precip_as_rain' = 275.15
+'surface.pdd.air_temp_all_precip_as_snow' = 273.15
+'surface.pdd.factor_ice' = 0.00879120879120879
+'surface.pdd.factor_snow' = 0.0032967032967033
+'surface.pdd.refreeze' = 0.6
+'surface.pdd.refreeze_ice_melt' = "yes"
+'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
+
+[surface.options.pdd_forcing]
+
+'surface.models' = "pdd,forcing"
+'surface.pdd.air_temp_all_precip_as_rain' = 275.15
+'surface.pdd.air_temp_all_precip_as_snow' = 273.15
+'surface.pdd.factor_ice' = 0.00879120879120879
+'surface.pdd.factor_snow' = 0.0032967032967033
+'surface.pdd.refreeze' = 0.6
+'surface.pdd.refreeze_ice_melt' = "yes"
+'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
 
 [surface.options.debm_simple]
 

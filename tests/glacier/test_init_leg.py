@@ -345,4 +345,7 @@ def test_the_run_toml_is_no_longer_written(tmp_path):
     script = render(tmp_path)
 
     assert not (tmp_path / RGI_ID / "output" / "post_processing").exists()
-    assert "pism-glacier-postprocess" not in script
+    # The dh extraction (``pism-glacier-postprocess-dh``) is a different tool
+    # that legitimately appears in the script; only the legacy TOML-reading
+    # command must be gone.
+    assert "pism-glacier-postprocess " not in script
