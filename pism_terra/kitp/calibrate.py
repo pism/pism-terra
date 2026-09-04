@@ -6,6 +6,13 @@ fields with a spatially-aware metric: pixel-wise RMSE is replaced by a
 block-bootstrap RMSE whose block size matches the field's decorrelation
 length. The best-RMSE experiment and every experiment whose 5-95 % CI
 overlaps the leader's are reported as the "tied" calibration set.
+
+Alongside the ranking, every field is importance-sampled: each member gets a
+Gaussian likelihood weight from its misfit against the observations (with a
+relative error plus a floor standing in for the missing observational
+uncertainty), for a handful of fudge factors on that error. The weights, their
+effective sample size and the resampled parameter histograms show how
+strongly the field constrains the parameters, which a single winner cannot.
 """
 
 import json
@@ -22,6 +29,7 @@ import xarray as xr
 import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from dask.diagnostics import ProgressBar
 
+from pism_terra.filtering import importance_sampling
 from pism_terra.processing import preprocess_netcdf as preprocess
 
 debm_uq_vars = {
@@ -205,7 +213,126 @@ def bootstrap_rmse_from_blocks(block_sums, block_counts, exp_id, n_boot=500, see
     )
 
 
+def observation_uncertainty(obs, relative=0.10, floor=50.0):
+    """
+    Attach a ``<var>_error`` field to every variable of an observation set.
+
+    The RCM fields carry no uncertainty of their own, so the likelihood uses
+    a relative error with an absolute floor: ``max(relative * |obs|, floor)``.
+    The floor keeps near-zero cells (the accumulation zone in the melt
+    fields, the equilibrium line in the balance) from becoming infinitely
+    informative, which is what a purely relative error does there.
+
+    Parameters
+    ----------
+    obs : xarray.Dataset
+        Observed fields, all in the same units.
+    relative : float, default ``0.10``
+        Relative error as a fraction of the absolute value.
+    floor : float, default ``50.0``
+        Smallest error, in the units of ``obs`` (kg m^-2 yr^-1 for the
+        mass-balance fields: 5 cm w.e. per year).
+
+    Returns
+    -------
+    xarray.Dataset
+        ``obs`` with one ``<var>_error`` per data variable.
+    """
+    errors = {f"{v}_error": np.maximum(relative * abs(obs[v]), floor) for v in obs.data_vars}
+    return obs.assign(**errors)
+
+
+def importance_weights(sim, obs, var, *, fudge_factors=(1.0, 3.0, 10.0), n_samples=10_000, seed=0, dim="exp_id"):
+    """
+    Importance-sample one field for several fudge factors on its error.
+
+    Wraps :func:`pism_terra.filtering.importance_sampling`; the weights are
+    the Gaussian log-likelihood of ``var`` averaged over ``time``, ``y`` and
+    ``x``, with the observed error scaled by the fudge factor. Resampling
+    resolves the weights into counts; ``n_samples`` only sets that
+    resolution (the share of a member with weight *w* has standard error
+    ``sqrt(w (1 - w) / n_samples)``), so the default resolves shares to well
+    under one percent whatever the ensemble size.
+
+    Parameters
+    ----------
+    sim : xarray.Dataset
+        Ensemble with dims ``(dim, time, y, x)`` holding ``var``.
+    obs : xarray.Dataset
+        Observations on the same grid holding ``var`` and ``<var>_error``.
+    var : str
+        Field to compare.
+    fudge_factors : sequence of float, default ``(1, 3, 10)``
+        Multipliers on the observed error, one filter per value.
+    n_samples : int, default ``10_000``
+        Draws with replacement per fudge factor.
+    seed : int, default ``0``
+        Seed of the resampler.
+    dim : str, default ``"exp_id"``
+        Ensemble dimension.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``weights`` and ``counts`` on ``(fudge_factor, dim)`` and ``ess`` on
+        ``fudge_factor``: the effective sample size ``1 / sum(w**2)``, which
+        equals the ensemble size when the field cannot tell the members apart
+        and 1 when a single member carries all the weight.
+    """
+    weights, counts = [], []
+    for fudge_factor in fudge_factors:
+        filtered = importance_sampling(
+            sim[[var]],
+            obs[[var, f"{var}_error"]],
+            sim_var=var,
+            obs_mean_var=var,
+            obs_std_var=f"{var}_error",
+            sum_dims=["time", "x", "y"],
+            fudge_factor=fudge_factor,
+            n_samples=n_samples,
+            seed=seed,
+            dim=dim,
+        )
+        w = filtered["weights"].squeeze(drop=True)
+        weights.append(w.transpose(dim))
+        sampled = filtered[f"{dim}_sampled"].values.ravel()
+        counts.append(xr.DataArray([(sampled == i).sum() for i in w[dim].values], dims=[dim], coords={dim: w[dim]}))
+    weights_da = xr.concat(weights, dim="fudge_factor").assign_coords(fudge_factor=list(fudge_factors))
+    counts_da = xr.concat(counts, dim="fudge_factor").assign_coords(fudge_factor=list(fudge_factors))
+    ess = 1.0 / (weights_da**2).sum(dim=dim)
+    return xr.Dataset({"weights": weights_da, "counts": counts_da, "ess": ess})
+
+
+def plot_parameter_histograms(uq_df, uq_vars, counts, filename):
+    """
+    Histogram each UQ parameter with every member repeated ``counts`` times.
+
+    Parameters
+    ----------
+    uq_df : pandas.DataFrame
+        Parameter values per member, indexed by experiment id.
+    uq_vars : dict
+        Mapping of parameter column to short label.
+    counts : pandas.Series
+        Repetitions per member (importance-sampling counts, or 0/1 for the
+        bootstrap tie test), indexed by experiment id.
+    filename : str or pathlib.Path
+        Output figure.
+    """
+    fig, axes = plt.subplots(1, len(uq_vars), sharey=True, figsize=(6.4, 1.8))
+    repeats = counts.reindex(uq_df.index, fill_value=0).values.astype(int)
+    for ax, (key, value) in zip(axes.flat, uq_vars.items()):
+        ax.hist(np.repeat(uq_df[key].values, repeats), bins=15)
+        ax.set_xlabel(value)
+        ax.set_xlim(uq_df[key].min(), uq_df[key].max())
+    fig.tight_layout()
+    fig.savefig(filename, dpi=300)
+    plt.close(fig)
+
+
 DEFAULT_DATA_DIR = "~/base/pism-terra"
+DEFAULT_FUDGE_FACTORS = (1.0, 3.0, 10.0)
+DEFAULT_N_SAMPLES = 10_000
 
 pctls = [0.05, 0.95]
 fontsize = 6
@@ -233,7 +360,13 @@ pdd_uq_vars = {"surface.pdd.factor_ice": "fice", "surface.pdd.factor_snow": "fsn
 m_vars = ["surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux", "climatic_mass_balance"]
 
 
-def calibrate(data_dir):
+def calibrate(
+    data_dir,
+    fudge_factors=DEFAULT_FUDGE_FACTORS,
+    n_samples=DEFAULT_N_SAMPLES,
+    relative_error=0.10,
+    error_floor=50.0,
+):
     """
     Rank KITP UQ ensemble members against observed surface mass balance.
 
@@ -242,6 +375,14 @@ def calibrate(data_dir):
     data_dir : str or pathlib.Path
         Root directory holding the KITP calibration inputs and outputs (the
         ``2026_08_kitp_*_calib`` trees). ``~`` is expanded.
+    fudge_factors : sequence of float, optional
+        Multipliers on the observed error for the importance sampling.
+    n_samples : int, optional
+        Draws with replacement per fudge factor; see :func:`importance_weights`.
+    relative_error : float, optional
+        Relative observational error; see :func:`observation_uncertainty`.
+    error_floor : float, optional
+        Absolute error floor in kg m^-2 yr^-1; see :func:`observation_uncertainty`.
     """
     data_dir = Path(data_dir).expanduser()
 
@@ -295,7 +436,9 @@ def calibrate(data_dir):
         # matters, so hand the regridder bare coordinates instead of the
         # ensemble itself.
         target_grid = xr.Dataset(coords={"y": ds["y"], "x": ds["x"]}).reset_coords(drop=True)
-        _obs = obs.regrid.conservative(target_grid).squeeze()
+        _obs = observation_uncertainty(
+            obs.regrid.conservative(target_grid).squeeze(), relative=relative_error, floor=error_floor
+        )
         _ds = ds[m_vars]
 
         cmb_obs = (
@@ -311,6 +454,34 @@ def calibrate(data_dir):
         for v in ["climatic_mass_balance", "surface_accumulation_flux", "surface_melt_flux", "surface_runoff_flux"]:
 
             with ProgressBar():
+
+                # 0) Importance sampling: likelihood weights per member for a
+                # few fudge factors on the observed error. The effective sample
+                # size says how many members the field really distinguishes.
+                weighted = importance_weights(_ds, _obs, v, fudge_factors=fudge_factors, n_samples=n_samples)
+                for fudge_factor in weighted.fudge_factor.values:
+                    w = weighted["weights"].sel(fudge_factor=fudge_factor)
+                    top_id = w.idxmax(dim="exp_id").values
+                    print(
+                        f"{ebm}/{v}: fudge {fudge_factor:g}: ESS = {float(weighted['ess'].sel(fudge_factor=fudge_factor)):.1f} "
+                        f"of {w.sizes['exp_id']}, top exp_id = {top_id} (weight {float(w.max()):.3f})"
+                    )
+                    plot_parameter_histograms(
+                        ebm_uq_df,
+                        ebm_uq_vars,
+                        weighted["counts"].sel(fudge_factor=fudge_factor).to_pandas(),
+                        f"{ebm}_{v}_ff_{fudge_factor:g}.png",
+                    )
+                importance_df = pd.concat(
+                    {
+                        f"{name}_ff_{fudge_factor:g}": weighted[name].sel(fudge_factor=fudge_factor).to_pandas()
+                        for fudge_factor in weighted.fudge_factor.values
+                        for name in ("weights", "counts")
+                    },
+                    axis=1,
+                )
+                importance_df.index.name = "exp_id"
+                importance_df.join(ebm_uq_df, how="left").to_csv(f"{ebm}_{v}_importance.csv")
 
                 # 1) Decorrelation length from the observed time-mean field.
                 sim_mean_all = _ds[v].mean(dim="time")
@@ -347,21 +518,7 @@ def calibrate(data_dir):
                     index=pd.Index(rmse_mean.exp_id.values, name="exp_id"),
                 )
 
-                fig, axes = plt.subplots(1, len(ebm_uq_vars), sharey=True, figsize=(6.4, 1.8))
-                for ax, (key, value) in zip(axes.flat, ebm_uq_vars.items()):
-                    # Repeat each parameter value by its sample count (= 1 if
-                    # the experiment tied with the best, 0 otherwise).
-                    values = np.repeat(
-                        ebm_uq_df[key].values, ebm_counts.reindex(ebm_uq_df.index, fill_value=0).values.astype(int)
-                    )
-                    ax.hist(values, bins=15)
-                    ax.set_xlabel(value)
-                    ax.set_xlim(ebm_uq_df[key].min(), ebm_uq_df[key].max())
-                    # ax.set_ylabel("Count")
-                fig.tight_layout()
-                fig.savefig(f"{ebm}_{v}.png", dpi=300)
-                plt.close()
-                del fig
+                plot_parameter_histograms(ebm_uq_df, ebm_uq_vars, ebm_counts, f"{ebm}_{v}.png")
 
                 # Write per-experiment stats to CSV so the user can inspect ties.
                 rmse_df = (
@@ -433,9 +590,40 @@ def main():
         default=DEFAULT_DATA_DIR,
     )
 
+    parser.add_argument(
+        "--fudge-factors",
+        help="Comma-separated multipliers on the observed error for the importance sampling.",
+        type=lambda s: tuple(float(x) for x in s.split(",")),
+        default=DEFAULT_FUDGE_FACTORS,
+    )
+    parser.add_argument(
+        "--n-samples",
+        help="Draws with replacement per fudge factor; sets the resolution of the resampled histograms.",
+        type=int,
+        default=DEFAULT_N_SAMPLES,
+    )
+    parser.add_argument(
+        "--relative-error",
+        help="Relative observational error of the RCM fields.",
+        type=float,
+        default=0.10,
+    )
+    parser.add_argument(
+        "--error-floor",
+        help="Absolute floor on the observational error, kg m^-2 yr^-1.",
+        type=float,
+        default=50.0,
+    )
+
     options = parser.parse_args()
 
-    calibrate(options.data_dir)
+    calibrate(
+        options.data_dir,
+        fudge_factors=options.fudge_factors,
+        n_samples=options.n_samples,
+        relative_error=options.relative_error,
+        error_floor=options.error_floor,
+    )
 
 
 if __name__ == "__main__":
