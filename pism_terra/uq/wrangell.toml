@@ -7,12 +7,6 @@ loc = 5
 scale = 2
 distribution = "uniform"
 
-['atmosphere.delta_T']
-
-loc = -2
-scale = 4
-distribution = "uniform"
-
 ['atmosphere.given.file']
 
 low = 0

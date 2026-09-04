@@ -36,7 +36,6 @@ from pyfiglet import Figlet
 from pism_terra.aws import local_to_s3
 from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.download import file_localizer
-from pism_terra.glacier.climate import create_offset_file
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.observations import DH_END, DH_START
 from pism_terra.glacier.stage import stage_glacier
@@ -1283,11 +1282,6 @@ def _run(*, kind: str) -> None:
     }
 
     for idx, row in rows_df.iterrows():
-        delta_T = row["atmosphere.delta_T"] if "atmosphere.delta_T" in row else 0
-        frac_P = row["atmosphere.frac_P"] if "atmosphere.frac_P" in row else 0
-        scalar_offset_file = input_path / Path(f"scalar_offset_{rgi_id}_id_{idx}.nc")
-        create_offset_file(scalar_offset_file, delta_T=delta_T, frac_P=frac_P)
-
         if is_ensemble:
             # Drop the staged-glacier columns and the composite sample id;
             # whatever remains is a row of UQ overrides to forward to PISM.
@@ -1299,9 +1293,7 @@ def _run(*, kind: str) -> None:
             {
                 "input.file": row["boot_file"],
                 "grid.file": row["grid_file"],
-                "atmosphere.delta_T.file": scalar_offset_file,
                 "atmosphere.elevation_change.file": row["boot_file"],
-                "atmosphere.precip_scaling.file": scalar_offset_file,
                 "atmosphere.given.file": row["climate_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
                 "surface.debm_simple.albedo_input.file": row["climate_file"],
