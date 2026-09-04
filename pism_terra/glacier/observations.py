@@ -47,6 +47,7 @@ from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3, project_prefix
 from pism_terra.download import extract_archive
+from pism_terra.raster import cog_writer
 from pism_terra.vector import get_glacier_from_rgi_id
 from pism_terra.workflow import (
     check_rio,
@@ -809,9 +810,7 @@ def build_dh_raster(
             window[fill] = reprojected[fill]
 
     output_file = Path(output_file)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    meta = {
-        "driver": "COG",
+    profile = {
         "dtype": "float32",
         "count": 2,
         "height": height,
@@ -819,14 +818,17 @@ def build_dh_raster(
         "crs": dst_crs,
         "transform": transform,
         "nodata": np.nan,
-        "compress": "DEFLATE",
-        "predictor": 3,
-        "blocksize": 512,
-        "overview_resampling": "AVERAGE",
-        "BIGTIFF": "YES",
-        "num_threads": "ALL_CPUS",
     }
-    with rasterio.open(output_file, "w", **meta) as dst:
+    with cog_writer(
+        output_file,
+        profile,
+        compress="DEFLATE",
+        predictor=3,
+        blocksize=512,
+        overview_resampling="AVERAGE",
+        BIGTIFF="YES",
+        num_threads="ALL_CPUS",
+    ) as dst:
         for idx, (band, description) in enumerate(zip(bands, ("dh", "err_dh")), start=1):
             dst.write(band, idx)
             dst.set_band_description(idx, description)

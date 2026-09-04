@@ -51,6 +51,7 @@ from pism_terra.glacier.ice_thickness import (
 )
 from pism_terra.glacier.rgi import prepare_rgi
 from pism_terra.log import setup_logging
+from pism_terra.raster import write_cog
 
 xr.set_options(keep_attrs=True)
 
@@ -303,9 +304,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     if da.rio.crs is None:
         da = da.rio.write_crs("EPSG:4326")
     predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
-    da.rio.to_raster(
+    write_cog(
+        da,
         cog_gebco_p,
-        driver="COG",
         compress="DEFLATE",
         predictor=predictor,
         blocksize=512,

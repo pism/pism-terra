@@ -47,7 +47,7 @@ from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3, project_prefix, s3_to_local
 from pism_terra.download import download_archive, extract_archive
-from pism_terra.raster import check_overlap
+from pism_terra.raster import check_overlap, cog_writer
 from pism_terra.workflow import check_xr_lazy, drop_geotransform_attr
 
 logger = logging.getLogger(__name__)
@@ -304,23 +304,18 @@ def prepare_ice_thickness_frank(
         with rasterio.open(reprojected[0]) as src:
             out_meta = src.meta.copy()
         predictor = 3 if np.issubdtype(mosaic.dtype, np.floating) else 2
-        out_meta.update(
-            {
-                "driver": "COG",
-                "height": mosaic.shape[1],
-                "width": mosaic.shape[2],
-                "transform": out_transform,
-                "compress": "DEFLATE",
-                "predictor": predictor,
-                "level": 6,
-                "blocksize": 512,
-                "overview_resampling": "AVERAGE",
-                "BIGTIFF": "YES",
-                "num_threads": "ALL_CPUS",
-            }
-        )
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        with rasterio.open(output_file, "w", **out_meta) as dest:
+        out_meta.update({"height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform})
+        with cog_writer(
+            output_file,
+            out_meta,
+            compress="DEFLATE",
+            predictor=predictor,
+            level=6,
+            blocksize=512,
+            overview_resampling="AVERAGE",
+            BIGTIFF="YES",
+            num_threads="ALL_CPUS",
+        ) as dest:
             dest.write(mosaic)
 
         for fpath in reprojected:
@@ -588,23 +583,18 @@ def prepare_ice_thickness_maffezzoli(
         # from S3 (so QGIS via /vsis3/ streams without a full download).
         # predictor=3 for floats, 2 for ints. BIGTIFF=YES for >4 GB outputs.
         predictor = 3 if np.issubdtype(mosaic.dtype, np.floating) else 2
-        out_meta.update(
-            {
-                "driver": "COG",
-                "height": mosaic.shape[1],
-                "width": mosaic.shape[2],
-                "transform": out_transform,
-                "compress": "DEFLATE",
-                "predictor": predictor,
-                "level": 6,
-                "blocksize": 512,
-                "overview_resampling": "AVERAGE",
-                "BIGTIFF": "YES",
-                "num_threads": "ALL_CPUS",
-            }
-        )
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        with rasterio.open(output_file, "w", **out_meta) as dest:
+        out_meta.update({"height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_transform})
+        with cog_writer(
+            output_file,
+            out_meta,
+            compress="DEFLATE",
+            predictor=predictor,
+            level=6,
+            blocksize=512,
+            overview_resampling="AVERAGE",
+            BIGTIFF="YES",
+            num_threads="ALL_CPUS",
+        ) as dest:
             dest.write(mosaic)
 
         for fpath in reprojected:

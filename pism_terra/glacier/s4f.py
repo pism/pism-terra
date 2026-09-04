@@ -47,7 +47,7 @@ from pism_terra.glacier.climate import era5, snap
 from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.glacier.observations import dh_from_tif, fetch_dh_raster
 from pism_terra.glacier.stage import staged_rgi_outlines
-from pism_terra.raster import apply_perimeter_band
+from pism_terra.raster import apply_perimeter_band, write_cog
 from pism_terra.vector import (
     get_glacier_from_rgi_id,
     glaciers_in_complex,
@@ -195,11 +195,10 @@ def cog_profile(da: xr.DataArray) -> dict:
     Returns
     -------
     dict
-        Keyword arguments for :meth:`rioxarray.raster_array.RasterArray.to_raster`.
+        COG creation options for :func:`pism_terra.raster.write_cog`.
     """
     is_float = np.issubdtype(da.dtype, np.floating)
     return {
-        "driver": "COG",
         "compress": "ZSTD",
         "predictor": 3 if is_float else 2,
         "overview_resampling": "cubic" if is_float else "nearest",
@@ -276,7 +275,7 @@ def write_dh_cogs(
         cog_path = path / f"{m_id}.tif"
         # Declare the NaN fill as nodata so viewers mask the unobserved cells.
         da = ds_dh[var].rio.write_nodata(np.nan)
-        da.rio.to_raster(cog_path, **cog_profile(da))
+        write_cog(da, cog_path, **cog_profile(da))
         print(cog_path)
         written[m_id] = cog_path
     return written
@@ -469,13 +468,13 @@ def s4f_glacier(
         # (surface for surface_clipped); ship it only when itself requested.
         if variables is None or var in variables:
             cog_path = path / f"{m_id}.tif"
-            out.rio.to_raster(cog_path, **cog_profile(out))
+            write_cog(out, cog_path, **cog_profile(out))
             print(cog_path)
             boot_files[m_id] = cog_path
         if var == "surface" and (variables is None or "surface_clipped" in variables):
             cog_clipped_path = path / f"{m_id}_clipped.tif"
             out_clipped = out.rio.clip(glacier_projected.geometry, drop=False)
-            out_clipped.rio.to_raster(cog_clipped_path, **cog_profile(out_clipped))
+            write_cog(out_clipped, cog_clipped_path, **cog_profile(out_clipped))
             print(cog_clipped_path)
             boot_files[f"{m_id}_clipped"] = cog_clipped_path
         if var == "bed" and (variables is None or "bed" in variables):
