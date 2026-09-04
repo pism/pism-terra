@@ -32,6 +32,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import toml
 
 from pism_terra.config import PismConfig, load_config
 from pism_terra.ismip7.experiments import CORE_EXPERIMENTS, resolve_counter
@@ -39,7 +40,7 @@ from pism_terra.ismip7.naming import ISMIP7Names
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "pism_terra" / "config"
 
-ALL_COUNTERS = [f"C{n:03d}" for n in range(1, 9)] + ["C011"]
+ALL_COUNTERS = [f"C{n:03d}" for n in range(1, 12)]
 
 
 @pytest.mark.parametrize("counter", ALL_COUNTERS)
@@ -102,6 +103,37 @@ def test_ocx_counter():
     assert spec.has_projection_forcing is False
     # The other counters all carry a stageable projection forcing.
     assert all(s.has_projection_forcing for c, s in CORE_EXPERIMENTS.items() if c != "C011")
+
+
+def test_ctrl_counters():
+    """C009/C010 (CTRL2015) run the ctrl forcing 2015-2300 like a projection."""
+    for counter, esm, climate_v, ocean_v in (
+        ("C009", "CESM2-WACCM", "v3", "v2"),
+        ("C010", "MRI-ESM2-0", "v2", "v1"),
+    ):
+        spec = CORE_EXPERIMENTS[counter]
+        assert spec.experiment_id == "ctrl"
+        # The forcing pathway is its own source.coop subtree, not an ssp one.
+        assert spec.pathway == "ctrl"
+        assert spec.esm_id == esm
+        assert spec.proj_end_year == 2300
+        assert spec.product_leg == "projection"
+        assert spec.climate_version == climate_v
+        assert spec.ocean_version == ocean_v
+        assert spec.has_projection_forcing is True
+    # Same ESMs and version tags as the ssp585-to-2300 pair they parallel.
+    for ctrl, ssp in (("C009", "C007"), ("C010", "C008")):
+        assert CORE_EXPERIMENTS[ctrl].esm_id == CORE_EXPERIMENTS[ssp].esm_id
+        assert CORE_EXPERIMENTS[ctrl].climate_version == CORE_EXPERIMENTS[ssp].climate_version
+        assert CORE_EXPERIMENTS[ctrl].ocean_version == CORE_EXPERIMENTS[ssp].ocean_version
+
+
+def test_counter_pathways_exist_in_prepare_setup():
+    """Every counter's pathway is one the prepare setup TOML actually builds."""
+    setup = toml.loads((CONFIG_DIR / "setup_ismip7_greenland.toml").read_text("utf-8"))
+    for spec in CORE_EXPERIMENTS.values():
+        gcm = setup["gcms"][spec.esm_id]
+        assert spec.pathway in gcm, f"{spec.esm_id}/{spec.pathway} missing from setup_ismip7_greenland.toml"
 
 
 def test_resolve_counter_unknown_raises():
