@@ -76,5 +76,5 @@ do
           -a units,${var},m,c,"kg s-1" \
           -O ${output} ${output}
   # correct the time dimension
-  ./fix-time-flux-variables.py ${output}
+  pism-ismip7-fix-time-flux-variables ${output}
 done

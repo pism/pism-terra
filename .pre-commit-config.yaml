@@ -63,7 +63,7 @@ repos:
           [
             "-rn", # Only display messages
             "-sn", # Don't display the score
-            "--extension-pkg-whitelist=scipy",
+            "--extension-pkg-whitelist=scipy,netCDF4",
           ]
 
 
