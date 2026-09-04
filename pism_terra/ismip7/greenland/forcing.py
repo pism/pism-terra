@@ -1389,7 +1389,9 @@ def _forcing_tasks(config: dict) -> list[tuple]:
     file). ``end`` is inclusive per the setup TOML convention.
 
     ``source`` and ``version`` may sit at the GCM level (defaults for every
-    pathway) with optional per-pathway overrides. ``source`` maps each
+    pathway) with optional per-pathway overrides. A pathway may also carry
+    ``fields = {climate = [...]}`` to override the ``[forcing]`` field list
+    for that pathway alone (the ctrl pathways publish no ``mrro``). ``source`` maps each
     forcing to its subtree and (optionally) a per-forcing version label:
     the table form ``{climate = {dataset = "SDBN1-1000m", version = 3}}``
     carries both, while a plain string (``{climate = "SDBN1-1000m"}``)
@@ -1431,8 +1433,12 @@ def _forcing_tasks(config: dict) -> list[tuple]:
             start_year = int(_pathway_config["start"])
             end_year = int(_pathway_config["end"])
             sources = {**gcm_sources, **_pathway_config.get("source", {})}
+            # Per-pathway field list, for pathways that are published with a
+            # different set of variables than the rest of the tree (the ctrl
+            # runs carry no ``mrro``).
+            field_overrides = _pathway_config.get("fields", {})
             for forcing, forcing_dict in config["forcing"].items():
-                fields = forcing_dict["fields"]
+                fields = field_overrides.get(forcing, forcing_dict["fields"])
                 # Fall back to a legacy global ``[forcing] short_hand`` so
                 # older setup TOMLs keep working.
                 spec = sources.get(forcing, forcing_dict.get("short_hand", "none"))

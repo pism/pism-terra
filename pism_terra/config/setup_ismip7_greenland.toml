@@ -21,9 +21,11 @@ resolution = "450m"
 # carries just the newest version of every file, discovered by listing.
 # (Upstream tags versions per *variable*; e.g. the CESM2-WACCM climate mixes
 # v3 [acabf, dacabfdz, mrro, dmrrodz] and v2 [ts, dtsdz] as of 2026-09-03 —
-# the label below tracks the newest.) A plain string dataset (with the
-# version at the GCM/pathway level) is still accepted.
-# ``source`` sits at the GCM level and may be overridden per pathway.
+# the label below tracks the newest. The ctrl trees carry the same newest
+# tags: CESM2-WACCM climate v3 / ocean v2, MRI-ESM2-0 climate v2 / ocean v1.)
+# A plain string dataset (with the version at the GCM/pathway level) is still
+# accepted. ``source`` sits at the GCM level and may be overridden per
+# pathway, as may the ``[forcing]`` field lists (``fields = {climate = [...]}``).
 
 # (Sub-tables rather than one inline table per GCM: the ``toml`` 0.x parser
 # used by prepare.py cannot handle inline tables nested two levels deep.)
@@ -34,6 +36,11 @@ historical = {start = 1900, end = 2014}
 ssp126 = {start = 2015, end = 2300}
 ssp370 = {start = 2015, end = 2100}
 ssp585 = {start = 2015, end = 2300}
+# CTRL2015 (C009): 2015 conditions held fixed, 2015-2300. Upstream publishes no
+# ``mrro`` under ctrl (only acabf, dacabfdz, dmrrodz, ts, dtsdz, sgd and the
+# anomalies), so the field list is overridden here; drop the override once the
+# variable appears.
+ctrl = {start = 2015, end = 2300, fields = {climate = ["acabf", "dacabfdz", "ts", "dmrrodz", "dtsdz"]}}
 
 [gcms.CESM2-WACCM.source]
 
@@ -46,6 +53,8 @@ historical = {start = 1900, end = 2014}
 ssp126 = {start = 2015, end = 2300}
 ssp370 = {start = 2015, end = 2100}
 ssp585 = {start = 2015, end = 2300}
+# CTRL2015 (C010); see the CESM2-WACCM ctrl note on the missing ``mrro``.
+ctrl = {start = 2015, end = 2300, fields = {climate = ["acabf", "dacabfdz", "ts", "dmrrodz", "dtsdz"]}}
 
 [gcms.MRI-ESM2-0.source]
 

@@ -70,9 +70,10 @@ def test_forcing_tasks_from_shipped_config():
         (gcm, pathway, fc): (version, start, end, short_hand, source)
         for (_, gcm, fc, version, pathway, start, end, short_hand, _, source) in tasks
     }
+    fields_by_key = {(gcm, pathway, fc): fields for (_, gcm, fc, _, pathway, _, _, _, fields, _) in tasks}
 
-    # 2 standard GCMs x 4 pathways x 2 forcings + OCX historical x 2 forcings
-    assert len(tasks) == 2 * 4 * 2 + 2
+    # 2 standard GCMs x 5 pathways x 2 forcings + OCX historical x 2 forcings
+    assert len(tasks) == 2 * 5 * 2 + 2
 
     # Climate and ocean are published on independent version tracks (per-
     # forcing ``version`` inside the source spec), matching the newest
@@ -83,6 +84,16 @@ def test_forcing_tasks_from_shipped_config():
     assert by_key[("MRI-ESM2-0", "historical", "ocean")] == ("v1", 1900, 2014, "ocean-1000m", None)
     assert by_key[("OCX", "historical", "climate")] == ("v1", 1958, 2024, "SDBN1-1000m", "RACMO2.3p2-ERA")
     assert by_key[("OCX", "historical", "ocean")] == ("v1", 1958, 2024, "ocean-1000m", "EN4")
+
+    # CTRL2015 (C009/C010) runs 2015-2300 off the same subtrees and version
+    # tags as the projections, but upstream publishes no ``mrro`` under ctrl,
+    # so the pathway overrides the climate field list.
+    assert by_key[("CESM2-WACCM", "ctrl", "climate")] == ("v3", 2015, 2300, "SDBN1-1000m", None)
+    assert by_key[("MRI-ESM2-0", "ctrl", "ocean")] == ("v1", 2015, 2300, "ocean-1000m", None)
+    assert "mrro" not in fields_by_key[("CESM2-WACCM", "ctrl", "climate")]
+    assert "mrro" not in fields_by_key[("MRI-ESM2-0", "ctrl", "climate")]
+    assert "mrro" in fields_by_key[("CESM2-WACCM", "ssp585", "climate")]
+    assert fields_by_key[("MRI-ESM2-0", "ctrl", "ocean")] == ["tf", "so"]
 
     # The GCM-level ``source``/``version`` keys must not be mistaken for pathways.
     assert not [t for t in tasks if t[4] in ("source", "version")]
@@ -98,6 +109,7 @@ def test_forcing_tasks_pathway_overrides_and_legacy_short_hand():
             "MRI-ESM2-0": {
                 "historical": {"start": 1900, "end": 2014},
                 "ssp585": {"start": 2015, "end": 2300, "source": {"climate": "SDBN1-1000m"}, "version": 1},
+                "ctrl": {"start": 2015, "end": 2300, "fields": {"climate": ["acabf"]}},
                 "source": {"climate": "GEMB-SDBN1-1000m", "ocean": "ocean-1000m"},
                 "version": 2,
             },
@@ -114,6 +126,13 @@ def test_forcing_tasks_pathway_overrides_and_legacy_short_hand():
         (gcm, pathway, fc): (version, short_hand, source)
         for (_, gcm, fc, version, pathway, _, _, short_hand, _, source) in tasks
     }
+    fields_by_key = {(gcm, pathway, fc): fields for (_, gcm, fc, _, pathway, _, _, _, fields, _) in tasks}
+
+    # A pathway-level ``fields`` entry replaces the ``[forcing]`` list for that
+    # forcing only; every other pathway/forcing keeps the global one.
+    assert fields_by_key[("MRI-ESM2-0", "ctrl", "climate")] == ["acabf"]
+    assert fields_by_key[("MRI-ESM2-0", "ctrl", "ocean")] == ["tf"]
+    assert fields_by_key[("MRI-ESM2-0", "ssp585", "climate")] == ["acabf"]
 
     # The override replaces climate but the GCM-level ocean entry survives.
     assert by_key[("MRI-ESM2-0", "ssp585", "climate")] == ("v1", "SDBN1-1000m", None)
