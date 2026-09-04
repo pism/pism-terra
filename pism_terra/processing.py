@@ -26,7 +26,7 @@ Processing Functions.
 import json
 import re
 from collections import OrderedDict
-from collections.abc import Hashable, Mapping
+from collections.abc import Hashable, Mapping, Sequence
 from typing import Any
 
 import cftime
@@ -186,90 +186,148 @@ def integrate_rate(
     return out
 
 
+def _search_id(regexp: str | Sequence[str], *sources: str) -> str | None:
+    """
+    Return the first capture group matched by any pattern in any source.
+
+    Patterns are tried in order against each source in turn, so the caller can
+    order them from most to least specific and let a general fallback catch the
+    file names the specific pattern does not cover.
+
+    Parameters
+    ----------
+    regexp : str or sequence of str
+        One pattern, or several tried in order. Each must have one capture group.
+    *sources : str
+        Strings to search, e.g. the file path and the ``command`` attribute.
+        Empty sources are skipped.
+
+    Returns
+    -------
+    str or None
+        The first captured identifier, or None when nothing matches.
+    """
+    for pattern in [regexp] if isinstance(regexp, str) else regexp:
+        for source in sources:
+            if not source:
+                continue
+            m = re.search(pattern, source)
+            if m is not None:
+                return m.group(1)
+    return None
+
+
 def preprocess_netcdf(
     ds,
-    exp_regexp: str = "id_(.+?)_",
-    uq_regexp: str | None = r"(RGI2000-v7\.0-C-[^/\s]+)",
     exp_dim: str = "exp_id",
+    exp_regexp: str | Sequence[str] = (r"_id_(.+?)_uq_\d+_", r"id_(.+?)_"),
+    rgi_dim: str | None = "rgi_id",
+    rgi_regexp: str | Sequence[str] | None = r"(RGI2000-v7\.0-[A-Z]-\d{2}-\d+)",
     uq_dim: str | None = "uq_id",
+    uq_regexp: str | Sequence[str] | None = r"_uq_(\d+)",
     gcm_dim: str | None = "gcm_id",
+    gcm_regexp: str | Sequence[str] | None = r"_gcm_(.+?)_exp_",
     drop_vars: list[str] | None = None,
     drop_dims: list[str] = ["nv4"],
     process_config: bool = True,
 ) -> xr.Dataset:
-    """
-    Add experiment identifier to the dataset.
+    r"""
+    Add the identifiers encoded in the file name as dimensions.
 
-    This function processes the dataset by extracting an experiment identifier from the filename
-    using a regular expression, adding it as a new dimension, and optionally dropping specified
-    variables and dimensions from the dataset.
+    The experiment, RGI, UQ and GCM identifiers are read out of the source file name
+    with regular expressions and added as length-one dimensions, so that a set of
+    files opened with :func:`xarray.open_mfdataset` combines into one ensemble.
+    Only `exp_dim` is required; each of the others is added when its pattern matches
+    and silently skipped when it does not, which lets the same call handle glacier
+    runs (``dh_RGI2000-v7.0-C-01-03383_id_0_uq_1_2000-01-01_2020-01-01.nc``), ice
+    sheet runs (``spatial_GIS_g1200m_id_HIRHAM5-ERA5_YMM_1990_2019_uq_0_...nc``) and
+    GCM-forced runs (``..._id_gcm_CESM2_exp_pdSST-futArcSIC_...nc``) alike.
+
+    Patterns are matched against the path the dataset was opened from. `rgi_regexp`
+    additionally falls back to the ``command`` attribute, where the RGI identifier
+    shows up in the input paths of runs whose output file names do not carry it.
 
     Parameters
     ----------
     ds : xarray.Dataset
         The input dataset to be processed.
-    exp_regexp : str, optional
-        The regular expression pattern to extract the experiment identifier from the filename, by default "id_(.+?)_".
-    uq_regexp : str or None, optional
-        The regular expression pattern to extract the UQ identifier from the filename, by default ``r"(RGI2000-v7\\.0-C-[^/\\s]+)"``.
-        If None, no UQ dimension is added.
     exp_dim : str, optional
-        The name of the new experiment dimension to be added to the dataset, by default "exp_id".
+        The name of the experiment dimension, by default "exp_id".
+    exp_regexp : str or sequence of str, optional
+        Pattern(s) for the experiment identifier, tried in order. By default the
+        anchored ``_id_(.+?)_uq_\d+_`` first, so that a multi-token identifier such as
+        ``HIRHAM5-ERA5_YMM_1990_2019`` is captured whole, then the looser
+        ``id_(.+?)_`` for file names without a ``_uq_`` tag.
+    rgi_dim : str or None, optional
+        The name of the RGI dimension, by default "rgi_id". If None, no RGI dimension
+        is added.
+    rgi_regexp : str or sequence of str or None, optional
+        Pattern(s) for the RGI identifier, by default ``r"(RGI2000-v7\.0-[A-Z]-\d{2}-\d+)"``.
+        If None, no RGI dimension is added.
     uq_dim : str or None, optional
-        The name of the new UQ dimension to be added to the dataset, by default "uq_id".
-        If None, no UQ dimension is added.
+        The name of the UQ dimension, by default "uq_id". If None, no UQ dimension is
+        added.
+    uq_regexp : str or sequence of str or None, optional
+        Pattern(s) for the UQ identifier, by default ``r"_uq_(\d+)"``. If None, no UQ
+        dimension is added.
     gcm_dim : str or None, optional
-        The name of the GCM dimension to be added to the dataset, by default "gcm_id".
-        If None, no GCM dimension is added. The GCM name is extracted from the filename
-        by matching the pattern ``id_<gcm>_<forcing>``.
-    drop_vars : list[str]| None, optional
+        The name of the GCM dimension, by default "gcm_id". If None, no GCM dimension
+        is added.
+    gcm_regexp : str or sequence of str or None, optional
+        Pattern(s) for the GCM identifier, by default ``r"_gcm_(.+?)_exp_"``. If None,
+        no GCM dimension is added.
+    drop_vars : list[str] or None, optional
         A list of variable names to be dropped from the dataset, by default None.
     drop_dims : list[str], optional
         A list of dimension names to be dropped from the dataset, by default ["nv4"].
     process_config : bool, optional
-        If True, extract and store pism_config as a JSON-encoded DataArray. If False, simply
-        drop the pism_config variable and axis without re-adding it. By default True.
+        If True, extract and store pism_config as a JSON-encoded DataArray. If False,
+        simply drop the pism_config variable and axis without re-adding it. By default
+        True.
 
     Returns
     -------
     xarray.Dataset
-        The processed dataset with the experiment identifier added as a new dimension, and specified variables and dimensions dropped.
+        The dataset with the matched identifiers added as dimensions, and the
+        requested variables and dimensions dropped.
 
     Raises
     ------
-    AssertionError
-        If the regular expression does not match any part of the filename.
+    ValueError
+        If no `exp_regexp` pattern matches the source path.
     """
 
-    m_exp_id_re = re.search(exp_regexp, ds.encoding["source"])
-    assert m_exp_id_re is not None
-    m_exp_id = m_exp_id_re.group(1)
+    source = str(ds.encoding.get("source", ""))
+    command = str(ds.attrs.get("command", ""))
+
+    expand_dims: list[str] = []
+    expand_coords: dict[str, list[str]] = {}
 
     if process_config:
         p_config = ds["pism_config"]
 
     ds = ds.drop_vars(["pism_config"], errors="ignore").drop_dims(["pism_config_axis"], errors="ignore")
 
-    expand_dims = []
-    expand_coords = {}
+    # Optional identifiers: a file name that does not carry one simply does not get
+    # the dimension, so glacier, ice sheet and GCM-forced runs share one code path.
+    for dim, regexp, sources in (
+        (rgi_dim, rgi_regexp, (source, command)),
+        (gcm_dim, gcm_regexp, (source,)),
+        (uq_dim, uq_regexp, (source,)),
+    ):
+        if dim is None or regexp is None:
+            continue
+        value = _search_id(regexp, *sources)
+        if value is not None:
+            expand_dims.append(dim)
+            expand_coords[dim] = [value]
 
-    if gcm_dim is not None:
-        gcm_regexp = r"_gcm_(.+?)_exp_"
-        m_gcm_re = re.search(gcm_regexp, ds.encoding["source"])
-        if m_gcm_re is not None:
-            m_gcm_id = m_gcm_re.group(1)
-            expand_dims.append(gcm_dim)
-            expand_coords[gcm_dim] = [m_gcm_id]
-
-    if uq_regexp is not None and uq_dim is not None and hasattr(ds, "command"):
-        m_uq_id_re = re.search(uq_regexp, ds.command)
-        assert m_uq_id_re is not None
-        m_uq_id = m_uq_id_re.group(1)
-        expand_dims.append(uq_dim)
-        expand_coords[uq_dim] = [m_uq_id]
-
+    m_exp_id = _search_id(exp_regexp, source)
+    if m_exp_id is None:
+        raise ValueError(f"{exp_regexp!r} does not match {source!r}")
     expand_dims.append(exp_dim)
     expand_coords[exp_dim] = [m_exp_id]
+
     ds = ds.expand_dims(expand_coords)
 
     if process_config:

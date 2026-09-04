@@ -78,6 +78,7 @@ from pism_terra.glacier.rgi import prepare_rgi
 from pism_terra.heatflux import prepare_heatflux_lucazeau
 from pism_terra.log import setup_logging
 from pism_terra.prepare_select import add_include_argument, select_datasets
+from pism_terra.raster import write_cog
 from pism_terra.vector import glaciers_in_complex
 from pism_terra.workflow import check_xr_lazy
 
@@ -395,9 +396,9 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
         if da.rio.crs is None:
             da = da.rio.write_crs("EPSG:4326")
         predictor = 3 if np.issubdtype(da.dtype, np.floating) else 2
-        da.rio.to_raster(
+        write_cog(
+            da,
             cog_gebco_p,
-            driver="COG",
             compress="DEFLATE",
             predictor=predictor,
             blocksize=512,

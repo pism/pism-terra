@@ -89,7 +89,9 @@ def sample_with_replacement_xr(weights, n_samples: int = 100, seed: int = 0, dim
         vectorize=True,
         dask="parallelized",
         kwargs={
-            dim: weights[dim].to_numpy(),
+            # ``sample_with_replacement`` names its identifier argument ``exp_id``
+            # whatever dimension is being resampled.
+            "exp_id": weights[dim].to_numpy(),
             "n_samples": n_samples,
             "seed": seed,
         },
@@ -193,7 +195,7 @@ def importance_sampling(
     weights /= weights.sum(dim=dim)
     weights.name = "weights"
 
-    samples = sample_with_replacement_xr(weights, n_samples=n_samples, seed=seed)
+    samples = sample_with_replacement_xr(weights, n_samples=n_samples, seed=seed, dim=dim)
     ds = xr.merge([log_likes, weights])
     ds[samples.name] = samples
 
