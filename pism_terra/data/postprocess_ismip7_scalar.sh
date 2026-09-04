@@ -4,9 +4,9 @@
 #
 # Expects the file with scalar diagnostics to be named
 #
-# scalar_GrIS_UAF_PISM_XXX_XXX_XXX_XXX_XXX_YYYY-YYYY.nc, e.g.
+# scalar_DOMAIN_GROUP_PISM_XXX_XXX_XXX_XXX_XXX_YYYY-YYYY.nc, e.g.
 #
-# scalar_GrIS_UAF_PISM_m001_CESM2-WACCM_f001_historical_C001_1985-2014.nc
+# scalar_DOMAIN_GROUP_PISM_m001_CESM2-WACCM_f001_historical_C001_1985-2014.nc
 #
 # when splitting this file, "scalar" will be replaced by the name of a scalar diagnostic.
 
@@ -15,19 +15,15 @@ set -e
 
 input=$1
 
-# Per-input scratch file (next to the input) so concurrent jobs don't collide on
-# a shared tmp.nc.
-tmp="${input%.nc}_pptmp.nc"
-
-# tell bash to remove the scratch file when done:
-trap 'rm -f "${tmp}"' EXIT
-
 # fix global attributes:
 ncatted -O \
         -a crs,global,c,c,"EPSG:3413" \
         -a command,global,d,c,"" \
         -a source,global,d,c,"" \
-        ${input} "${tmp}"
+        ${input} tmp.nc
+
+# tell bash to remove tmp.nc when done:
+trap 'rm -f tmp.nc' EXIT
 
 # fix time units:
 script='
@@ -37,7 +33,7 @@ time_bounds=float(time_bounds/86400);
 time_bounds@units="days since 1850-01-01"
 '
 
-ncap2 -O -s "${script}" "${tmp}" "${tmp}"
+ncap2 -O -s "${script}" tmp.nc tmp.nc
 
 snapshot_variables="
 lim
@@ -61,7 +57,7 @@ for var in ${snapshot_variables};
 do
   output=${input/scalar/${var}}
   # extract the variable
-  ncks -v ${var} -O "${tmp}" ${output}
+  ncks -v ${var} -O tmp.nc ${output}
   # convert from double to float
   ncap2 -s "${var}=float(${var})" -O ${output} ${output}
   # set _FillValue
@@ -72,13 +68,13 @@ for var in ${flux_variables};
 do
   output=${input/scalar/${var}}
   # extract the variable
-  ncks -v ${var} -O "${tmp}" ${output}
+  ncks -v ${var} -O tmp.nc ${output}
   # convert from double to float
   ncap2 -s "${var}=float(${var})" -O ${output} ${output}
-  # set _FillValue and correct units
+  # set _FillValue
   ncatted -a _FillValue,${var},c,f,${fill_value} \
           -a units,${var},m,c,"kg s-1" \
           -O ${output} ${output}
   # correct the time dimension
-  ncap2 -s "time=float(0.5*(time_bounds(:,0)+time_bounds(:,1)))" -O ${output} ${output}
+  ./fix-time-flux-variables.py ${output}
 done
