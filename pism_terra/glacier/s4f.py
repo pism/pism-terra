@@ -43,12 +43,7 @@ from shapely.geometry import Point, Polygon, box
 from pism_terra.aws import local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
-from pism_terra.glacier.climate import (
-    create_offset_file,
-    create_step_file,
-    era5,
-    snap,
-)
+from pism_terra.glacier.climate import era5, snap
 from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.glacier.observations import dh_from_tif, fetch_dh_raster
 from pism_terra.glacier.stage import staged_rgi_outlines
@@ -64,10 +59,6 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 xr.set_options(keep_attrs=True)
 
 CLIMATE: Mapping[str, Callable] = {"era5": era5, "snap": snap}
-MODIFIER: Mapping[str, Callable] = {
-    "era5": create_offset_file,
-    "snap": create_offset_file,
-}
 
 
 def main():

@@ -46,8 +46,6 @@ from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import (
     carra2,
     carra2_monthly_mean,
-    create_offset_file,
-    create_step_file,
     elevation_dependent,
     era5,
     era5_mean,
@@ -81,10 +79,6 @@ CLIMATE: Mapping[str, Callable] = {
     "era5-mean": era5_mean,
     "era5-monthly-mean": era5_monthly_mean,
     "snap-monthly-mean": snap,
-}
-MODIFIER: Mapping[str, Callable] = {
-    "era5": create_offset_file,
-    "snap": create_offset_file,
 }
 
 
