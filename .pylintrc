@@ -1,6 +1,7 @@
 [MASTER]
 jobs=4 #number of processes to use
-extension-pkg-allow-list=netCDF4 #C extensions pylint may import to introspect
+extension-pkg-allow-list=scipy,netCDF4,rasterio #C extensions pylint may import to introspect
+ignore-paths=(^|/)benchmarks/ #one-off benchmark scripts, not linted locally or in CI
 [BASIC]
 good-names=nameOfYourProject #names to be considered ok
 [pre-commit-hook]

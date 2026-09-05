@@ -59,13 +59,11 @@ repos:
         entry: pylint
         language: system
         types: [python]
-        exclude: ^benchmarks/
         require_serial: true
         args:
           [
             "-rn", # Only display messages
             "-sn", # Don't display the score
-            "--extension-pkg-whitelist=scipy,netCDF4",
           ]
 
 
