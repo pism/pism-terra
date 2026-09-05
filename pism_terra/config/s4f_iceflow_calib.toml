@@ -24,7 +24,7 @@ velocity = "its_live"
 [time]
 
 'time.start' = "0001-01-01"
-'time.end' =  "0101-01-01"
+'time.end' =  "0251-01-01"
 'time.calendar' =  "365_day"
 'time.reference_date' = "0001-01-01"
 
@@ -45,6 +45,9 @@ velocity = "its_live"
 'input.file' = "none"
 'input.forcing.time_extrapolation' = "yes"
 'input.forcing.buffer_size' = 24
+# Regridded from the spin-up state given by --regrid-file (or
+# campaign.regrid_file); dropped from the command when neither is set.
+'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat"
 
 [reporting]
 

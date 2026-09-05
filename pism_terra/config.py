@@ -1640,7 +1640,10 @@ class CampaignConfig(BaseModel):
     present_day_forcings : str, list, or None
         Present-day forcing identifier(s).
     regrid_file : str or None
-        Path to a file used for regridding (relative to the input directory).
+        State file to regrid from while bootstrapping. ISMIP7: a filename in
+        the bucket (relative to the input directory), downloaded by staging.
+        Glacier runs: a local path or S3/HTTP URI, overridden by
+        ``--regrid-file``.
     retreat_file : str or None
         Path to the retreat NetCDF file (relative to the input directory).
     rgi_complex_file : str or None

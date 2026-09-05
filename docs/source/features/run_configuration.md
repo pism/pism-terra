@@ -63,6 +63,44 @@ Without `init_start`/`init_end` the run bootstraps directly, exactly as before.
 The mechanism mirrors the ISMIP7 Greenland runner, which uses the same two
 campaign keys.
 
+## Regridding from a spin-up state
+
+A run can start from the state of an earlier run at any resolution: it keeps
+bootstrapping from the staged boot file and regrids `input.regrid.vars` from
+that state. This is how a single long spin-up seeds a UQ ensemble on a finer
+grid, and it is the pattern the ISMIP7 Greenland runner uses with its
+`campaign.regrid_file`.
+
+```bash
+rgi_id=RGI2000-v7.0-C-01-04374
+# 1. spin-up, single run
+pism-glacier-run-forward --end 0501-01-01 --resolution 500m \
+  --data-path glacier_s4f_input --output-path 2026_09_s4f_iceflow_calib \
+  ${rgi_id} CONFIG.toml TEMPLATE.j2
+# 2. ensemble seeded from the spin-up state
+pism-glacier-run-forward --samples 5 --end 0101-01-01 --resolution 200m \
+  --regrid-file 2026_09_s4f_iceflow_calib/${rgi_id}/output/state/state_g500m_${rgi_id}_id_0_0001-01-01_0501-01-01.nc \
+  --data-path glacier_s4f_input --output-path 2026_09_s4f_iceflow_calib_uq \
+  ${rgi_id} CONFIG.toml TEMPLATE.j2 UQ.toml
+```
+
+Rules:
+
+- `--regrid-file` wins over `campaign.regrid_file`; with neither, the run
+  bootstraps as before. A local path that does not exist fails at render time
+  (the spin-up has not finished yet); an `s3://` or `https://` URI is
+  downloaded into the glacier's input directory.
+- The regrid applies to the leg that bootstraps. With `init_start`/`init_end`
+  that is the init leg, and the main leg restarts from the init state without
+  `input.regrid.*`. For inverse runs it is the prior leg; the main leg still
+  regrids `tauc` from the inversion output.
+- `input.regrid.vars` in the config's `['input']` table selects the fields; the
+  default is `litho_temp,enthalpy,age,tillwat`, the thermal and basal state,
+  leaving the geometry to the boot file. Add `thk` to carry the spun-up
+  geometry instead. `input.regrid.file` is managed by the runner and need not
+  be declared.
+- Output names do not change; use a separate `--output-path` per experiment.
+
 ## Inverse runs
 
 `pism-glacier-run-inverse` (and its ISMIP7 counterpart) chains a third call

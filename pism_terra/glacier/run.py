@@ -65,6 +65,77 @@ CLIMATE_FILE_OPTIONS = (
     "surface.pdd.std_dev.file",
 )
 
+#: Fields regridded from a spin-up state when ``['input']`` does not pin
+#: ``input.regrid.vars``: the thermal/basal state, leaving the geometry to the
+#: boot file. Same choice as the ISMIP7 Greenland configs.
+DEFAULT_REGRID_VARS = "litho_temp,enthalpy,age,tillwat"
+
+
+def _resolve_regrid_file(spec: str | Path | None, input_path: Path) -> Path | None:
+    """
+    Resolve the state file a run regrids from.
+
+    Parameters
+    ----------
+    spec : str or pathlib.Path or None
+        ``--regrid-file`` if given, else ``campaign.regrid_file``. ``None`` and
+        the ``"none"`` placeholder both mean "bootstrap only". A local path is
+        resolved as is; an S3/HTTP URI is downloaded into ``input_path``.
+    input_path : pathlib.Path
+        Per-glacier input directory that remote files are localized into.
+
+    Returns
+    -------
+    pathlib.Path or None
+        Absolute path of the state file, or ``None`` when no regridding is wanted.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a local ``spec`` does not exist — typically the spin-up has not
+        finished yet, or its state file is named differently than expected.
+    """
+    if spec is None or str(spec).strip().lower() == "none":
+        return None
+    spec = str(spec)
+    if spec.startswith(("s3://", "https://", "http://")):
+        return Path(file_localizer(spec, input_path)).resolve()
+    regrid_file = Path(spec).expanduser().resolve()
+    if not regrid_file.is_file():
+        raise FileNotFoundError(
+            f"regrid file {regrid_file} does not exist. Runs write their state to "
+            "<output-path>/<RGI_ID>/output/state/state_g<res>_<RGI_ID>_id_<n>_<start>_<end>.nc; "
+            "has the spin-up finished?"
+        )
+    return regrid_file
+
+
+def _apply_regrid(run: dict, regrid_file: str | Path | None) -> None:
+    """
+    Wire ``input.regrid.*`` into the leg that bootstraps, in place.
+
+    With a state file the run keeps bootstrapping from the boot file and
+    regrids ``input.regrid.vars`` from that state, so the spin-up may have run
+    at another resolution. Without one, the ``"none"`` placeholders a config
+    may carry are removed so PISM never sees them.
+
+    Parameters
+    ----------
+    run : dict
+        Assembled option dict of the bootstrapping leg. Mutated.
+    regrid_file : str or pathlib.Path or None
+        State file to regrid from, or ``None``.
+    """
+    if regrid_file:
+        run["input.regrid.file"] = Path(regrid_file).resolve()
+        # ['input'] may pin the variable list (e.g. add thk to carry the spun-up
+        # geometry); otherwise fall back to the thermal state.
+        if str(run.get("input.regrid.vars", "none")).strip().lower() == "none":
+            run["input.regrid.vars"] = DEFAULT_REGRID_VARS
+    else:
+        run.pop("input.regrid.file", None)
+        run.pop("input.regrid.vars", None)
+
 
 #: Interval of the per-run elevation/mass-change extraction, matching the
 #: Hugonnet et al. (2021) observational record the output is compared against
@@ -555,6 +626,11 @@ def _render_inverse_run(
     run.update(run_overrides)
     inv.update(inv_overrides)
 
+    # The prior leg is the one that bootstraps, so an optional spin-up state
+    # (``--regrid-file`` / ``campaign.regrid_file``) is regridded there; the
+    # main leg below overwrites ``input.regrid.*`` with the inverted tauc.
+    _apply_regrid(run, config_cli.get("regrid_file"))
+
     scalar_file = scalar_path / Path(f"scalar_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
@@ -888,6 +964,11 @@ def _render_forward_run(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
 
+    # Optional spin-up state to regrid from (``--regrid-file`` /
+    # ``campaign.regrid_file``). Applied before the init leg is split off so
+    # whichever leg bootstraps carries it; the main leg drops it again below.
+    _apply_regrid(run, config_cli.get("regrid_file"))
+
     scalar_file = scalar_path / Path(f"scalar_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     spatial_file = spatial_path / Path(f"spatial_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
     state_file = state_path / Path(f"state_g{resolution}_{rgi_id}_{name_options}_{start}_{end}.nc")
@@ -925,6 +1006,8 @@ def _render_forward_run(
         )
         run["input.file"] = state_init.resolve()
         run.pop("input.bootstrap", None)
+        run.pop("input.regrid.file", None)
+        run.pop("input.regrid.vars", None)
 
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
@@ -1075,6 +1158,13 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         type=int,
         default=None,
         help="Override the number of samples in the UQ file (ensemble mode only).",
+    )
+    parser.add_argument(
+        "--regrid-file",
+        type=_nullable_string,
+        default=None,
+        help="PISM state file to regrid input.regrid.vars from while bootstrapping "
+        "(e.g. a spin-up state at another resolution). Overrides campaign.regrid_file.",
     )
     if supports_execute:
         parser.add_argument(
@@ -1241,6 +1331,9 @@ def _run(*, kind: str) -> None:
     years = list(range(start_ts.year, last_year + 1))
     campaign_config = cfg.campaign.as_params()
     campaign_config["years"] = years
+    # Resolved once here (not per member): every ensemble member regrids from
+    # the same state, and a missing file should fail before staging starts.
+    regrid_file = _resolve_regrid_file(options.regrid_file or cfg.campaign.regrid_file, input_path)
 
     df = stage_glacier(
         campaign_config,
@@ -1279,6 +1372,9 @@ def _run(*, kind: str) -> None:
         "stress_balance": options.stress_balance,
         "start": start_cli,
         "end": end_cli,
+        # Bypasses the uq-override filter on purpose: ``input.regrid.*`` need
+        # not be declared in the config's ['input'] table.
+        "regrid_file": regrid_file,
     }
 
     for idx, row in rows_df.iterrows():
