@@ -289,8 +289,6 @@ bp_ksp_type = "fgmres"
 bp_pc_type = "mg"
 bp_mg_levels_ksp_type = "richardson"
 bp_mg_levels_pc_type = "sor"
-# Exact LU (MUMPS) on the coarse MG level: GAMG + loose GMRES there stalled
-# with DIVERGED_MAX_IT on the thin, stiff coarse problem.
 bp_mg_coarse_ksp_type = "preonly"
 bp_mg_coarse_pc_type = "lu"
 bp_mg_coarse_pc_factor_mat_solver_type = "mumps"
@@ -300,7 +298,6 @@ bp_snes_ksp_ew_version = 3
 bp_snes_rtol = 1e-3
 bp_ksp_rtol = 1e-3
 bp_snes_converged_reason = ""
-bp_ksp_converged_reason = ""
 
 [solver.inverse]
 
@@ -318,4 +315,3 @@ bp_snes_ksp_ew = 0
 bp_snes_ksp_ew_version = 3
 bp_snes_rtol = 1e-4
 bp_snes_converged_reason = ""
-bp_ksp_converged_reason = ""
