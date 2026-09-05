@@ -38,7 +38,7 @@ import pint_xarray  # pylint: disable=unused-import
 import pytest
 import xarray as xr
 
-from pism_terra.processing import integrate_rate, preprocess_netcdf
+from pism_terra.processing import decode_pism_config, integrate_rate, preprocess_netcdf
 
 # pint defines year as the Julian year; conversions out of Gt/yr use this.
 JULIAN_YEAR_DAYS = 365.25
@@ -481,7 +481,20 @@ def test_preserves_long_name(monthly_mb):
     assert result.attrs["long_name"] == "Cumulative Mass balance"
 
 
-def _write_run(tmp_path, name, command=""):
+# What PISM's ``Config::json()`` writes into the data of ``pism_config``: numbers
+# as ``[value, units]`` pairs, flags as booleans, unset files as empty strings.
+PISM_CONFIG_JSON = json.dumps(
+    {
+        "age.enabled": False,
+        "geometry.front_retreat.prescribed.file": "",
+        "grid.dx": [1200.0, "m"],
+        "surface.pdd.factor_ice": [0.00879, "meter / (kelvin day)"],
+        "stress_balance.model": "ssa+sia",
+    }
+)
+
+
+def _write_run(tmp_path, name, command="", config_blob=None):
     """
     Write a minimal PISM-like output file and return its path.
 
@@ -493,14 +506,23 @@ def _write_run(tmp_path, name, command=""):
         File name encoding the run identifiers.
     command : str, optional
         Value of the ``command`` attribute, by default "".
+    config_blob : str or None, optional
+        JSON text to store in the data of ``pism_config`` as a fixed-length
+        character array, the way PISM does. By default the variable holds no
+        JSON and only carries attributes.
 
     Returns
     -------
     pathlib.Path
         Path of the written file.
     """
+    if config_blob is None:
+        pism_config = xr.DataArray(0)
+    else:
+        chars = np.frombuffer(config_blob.encode().ljust(len(config_blob) + 8, b"\x00"), dtype="S1")
+        pism_config = xr.DataArray(chars, dims=("cfg",))
     ds = xr.Dataset(
-        {"thk": ("time", [1.0, 2.0]), "pism_config": ((), 0)},
+        {"thk": ("time", [1.0, 2.0]), "pism_config": pism_config},
         coords={"time": [0.0, 1.0]},
         attrs={"command": command},
     )
@@ -600,3 +622,80 @@ def test_preprocess_unmatched_exp_regexp_raises(tmp_path):
 
     with pytest.raises(ValueError, match="does not match"):
         preprocess_netcdf(xr.open_dataset(path), process_config=False)
+
+
+def test_preprocess_config_prefers_json_blob(tmp_path):
+    """
+    Check the JSON blob in the data of ``pism_config`` wins over the attributes.
+
+    The blob is normalised to the attribute convention: ``[value, units]`` pairs are
+    unwrapped, flags become ``"true"``/``"false"`` and an empty retreat file is
+    recorded as ``"false"``. The ``cfg`` character dimension must not survive.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    path = _write_run(
+        tmp_path, "dh_RGI2000-v7.0-C-01-03383_id_0_uq_1_2000-01-01_2020-01-01.nc", config_blob=PISM_CONFIG_JSON
+    )
+
+    ds = preprocess_netcdf(xr.open_dataset(path))
+
+    assert "cfg" not in ds.dims
+    assert ds["pism_config"].dims == ("rgi_id", "uq_id", "exp_id")
+    config = json.loads(ds["pism_config"].values.reshape(-1)[0])
+    assert config == {
+        "age.enabled": "false",
+        "geometry.front_retreat.prescribed.file": "false",
+        "grid.dx": 1200.0,
+        "stress_balance.model": "ssa+sia",
+        "surface.pdd.factor_ice": 0.00879,
+    }
+
+
+def test_preprocess_config_blob_survives_dask_and_raw_chars(tmp_path):
+    """
+    Check the blob is decoded from a dask-backed and from an undecoded character array.
+
+    ``open_mfdataset`` hands ``preprocess`` dask-backed variables, and with
+    ``decode_cf=False`` the ``|S1`` array is not collapsed into one byte string.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    path = _write_run(tmp_path, "spatial_g100m_id_0_uq_2_2000-01-01_2020-01-01.nc", config_blob=PISM_CONFIG_JSON)
+    expected = {
+        "age.enabled": "false",
+        "geometry.front_retreat.prescribed.file": "",
+        "grid.dx": 1200.0,
+        "stress_balance.model": "ssa+sia",
+        "surface.pdd.factor_ice": 0.00879,
+    }
+
+    with xr.open_dataset(path, chunks={}) as ds:
+        assert decode_pism_config(ds["pism_config"]) == expected
+    with xr.open_dataset(path, decode_cf=False) as ds:
+        assert ds["pism_config"].dtype == np.dtype("S1") and ds["pism_config"].ndim >= 1
+        assert decode_pism_config(ds["pism_config"]) == expected
+
+
+def test_decode_pism_config_scalar_string_and_fallback():
+    """
+    Check a scalar string variable is decoded and attributes are used without a blob.
+
+    A scalar string is the layout proposed for PISM once the per-parameter attributes
+    are dropped; a variable whose data is not JSON falls back to the attributes with
+    the documentation entries removed.
+    """
+    scalar = xr.DataArray(PISM_CONFIG_JSON, attrs={"grid.dx": "ignored when a blob is present"})
+    assert decode_pism_config(scalar)["grid.dx"] == 1200.0
+
+    attrs_only = xr.DataArray(np.int8(0), attrs={"grid.dx": "1200", "grid.dx_doc": "ignored", "grid.dx_type": "x"})
+    assert decode_pism_config(attrs_only) == {"grid.dx": "1200"}
+
+    not_json = xr.DataArray(np.array(b"garbage", dtype="S7"), attrs={"grid.dx": "1200"})
+    assert decode_pism_config(not_json) == {"grid.dx": "1200"}

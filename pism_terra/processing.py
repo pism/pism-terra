@@ -217,6 +217,84 @@ def _search_id(regexp: str | Sequence[str], *sources: str) -> str | None:
     return None
 
 
+_CONFIG_META_SUFFIXES = ("_doc", "_type", "_units", "_option", "_choices")
+
+
+def _normalize_config_value(value: Any) -> Any:
+    """
+    Bring one JSON-encoded PISM parameter into the attribute convention.
+
+    ``Config::json()`` writes numbers as ``[value, units]`` pairs and flags as JSON
+    booleans, whereas the per-parameter attributes hold the bare number and the
+    strings ``"true"``/``"false"``. Downstream code was written against the
+    attributes, so the JSON values are mapped onto that convention.
+
+    Parameters
+    ----------
+    value : Any
+        Value as decoded from the JSON string.
+
+    Returns
+    -------
+    Any
+        The value in attribute convention.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list) and len(value) == 2 and isinstance(value[1], str):
+        return value[0]
+    return value
+
+
+def decode_pism_config(config: xr.DataArray) -> dict[str, Any]:
+    """
+    Return PISM's configuration as a flat ``{parameter: value}`` dictionary.
+
+    PISM records its configuration twice in every output file: as a JSON string in
+    the data of the ``pism_config`` variable and as one attribute per parameter on
+    the same variable. The JSON is preferred because it is one contiguous read,
+    whereas the ~2300 attributes dominate the cost of opening a file (see
+    ``docs/source/developer/ensemble_output_store.md``). The attributes are the
+    fallback for files whose data carries no JSON, such as hand-made test files or
+    output of PISM versions that predate the JSON blob.
+
+    Both paths return the same dictionary: documentation attributes (``*_doc``,
+    ``*_type``, ...) are dropped, and JSON values are normalised with
+    :func:`_normalize_config_value`.
+
+    Parameters
+    ----------
+    config : xarray.DataArray
+        The ``pism_config`` variable as opened by xarray, either as the decoded
+        0-d byte string, the raw ``|S1`` character array, or a scalar string.
+
+    Returns
+    -------
+    dict[str, Any]
+        Parameter names mapped to their values.
+    """
+    values = np.asarray(config.values)
+    raw: Any = None
+    if values.dtype.kind == "S":
+        raw = values.tobytes() if values.ndim else values.item()
+    elif values.dtype.kind in "UO" and values.size == 1:
+        raw = values.reshape(-1)[0]
+
+    if isinstance(raw, bytes):
+        raw = raw.decode(errors="replace")
+    text = raw.strip("\x00").strip() if isinstance(raw, str) else ""
+
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return {k: _normalize_config_value(v) for k, v in parsed.items()}
+
+    return {k: v for k, v in config.attrs.items() if not k.endswith(_CONFIG_META_SUFFIXES)}
+
+
 def preprocess_netcdf(
     ds,
     exp_dim: str = "exp_id",
@@ -281,9 +359,10 @@ def preprocess_netcdf(
     drop_dims : list[str], optional
         A list of dimension names to be dropped from the dataset, by default ["nv4"].
     process_config : bool, optional
-        If True, extract and store pism_config as a JSON-encoded DataArray. If False,
-        simply drop the pism_config variable and axis without re-adding it. By default
-        True.
+        If True, store ``pism_config`` as a JSON-encoded coordinate over the identifier
+        dimensions, decoded with :func:`decode_pism_config` (the JSON blob in the
+        variable's data, falling back to its attributes). If False, simply drop the
+        pism_config variable and axis without re-adding it. By default True.
 
     Returns
     -------
@@ -331,15 +410,11 @@ def preprocess_netcdf(
     ds = ds.expand_dims(expand_coords)
 
     if process_config:
-
-        # List of suffixes to exclude
-        suffixes_to_exclude = ["_doc", "_type", "_units", "_option", "_choices"]
-
-        # Filter the dictionary and encode as a single JSON string per (uq_id, exp_id)
-        config = {
-            k: v for k, v in p_config.attrs.items() if not any(k.endswith(suffix) for suffix in suffixes_to_exclude)
-        }
-        if "geometry.front_retreat.prescribed.file" not in config.keys():
+        # One JSON string per (uq_id, exp_id, ...), decoded from the blob PISM writes
+        # (attributes only as a fallback). An absent or empty retreat file is
+        # recorded as "false" so that the retreat method can be read off the config.
+        config = decode_pism_config(p_config)
+        if not config.get("geometry.front_retreat.prescribed.file"):
             config["geometry.front_retreat.prescribed.file"] = "false"
 
         config_json = json.dumps(OrderedDict(sorted(config.items())))
