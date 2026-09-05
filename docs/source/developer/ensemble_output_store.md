@@ -26,6 +26,111 @@ cost is the per-file open, so it scales with the file count and only a
 single-store layout removes it. Ensembles have to run both on Lustre-type
 HPC (chinook, `/import/c1/...`) and on AWS compute writing directly to S3.
 
+## Measured: where the per-file open cost goes
+
+Benchmark in `benchmarks/open_mfdataset/` (2026-09-04): synthetic ensembles
+of 200 members, 16 two-dimensional `f8` variables on a 512×512 grid, zlib-2,
+about 4.5 MB per file, opened on an M-series laptop with a warm page cache
+(xarray 2024.11, netCDF-C 4.9.3, HDF5 1.12.2). Layouts:
+
+| layout | member dim in file | `time` | chunks | `pism_config` |
+|---|---|---|---|---|
+| A `pism_today` | none | unlimited | `(1, ny, nx)` | `char(cfg)` + ~2330 attributes |
+| B `postproc_default` | none | unlimited | netCDF-C default `(1, 30, 73)`-like | as A |
+| C `exp_id_char` | `-exp_id`: `char exp_id(exp_id, nc)` | unlimited | as A | as A |
+| D `uq_id_int` | `int32 uq_id(uq_id)` | unlimited | as A | as A |
+| E `uq_id_fixed_time` | as D | fixed | as A | as A |
+| F `uq_id_json_cfg` | as D | fixed | as A | scalar string variable, no attributes |
+| G `uq_id_no_cfg` | as D | fixed | as A | absent |
+| H, I | A and F after `h5repack -S PAGE -G 1048576` | | | |
+
+**Reads per open** (h5netcdf engine through a counting file object, one file):
+
+| layout | `read()` calls | bytes read |
+|---|---|---|
+| A, B | 215 | 326 KB |
+| C, D, E | 232–235 | 330 KB |
+| F | 109 | 69 KB |
+| G | 103 | 41 KB |
+| H or I with `page_buf_size=4 MiB` | 8 | 3 MB |
+
+Of a file's 394 KB of HDF5 metadata, ~320 KB is the dense attribute storage
+of `pism_config`. Per file, `netCDF4.Dataset()` takes 16 ms and reading all
+attributes another 13 ms, of which `pism_config` is essentially all; with
+h5py the file open is 0.1 ms and the `pism_config` attributes 31 ms.
+
+**`open_mfdataset` over 200 files** (seconds, netcdf4 engine unless noted;
+`preprocess` = `preprocess_netcdf`):
+
+| call | A | D | F |
+|---|---|---|---|
+| preprocess, serial | 12.6 | 13.2 | 4.2 |
+| no preprocess, serial | — | 23.8 | 5.4 |
+| preprocess, `parallel=True` (default threaded scheduler) | 17.8 | | |
+| preprocess, `parallel=True`, dask `processes` scheduler, 8 workers | 5.7 | | |
+| preprocess, `parallel=True`, `distributed.LocalCluster` 8 procs | 2.9 | | |
+| no preprocess, `combine="nested"` + `data_vars/coords="minimal"`, `compat/join="override"` | | | 4.1 (3.6 with `decode_cf=False`) |
+| the same with the 8-process `LocalCluster` | | | 2.6 |
+| preprocess, serial, h5netcdf engine | 28.8 | | 12.3 (no preprocess) |
+
+B equals A, E equals D, G equals F and H equals A within noise. Loading
+`usurf` for all 200 members afterwards takes 2–4 s regardless of layout.
+
+**Latency model.** Re-running the single-file open with a 1 ms sleep per
+`read()` gives A 517 ms/file, F 186 ms/file, I with a 4 MiB page buffer
+53 ms/file. The A figure reproduces the 258 s / 500 files measured on chinook
+(516 ms/file): on Lustre the open is bound by the number of small metadata
+reads, not by CPU.
+
+### Conclusions
+
+1. **The ~2330 attributes on `pism_config` are the dominant cost**: half the
+   reads, 80 % of the bytes, half the CPU per file, a 3× difference in
+   `open_mfdataset` (D → F) and 2.8× in the latency model. PISM already
+   writes the same content as a JSON string in the variable's data
+   (`Config::json()`), so the attributes written by `config_metadata()` in
+   `~/pism/src/util/Config.cc` are redundant. Proposed PISM change: a flag
+   (e.g. `output.pism_config.attributes = false`) that skips them. On the
+   pism-terra side `preprocess_netcdf` now decodes the JSON blob through
+   `decode_pism_config` (`pism_terra/processing.py`) and only falls back to
+   the attributes when the data holds no JSON; the JSON's `[value, units]`
+   pairs and booleans are mapped onto the attribute convention, so the
+   `pism_config` coordinate is unchanged for consumers. Still reading the
+   attributes directly: `pism_config_value` (`pism_terra/workflow.py`) and
+   `kitp/analyze.py` (`pism_config.attrs["grid.dx"]`).
+2. **Recording the member id in PISM does not make the open faster** (D ≈ A);
+   it only removes the regex + `expand_dims` part of `preprocess_netcdf`
+   (~1 s per 200 files). Today's `-exp_id` is the wrong shape for it: xarray
+   decodes `char exp_id(exp_id, nc)` to an `|S10` coordinate that sorts
+   lexicographically (`'0', '1', '10', '11', '2', …`), the label is capped
+   at 10 characters, and `preprocess_netcdf` raises
+   `Dimension exp_id already exists` on such files. If PISM records the
+   member, it should be an integer coordinate (`int uq_id(uq_id)`, name
+   configurable) on every non-time variable, as the leading dimension — which
+   is exactly the `(uq_id, time, y, x)` layout of the Zarr schema above.
+3. **Chunking and the unlimited `time` dimension do not matter** for open
+   (A = B, D = E) or for a full-slice read.
+4. **HDF5 paged aggregation only pays off when read with a page buffer**
+   (h5netcdf engine, `driver_kwds={"page_buf_size": 4 << 20}`): reads drop
+   from 215 to 8 at the price of reading 3 MB instead of 0.3 MB. netCDF-C
+   has no API for either the file-space strategy or the page buffer, so the
+   netcdf4 engine cannot benefit and PISM cannot write such files; it needs a
+   post-run `h5repack` (7 s per file with the attributes, 1 s without).
+   Worth it only on Lustre or S3, and only together with item 1.
+5. **Client side**, independent of the file layout: `parallel=True` with the
+   default threaded scheduler is *slower* than serial (the netCDF4/HDF5
+   global lock serialises the opens); a process-based scheduler
+   (`LocalCluster(processes=True)`) gives 4×. The nested/minimal/override
+   combine saves another 25 %. h5netcdf is 2–3× slower than netcdf4 on a
+   local disk (per-attribute Python calls) and is only worth using for paged
+   files on a latency-bound file system.
+
+With items 1 and 5 the 500-file open on chinook is estimated at roughly
+186 ms × 500 / 8 ≈ 12–40 s instead of 258 s; the single store below still
+removes the per-file cost entirely and remains the target, but the NetCDF
+path — and the Phase 0 consolidation that has to read the files once — gets
+much cheaper on the way.
+
 ## Verdict
 
 Possible and worthwhile — but not with icechunk on Lustre, and without a

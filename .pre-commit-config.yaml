@@ -35,7 +35,8 @@ repos:
       - id: numpydoc-validation
         # sphinx-gallery examples open with an RST title, not a numpydoc
         # summary — the title is what the gallery hangs its label on.
-        exclude: ^(docs/source/conf\.py|examples/.*\.py)$
+        # benchmarks/ holds stand-alone measurement scripts, not API.
+        exclude: ^(docs/source/conf\.py|examples/.*\.py|benchmarks/.*\.py)$
 
   # Can run individually with `pre-commit run mypy --all-files`
   - repo: https://github.com/pre-commit/mirrors-mypy
@@ -58,6 +59,7 @@ repos:
         entry: pylint
         language: system
         types: [python]
+        exclude: ^benchmarks/
         require_serial: true
         args:
           [
