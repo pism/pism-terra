@@ -43,7 +43,6 @@ ulimit
 
 pismtasks=$(( SLURM_NTASKS - 4 ))
 
-
 {% if run_init_str %}
 # ###############################################################################
 # INIT RUN
@@ -52,7 +51,6 @@ pismtasks=$(( SLURM_NTASKS - 4 ))
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_init_str }} -output.asynchronous
 {% endif %}
 
-
 {% if inv_str %}
 # ###############################################################################
 # INVERSION RUN
@@ -60,7 +58,6 @@ mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} app
 
 mpiexec -n  ${SLURM_NTASKS} apptainer run  ${container} pismi {{ inv_str }}
 {% endif %}
-
 
 {% if run_hist_str %}
 # ###############################################################################
@@ -78,4 +75,10 @@ mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} app
 mpiexec -n 1  apptainer run ${container} pism_async_writer : -n ${pismtasks} apptainer run ${container} pism {{ run_proj_str }} -output.asynchronous
 {% endif %}
 
+{% if post_process_str %}
+# ###############################################################################
+# POSTPROCESSING RUN
+# ###############################################################################
+
 {{ post_process_str }}
+{% endif %}
