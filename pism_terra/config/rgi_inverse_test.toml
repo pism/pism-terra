@@ -7,13 +7,11 @@
 
 bathymetry = "gebco"
 bucket = "pism-cloud-data"
-climate = "snap-monthly-mean"
+climate = "era5-monthly-mean"
 dem = "glo_90"
-forcing_mask = "none"
-heatflux = "lucazeau"
-ice_thickness = "maffezzoli"
+forcing_mask = "all"
+ice_thickness = "frank"
 name = "Calibration"
-ocean_moat = "yes"
 prefix = "glacier/input"
 project_directory = "rgi"
 rgi_complex_file = "rgi_c.gpkg"
@@ -23,12 +21,13 @@ velocity = "its_live"
 [time]
 
 'time.calendar' =  "365_day"
-'time.end' =  "0251-01-01"
+'time.end' =  "0001-02-01"
 'time.reference_date' = "0001-01-01"
 'time.start' = "0001-01-01"
 
 [time_stepping]
 
+'time_stepping.adaptive_ratio' = 500
 'time_stepping.skip.enabled' = "yes"
 'time_stepping.skip.max' = 100
 
@@ -50,20 +49,20 @@ velocity = "its_live"
 'output.checkpoint.interval' = 24
 'output.compression_level'= 2
 'output.format' = "netcdf4_parallel"
-'output.scalar.times' = "monthly"
+'output.scalar.times' = "daily"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
-'output.spatial.times' = "10"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,ice_mass,mass_fluxes"
+'output.spatial.times' = "yearly"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes"
 
 [grid]
 
 'grid.Lbz' = 0
-'grid.Lz' = 2000
+'grid.Lz' = 2400
 'grid.Mbz' = 1
-'grid.Mz' = 101
+'grid.Mz' = 121
 'grid.file' = "none"
 'grid.registration' = "center"
 resolution = "500m"
@@ -100,7 +99,6 @@ model = 'blatter'
 'stress_balance.model' = "blatter"
 'stress_balance.sia.max_diffusivity' = 100000.0
 'stress_balance.sia.surface_gradient_method' = 'eta'
-'time_stepping.adaptive_ratio' = 500
 
 [stress_balance.options.hybrid]
 
@@ -127,54 +125,23 @@ model = 'blatter'
 
 [surface]
 
-model = "debm_enhanced"
+model = "pdd"
 
-[surface.options.elevation_dependent]
+[surface.options.cosipy]
 
-'surface.elevation_dependent.M_limit_max' = 2.42
-'surface.elevation_dependent.M_limit_min' = -8.80
-'surface.elevation_dependent.M_max' = 2.42
-'surface.elevation_dependent.M_min' = -8.80         # = -8000 kg/m^2 / 910 kg/m^3
-'surface.elevation_dependent.z_ELA' = 1750
-'surface.elevation_dependent.z_M_max' = 2200
-'surface.elevation_dependent.z_M_min' = 700
-'surface.models' = "elevation_dependent"
+'surface.models' = "given,forcing"
 
 [surface.options.pdd]
 
-'surface.models' = "pdd"
-
-[surface.options.debm_simple]
-
-'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
-'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
-'surface.debm_simple.albedo_input.file' = "none"
-'surface.debm_simple.albedo_input.periodic' = "yes"
-'surface.debm_simple.c1' = 48
-'surface.debm_simple.c2' = -80
-'surface.debm_simple.interpret_precip_as_snow' = "no"
-'surface.debm_simple.refreeze' = 0.5
-'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
-'surface.models' = "debm_simple"
-
-[surface.options.debm_enhanced]
-
-'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
-'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
-'surface.debm_simple.c1' = 48
-'surface.debm_simple.c2' = -80
-'surface.debm_simple.interpret_precip_as_snow' = "no"
-'surface.debm_simple.refreeze' = 0.5
-'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
-'surface.models' = "debm_enhanced"
+'surface.force_to_thickness.alpha' = 0.75
+'surface.force_to_thickness.file' = "none"
+'surface.force_to_thickness.ice_free_alpha_factor' = 10.0
+'surface.models' = "pdd,forcing"
 
 [calving]
 
-'calving.methods' = 'float_kill'
+'calving.methods' = 'vonmises_calving'
+'calving.vonmises_calving.sigma_max' = 7.5e5
 
 [atmosphere]
 
@@ -185,8 +152,6 @@ model = "given"
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = "yes"
 'atmosphere.models' = "given"
-
-[atmosphere.options.none]
 
 [ocean]
 
@@ -217,12 +182,6 @@ model = "null"
 model = "off"
 
 [frontal_melt.options.off]
-
-[bed_deformation]
-
-model = "none"
-
-[bed_deformation.options.none]
 
 [inverse]
 
