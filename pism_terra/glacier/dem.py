@@ -482,10 +482,12 @@ def boot_file_from_grid(
         merge_list.append(tillwat)
 
     ds = xr.merge(merge_list, compat="no_conflicts")
-    if velocity_dataset not in ("none", None) and (_wanted("v")):
+    if velocity_dataset not in ("none", None) and (_wanted("v")) or _wanted("tillwat"):
         v_filename = path / Path(f"obs_{rgi_id}.nc")
         v = glacier_velocities_from_grid(target_grid, geometries, path=v_filename, rgi_id=rgi_id)
         _v = v["v"].fillna(0)
+        ds["tillwat"] = xr.where(_v < 100, 0, xr.where(_v > 250, 2, 1 + (_v - 100) / (250 - 100)))
+        ds["tillwat"].attrs.update({"units": "m"})
         ds["v"] = v["v"]
 
     ds = ds.fillna(0)
