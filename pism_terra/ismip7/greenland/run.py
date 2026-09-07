@@ -34,6 +34,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.inversion import inversion_uses_hardav
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.stage import stage
 from pism_terra.ismip7.naming import ISMIP7Names, member_ids
@@ -1113,6 +1114,11 @@ def _render_inverse_run(
     run_fwd["basal_yield_stress.model"] = "constant"
     for key in [k for k in run_fwd if k.startswith("basal_yield_stress.mohr_coulomb.")]:
         run_fwd.pop(key)
+    # An inversion that also produced a vertically-averaged hardness: regrid
+    # it and make the Blatter solver use it (see pism_terra.inversion.inversion_uses_hardav).
+    if inversion_uses_hardav(inv):
+        run_fwd["input.regrid.vars"] = "tauc,hardav"
+        run_fwd["stress_balance.averaged_hardness.enabled"] = "yes"
 
     leg_params = _build_forward_legs(
         cfg,

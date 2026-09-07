@@ -33,6 +33,7 @@ from pathlib import Path
 
 import pytest
 
+from pism_terra.inversion import inversion_uses_hardav
 from pism_terra.ismip7.greenland.run import _render_forward_run, _render_inverse_run
 
 REPO = Path(__file__).resolve().parents[1]
@@ -175,6 +176,43 @@ def test_inverse_chained_script_single_pathway(tmp_path):
     assert "mohr_coulomb" not in fwd
     assert "-time.start 2007-01-01" in fwd
     assert "-time.end 2015-01-01" in fwd
+
+
+def test_inverse_alternating_regrids_hardav(tmp_path):
+    """
+    An alternating tauc/hardav inversion feeds ``hardav`` to the forward leg.
+
+    With ``inverse.alternating_cycles > 0`` the forward leg must regrid both
+    inverted fields and switch the Blatter solver to the prescribed hardness.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Output directory (pytest fixture).
+    """
+    text = FREE_HY.read_text().replace("[inverse]\n", "[inverse]\n'inverse.alternating_cycles' = 2\n", 1)
+    cfg = tmp_path / "alternating.toml"
+    cfg.write_text(text)
+
+    script = _render_inverse(tmp_path, cfg)
+    init, inv, fwd = _legs(script)
+
+    assert "-inverse.alternating_cycles 2" in inv
+    assert "-input.regrid.vars tauc,hardav" in fwd
+    assert "-stress_balance.averaged_hardness.enabled yes" in fwd
+    # The init leg is unaffected.
+    assert "averaged_hardness" not in init
+    assert "-input.regrid.vars litho_temp,enthalpy,age,tillwat" in init
+
+
+def test_inversion_uses_hardav():
+    """``inversion_uses_hardav`` recognises alternation and hardness inversions."""
+    assert not inversion_uses_hardav({})
+    assert not inversion_uses_hardav({"inverse.alternating_cycles": 0, "inv_design": "tauc"})
+    assert inversion_uses_hardav({"inverse.alternating_cycles": 3})
+    assert inversion_uses_hardav({"inverse.alternating_cycles": "1"})
+    assert inversion_uses_hardav({"inv_design": "hardav"})
+    assert not inversion_uses_hardav({"inverse.alternating_cycles": "not-a-number"})
 
 
 def test_inverse_missing_init_bounds_raises(tmp_path):
