@@ -268,14 +268,14 @@ model = "null"
 
 [inverse]
 
-'inverse.adjoint.method' =  "approximate"
+'inverse.adjoint.method' = "approximate"
 'inverse.alternating_cycles' = 2
 'inverse.alternating_misfit_tol' = 0.01
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
 'inverse.design.param' = "exp"
 'inverse.file' = "none"
-'inverse.huber.delta' =  1e2
+'inverse.huber.delta' = 1e2
 'inverse.max_iterations' = 500
 'inverse.state_func' = "huber"
 'inverse.stress_balance.hardav_max' = 5e8
