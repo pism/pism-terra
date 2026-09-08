@@ -78,6 +78,9 @@ keeps their outputs apart.
   - Extract per-region masked spatial fields, one file per region.
 * - `pism-validate`
   - Sanity-check a staging directory's NetCDFs.
+* - `pism-inverse-lcurve`
+  - Plot the L-curve of a Tikhonov inversion ensemble and mark its corner.
+    See {doc}`../greenland/inversion` for what the two axes mean.
 ```
 
 ## ISMIP7 Greenland
