@@ -584,3 +584,29 @@ def test_forward_init_leg_counter(tmp_path):
     assert "-time.start 2015-01-01" in proj
     assert "-atmosphere.given.file proj_climate.nc" in proj
     assert "-atmosphere.given.file proj_climate.nc" not in hist
+
+
+def test_init_leg_carries_the_bed_deformation_model(tmp_path):
+    """
+    The init leg runs the same bed deformation model as the legs restarting from it.
+
+    C003 selects Lingle-Clark. On a restart that model reads its displacement
+    fields from the input file instead of bootstrapping them, so an init
+    state written with the no-op model cannot be continued.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = _c003_with_init(tmp_path)
+    script = _render_inverse(
+        tmp_path,
+        cfg,
+        sample="MRI-ESM2-0",
+        proj_overrides={"atmosphere.given.file": "proj_climate.nc"},
+    )
+    init, _, hist, proj = _legs(script)
+
+    for leg in (init, hist, proj):
+        assert "-bed_deformation.model lc" in leg

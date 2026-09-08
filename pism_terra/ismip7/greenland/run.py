@@ -96,18 +96,21 @@ def _make_output_paths(path: str | Path, *, inverse: bool = False) -> dict[str, 
     return paths
 
 
-def _base_run_dict(cfg, *, bed_deformation: bool = True) -> dict:
+def _base_run_dict(cfg) -> dict:
     """
     Merge the config sections shared by every forward PISM invocation.
+
+    Every leg gets the same ``[bed_deformation]`` model. The init leg used to
+    omit it, but the main legs *restart* from the init state and the
+    Lingle-Clark model reads its ``viscous_bed_displacement`` /
+    ``elastic_bed_displacement`` from the restart file rather than
+    bootstrapping them, so an init state written without the model cannot be
+    continued with it ("Can't find 'viscous_bed_displacement'").
 
     Parameters
     ----------
     cfg : PismConfig
         Loaded configuration.
-    bed_deformation : bool, optional
-        Include ``cfg.bed_deformation.selected()``. The inverse init/prior
-        leg historically omits it; forward legs include it. Default is
-        ``True``.
 
     Returns
     -------
@@ -126,8 +129,7 @@ def _base_run_dict(cfg, *, bed_deformation: bool = True) -> dict:
     ):
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
-    if bed_deformation:
-        run.update(cfg.bed_deformation.selected())
+    run.update(cfg.bed_deformation.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.ocean.selected())
     run.update(cfg.frontal_melt.selected())
@@ -204,7 +206,7 @@ def _build_init_leg(
     ValueError
         If ``init_surface_model`` names no ``[surface.options.*]`` table.
     """
-    run_init = _base_run_dict(cfg, bed_deformation=False)
+    run_init = _base_run_dict(cfg)
     run_init.pop("time.start", None)
     run_init.pop("time.end", None)
     run_init.update({"time.start": init_start, "time.end": init_end})
