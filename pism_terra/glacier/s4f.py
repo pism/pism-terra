@@ -180,9 +180,16 @@ def main():
     print(f"Total size of {len(all_nc_files)} NetCDF files: {size}")
 
     bucket = config["bucket"]
-    prefix = config["prefix"]
+    # Planning products live under the project's own prefix
+    # (``<project_directory>/planning``, e.g. ``s4f/planning``), not under the
+    # ``prefix`` the staged model inputs are downloaded from.
+    planning_prefix = f"{config.get('project_directory') or config['prefix']}/planning"
+    # Sync only this glacier's directory (and the RGI outline written next to
+    # it), not all of ``path``: an output path like ``data/`` typically holds
+    # unrelated files that must not end up in the planning bucket.
     print("Now run")
-    print(f"""aws s3 sync {path} s3://{bucket}/{prefix}/planning --exclude "*/staging/*" """)
+    print(f"""aws s3 sync {glacier_path} s3://{bucket}/{planning_prefix}/{rgi_id} --exclude "staging/*" """)
+    print(f"aws s3 cp {rgi_cloud} s3://{bucket}/{planning_prefix}/{rgi_cloud.name}")
 
 
 def cog_profile(da: xr.DataArray) -> dict:
@@ -340,9 +347,14 @@ def write_velocity_cogs(
         Mapping from ``f"{rgi_id}_{product}_{var}"`` to the written COG
         paths; empty when no velocity product is configured.
     """
+    print("")
+    print("Generate Velocity")
+    print("-" * 120)
     product = config.get("velocity", "none")
     if not product or product == "none":
+        print(f"No velocity product configured (velocity = {product!r}), skipping")
         return {}
+    print(f"Velocity product: {product}")
 
     ds_vel = glacier_velocities_from_grid(
         grid_ds,
@@ -529,24 +541,34 @@ def s4f_glacier(
             boot_wanted.add("surface")
         boot_variables = sorted(boot_wanted)
 
-    # Build boot dataset (DEM/thickness/bed) — caches go to staging
-    boot_ds = boot_file_from_grid(
-        grid_ds,
-        rgi_id,
-        glacier_projected.geometry,
-        dem_dataset=config["dem"],
-        ice_thickness_dataset=config["ice_thickness"],
-        velocity_dataset=config["velocity"],
-        bathymetry_dataset=config["bathymetry"],
-        forcing_mask=config["forcing_mask"] if config["forcing_mask"] else None,
-        ocean_moat=config.get("ocean_moat", "no"),
-        path=staging_path,
-        force_overwrite=force_overwrite,
-        bucket=config["bucket"],
-        prefix=config["prefix"],
-        project_directory=config.get("project_directory"),
-        variables=boot_variables,
-    )
+    # Build boot dataset (DEM/thickness/bed) — caches go to staging. When
+    # only planning products were requested (e.g. ``--variables velocity``)
+    # there is nothing to boot: skip the DEM/thickness build entirely rather
+    # than spend an hour mosaicking tiles for an empty dataset.
+    if boot_variables is not None and not boot_variables:
+        print("")
+        print("Generate DEM")
+        print("-" * 120)
+        print("No boot variables requested, skipping")
+        boot_ds = xr.Dataset()
+    else:
+        boot_ds = boot_file_from_grid(
+            grid_ds,
+            rgi_id,
+            glacier_projected.geometry,
+            dem_dataset=config["dem"],
+            ice_thickness_dataset=config["ice_thickness"],
+            velocity_dataset=config["velocity"],
+            bathymetry_dataset=config["bathymetry"],
+            forcing_mask=config["forcing_mask"] if config["forcing_mask"] else None,
+            ocean_moat=config.get("ocean_moat", "no"),
+            path=staging_path,
+            force_overwrite=force_overwrite,
+            bucket=config["bucket"],
+            prefix=config["prefix"],
+            project_directory=config.get("project_directory"),
+            variables=boot_variables,
+        )
 
     print("")
     print("Saving Cloud Optimized GeoTIFFs")
