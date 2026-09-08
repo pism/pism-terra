@@ -32,6 +32,14 @@ regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1972.nc"
 version = "v2"
 
+[campaign.forcing_versions]
+
+# Version tags in the forcing *filenames*, per GCM and forcing product — the
+# same numbers as [gcms.<GCM>.source] in setup_ismip7_greenland.toml. Staging
+# uses them verbatim; without them it picks the newest file present, which
+# silently selects a superseded product that is still on S3.
+CESM2-WACCM = {climate = 2, ocean = 2}
+
 [time]
 
 'time.calendar' =  "standard"
