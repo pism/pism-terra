@@ -82,8 +82,9 @@ keeps their outputs apart.
   - Plot the L-curve of a Tikhonov inversion ensemble and mark its corner.
     See {doc}`../greenland/inversion` for what the two axes mean.
 * - `pism-inverse-plot`
-  - Map the inverted field (`tauc` or `hardav`) and the velocity residual of
-    every ensemble member side by side, on one shared color scale per row.
+  - Map an inversion ensemble field by field — the inverted field (`tauc` or
+    `hardav`), the design variable `zeta`, and the velocity residual — one
+    figure each, every member on one shared color scale.
 ```
 
 ## ISMIP7 Greenland

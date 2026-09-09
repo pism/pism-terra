@@ -30,6 +30,7 @@ dependencies = [
     "cfgrib",
     "cftime",
     "cmap",
+    "cmcrameri",
     "cmweather",
     "dask[distributed,dataframe]",
     "dem_stitcher",

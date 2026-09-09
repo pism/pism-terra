@@ -21,11 +21,11 @@ Tests for :mod:`pism_terra.inverse_plot`.
 Builds a small synthetic inversion ensemble carrying the fields the maps
 need, and covers:
 
-- ``read_member`` masking the design variable to the free cells and the
-  residual to the misfit area, and skipping unusable files.
+- ``read_member`` masking the design variable and zeta to the free cells and
+  the residual to the misfit area, and skipping unusable files.
 - ``shared_limits`` pooling across members, honouring overrides, and its
-  guards for a log scale and a fully-masked row.
-- ``plot_members`` writing a figure for one and for many members.
+  guards for log and diverging scales and a fully-masked row.
+- ``plot_field`` writing one file per field, named after the variable.
 - the ``main`` entry point end to end, including its exit on an empty
   ensemble.
 """
@@ -39,7 +39,14 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from pism_terra.inverse_plot import main, plot_members, read_member, shared_limits
+from pism_terra.inverse_plot import (
+    FIELDS,
+    field_name,
+    main,
+    plot_field,
+    read_member,
+    shared_limits,
+)
 
 PENALTY = "inverse.tikhonov.penalty_weight"
 
@@ -52,6 +59,7 @@ def write_member(
     tauc_free: float = 1.0e5,
     tauc_fixed: float = 1.4e5,
     residual: float = 20.0,
+    zeta: float = 1.5,
     complete: bool = True,
 ) -> Path:
     """
@@ -76,6 +84,9 @@ def write_member(
     residual : float, optional
         ``inv_residual`` value on the misfit area; the rest gets twice this,
         which masking must drop.
+    zeta : float, optional
+        ``zeta_inv`` value on the free cells; the fixed cells get its
+        negation, so a sign-preserving diverging scale is testable.
     complete : bool, optional
         If False, the residual is left out, as in a member still running.
 
@@ -92,7 +103,7 @@ def write_member(
         "pism_config": ((), np.int8(0), {PENALTY: np.float64(penalty_weight)}),
         design: (("time", "y", "x"), np.where(free, tauc_free, tauc_fixed)[np.newaxis, ...]),
         f"{design}_prior": (("time", "y", "x"), np.full((1, ny, nx), tauc_fixed)),
-        "zeta_inv": (("time", "y", "x"), np.zeros((1, ny, nx))),
+        "zeta_inv": (("time", "y", "x"), np.where(free, zeta, -zeta)[np.newaxis, ...]),
         "zeta_fixed_mask": (("time", "y", "x"), np.where(free, 0.0, 1.0)[np.newaxis, ...]),
         "vel_misfit_weight": (("time", "y", "x"), free.astype(float)[np.newaxis, ...]),
     }
@@ -119,8 +130,8 @@ def fixture_ensemble(tmp_path: Path) -> list[Path]:
         The member files, deliberately not ordered by penalty weight.
     """
     files = [
-        write_member(tmp_path / f"inv_{p:g}.nc", p, tauc_free=t, residual=r)
-        for p, t, r in [(10.0, 3.0e5, 5.0), (0.1, 1.0e5, 40.0), (1.0, 2.0e5, 12.0)]
+        write_member(tmp_path / f"inv_{p:g}.nc", p, tauc_free=t, residual=r, zeta=z)
+        for p, t, r, z in [(10.0, 3.0e5, 5.0, 3.0), (0.1, 1.0e5, 40.0, 0.5), (1.0, 2.0e5, 12.0, 1.5)]
     ]
     files.append(write_member(tmp_path / "inv_running.nc", 100.0, complete=False))
     return files
@@ -128,7 +139,7 @@ def fixture_ensemble(tmp_path: Path) -> list[Path]:
 
 def test_read_member_masks_to_the_inverted_region(ensemble: list[Path]) -> None:
     """
-    Keep the free cells of the design variable and the fit cells of residual.
+    Keep only the free cells, and the residual's fit cells.
 
     Parameters
     ----------
@@ -140,15 +151,36 @@ def test_read_member_masks_to_the_inverted_region(ensemble: list[Path]) -> None:
     None
         Asserts only.
     """
-    member = read_member(ensemble[0], [PENALTY], None)
+    member = read_member(ensemble[0], [PENALTY], list(FIELDS))
     assert member is not None
     assert member["design_name"] == "tauc"
     assert member["penalty_weight"] == 10.0
-    # Left half kept, right half masked out, on both rows.
-    assert np.array_equal(np.isnan(member["design"]), np.isnan(member["inv_residual"]))
+    # Every field keeps the same left half and drops the same right half.
+    for key in FIELDS:
+        assert np.isnan(member[key]).sum() == member[key].size // 2, key
     assert np.nanmin(member["design"]) == np.nanmax(member["design"]) == 3.0e5
-    assert np.nanmin(member["inv_residual"]) == np.nanmax(member["inv_residual"]) == 5.0
-    assert np.isnan(member["design"]).sum() == member["design"].size // 2
+    assert np.nanmin(member["zeta"]) == np.nanmax(member["zeta"]) == 3.0
+    assert np.nanmin(member["residual"]) == np.nanmax(member["residual"]) == 5.0
+
+
+def test_read_member_reads_only_what_is_asked(ensemble: list[Path]) -> None:
+    """
+    Skip the fields that will not be plotted.
+
+    Parameters
+    ----------
+    ensemble : list of pathlib.Path
+        Synthetic ensemble from the fixture.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    member = read_member(ensemble[0], [PENALTY], ["zeta"])
+    assert member is not None
+    assert "zeta" in member
+    assert "design" not in member and "residual" not in member
 
 
 def test_read_member_unmasked_keeps_everything(ensemble: list[Path]) -> None:
@@ -165,15 +197,19 @@ def test_read_member_unmasked_keeps_everything(ensemble: list[Path]) -> None:
     None
         Asserts only.
     """
-    member = read_member(ensemble[0], [PENALTY], None, mask=False)
+    member = read_member(ensemble[0], [PENALTY], list(FIELDS), mask=False)
     assert member is not None
     assert not np.isnan(member["design"]).any()
     assert set(np.unique(member["design"])) == {3.0e5, 1.4e5}
+    assert set(np.unique(member["zeta"])) == {3.0, -3.0}
 
 
 def test_read_member_skips_incomplete(ensemble: list[Path]) -> None:
     """
     Return None for a member that has not written its residual.
+
+    The residual is only missed when it is asked for; the same file still
+    yields a panel for the fields it does carry.
 
     Parameters
     ----------
@@ -185,7 +221,8 @@ def test_read_member_skips_incomplete(ensemble: list[Path]) -> None:
     None
         Asserts only.
     """
-    assert read_member(ensemble[-1], [PENALTY], None) is None
+    assert read_member(ensemble[-1], [PENALTY], list(FIELDS)) is None
+    assert read_member(ensemble[-1], [PENALTY], ["design", "zeta"]) is not None
 
 
 def test_read_member_skips_unknown_parameter(ensemble: list[Path]) -> None:
@@ -202,7 +239,22 @@ def test_read_member_skips_unknown_parameter(ensemble: list[Path]) -> None:
     None
         Asserts only.
     """
-    assert read_member(ensemble[0], ["surface.pdd.factor_ice"], None) is None
+    assert read_member(ensemble[0], ["surface.pdd.factor_ice"], list(FIELDS)) is None
+
+
+def test_field_name_substitutes_the_design_variable() -> None:
+    """
+    Name each field's file after the variable it plots.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    assert field_name("design", "tauc") == "tauc"
+    assert field_name("design", "hardav") == "hardav"
+    assert field_name("zeta", "tauc") == "zeta_inv"
+    assert field_name("residual", "tauc") == "inv_residual"
 
 
 def test_shared_limits_pool_across_members() -> None:
@@ -223,6 +275,21 @@ def test_shared_limits_pool_across_members() -> None:
     assert 1.0 < low and high < 10.0
 
 
+def test_shared_limits_diverging_is_symmetric() -> None:
+    """
+    Centre a diverging scale on zero, whichever side is larger.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    assert shared_limits([np.array([[-2.0, 7.0]])], percentile=0.0, scale="diverging") == (-7.0, 7.0)
+    assert shared_limits([np.array([[-7.0, 2.0]])], percentile=0.0, scale="diverging") == (-7.0, 7.0)
+    # An explicit limit still wins, even if that breaks the symmetry.
+    assert shared_limits([np.array([[-2.0, 7.0]])], percentile=0.0, scale="diverging", vmin=0.0) == (0.0, 7.0)
+
+
 def test_shared_limits_guards() -> None:
     """
     Refuse a fully-masked row, and drop non-positives for a log scale.
@@ -235,16 +302,16 @@ def test_shared_limits_guards() -> None:
     with pytest.raises(ValueError, match="fully masked"):
         shared_limits([np.array([[np.nan, np.nan]])])
     with pytest.raises(ValueError, match="log color scale"):
-        shared_limits([np.array([[0.0, -1.0]])], percentile=0.0, positive=True)
-    assert shared_limits([np.array([[0.0, 1.0, 4.0]])], percentile=0.0, positive=True) == (1.0, 4.0)
+        shared_limits([np.array([[0.0, -1.0]])], percentile=0.0, scale="log")
+    assert shared_limits([np.array([[0.0, 1.0, 4.0]])], percentile=0.0, scale="log") == (1.0, 4.0)
     # A constant field still yields an increasing pair.
     low, high = shared_limits([np.array([[3.0, 3.0]])], percentile=0.0)
     assert low < high
 
 
-def test_plot_members_writes_figure(ensemble: list[Path], tmp_path: Path) -> None:
+def test_plot_field_writes_one_file_per_variable(ensemble: list[Path], tmp_path: Path) -> None:
     """
-    Draw both rows for a multi-member ensemble and for a single member.
+    Name each figure after its variable, and draw a single member too.
 
     Parameters
     ----------
@@ -258,20 +325,45 @@ def test_plot_members_writes_figure(ensemble: list[Path], tmp_path: Path) -> Non
     None
         Asserts only.
     """
-    members = [m for m in (read_member(f, [PENALTY], None) for f in ensemble) if m is not None]
+    members = [m for m in (read_member(f, [PENALTY], list(FIELDS)) for f in ensemble) if m is not None]
     members.sort(key=lambda m: m["penalty_weight"])
-    output_file = tmp_path / "figures" / "maps.png"
-    plot_members(members, "penalty_weight", output_file)
-    assert output_file.exists()
+    base = tmp_path / "figures" / "maps.png"
+    written = [plot_field(members, key, "penalty_weight", base) for key in FIELDS]
+    assert [p.name for p in written] == ["maps_tauc.png", "maps_zeta_inv.png", "maps_inv_residual.png"]
+    assert all(p.exists() for p in written)
 
-    single = tmp_path / "one.pdf"
-    plot_members(members[:1], "penalty_weight", single, log=False)
-    assert single.exists()
+    single = plot_field(members[:1], "design", "penalty_weight", tmp_path / "one.pdf", scale="linear")
+    assert single.name == "one_tauc.pdf" and single.exists()
+
+
+def test_plot_field_wraps_onto_a_grid(ensemble: list[Path], tmp_path: Path) -> None:
+    """
+    Wrap the members onto ``ncols`` columns, hiding a partial row's leftovers.
+
+    Parameters
+    ----------
+    ensemble : list of pathlib.Path
+        Synthetic ensemble from the fixture.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    members = [m for m in (read_member(f, [PENALTY], ["zeta"]) for f in ensemble) if m is not None]
+    # Four members over two columns: a full grid.
+    assert plot_field(members, "zeta", "penalty_weight", tmp_path / "full.png", ncols=2).exists()
+    # Three over two: the fourth cell must be hidden rather than left empty.
+    assert plot_field(members[:3], "zeta", "penalty_weight", tmp_path / "partial.png", ncols=2).exists()
+    # More columns than members still gives one row.
+    assert plot_field(members[:2], "zeta", "penalty_weight", tmp_path / "wide.png", ncols=8).exists()
 
 
 def test_main_end_to_end(ensemble: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Write the figure from the command line, skipping the unusable member.
+    Write one figure per field from the command line.
 
     Parameters
     ----------
@@ -287,13 +379,46 @@ def test_main_end_to_end(ensemble: list[Path], tmp_path: Path, monkeypatch: pyte
     None
         Asserts only.
     """
-    output_file = tmp_path / "out" / "maps.png"
+    base = tmp_path / "out" / "maps.png"
     monkeypatch.setattr(
         "sys.argv",
-        ["pism-inverse-plot", "--parameters", PENALTY, "-o", str(output_file)] + [str(f) for f in ensemble],
+        ["pism-inverse-plot", "--parameters", PENALTY, "-o", str(base)] + [str(f) for f in ensemble],
     )
     main()
-    assert output_file.exists()
+    assert {p.name for p in base.parent.glob("*.png")} == {
+        "maps_tauc.png",
+        "maps_zeta_inv.png",
+        "maps_inv_residual.png",
+    }
+
+
+def test_main_plots_a_subset(ensemble: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Write only the fields ``--variables`` asks for, and reject unknown ones.
+
+    Parameters
+    ----------
+    ensemble : list of pathlib.Path
+        Synthetic ensemble from the fixture.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to set ``sys.argv``.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    base = tmp_path / "subset" / "maps.png"
+    argv = ["pism-inverse-plot", "--variables", "zeta", "-o", str(base)] + [str(f) for f in ensemble]
+    monkeypatch.setattr("sys.argv", argv)
+    main()
+    assert {p.name for p in base.parent.glob("*.png")} == {"maps_zeta_inv.png"}
+
+    monkeypatch.setattr("sys.argv", argv[:1] + ["--variables", "speed"] + argv[3:])
+    with pytest.raises(SystemExit):
+        main()
 
 
 def test_main_exits_when_nothing_is_usable(

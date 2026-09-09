@@ -16,43 +16,57 @@
 # along with PISM; if not, write to the Free Software
 
 """
-Side-by-side maps of an inversion ensemble's design variable and residual.
+Side-by-side maps of the fields of a PISM inversion ensemble.
 
-The L-curve reduces each member to two numbers; this is the other half of
-choosing a regularization parameter, which the L-curve's corner cannot tell
-you: what the inverted field actually looks like. Weak regularization prints
-observational noise onto ``tauc`` as speckle, strong regularization smooths
-away real sticky spots, and only the maps show which is happening.
+The L-curve reduces each member to two numbers; these maps are the half its
+corner cannot show — whether weak regularization is printing observational
+noise onto the design variable, or strong regularization is smoothing real
+sticky spots away.
 
-One row per field — the design variable (``tauc`` or ``hardav``, whichever
-the run inverted for) on top, ``inv_residual`` below — with one panel per
-ensemble member, ordered by the swept parameter. Every panel in a row shares
-one color scale and colormap, so the panels are comparable by eye; that
-shared scale is the whole point, and it is computed across all members rather
-than per panel.
+One figure per field, each a grid of panels (four per row by default)
+ordered by the swept parameter, every panel on one shared color scale
+computed across all members. That
+shared scale is the whole point: scaling each panel to its own data would
+make every member look alike. Three fields are available, written to separate
+files:
+
+- ``design`` — the field the run inverted for, ``tauc`` or ``hardav``, on a
+  logarithmic scale, since a penalty sweep moves it over several decades.
+- ``zeta`` — the parameterized design variable the inversion actually
+  optimizes (``tauc = tauc_scale * exp(zeta)`` under the default ``exp``
+  parameterization), so it is signed and centered on zero: Crameri's
+  ``broc``, symmetric about zero, showing where the inversion pushed the
+  field above (positive) and below (negative) ``tauc_scale``.
+- ``residual`` — ``inv_residual``, the velocity misfit in m/yr, linear
+  because it reaches zero where the model fits the observations.
 
 ```bash
 pism-inverse-plot --parameters inverse.tikhonov.penalty_weight \
-    -o inverse_maps.png inv_g*.nc
+    -o maps.png inv_g*.nc
 ```
 
-By default the design variable is masked to the cells the inversion was free
+writes ``maps_tauc.png``, ``maps_zeta_inv.png`` and ``maps_inv_residual.png``.
+
+The design variable and zeta are masked to the cells the inversion was free
 to change (``zeta_fixed_mask == 0``) and the residual to the misfit area PISM
 actually fit (``vel_misfit_weight > 0``) — elsewhere the field is just the
-prior, and plotting it would dominate the shared color scale. The design
-variable also gets a logarithmic scale, since a penalty sweep moves ``tauc``
-over several decades. Members that are still running, or that crashed before
-writing the fields, are skipped with a warning.
+prior, and plotting it would dominate the shared color scale. Members that
+are still running, or that crashed before writing the fields, are skipped
+with a warning.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Imported for its side effect: registering Crameri's "cmc.*" colormaps.
+import cmcrameri.cm  # noqa: F401  pylint: disable=unused-import
 import matplotlib as mpl
 import matplotlib.pylab as plt
 import numpy as np
@@ -74,19 +88,64 @@ warnings.filterwarnings("ignore", message="invalid value encountered in cast", c
 
 logger = logging.getLogger("pism_terra.inverse_plot")
 
-RESIDUAL_VAR = "inv_residual"
-
-# Mask each field to where it means something, as (mask variable, value kept)
-# candidates tried in order — the first one the file carries wins.
+# Mask candidates, as (mask variable, value kept), tried in order — the first
+# one the file carries wins; ``inf`` means "every positive value".
 #
-# The design variable is only a result where the inversion was free to change
-# it: outside ``zeta_fixed_mask`` it still holds the prior, which would
-# otherwise dominate the color scale. Ice thickness is the fallback, and a
-# poor one on a bootstrapped domain where every cell carries a sliver of ice.
-# The residual is only defined on the cells PISM actually fit.
-MASKS: dict[str, tuple[tuple[str, float], ...]] = {
-    "design": (("zeta_fixed_mask", 0.0), ("thk", np.inf)),
-    RESIDUAL_VAR: (("vel_misfit_weight", np.inf),),
+# The design variable and its parameterization are only a result where the
+# inversion was free to change them: outside ``zeta_fixed_mask`` they still
+# hold the prior, which would otherwise dominate the color scale. Ice
+# thickness is the fallback, and a poor one on a bootstrapped domain where
+# every cell carries a sliver of ice. The residual is only defined on the
+# cells PISM actually fit.
+FREE_CELL_MASKS = (("zeta_fixed_mask", 0.0), ("thk", np.inf))
+MISFIT_AREA_MASKS = (("vel_misfit_weight", np.inf),)
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    """
+    How one plotted field is read, masked, scaled and labelled.
+
+    Attributes
+    ----------
+    variables : tuple of str
+        Candidate variable names, tried in order; the literal ``{design}`` is
+        replaced with the design variable the run inverted for. Plain
+        substitution, not ``str.format``: the labels carry mathtext braces.
+    label : str
+        Axis and colorbar label; ``{design}`` is replaced as above.
+    units : str
+        Units for the colorbar; ``{design_units}`` is replaced with the
+        design variable's units.
+    cmap : str
+        Default colormap.
+    scale : str
+        ``"log"``, ``"linear"`` or ``"diverging"`` (symmetric about zero).
+    masks : tuple
+        Mask candidates as in :data:`FREE_CELL_MASKS`.
+    """
+
+    variables: tuple[str, ...]
+    label: str
+    units: str
+    cmap: str
+    scale: str
+    masks: tuple[tuple[str, float], ...]
+
+
+FIELDS = {
+    "design": FieldSpec(("{design}",), "{design}", "{design_units}", "viridis", "log", FREE_CELL_MASKS),
+    # An alternating co-inversion names zeta per phase; a single-design run
+    # writes the plain name.
+    "zeta": FieldSpec(
+        ("zeta_inv", "zeta_inv_{design}"),
+        r"$\zeta$ (design variable)",
+        "1",
+        "cmc.broc",
+        "diverging",
+        FREE_CELL_MASKS,
+    ),
+    "residual": FieldSpec(("inv_residual",), "inversion residual", "m yr$^{-1}$", "magma", "linear", MISFIT_AREA_MASKS),
 }
 
 
@@ -109,9 +168,74 @@ def _slice2d(ds: xr.Dataset, name: str) -> np.ndarray:
     return ds[name].squeeze().values.astype(float)
 
 
-def read_member(path: Path, parameters: list[str], variable: str | None, mask: bool = True) -> dict[str, Any] | None:
+def _resolve(spec: FieldSpec, ds: xr.Dataset, design: str) -> str | None:
     """
-    Read one member's design variable, residual and swept parameters.
+    Find the first of a field's candidate variables that the file carries.
+
+    Parameters
+    ----------
+    spec : FieldSpec
+        Field being read.
+    ds : xarray.Dataset
+        Inversion output.
+    design : str
+        Design variable the run inverted for.
+
+    Returns
+    -------
+    str or None
+        Variable name, or ``None`` when the file carries none of them.
+    """
+    for candidate in spec.variables:
+        name = candidate.replace("{design}", design)
+        if name in ds:
+            return name
+    return None
+
+
+def _apply_mask(ds: xr.Dataset, values: np.ndarray, spec: FieldSpec, filename: str, key: str) -> np.ndarray:
+    """
+    Blank out the cells where a field is not a result.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output holding the mask variables.
+    values : numpy.ndarray
+        Field to mask.
+    spec : FieldSpec
+        Field being masked; supplies the mask candidates.
+    filename : str
+        File name, for the warning when no mask is available.
+    key : str
+        Field key, for the same warning.
+
+    Returns
+    -------
+    numpy.ndarray
+        The field with masked-out cells set to NaN, or unchanged when the
+        file carries none of the mask variables.
+    """
+    for mask_var, keep in spec.masks:
+        if mask_var not in ds:
+            continue
+        mask_values = _slice2d(ds, mask_var)
+        selected = mask_values > 0 if np.isinf(keep) else mask_values == keep
+        return np.where(selected, values, np.nan)
+    logger.warning("%s: none of %s present, %s left unmasked", filename, ", ".join(v for v, _ in spec.masks), key)
+    return values
+
+
+def read_member(
+    path: Path,
+    parameters: list[str],
+    fields: list[str],
+    *,
+    variable: str | None = None,
+    mask: bool = True,
+) -> dict[str, Any] | None:
+    """
+    Read one member's fields and swept parameters.
 
     Parameters
     ----------
@@ -120,28 +244,27 @@ def read_member(path: Path, parameters: list[str], variable: str | None, mask: b
     parameters : list of str
         Dotted ``pism_config`` keys to read; they key the returned dict by
         their last dotted component.
-    variable : str or None
-        Design variable to plot, or ``None`` to detect it per file with
+    fields : list of str
+        Keys of :data:`FIELDS` to read. A file missing any of them is
+        skipped, so ask only for what will be plotted.
+    variable : str or None, optional
+        Design variable, or ``None`` to detect it per file with
         :func:`pism_terra.lcurve.design_variable`.
     mask : bool, optional
-        Mask each field to where it is meaningful (see :data:`MASKS`).
+        Mask each field to where it is meaningful.
 
     Returns
     -------
     dict or None
-        Keys ``design`` (the field), ``design_name``, ``inv_residual``,
-        ``x``, ``y``, ``file``, plus one entry per parameter — or ``None``
-        when the file cannot contribute a panel, which is logged.
+        One entry per requested field, plus ``design_name``, ``x``, ``y``,
+        ``file`` and one entry per parameter — or ``None`` when the file
+        cannot contribute a panel, which is logged.
     """
     try:
         with xr.open_dataset(path) as ds:
-            name = variable or design_variable(ds)
-            if name is None:
-                logger.warning("%s: skipped, cannot tell tauc from hardav; pass --variable", path.name)
-                return None
-            missing = [v for v in (name, RESIDUAL_VAR) if v not in ds]
-            if missing:
-                logger.warning("%s: skipped, missing %s", path.name, ", ".join(missing))
+            design = variable or design_variable(ds)
+            if design is None:
+                logger.warning("%s: skipped, cannot tell tauc from hardav; pass --design-variable", path.name)
                 return None
             config = ds["pism_config"].attrs
             absent = [p for p in parameters if p not in config]
@@ -150,28 +273,19 @@ def read_member(path: Path, parameters: list[str], variable: str | None, mask: b
                 return None
 
             member: dict[str, Any] = {short_name(p): float(config[p]) for p in parameters}
-            fields = {"design": _slice2d(ds, name), RESIDUAL_VAR: _slice2d(ds, RESIDUAL_VAR)}
-            if mask:
-                for key, candidates in MASKS.items():
-                    for mask_var, keep in candidates:
-                        if mask_var not in ds:
-                            continue
-                        values = _slice2d(ds, mask_var)
-                        # ``keep`` is either an exact flag value to keep
-                        # (zeta_fixed_mask == 0, the free cells) or inf,
-                        # meaning "every positive value".
-                        selected = values > 0 if np.isinf(keep) else values == keep
-                        fields[key] = np.where(selected, fields[key], np.nan)
-                        break
-                    else:
-                        logger.warning(
-                            "%s: none of %s present, %s left unmasked",
-                            path.name,
-                            ", ".join(v for v, _ in candidates),
-                            key,
-                        )
-            member.update(fields)
-            member["design_name"] = name
+            for key in fields:
+                spec = FIELDS[key]
+                name = _resolve(spec, ds, design)
+                if name is None:
+                    logger.warning(
+                        "%s: skipped, none of %s present",
+                        path.name,
+                        ", ".join(v.replace("{design}", design) for v in spec.variables),
+                    )
+                    return None
+                values = _slice2d(ds, name)
+                member[key] = _apply_mask(ds, values, spec, path.name, key) if mask else values
+            member["design_name"] = design
             member["x"] = ds["x"].values
             member["y"] = ds["y"].values
             member["file"] = path.name
@@ -187,10 +301,10 @@ def shared_limits(
     percentile: float = 1.0,
     vmin: float | None = None,
     vmax: float | None = None,
-    positive: bool = False,
+    scale: str = "linear",
 ) -> tuple[float, float]:
     """
-    Color limits spanning every member, so the panels are comparable.
+    Compute color limits spanning every member, so the panels are comparable.
 
     Taken as percentiles over the pooled values rather than the outright
     min/max, so a handful of extreme cells in one member does not flatten the
@@ -205,9 +319,10 @@ def shared_limits(
         range.
     vmin, vmax : float or None, optional
         Explicit overrides, each taking precedence over the percentile.
-    positive : bool, optional
-        Clip the lower limit to the smallest positive value, for a log scale
-        that cannot show zero or negative values.
+    scale : str, optional
+        ``"log"`` drops non-positive values, which it cannot show;
+        ``"diverging"`` returns limits symmetric about zero, so the sign is
+        read off the colormap's midpoint.
 
     Returns
     -------
@@ -223,109 +338,147 @@ def shared_limits(
     pooled = np.concatenate([a[np.isfinite(a)].ravel() for a in arrays])
     if pooled.size == 0:
         raise ValueError("every member is fully masked; nothing to scale the colors by")
-    if positive:
+    if scale == "log":
         pooled = pooled[pooled > 0]
         if pooled.size == 0:
             raise ValueError("no positive values; a log color scale is not possible")
-    low = float(np.percentile(pooled, percentile)) if vmin is None else vmin
-    high = float(np.percentile(pooled, 100.0 - percentile)) if vmax is None else vmax
+
+    if scale == "diverging":
+        extent = float(np.percentile(np.abs(pooled), 100.0 - percentile))
+        low = -extent if vmin is None else vmin
+        high = extent if vmax is None else vmax
+    else:
+        low = float(np.percentile(pooled, percentile)) if vmin is None else vmin
+        high = float(np.percentile(pooled, 100.0 - percentile)) if vmax is None else vmax
+
     if low >= high:
         # A constant field (every member identical) still deserves a panel.
         low, high = (low - 0.5, high + 0.5) if low == high else (high, low)
     return low, high
 
 
-def plot_members(
+def field_name(key: str, design: str) -> str:
+    """
+    Name a field takes in the output filename.
+
+    Parameters
+    ----------
+    key : str
+        Field key, one of :data:`FIELDS`.
+    design : str
+        Design variable the run inverted for.
+
+    Returns
+    -------
+    str
+        The field's first candidate variable name, with the design variable
+        substituted — e.g. ``"tauc"``, ``"zeta_inv"``, ``"inv_residual"``.
+    """
+    return FIELDS[key].variables[0].replace("{design}", design)
+
+
+def plot_field(
     members: list[dict[str, Any]],
+    key: str,
     sweep: str,
     output_file: Path,
     *,
-    cmaps: tuple[str, str] = ("viridis", "magma"),
-    log: bool = True,
-    limits: tuple[float | None, float | None, float | None, float | None] = (None, None, None, None),
+    cmap: str | None = None,
+    scale: str | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     percentile: float = 1.0,
+    ncols: int = 4,
     panel_width: float = 1.6,
     dpi: int = 300,
-) -> None:
+) -> Path:
     """
-    Draw the design-variable and residual rows and write the figure.
+    Draw one field across the ensemble as a grid of panels, and write it.
 
     Parameters
     ----------
     members : list of dict
         Member dicts from :func:`read_member`, in plotting order.
+    key : str
+        Field to draw, a key of :data:`FIELDS`.
     sweep : str
         Column naming the swept parameter; its value titles each panel.
     output_file : pathlib.Path
-        Where to write the figure; the suffix picks the format.
-    cmaps : tuple of str, optional
-        Colormaps for the design-variable and residual rows.
-    log : bool, optional
-        Logarithmic color scale for the design variable. On by default: a
-        penalty sweep moves ``tauc`` over several decades, and a linear scale
-        then shows the weakly-regularized members as uniformly dark. The
-        residual stays linear — it reaches zero where the model fits the
-        observations, which a log scale cannot show.
-    limits : tuple, optional
-        ``(vmin, vmax, residual_vmin, residual_vmax)``; each ``None`` entry
-        falls back to the percentile over all members.
+        Base path; the field's variable name is appended to its stem, so
+        ``maps.png`` becomes e.g. ``maps_tauc.png``.
+    cmap : str or None, optional
+        Colormap, defaulting to the field's own.
+    scale : str or None, optional
+        Color scale, defaulting to the field's own.
+    vmin, vmax : float or None, optional
+        Color limits, each defaulting to the percentile over all members.
     percentile : float, optional
         Percentile for the shared limits (see :func:`shared_limits`).
+    ncols : int, optional
+        Panels per row; the members wrap onto as many rows as they need.
     panel_width : float, optional
         Width of one panel, inches.
     dpi : int, optional
         Resolution of raster output.
+
+    Returns
+    -------
+    pathlib.Path
+        The file written.
     """
+    spec = FIELDS[key]
     design_name = members[0]["design_name"]
     names = {m["design_name"] for m in members}
     if len(names) > 1:
         logger.warning(
             "members disagree on the design variable (%s); labelling as %s", ", ".join(sorted(names)), design_name
         )
-
-    vmin, vmax, res_vmin, res_vmax = limits
-    design_limits = shared_limits(
-        [m["design"] for m in members], percentile=percentile, vmin=vmin, vmax=vmax, positive=log
-    )
-    residual_limits = shared_limits(
-        [m[RESIDUAL_VAR] for m in members], percentile=percentile, vmin=res_vmin, vmax=res_vmax
-    )
-    rows = (
-        ("design", design_name, DESIGN_VARIABLES.get(design_name, ""), cmaps[0], design_limits, log),
-        (RESIDUAL_VAR, "inversion residual", "m yr$^{-1}$", cmaps[1], residual_limits, False),
-    )
+    label = spec.label.replace("{design}", design_name)
+    units = spec.units.replace("{design_units}", DESIGN_VARIABLES.get(design_name, ""))
+    scale = scale or spec.scale
+    low, high = shared_limits([m[key] for m in members], percentile=percentile, vmin=vmin, vmax=vmax, scale=scale)
+    norm = LogNorm(vmin=low, vmax=high) if scale == "log" else Normalize(vmin=low, vmax=high)
 
     with mpl.rc_context(rc=rc_params):
         extent = [members[0]["x"][0], members[0]["x"][-1], members[0]["y"][0], members[0]["y"][-1]]
         aspect = abs((extent[3] - extent[2]) / (extent[1] - extent[0]))
+        columns = max(1, min(ncols, len(members)))
+        rows = math.ceil(len(members) / columns)
         fig, axs = plt.subplots(
-            len(rows),
-            len(members),
-            figsize=(panel_width * len(members) + 0.9, panel_width * aspect * len(rows) + 0.5),
+            rows,
+            columns,
+            figsize=(panel_width * columns + 0.9, panel_width * aspect * rows + 0.6),
             squeeze=False,
             layout="constrained",
         )
-        for row, (key, title, units, cmap, (low, high), row_log) in enumerate(rows):
-            norm = LogNorm(vmin=low, vmax=high) if row_log else Normalize(vmin=low, vmax=high)
-            for col, member in enumerate(members):
-                ax = axs[row][col]
-                image = ax.imshow(
-                    member[key], origin="lower", extent=extent, cmap=cmap, norm=norm, interpolation="nearest"
-                )
-                ax.set_xticks([])
-                ax.set_yticks([])
-                if row == 0:
-                    ax.set_title(f"{sweep} = {member[sweep]:g}", fontsize=fontsize)
-                if col == 0:
-                    ax.set_ylabel(title, fontsize=fontsize)
-            colorbar = fig.colorbar(image, ax=list(axs[row]), fraction=0.02, pad=0.01, extend="both")
-            colorbar.set_label(f"{title} ({units})" if units else title, fontsize=fontsize)
-            colorbar.ax.tick_params(labelsize=fontsize)
+        flat = axs.ravel()
+        for ax, member in zip(flat, members):
+            image = ax.imshow(
+                member[key],
+                origin="lower",
+                extent=extent,
+                cmap=cmap or spec.cmap,
+                norm=norm,
+                interpolation="nearest",
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title(f"{sweep} = {member[sweep]:g}", fontsize=fontsize)
+        # A partly-filled last row would otherwise show empty framed panels.
+        for ax in flat[len(members) :]:
+            ax.set_visible(False)
+        for row in range(rows):
+            axs[row][0].set_ylabel(label, fontsize=fontsize)
+        colorbar = fig.colorbar(image, ax=list(flat), fraction=0.02, pad=0.01, extend="both")
+        colorbar.set_label(f"{label} ({units})" if units else label, fontsize=fontsize)
+        colorbar.ax.tick_params(labelsize=fontsize)
 
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(output_file, dpi=dpi)
+        path = output_file.with_name(f"{output_file.stem}_{field_name(key, design_name)}{output_file.suffix}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, dpi=dpi)
         plt.close(fig)
-    logger.info("wrote %s", output_file)
+    logger.info("wrote %s", path)
+    return path
 
 
 def main() -> None:
@@ -335,13 +488,14 @@ def main() -> None:
     Returns
     -------
     None
-        The figure is written to disk.
+        One figure per requested field is written to disk.
     """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = (
-        "Maps of an inversion ensemble side by side: the inverted field (tauc or hardav) "
-        "and the velocity residual, one panel per member, sharing one color scale per row "
-        "so the members can be compared by eye."
+        "Maps of an inversion ensemble side by side, one figure per field: the inverted "
+        "field (tauc or hardav), the parameterized design variable zeta, and the velocity "
+        "residual. Each figure puts every member on one shared color scale so they can be "
+        "compared by eye."
     )
     parser.add_argument(
         "--parameters",
@@ -353,37 +507,33 @@ def main() -> None:
     parser.add_argument(
         "-o",
         "--output-file",
-        help="Figure to write; the suffix picks the format.",
+        help="Base path for the figures; each field's variable name is appended to the stem, "
+        "so maps.png becomes maps_tauc.png, maps_zeta_inv.png and maps_inv_residual.png. "
+        "The suffix picks the format.",
         type=str,
         default="inverse_maps.png",
     )
     parser.add_argument(
-        "--variable",
+        "--variables",
+        help=f"Comma-separated fields to plot, one figure each: {', '.join(FIELDS)}.",
+        type=str,
+        default=",".join(FIELDS),
+    )
+    parser.add_argument(
+        "--design-variable",
         help="Design variable to plot. The default reads it from each file.",
         choices=sorted(DESIGN_VARIABLES),
         default=None,
     )
-    parser.add_argument(
-        "--cmap",
-        help="Colormap for the design variable.",
-        type=str,
-        default="viridis",
-    )
-    parser.add_argument(
-        "--residual-cmap",
-        help="Colormap for the residual.",
-        type=str,
-        default="magma",
-    )
+    for key, spec in FIELDS.items():
+        parser.add_argument(f"--{key}-cmap", help=f"Colormap for the {key} figure.", type=str, default=spec.cmap)
+        parser.add_argument(f"--{key}-vmin", help=f"Lower color limit of the {key} figure.", type=float, default=None)
+        parser.add_argument(f"--{key}-vmax", help=f"Upper color limit of the {key} figure.", type=float, default=None)
     parser.add_argument(
         "--linear",
         help="Linear color scale for the design variable instead of the default logarithmic one.",
         action="store_true",
     )
-    parser.add_argument("--vmin", help="Lower color limit of the design variable.", type=float, default=None)
-    parser.add_argument("--vmax", help="Upper color limit of the design variable.", type=float, default=None)
-    parser.add_argument("--residual-vmin", help="Lower color limit of the residual.", type=float, default=None)
-    parser.add_argument("--residual-vmax", help="Upper color limit of the residual.", type=float, default=None)
     parser.add_argument(
         "--percentile",
         help="Percentile trimmed off each end when the color limits are computed from the data.",
@@ -394,6 +544,12 @@ def main() -> None:
         "--no-mask",
         help="Plot the full domain instead of masking to the inverted cells and the misfit area.",
         action="store_true",
+    )
+    parser.add_argument(
+        "--ncols",
+        help="Panels per row; the members wrap onto as many rows as they need.",
+        type=int,
+        default=4,
     )
     parser.add_argument(
         "--panel-width",
@@ -417,6 +573,10 @@ def main() -> None:
     parameters = [p.strip() for p in options.parameters.split(",") if p.strip()]
     if not parameters:
         parser.error("--parameters needs at least one pism_config key")
+    fields = [f.strip() for f in options.variables.split(",") if f.strip()]
+    unknown = [f for f in fields if f not in FIELDS]
+    if unknown or not fields:
+        parser.error(f"--variables takes any of {', '.join(FIELDS)}; got {', '.join(unknown) or 'nothing'}")
 
     output_file = Path(options.output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -425,31 +585,36 @@ def main() -> None:
     members = [
         member
         for member in (
-            read_member(Path(f), parameters, options.variable, mask=not options.no_mask) for f in options.INFILES
+            read_member(Path(f), parameters, fields, variable=options.design_variable, mask=not options.no_mask)
+            for f in options.INFILES
         )
         if member is not None
     ]
     if not members:
         raise SystemExit(
             f"none of the {len(options.INFILES)} given files yielded a panel; "
-            f"they need a design variable, {RESIDUAL_VAR} and {', '.join(parameters)}"
+            f"they need {', '.join(fields)} and {', '.join(parameters)}"
         )
     sweep = short_name(parameters[0])
     members.sort(key=lambda m: tuple(m[short_name(p)] for p in parameters))
     logger.info("plotting %d of %d files", len(members), len(options.INFILES))
 
-    plot_members(
-        members,
-        sweep,
-        output_file,
-        cmaps=(options.cmap, options.residual_cmap),
-        log=not options.linear,
-        limits=(options.vmin, options.vmax, options.residual_vmin, options.residual_vmax),
-        percentile=options.percentile,
-        panel_width=options.panel_width,
-        dpi=options.dpi,
-    )
-    print(f"wrote {output_file} ({len(members)} members)")
+    for key in fields:
+        path = plot_field(
+            members,
+            key,
+            sweep,
+            output_file,
+            cmap=getattr(options, f"{key}_cmap"),
+            scale="linear" if key == "design" and options.linear else None,
+            vmin=getattr(options, f"{key}_vmin"),
+            vmax=getattr(options, f"{key}_vmax"),
+            percentile=options.percentile,
+            ncols=options.ncols,
+            panel_width=options.panel_width,
+            dpi=options.dpi,
+        )
+        print(f"wrote {path} ({len(members)} members)")
 
 
 if __name__ == "__main__":
