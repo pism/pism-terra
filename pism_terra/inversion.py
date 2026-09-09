@@ -11,8 +11,9 @@ def inversion_uses_hardav(inv: dict[str, Any]) -> bool:
 
     That is the case for an alternating tauc/hardav inversion
     (``inverse.alternating_cycles > 0``) or a plain hardness inversion
-    (``-inv_design hardav``). Forward legs then need to regrid ``hardav`` from
-    the inversion output and enable ``stress_balance.averaged_hardness.enabled``.
+    (``inverse.design.variable = "hardav"``, or its short option
+    ``inv_design``). Forward legs then need to regrid ``hardav`` from the
+    inversion output and enable ``stress_balance.averaged_hardness.enabled``.
 
     Parameters
     ----------
@@ -29,5 +30,5 @@ def inversion_uses_hardav(inv: dict[str, Any]) -> bool:
         cycles = int(inv.get("inverse.alternating_cycles", 0))
     except (TypeError, ValueError):
         cycles = 0
-    design = str(inv.get("inv_design", inv.get("inverse.design", "tauc"))).lower()
+    design = str(inv.get("inverse.design.variable", inv.get("inv_design", "tauc"))).lower()
     return cycles > 0 or design == "hardav"
