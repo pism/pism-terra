@@ -38,7 +38,7 @@ from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.download import file_localizer
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.observations import DH_END, DH_START
-from pism_terra.glacier.stage import stage_glacier
+from pism_terra.glacier.stage import campaign_years, stage_glacier
 from pism_terra.inversion import inversion_uses_hardav
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
@@ -1333,8 +1333,7 @@ def _run(*, kind: str) -> None:
     # the CLI string overrides (``start_cli`` / ``end_cli``) below.
     start_ts = pd.Timestamp(start_cli or cfg.time.time_start)
     end_ts = pd.Timestamp(end_cli or cfg.time.time_end)
-    last_year = end_ts.year - 1 if (end_ts.month == 1 and end_ts.day == 1) else end_ts.year
-    years = list(range(start_ts.year, last_year + 1))
+    years = campaign_years(start_ts, end_ts)
     campaign_config = cfg.campaign.as_params()
     campaign_config["years"] = years
     # Resolved once here (not per member): every ensemble member regrids from
