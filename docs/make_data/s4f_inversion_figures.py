@@ -139,7 +139,7 @@ def main() -> int:
     parser.add_argument(
         "--resolution", help="Grid resolution tag in the file names.", type=str, default=DEFAULT_RESOLUTION
     )
-    parser.add_argument("--dpi", help="Figure resolution; the page does not need print quality.", type=int, default=150)
+    parser.add_argument("--dpi", help="Figure resolution; the page does not need print quality.", type=int, default=300)
     options = parser.parse_args()
 
     options.output_dir.mkdir(parents=True, exist_ok=True)
