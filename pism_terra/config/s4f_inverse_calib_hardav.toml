@@ -268,7 +268,7 @@ model = "null"
 
 [inverse]
 
-'inv_design' = "hardav"
+'inverse.design.variable' = "hardav"
 'inverse.stress_balance.hardav_max' = 5e8
 'inverse.stress_balance.hardav_min' = 1e7
 'inverse.adjoint.method' =  "exact"

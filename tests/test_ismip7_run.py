@@ -212,6 +212,8 @@ def test_inversion_uses_hardav():
     assert inversion_uses_hardav({"inverse.alternating_cycles": 3})
     assert inversion_uses_hardav({"inverse.alternating_cycles": "1"})
     assert inversion_uses_hardav({"inv_design": "hardav"})
+    assert inversion_uses_hardav({"inverse.design.variable": "hardav"})
+    assert not inversion_uses_hardav({"inverse.design.variable": "tauc", "inv_design": "hardav"})
     assert not inversion_uses_hardav({"inverse.alternating_cycles": "not-a-number"})
 
 
