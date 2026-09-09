@@ -1,7 +1,7 @@
 [run_info]
 
 'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA Baseline Run"
+'run_info.title' = "PISM-TERRA Historical Baseline Run"
 
 [campaign]
 
