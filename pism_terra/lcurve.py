@@ -28,6 +28,12 @@ misfit-weight-weighted RMS of ``inv_residual``, in m/yr — gives the familiar
 L-shaped curve, and the corner of that L (maximum Menger curvature in log-log
 space) is the conventional pick for the regularization parameter.
 
+The model-norm axis is labelled with the field the run inverted for — ``tauc``
+or ``hardav``, read off the variables ``pismi`` wrote — and with the units of
+the norm. Those are usually *not* the units of that field: ``J_design`` is
+evaluated on the parameterized design variable zeta, which is dimensionless
+under PISM's default ``inverse.design.param = "exp"``.
+
 The tool reads the ensemble members named on the command line, tabulates the
 regularization parameters straight out of each file's ``pism_config``
 attributes, and writes the plot plus the underlying table:
@@ -45,6 +51,7 @@ warning rather than aborting the analysis.
 from __future__ import annotations
 
 import logging
+import re
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
@@ -66,6 +73,21 @@ logger = logging.getLogger("pism_terra.lcurve")
 DEFAULT_PARAMETERS = ["inverse.tikhonov.penalty_weight"]
 
 REQUIRED_VARS = ("vel_misfit_weight", "inv_residual", "J_design")
+
+# Design variables ``pismi -inv_design`` can invert for, with the units of the
+# *physical* field. ``hardav`` is the vertically-averaged ice hardness
+# B = A^(-1/n), so its units carry the Glen exponent; PISM writes the literal
+# string ``Pa s^(1/n)`` and marks it as not UDUNITS-validated
+# (``set_units_without_validation`` in ``HardnessAverage``), with the exponent
+# filled in from the flow law's ``n``.
+DESIGN_VARIABLES = {"tauc": "Pa", "hardav": "Pa s^(1/n)"}
+
+# Config keys holding the Glen exponent, most specific stress balance first.
+_GLEN_EXPONENT_KEYS = (
+    "stress_balance.blatter.Glen_exponent",
+    "stress_balance.ssa.Glen_exponent",
+    "stress_balance.sia.Glen_exponent",
+)
 
 fontsize = 6
 rc_params = {
@@ -95,6 +117,79 @@ def short_name(parameter: str) -> str:
         The last dotted component, e.g. ``"penalty_weight"``.
     """
     return parameter.split(".")[-1]
+
+
+def design_variable(ds: xr.Dataset) -> str | None:
+    """
+    Which field the inversion solved for: ``tauc`` or ``hardav``.
+
+    ``pismi``'s ``-inv_design`` is a plain option rather than a configuration
+    parameter, so it is not recorded in ``pism_config`` and has to be read off
+    the variables the run wrote. An alternating co-inversion names its design
+    variable per phase (``zeta_inv_tauc`` / ``zeta_inv_hardav``); a
+    single-design run writes ``zeta_inv`` and a ``<design>_prior``. The plain
+    field is the last resort, since a ``tauc`` inversion of a Blatter forward
+    problem may carry a prescribed ``hardav`` alongside it.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output.
+
+    Returns
+    -------
+    str or None
+        ``"tauc"`` or ``"hardav"``, or ``None`` when the file names neither
+        or names both (an alternating run inverts for both in turn).
+    """
+    names = set(ds.variables)
+    for candidates in (
+        [v for v in DESIGN_VARIABLES if f"zeta_inv_{v}" in names],
+        [v for v in DESIGN_VARIABLES if f"{v}_prior" in names],
+        [v for v in DESIGN_VARIABLES if v in names],
+    ):
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            return None
+    return None
+
+
+def model_norm_units(ds: xr.Dataset, design: str | None) -> str | None:
+    """
+    Give the units of the model norm, or ``None`` when it is dimensionless.
+
+    ``J_design`` is the design functional evaluated on the *parameterized*
+    design variable zeta, not on the physical field: with
+    ``inverse.design.param = "exp"`` (PISM's default, which keeps ``tauc``
+    positive via ``tauc = tauc_scale * exp(zeta)``) zeta is dimensionless, and
+    so is ``N = sqrt(J_design)``. Only ``param = "ident"`` makes zeta the field
+    itself, and only then does the norm carry the field's units.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output carrying ``pism_config``.
+    design : str or None
+        Design variable from :func:`design_variable`.
+
+    Returns
+    -------
+    str or None
+        Units of the norm, or ``None`` when it is dimensionless — either
+        because zeta is a transform of the field or because the design
+        variable could not be identified.
+    """
+    config = ds["pism_config"].attrs
+    if design is None or str(config.get("inverse.design.param", "")).lower() != "ident":
+        return None
+    units = DESIGN_VARIABLES[design]
+    if "1/n" not in units:
+        return units
+    for key in _GLEN_EXPONENT_KEYS:
+        if key in config:
+            return units.replace("1/n", f"1/{float(config[key]):g}")
+    return units
 
 
 def data_misfit(ds: xr.Dataset) -> float:
@@ -158,8 +253,9 @@ def collect_lcurve(files: list[Path], parameters: list[str]) -> pd.DataFrame:
     -------
     pandas.DataFrame
         One row per usable file with the ``parameters`` columns plus ``M``
-        (data misfit, m/yr), ``N`` (model norm) and ``file``, sorted by the
-        parameter columns.
+        (data misfit, m/yr), ``N`` (model norm), ``design`` (the inverted
+        field), ``norm_units`` (empty when the norm is dimensionless) and
+        ``file``, sorted by the parameter columns.
 
     Raises
     ------
@@ -183,6 +279,9 @@ def collect_lcurve(files: list[Path], parameters: list[str]) -> pd.DataFrame:
                 row: dict[str, Any] = {c: float(config[p]) for c, p in zip(columns, parameters)}
                 row["M"] = data_misfit(ds)
                 row["N"] = model_norm(ds)
+                design = design_variable(ds)
+                row["design"] = design or ""
+                row["norm_units"] = model_norm_units(ds, design) or ""
                 row["file"] = path.name
                 rows.append(row)
         except (OSError, KeyError, ValueError) as error:
@@ -233,6 +332,41 @@ def corner(norm: np.ndarray, misfit: np.ndarray) -> int | None:
     return best
 
 
+def norm_axis_label(df: pd.DataFrame) -> str:
+    """
+    Build the model-norm axis label, naming the inverted field and its units.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Table from :func:`collect_lcurve`, carrying ``design`` and
+        ``norm_units``.
+
+    Returns
+    -------
+    str
+        Label naming the design variable — ``tauc`` or ``hardav`` — and either
+        its units or the fact that the norm is dimensionless. Falls back to
+        the bare norm when the ensemble mixes design variables or the field
+        could not be identified.
+    """
+    designs = sorted(set(df["design"]) - {""})
+    base = r"model norm  $N=\sqrt{J_\mathrm{design}}$"
+    if len(designs) != 1:
+        if len(designs) > 1:
+            logger.warning("ensemble mixes design variables (%s); labelling generically", ", ".join(designs))
+        return base
+    units = sorted(set(df["norm_units"]) - {""})
+    # A dimensionless norm is the common case: it is the norm of the
+    # parameterized zeta, not of the field itself (see model_norm_units).
+    if len(units) != 1:
+        return f"{base}, {designs[0]} (dimensionless $\\zeta$)"
+    # PISM writes the exponent as ``s^(1/3)``; typeset it rather than
+    # printing the caret and parentheses literally on the axis.
+    shown = re.sub(r"\^\(([^)]*)\)", r"$^{\1}$", units[0])
+    return f"{base}, {designs[0]} ({shown})"
+
+
 def plot_lcurve(
     df: pd.DataFrame,
     parameters: list[str],
@@ -246,7 +380,9 @@ def plot_lcurve(
     Points are joined in order of the *first* parameter, whose value labels
     each marker. Any further parameters split the ensemble into one curve per
     combination of their values, drawn with a legend, so a 2-D sweep stays
-    readable. The corner of every curve is marked with a star.
+    readable. The corner of every curve is marked with a star. The abscissa is
+    labelled with the field the inversion solved for (see
+    :func:`norm_axis_label`).
 
     Parameters
     ----------
@@ -301,7 +437,7 @@ def plot_lcurve(
         if log:
             ax.set_xscale("log")
             ax.set_yscale("log")
-        ax.set_xlabel(r"model norm  $N=\sqrt{J_\mathrm{design}}$")
+        ax.set_xlabel(norm_axis_label(df))
         ax.set_ylabel(r"data misfit  $M$ (m yr$^{-1}$)")
         ax.set_title("L-curve")
         ax.grid(True, which="both", alpha=0.3)

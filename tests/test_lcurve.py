@@ -39,6 +39,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from pism_terra import lcurve
 from pism_terra.lcurve import (
     collect_lcurve,
     corner,
@@ -61,6 +62,8 @@ def write_member(
     weight: np.ndarray | None = None,
     cH1: float = 1.0,
     complete: bool = True,
+    design: str = "tauc",
+    param: str = "exp",
 ) -> Path:
     """
     Write a synthetic inversion output file.
@@ -83,14 +86,27 @@ def write_member(
     complete : bool, optional
         If False, the inversion diagnostics are left out, as in a member that
         is still running.
+    design : str, optional
+        Design variable the run inverted for; its field and ``<design>_prior``
+        are written, as ``pismi`` does.
+    param : str, optional
+        Value of ``inverse.design.param``. Only ``"ident"`` makes the model
+        norm carry the design variable's units.
 
     Returns
     -------
     pathlib.Path
         The path written, for convenience.
     """
-    attrs = {PENALTY: np.float64(penalty_weight), CH1: np.float64(cH1)}
+    attrs = {
+        PENALTY: np.float64(penalty_weight),
+        CH1: np.float64(cH1),
+        "inverse.design.param": param,
+        "stress_balance.blatter.Glen_exponent": np.float64(3.0),
+    }
     data: dict[str, Any] = {"pism_config": ((), np.int8(0), attrs)}
+    for name in (design, f"{design}_prior", "zeta_inv"):
+        data[name] = (("y", "x"), np.ones_like(residual))
     if complete:
         w = np.ones_like(residual) if weight is None else weight
         data["vel_misfit_weight"] = (("time", "y", "x"), w[np.newaxis, ...])
@@ -314,3 +330,97 @@ def test_main_end_to_end(ensemble: list[Path], tmp_path: Path, monkeypatch: pyte
     main()
     assert output_file.exists()
     assert output_file.with_suffix(".csv").exists()
+
+
+def test_design_variable_detection(tmp_path: Path) -> None:
+    """
+    Read the inverted field off the variables the run wrote.
+
+    A ``tauc`` inversion of a Blatter forward problem can carry a prescribed
+    ``hardav`` alongside, so the plain field is only the last resort; an
+    alternating run names both phases and is reported as neither.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    residual = np.full((3, 3), 5.0)
+    j_design = np.array([10.0, 4.0])
+    tauc = write_member(tmp_path / "tauc.nc", 1.0, residual, j_design)
+    hardav = write_member(tmp_path / "hardav.nc", 1.0, residual, j_design, design="hardav")
+    with xr.open_dataset(tauc) as ds:
+        assert lcurve.design_variable(ds) == "tauc"
+    with xr.open_dataset(hardav) as ds:
+        assert lcurve.design_variable(ds) == "hardav"
+
+    # A tauc run that also carries a prescribed hardav field.
+    with xr.open_dataset(tauc) as ds:
+        mixed = ds.load()
+    mixed["hardav"] = mixed["tauc"]
+    assert lcurve.design_variable(mixed) == "tauc"
+
+    # An alternating co-inversion names both phases.
+    alternating = mixed.rename({"zeta_inv": "zeta_inv_tauc"})
+    alternating["zeta_inv_hardav"] = alternating["zeta_inv_tauc"]
+    assert lcurve.design_variable(alternating) is None
+
+
+def test_model_norm_units_follow_the_parameterization(tmp_path: Path) -> None:
+    """
+    The norm carries the field's units only under ``param = "ident"``.
+
+    ``J_design`` is evaluated on the parameterized zeta, so the default
+    ``exp`` parameterization leaves the norm dimensionless. ``hardav``'s units
+    carry the Glen exponent.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    residual, j_design = np.full((3, 3), 5.0), np.array([10.0, 4.0])
+    expectations = [
+        ("exp_tauc", "tauc", "exp", None),
+        ("exp_hardav", "hardav", "exp", None),
+        ("ident_tauc", "tauc", "ident", "Pa"),
+        ("ident_hardav", "hardav", "ident", "Pa s^(1/3)"),
+    ]
+    for name, design, param, expected in expectations:
+        path = write_member(tmp_path / f"{name}.nc", 1.0, residual, j_design, design=design, param=param)
+        with xr.open_dataset(path) as ds:
+            assert lcurve.model_norm_units(ds, lcurve.design_variable(ds)) == expected, name
+
+
+def test_norm_axis_label_names_the_design_variable(ensemble: list[Path]) -> None:
+    """
+    The abscissa names the inverted field and how the norm is scaled.
+
+    Parameters
+    ----------
+    ensemble : list of pathlib.Path
+        Synthetic ensemble from the fixture.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    df = collect_lcurve(ensemble, [PENALTY])
+    label = lcurve.norm_axis_label(df)
+    assert "tauc" in label and "dimensionless" in label
+
+    # A mixed ensemble cannot claim either field.
+    mixed = df.copy()
+    mixed.loc[0, "design"] = "hardav"
+    assert "tauc" not in lcurve.norm_axis_label(mixed)
