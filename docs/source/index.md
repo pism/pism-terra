@@ -84,6 +84,13 @@ summer_school/cloud
 ```
 
 ```{toctree}
+:caption: Snow4Flow
+:hidden:
+
+s4f/inversion
+```
+
+```{toctree}
 :caption: Resources
 :hidden:
 

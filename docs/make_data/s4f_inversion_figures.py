@@ -31,7 +31,9 @@ member contributes nothing until it has written its inversion diagnostics::
     python docs/make_data/s4f_inversion_figures.py --root /mnt/storstrommen/pism/terra
 
 Only the experiments present under ``--root`` are regenerated, so it is safe
-to run while some sweeps are still queued.
+to run while some sweeps are still queued. The page writes the sweeps to bare
+``inverse_*_penalty`` directories; ``--prefix`` bridges that to the dated ones
+an actual campaign uses.
 """
 
 from __future__ import annotations
@@ -41,15 +43,19 @@ import sys
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 
-# Output directory of each sweep, and the design variables to map for it. The
-# alternating run solves for both in turn, so it gets a figure per phase.
+# Output directory of each sweep as the page names it, and the design
+# variables to map for it. The alternating run solves for both in turn, so it
+# gets a figure per phase.
 EXPERIMENTS = {
-    "tauc": ("2026_09_s4f_inverse_tauc_penalty", "tauc"),
-    "hardav": ("2026_09_s4f_inverse_hardav_penalty", "hardav"),
-    "alt": ("2026_09_s4f_inverse_alt_penalty", "tauc,hardav"),
+    "tauc": ("inverse_tauc_penalty", "tauc"),
+    "hardav": ("inverse_hardav_penalty", "hardav"),
+    "alt": ("inverse_alt_penalty", "tauc,hardav"),
 }
 
 DEFAULT_ROOT = Path("/mnt/storstrommen/pism/terra")
+# Campaign directories are dated on disk; the page writes the bare names, so
+# bridge the two here rather than dating every path in the documentation.
+DEFAULT_PREFIX = "2026_09_s4f_"
 DEFAULT_RGI_ID = "RGI2000-v7.0-C-01-04374"
 DEFAULT_RESOLUTION = "200m"
 
@@ -118,6 +124,12 @@ def main() -> int:
         "--root", help="Directory holding the sweep output directories.", type=Path, default=DEFAULT_ROOT
     )
     parser.add_argument(
+        "--prefix",
+        help="Prepended to each sweep's directory name, for dated campaign directories.",
+        type=str,
+        default=DEFAULT_PREFIX,
+    )
+    parser.add_argument(
         "--output-dir",
         help="Where the figures are written; the page reads them from here.",
         type=Path,
@@ -133,6 +145,7 @@ def main() -> int:
     options.output_dir.mkdir(parents=True, exist_ok=True)
     written = 0
     for name, (directory, designs) in EXPERIMENTS.items():
+        directory = f"{options.prefix}{directory}"
         files = member_files(options.root, directory, options.rgi_id, options.resolution)
         if not files:
             print(f"{name}: no members under {options.root / directory}, skipped")

@@ -44,7 +44,7 @@ commands below use `debug.j2`, which runs the members in the foreground.
 
 ```bash
 pism-glacier-run-inverse --resolution 200m --ntasks 48 --tasks 24 \
-    --data-path glacier_s4f_input --output-path 2026_09_s4f_inverse_tauc_penalty \
+    --data-path glacier_s4f_input --output-path inverse_tauc_penalty \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/s4f_inverse_calib_tauc.toml \
     pism_terra/templates/debug.j2 \
@@ -53,7 +53,7 @@ pism-glacier-run-inverse --resolution 200m --ntasks 48 --tasks 24 \
 
 ```bash
 pism-glacier-run-inverse --resolution 200m --ntasks 48 --tasks 24 \
-    --data-path glacier_s4f_input --output-path 2026_09_s4f_inverse_hardav_penalty \
+    --data-path glacier_s4f_input --output-path inverse_hardav_penalty \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/s4f_inverse_calib_hardav.toml \
     pism_terra/templates/debug.j2 \
@@ -62,7 +62,7 @@ pism-glacier-run-inverse --resolution 200m --ntasks 48 --tasks 24 \
 
 ```bash
 pism-glacier-run-inverse --resolution 200m --ntasks 48 --tasks 24 \
-    --data-path glacier_s4f_input --output-path 2026_09_s4f_inverse_alt_penalty \
+    --data-path glacier_s4f_input --output-path inverse_alt_penalty \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/s4f_inverse_calib_alt.toml \
     pism_terra/templates/debug.j2 \
@@ -105,17 +105,17 @@ written:
 
 ```bash
 pism-inverse-lcurve -o tauc_lcurve.png \
-    2026_09_s4f_inverse_tauc_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
+    inverse_tauc_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
 ```
 
 ```bash
 pism-inverse-lcurve -o hardav_lcurve.png \
-    2026_09_s4f_inverse_hardav_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
+    inverse_hardav_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
 ```
 
 ```bash
 pism-inverse-lcurve -o alt_lcurve.png \
-    2026_09_s4f_inverse_alt_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
+    inverse_alt_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
 ```
 
 Each writes the figure, the table behind it as `.csv`, and prints the corner it
@@ -165,17 +165,17 @@ speckle, strong regularization smooths real sticky spots away.
 
 ```bash
 pism-inverse-plot --design-variable tauc -o tauc_maps.png \
-    2026_09_s4f_inverse_tauc_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
+    inverse_tauc_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
 ```
 
 ```bash
 pism-inverse-plot --design-variable hardav -o hardav_maps.png \
-    2026_09_s4f_inverse_hardav_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
+    inverse_hardav_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
 ```
 
 ```bash
 pism-inverse-plot --design-variable tauc,hardav -o alt_maps.png \
-    2026_09_s4f_inverse_alt_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
+    inverse_alt_penalty/RGI2000-v7.0-C-01-04374/output/inverse/inv_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_*.nc
 ```
 
 Each field becomes its own figure, named after the variable it plots — so the
@@ -261,8 +261,11 @@ python docs/make_data/s4f_inversion_figures.py --root /mnt/storstrommen/pism/ter
 
 It runs exactly the commands above for all three sweeps, writes the PNGs into
 `docs/source/_static/s4f/`, and skips any sweep whose output directory is not
-there yet — so it is safe to run mid-campaign. `--rgi-id`, `--resolution` and
-`--dpi` are there for a different glacier or a different-looking page.
+there yet — so it is safe to run mid-campaign. A real campaign dates its
+output directories, which the commands on this page leave off; `--prefix`
+bridges the two and defaults to the campaign these figures came from.
+`--rgi-id`, `--resolution` and `--dpi` are there for a different glacier or a
+different-looking page.
 
 ```{admonition} These sweeps are incomplete
 :class: warning
