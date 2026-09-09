@@ -64,6 +64,7 @@ def write_member(
     complete: bool = True,
     design: str = "tauc",
     param: str = "exp",
+    alternating: dict[str, float] | None = None,
 ) -> Path:
     """
     Write a synthetic inversion output file.
@@ -92,6 +93,10 @@ def write_member(
     param : str, optional
         Value of ``inverse.design.param``. Only ``"ident"`` makes the model
         norm carry the design variable's units.
+    alternating : dict or None, optional
+        Write an alternating co-inversion's per-phase histories instead of a
+        plain ``J_design``, as ``{"c<cycle>_<design>": J_design value}``.
+        Each carries its own ``inv_iter_<tag>`` axis, as ``pismi`` writes.
 
     Returns
     -------
@@ -111,7 +116,16 @@ def write_member(
         w = np.ones_like(residual) if weight is None else weight
         data["vel_misfit_weight"] = (("time", "y", "x"), w[np.newaxis, ...])
         data["inv_residual"] = (("time", "y", "x"), residual[np.newaxis, ...])
-        data["J_design"] = (("inv_iter",), j_design)
+        if alternating is None:
+            data["J_design"] = (("inv_iter",), j_design)
+        else:
+            for tag, value in alternating.items():
+                data[f"J_design_{tag}"] = ((f"inv_iter_{tag}",), np.array([10.0 * value, value]))
+                # The weighted variant shares the name prefix and must not be
+                # mistaken for the design functional.
+                data[f"J_design_weighted_{tag}"] = ((f"inv_iter_{tag}",), np.array([1.0, 1.0]))
+                design_name = tag.split("_", 1)[1]
+                data[f"zeta_inv_{design_name}"] = (("time", "y", "x"), np.zeros_like(residual)[np.newaxis, ...])
     xr.Dataset(data).to_netcdf(path)
     return path
 
@@ -424,3 +438,136 @@ def test_norm_axis_label_names_the_design_variable(ensemble: list[Path]) -> None
     mixed = df.copy()
     mixed.loc[0, "design"] = "hardav"
     assert "tauc" not in lcurve.norm_axis_label(mixed)
+
+
+def test_j_design_variable_picks_the_last_cycle(tmp_path: Path) -> None:
+    """
+    Read each phase's own history, from its last alternation cycle.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    residual = np.full((3, 3), 4.0)
+    path = write_member(
+        tmp_path / "alt.nc",
+        1.0,
+        residual=residual,
+        j_design=np.array([1.0, 1.0]),
+        alternating={"c0_tauc": 100.0, "c0_hardav": 81.0, "c1_tauc": 9.0, "c1_hardav": 16.0},
+    )
+    with xr.open_dataset(path) as ds:
+        assert lcurve.j_design_variable(ds, "tauc") == "J_design_c1_tauc"
+        assert lcurve.j_design_variable(ds, "hardav") == "J_design_c1_hardav"
+        # The last cycle's converged value, not the weighted variant.
+        assert lcurve.model_norm(ds, "tauc") == pytest.approx(3.0)
+        assert lcurve.model_norm(ds, "hardav") == pytest.approx(4.0)
+        # A phase the run never reached.
+        assert lcurve.j_design_variable(ds, None) is None
+
+    half = write_member(
+        tmp_path / "half.nc", 1.0, residual=residual, j_design=np.array([1.0, 1.0]), alternating={"c0_tauc": 25.0}
+    )
+    with xr.open_dataset(half) as ds:
+        assert lcurve.j_design_variable(ds, "tauc") == "J_design_c0_tauc"
+        assert lcurve.j_design_variable(ds, "hardav") is None
+        with pytest.raises(KeyError, match="hardav"):
+            lcurve.model_norm(ds, "hardav")
+
+
+def test_collect_lcurve_one_row_per_phase(tmp_path: Path) -> None:
+    """
+    Give each phase its own row, sharing the member's single misfit.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    files = []
+    for penalty, misfit, tauc_j, hardav_j in [(0.1, 10.0, 64.0, 4.0), (1.0, 20.0, 16.0, 9.0)]:
+        files.append(
+            write_member(
+                tmp_path / f"alt_{penalty:g}.nc",
+                penalty,
+                residual=np.full((3, 3), misfit),
+                j_design=np.array([1.0, 1.0]),
+                alternating={"c0_tauc": 1.0, "c0_hardav": 1.0, "c1_tauc": tauc_j, "c1_hardav": hardav_j},
+            )
+        )
+    # One member has not reached the hardav phase.
+    files.append(
+        write_member(
+            tmp_path / "alt_partial.nc",
+            10.0,
+            residual=np.full((3, 3), 30.0),
+            j_design=np.array([1.0, 1.0]),
+            alternating={"c0_tauc": 4.0},
+        )
+    )
+    df = collect_lcurve(files, [PENALTY])
+    assert list(df["design"]) == ["hardav", "hardav", "tauc", "tauc", "tauc"]
+    hardav = df[df["design"] == "hardav"]
+    tauc = df[df["design"] == "tauc"]
+    assert list(hardav["N"]) == pytest.approx([2.0, 3.0])
+    assert list(tauc["N"]) == pytest.approx([8.0, 4.0, 2.0])
+    # The misfit is the member's, shared by both of its phases.
+    assert list(hardav["M"]) == pytest.approx([10.0, 20.0])
+    assert list(tauc["M"])[:2] == pytest.approx([10.0, 20.0])
+
+
+def test_main_writes_a_curve_per_phase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Suffix the outputs only when there is more than one phase to draw.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to set ``sys.argv``.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    files = [
+        write_member(
+            tmp_path / f"alt_{p:g}.nc",
+            p,
+            residual=np.full((3, 3), m),
+            j_design=np.array([1.0, 1.0]),
+            alternating={"c0_tauc": t, "c0_hardav": h},
+        )
+        for p, m, t, h in [(0.1, 10.0, 64.0, 4.0), (1.0, 20.0, 16.0, 9.0), (10.0, 40.0, 4.0, 16.0)]
+    ]
+    out = tmp_path / "alt" / "lcurve.png"
+    monkeypatch.setattr("sys.argv", ["pism-inverse-lcurve", "-o", str(out)] + [str(f) for f in files])
+    main()
+    assert {p.name for p in out.parent.iterdir()} >= {
+        "lcurve_tauc.png",
+        "lcurve_hardav.png",
+        "lcurve_tauc.csv",
+        "lcurve_hardav.csv",
+    }
+
+    # Restricting to one phase drops the suffix again.
+    single = tmp_path / "one" / "lcurve.png"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["pism-inverse-lcurve", "--design-variable", "tauc", "-o", str(single)] + [str(f) for f in files],
+    )
+    main()
+    assert {p.name for p in single.parent.iterdir()} >= {"lcurve.png", "lcurve.csv"}

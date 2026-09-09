@@ -43,9 +43,17 @@ pism-inverse-lcurve --parameters inverse.tikhonov.penalty_weight \
     -o lcurve.png inv_g*.nc
 ```
 
+An alternating ``tauc``/``hardav`` co-inversion optimizes each phase in turn
+and writes a design functional per phase and cycle, so it gives one curve per
+phase — ``lcurve_tauc.png`` and ``lcurve_hardav.png``, each with its table —
+taking each phase's norm from its last cycle. The misfit is shared: there is
+one residual, produced by both design variables together, so the curves
+differ only in ``N``. Outputs are suffixed only when there is more than one
+curve, so a single-design run keeps the name it was given.
+
 Members that are still running, or that crashed before writing the inversion
-diagnostics, lack ``J_design``/``inv_residual`` and are skipped with a
-warning rather than aborting the analysis.
+diagnostics, lack the residual or a phase's design functional and are skipped
+with a warning rather than aborting the analysis.
 """
 
 from __future__ import annotations
@@ -72,7 +80,10 @@ logger = logging.getLogger("pism_terra.lcurve")
 
 DEFAULT_PARAMETERS = ["inverse.tikhonov.penalty_weight"]
 
-REQUIRED_VARS = ("vel_misfit_weight", "inv_residual", "J_design")
+# Fields every member needs. The design functional is resolved separately:
+# a single-design run writes ``J_design``, an alternating co-inversion writes
+# ``J_design_c<cycle>_<design>`` per phase (see :func:`j_design_variable`).
+REQUIRED_VARS = ("vel_misfit_weight", "inv_residual")
 
 # Design variables ``pismi -inv_design`` can invert for, with the units of the
 # *physical* field. ``hardav`` is the vertically-averaged ice hardness
@@ -279,31 +290,79 @@ def data_misfit(ds: xr.Dataset) -> float:
     return float(np.sqrt(np.nansum(weight * residual**2) / np.nansum(weight)))
 
 
-def model_norm(ds: xr.Dataset) -> float:
+def j_design_variable(ds: xr.Dataset, design: str | None = None) -> str | None:
+    """
+    Name the design-functional history of one inversion phase.
+
+    A single-design run writes ``J_design``. An alternating co-inversion runs
+    the phases repeatedly and writes one history each, ``J_design_c<cycle>_
+    <design>``, so the phase's converged norm is the one from its *last*
+    cycle. (``J_design_weighted_...`` is the same functional divided by the
+    penalty weight, so it is not the model norm and is skipped.)
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output.
+    design : str or None, optional
+        Design variable whose phase is wanted. ``None`` accepts only the
+        plain ``J_design``.
+
+    Returns
+    -------
+    str or None
+        Variable name, or ``None`` when the file carries no history for that
+        phase — a member that has not reached it yet.
+    """
+    if "J_design" in ds:
+        return "J_design"
+    if design is None:
+        return None
+    pattern = re.compile(rf"^J_design_c(\d+)_{re.escape(design)}$")
+    cycles = [(int(m.group(1)), name) for name in ds.variables if (m := pattern.match(str(name)))]
+    return max(cycles)[1] if cycles else None
+
+
+def model_norm(ds: xr.Dataset, design: str | None = None) -> float:
     """
     Model norm ``N = sqrt(J_design)`` at the last inversion iteration.
 
     Parameters
     ----------
     ds : xarray.Dataset
-        Inversion output carrying the ``J_design`` iteration history.
+        Inversion output carrying a design-functional iteration history.
+    design : str or None, optional
+        Design variable whose phase to read, for an alternating co-inversion.
 
     Returns
     -------
     float
         Square root of the design functional of the converged solution.
+
+    Raises
+    ------
+    KeyError
+        If the file carries no design functional for that phase.
     """
-    return float(np.sqrt(ds["J_design"].isel(inv_iter=-1)))
+    name = j_design_variable(ds, design)
+    if name is None:
+        raise KeyError(f"no design functional for {design or 'the inversion'}")
+    # An alternating run names the iteration axis per phase too
+    # (``inv_iter_c1_tauc``), so index the history's own dimension.
+    history = ds[name]
+    return float(np.sqrt(history.isel({history.dims[-1]: -1})))
 
 
-def collect_lcurve(files: list[Path], parameters: list[str]) -> pd.DataFrame:
+def collect_lcurve(files: list[Path], parameters: list[str], designs: list[str] | None = None) -> pd.DataFrame:
     """
     Tabulate misfit, model norm and regularization parameters of an ensemble.
 
-    Files that do not carry the full set of inversion diagnostics — members
-    still running, or crashed before the diagnostics were written — are
-    skipped with a warning, as are files missing one of ``parameters`` in
-    their ``pism_config`` attributes.
+    An alternating co-inversion contributes one row per phase: the data
+    misfit is shared — one residual, produced by both design variables
+    together — while the model norm is that phase's own. Files that do not
+    carry the full set of inversion diagnostics, and phases a member has not
+    reached, are skipped with a warning, as are files missing one of
+    ``parameters`` in their ``pism_config`` attributes.
 
     Parameters
     ----------
@@ -312,14 +371,18 @@ def collect_lcurve(files: list[Path], parameters: list[str]) -> pd.DataFrame:
     parameters : list of str
         Dotted ``pism_config`` keys to read from each file; they become
         columns named after their last dotted component.
+    designs : list of str or None, optional
+        Design variables to tabulate, or ``None`` to detect them per file
+        with :func:`design_variables`.
 
     Returns
     -------
     pandas.DataFrame
-        One row per usable file with the ``parameters`` columns plus ``M``
-        (data misfit, m/yr), ``N`` (model norm), ``design`` (the inverted
-        field), ``norm_units`` (empty when the norm is dimensionless) and
-        ``file``, sorted by the parameter columns.
+        One row per usable (file, design) pair with the ``parameters``
+        columns plus ``M`` (data misfit, m/yr), ``N`` (model norm),
+        ``design`` (the inverted field), ``norm_units`` (empty when the norm
+        is dimensionless) and ``file``, sorted by design then the parameter
+        columns.
 
     Raises
     ------
@@ -340,24 +403,34 @@ def collect_lcurve(files: list[Path], parameters: list[str]) -> pd.DataFrame:
                 if missing:
                     logger.warning("%s: skipped, pism_config has no %s", path.name, ", ".join(missing))
                     continue
-                row: dict[str, Any] = {c: float(config[p]) for c, p in zip(columns, parameters)}
-                row["M"] = data_misfit(ds)
-                row["N"] = model_norm(ds)
-                design = design_variable(ds)
-                row["design"] = design or ""
-                row["norm_units"] = model_norm_units(ds, design) or ""
-                row["file"] = path.name
-                rows.append(row)
+
+                found = designs or design_variables(ds) or [None]  # type: ignore[list-item]
+                misfit = data_misfit(ds)
+                for design in found:
+                    if j_design_variable(ds, design) is None:
+                        logger.warning(
+                            "%s: no %s design functional, that phase is not written yet",
+                            path.name,
+                            design or "J_design",
+                        )
+                        continue
+                    row: dict[str, Any] = {c: float(config[p]) for c, p in zip(columns, parameters)}
+                    row["M"] = misfit
+                    row["N"] = model_norm(ds, design)
+                    row["design"] = design or ""
+                    row["norm_units"] = model_norm_units(ds, design) or ""
+                    row["file"] = path.name
+                    rows.append(row)
         except (OSError, KeyError, ValueError) as error:
             logger.warning("%s: skipped, %s", path.name, error)
 
     if not rows:
         raise ValueError(
             f"none of the {len(files)} given files yielded an L-curve point; "
-            f"they need {', '.join(REQUIRED_VARS)} and {', '.join(parameters)}"
+            f"they need {', '.join(REQUIRED_VARS)}, a design functional and {', '.join(parameters)}"
         )
-    logger.info("collected %d of %d files", len(rows), len(files))
-    return pd.DataFrame(rows).sort_values(columns).reset_index(drop=True)
+    logger.info("collected %d rows from %d files", len(rows), len(files))
+    return pd.DataFrame(rows).sort_values(["design"] + columns).reset_index(drop=True)
 
 
 def corner(norm: np.ndarray, misfit: np.ndarray) -> int | None:
@@ -517,13 +590,14 @@ def main() -> None:
     Returns
     -------
     None
-        The figure and the ``.csv`` table are written to disk.
+        A figure and its ``.csv`` table are written to disk, one pair per
+        design variable.
     """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = (
         "L-curve of a PISM Tikhonov inversion ensemble: data misfit against model norm, "
         "with the corner of the L marked as the conventional pick for the "
-        "regularization parameter."
+        "regularization parameter. An alternating co-inversion gives one curve per phase."
     )
     parser.add_argument(
         "--parameters",
@@ -540,6 +614,14 @@ def main() -> None:
         "alongside it with a .csv suffix.",
         type=str,
         default="lcurve.png",
+    )
+    parser.add_argument(
+        "--design-variable",
+        help=f"Comma-separated design variables to curve ({', '.join(DESIGN_VARIABLES)}). The default "
+        "reads them from each file, which yields one curve per phase of an alternating "
+        "co-inversion.",
+        type=str,
+        default=None,
     )
     parser.add_argument(
         "--log",
@@ -567,17 +649,37 @@ def main() -> None:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     setup_logging(output_file.parent / "lcurve.log")
 
-    df = collect_lcurve([Path(f) for f in options.INFILES], parameters)
-    table_file = output_file.with_suffix(".csv")
-    df.to_csv(table_file, index=False)
-    logger.info("wrote %s", table_file)
+    designs = None
+    if options.design_variable:
+        designs = [d.strip() for d in options.design_variable.split(",") if d.strip()]
+        unknown = [d for d in designs if d not in DESIGN_VARIABLES]
+        if unknown or not designs:
+            parser.error(
+                f"--design-variable takes any of {', '.join(DESIGN_VARIABLES)}; "
+                f"got {', '.join(unknown) or 'nothing'}"
+            )
 
-    corners = plot_lcurve(df, parameters, output_file, log=options.log, dpi=options.dpi)
+    df = collect_lcurve([Path(f) for f in options.INFILES], parameters, designs)
+    # An alternating co-inversion gives one curve per phase; only then are the
+    # outputs suffixed, so a single-design run keeps the name it was given.
+    found = list(df["design"].unique())
+    for design in found:
+        rows = df[df["design"] == design].reset_index(drop=True)
+        path = output_file
+        if len(found) > 1:
+            path = output_file.with_name(f"{output_file.stem}_{design}{output_file.suffix}")
+        table_file = path.with_suffix(".csv")
+        rows.to_csv(table_file, index=False)
+        logger.info("wrote %s", table_file)
 
-    print(df.to_string(index=False))
-    if not corners.empty:
-        print("\nL-curve corner:")
-        print(corners.to_string(index=False))
+        corners = plot_lcurve(rows, parameters, path, log=options.log, dpi=options.dpi)
+
+        if len(found) > 1:
+            print(f"\n=== {design} ===")
+        print(rows.to_string(index=False))
+        if not corners.empty:
+            print("L-curve corner:")
+            print(corners.to_string(index=False))
 
 
 if __name__ == "__main__":
