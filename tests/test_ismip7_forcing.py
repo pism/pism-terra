@@ -230,3 +230,24 @@ def test_needs_download_decisions(tmp_path):
     # Present with wrong size and no sidecar: must re-download.
     forcing._meta_path(local).unlink()
     assert forcing._needs_download(local, {**remote, "size": 11})
+
+
+def test_unit_overrides_are_udunits_parsable():
+    """
+    Every normalized unit is a single UDUNITS token PISM can parse.
+
+    The published ``tf`` units alternate between ``deg_C`` and ``deg C``
+    across GCM/pathway trees, and UDUNITS reads the space in the latter as
+    multiplication by an undefined ``deg``. Guard against a replacement that
+    reintroduces whitespace, and against dropping either variable from the
+    map.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    assert forcing.UNIT_OVERRIDES["tf"] == "deg_C"
+    assert forcing.UNIT_OVERRIDES["so"] == "g/kg"
+    for m_var, units in forcing.UNIT_OVERRIDES.items():
+        assert " " not in units, f"{m_var}: {units!r} is not a single UDUNITS token"
