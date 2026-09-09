@@ -66,6 +66,8 @@ def write_member(
     design: str = "tauc",
     param: str = "exp",
     alternating: dict[str, float] | None = None,
+    config_design: str | None = None,
+    cycles: float | None = None,
 ) -> Path:
     """
     Write a synthetic inversion output file.
@@ -98,18 +100,27 @@ def write_member(
         Write an alternating co-inversion's per-phase histories instead of a
         plain ``J_design``, as ``{"c<cycle>_<design>": J_design value}``.
         Each carries its own ``inv_iter_<tag>`` axis, as ``pismi`` writes.
+    config_design : str or None, optional
+        Value of ``inverse.design.variable``. ``None`` leaves the key out, as
+        output written before PISM gained the parameter does.
+    cycles : float or None, optional
+        Value of ``inverse.alternating_cycles``. ``None`` leaves it out.
 
     Returns
     -------
     pathlib.Path
         The path written, for convenience.
     """
-    attrs = {
+    attrs: dict[str, Any] = {
         PENALTY: np.float64(penalty_weight),
         CH1: np.float64(cH1),
         "inverse.design.param": param,
         "stress_balance.blatter.Glen_exponent": np.float64(3.0),
     }
+    if config_design is not None:
+        attrs["inverse.design.variable"] = config_design
+    if cycles is not None:
+        attrs["inverse.alternating_cycles"] = np.float64(cycles)
     data: dict[str, Any] = {"pism_config": ((), np.int8(0), attrs)}
     for name in (design, f"{design}_prior", "zeta_inv"):
         data[name] = (("y", "x"), np.ones_like(residual))
@@ -693,3 +704,70 @@ def test_main_writes_the_combined_figure(tmp_path: Path, monkeypatch: pytest.Mon
     )
     main()
     assert {p.name for p in single.parent.glob("*.png")} == {"lcurve.png"}
+
+
+def test_design_variables_prefer_the_configuration(tmp_path: Path) -> None:
+    """
+    Read the design variable from ``pism_config`` before the written fields.
+
+    The configuration describes the run rather than how far it has got, so a
+    co-inversion is recognised from its first timestep — before the hardav
+    phase has written anything — where the fields alone would call it a
+    single-design tauc run.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    residual, j_design = np.full((3, 3), 5.0), np.array([10.0, 4.0])
+
+    # A co-inversion that has only started its tauc phase: on the fields
+    # alone this is indistinguishable from a plain tauc run.
+    early = write_member(
+        tmp_path / "early.nc", 1.0, residual, j_design, design="tauc", cycles=2.0, config_design="tauc"
+    )
+    with xr.open_dataset(early) as ds:
+        assert lcurve.design_variables(ds) == ["tauc", "hardav"]
+        assert lcurve.design_variable(ds) is None
+
+    # A single-design hardav run whose fields would also allow "tauc".
+    hardav = write_member(tmp_path / "hardav.nc", 1.0, residual, j_design, design="tauc", config_design="hardav")
+    with xr.open_dataset(hardav) as ds:
+        assert lcurve.design_variables(ds) == ["hardav"]
+
+    # cycles = 0 is a single-design run, not a co-inversion.
+    plain = write_member(tmp_path / "plain.nc", 1.0, residual, j_design, cycles=0.0, config_design="tauc")
+    with xr.open_dataset(plain) as ds:
+        assert lcurve.design_variables(ds) == ["tauc"]
+
+
+def test_design_variables_fall_back_to_the_fields(tmp_path: Path) -> None:
+    """
+    Keep reading the written fields for output that predates the parameter.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    residual, j_design = np.full((3, 3), 5.0), np.array([10.0, 4.0])
+    legacy = write_member(tmp_path / "legacy.nc", 1.0, residual, j_design, design="hardav")
+    with xr.open_dataset(legacy) as ds:
+        assert "inverse.design.variable" not in ds["pism_config"].attrs
+        assert lcurve.design_variables(ds) == ["hardav"]
+
+    # A garbled value is ignored rather than trusted.
+    odd = write_member(tmp_path / "odd.nc", 1.0, residual, j_design, design="tauc", config_design="speed")
+    with xr.open_dataset(odd) as ds:
+        assert lcurve.design_variables(ds) == ["tauc"]

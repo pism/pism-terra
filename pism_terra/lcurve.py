@@ -137,14 +137,21 @@ def design_variables(ds: xr.Dataset) -> list[str]:
     """
     Which fields the inversion solved for: ``tauc``, ``hardav``, or both.
 
-    ``pismi``'s ``-inv_design`` is a plain option rather than a configuration
-    parameter, so it is not recorded in ``pism_config`` and has to be read off
-    the variables the run wrote. An alternating co-inversion names its design
-    variable per phase (``zeta_inv_tauc`` *and* ``zeta_inv_hardav``); a
-    single-design run writes ``zeta_inv`` and a ``<design>_prior``. The plain
-    field is the last resort, since a ``tauc`` inversion of a Blatter forward
-    problem may carry a prescribed ``hardav`` alongside it, and an alternating
-    run carries both fields whichever phase it is in.
+    Read from ``pism_config`` where possible, since that describes the run
+    rather than how far it has got:
+
+    - ``inverse.alternating_cycles > 0`` is a co-inversion, which solves for
+      both in turn — true from the first timestep, before either phase has
+      written anything.
+    - ``inverse.design.variable`` names the field of a single-design run.
+      (``pismi``'s ``-inv_design`` is its short option.)
+
+    Output written before PISM gained that parameter carries neither, so the
+    fallback reads the variables the run wrote: an alternating run names zeta
+    per phase (``zeta_inv_tauc`` *and* ``zeta_inv_hardav``), a single-design
+    run writes ``zeta_inv`` and a ``<design>_prior``. The plain field is the
+    last resort, since a ``tauc`` inversion of a Blatter forward problem may
+    carry a prescribed ``hardav`` alongside it.
 
     Parameters
     ----------
@@ -155,9 +162,20 @@ def design_variables(ds: xr.Dataset) -> list[str]:
     -------
     list of str
         The design variables, in :data:`DESIGN_VARIABLES` order — two for an
-        alternating co-inversion, one for a single-design run, none when the
-        file names neither.
+        alternating co-inversion, one for a single-design run, none when
+        neither the configuration nor the variables say.
     """
+    config = ds["pism_config"].attrs if "pism_config" in ds else {}
+    try:
+        cycles = int(float(config.get("inverse.alternating_cycles", 0)))
+    except (TypeError, ValueError):
+        cycles = 0
+    if cycles > 0:
+        return list(DESIGN_VARIABLES)
+    configured = str(config.get("inverse.design.variable", "")).lower()
+    if configured in DESIGN_VARIABLES:
+        return [configured]
+
     names = set(ds.variables)
     for candidates in (
         [v for v in DESIGN_VARIABLES if f"zeta_inv_{v}" in names],
