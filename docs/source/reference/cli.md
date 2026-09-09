@@ -80,8 +80,8 @@ keeps their outputs apart.
   - Sanity-check a staging directory's NetCDFs.
 * - `pism-inverse-lcurve`
   - Plot the L-curve of a Tikhonov inversion ensemble and mark its corner,
-    one curve per phase of an alternating co-inversion. See
-    {doc}`../greenland/inversion` for what the two axes mean.
+    one curve per phase of an alternating co-inversion plus a combined
+    figure. See {doc}`../greenland/inversion` for what the two axes mean.
 * - `pism-inverse-plot`
   - Map an inversion ensemble field by field — the inverted field (`tauc` or
     `hardav`), the design variable `zeta`, and the velocity residual — one

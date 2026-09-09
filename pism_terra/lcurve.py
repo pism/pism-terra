@@ -49,7 +49,10 @@ phase — ``lcurve_tauc.png`` and ``lcurve_hardav.png``, each with its table —
 taking each phase's norm from its last cycle. The misfit is shared: there is
 one residual, produced by both design variables together, so the curves
 differ only in ``N``. Outputs are suffixed only when there is more than one
-curve, so a single-design run keeps the name it was given.
+curve, so a single-design run keeps the name it was given, and a third figure
+— ``lcurve_combined.png`` — overlays the phases on one pair of axes, which
+the dimensionless norm of the default ``exp`` parameterization makes
+comparable.
 
 Members that are still running, or that crashed before writing the inversion
 diagnostics, lack the residual or a phase's design functional and are skipped
@@ -469,7 +472,7 @@ def corner(norm: np.ndarray, misfit: np.ndarray) -> int | None:
     return best
 
 
-def norm_axis_label(df: pd.DataFrame) -> str:
+def norm_axis_label(df: pd.DataFrame, mixed_ok: bool = False) -> str:
     """
     Build the model-norm axis label, naming the inverted field and its units.
 
@@ -478,6 +481,9 @@ def norm_axis_label(df: pd.DataFrame) -> str:
     df : pandas.DataFrame
         Table from :func:`collect_lcurve`, carrying ``design`` and
         ``norm_units``.
+    mixed_ok : bool, optional
+        Set when several design variables are deliberately on one pair of
+        axes, as in :func:`plot_combined`, so that is not warned about.
 
     Returns
     -------
@@ -490,8 +496,12 @@ def norm_axis_label(df: pd.DataFrame) -> str:
     designs = sorted(set(df["design"]) - {""})
     base = r"model norm  $N=\sqrt{J_\mathrm{design}}$"
     if len(designs) != 1:
-        if len(designs) > 1:
+        if len(designs) > 1 and not mixed_ok:
             logger.warning("ensemble mixes design variables (%s); labelling generically", ", ".join(designs))
+        if len(designs) > 1 and mixed_ok:
+            units = sorted(set(df["norm_units"]) - {""})
+            shown = mathtext_units(units[0]) if len(units) == 1 else r"dimensionless $\zeta$"
+            return f"{base} ({shown})"
         return base
     units = sorted(set(df["norm_units"]) - {""})
     # A dimensionless norm is the common case: it is the norm of the
@@ -499,6 +509,65 @@ def norm_axis_label(df: pd.DataFrame) -> str:
     if len(units) != 1:
         return f"{base}, {designs[0]} (dimensionless $\\zeta$)"
     return f"{base}, {designs[0]} ({mathtext_units(units[0])})"
+
+
+# One color and marker per design variable, so the combined figure reads at a
+# glance and keeps the same assignment across runs.
+DESIGN_STYLE = {"tauc": ("C0", "o"), "hardav": ("C1", "s")}
+
+
+def _draw_curve(
+    ax: Any,
+    g: pd.DataFrame,
+    sweep: str,
+    *,
+    label: str | None = None,
+    color: str | None = None,
+    marker: str = "o",
+    offset: tuple[int, int] = (3, 3),
+) -> dict[str, Any] | None:
+    """
+    Draw one member sequence as a curve, and star its corner.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to draw on.
+    g : pandas.DataFrame
+        Rows of one curve, already ordered along it.
+    sweep : str
+        Column whose value labels each point.
+    label : str or None, optional
+        Legend entry for the curve.
+    color : str or None, optional
+        Line color; ``None`` takes the next one from the cycle.
+    marker : str, optional
+        Point marker.
+    offset : tuple of int, optional
+        Point-label offset in points, staggered per curve so overlaid curves
+        do not collide.
+
+    Returns
+    -------
+    dict or None
+        The corner row, or ``None`` when the curve is too short to have one.
+    """
+    ax.plot(g["N"], g["M"], marker=marker, ls="-", ms=2, lw=0.75, label=label, color=color)
+    for _, row in g.iterrows():
+        ax.annotate(
+            f"{row[sweep]:g}",
+            (row["N"], row["M"]),
+            fontsize=fontsize,
+            xytext=offset,
+            textcoords="offset points",
+            color=color,
+        )
+    index = corner(g["N"].values, g["M"].values)
+    if index is None:
+        logger.warning("%s: fewer than 3 points, no corner", label or "L-curve")
+        return None
+    ax.plot(g["N"][index], g["M"][index], "k*", ms=5, zorder=5)
+    return g.loc[index].to_dict()
 
 
 def plot_lcurve(
@@ -548,21 +617,9 @@ def plot_lcurve(
         for key, group in groups:
             g = group.sort_values(sweep).reset_index(drop=True)
             label = ", ".join(f"{c}={v:g}" for c, v in zip(grouping, np.atleast_1d(key))) if grouping else None
-            ax.plot(g["N"], g["M"], "o-", ms=2, lw=0.75, label=label)
-            for _, row in g.iterrows():
-                ax.annotate(
-                    f"{row[sweep]:g}",
-                    (row["N"], row["M"]),
-                    fontsize=fontsize,
-                    xytext=(3, 3),
-                    textcoords="offset points",
-                )
-            index = corner(g["N"].values, g["M"].values)
-            if index is None:
-                logger.warning("%s: fewer than 3 points, no corner", label or "L-curve")
-                continue
-            ax.plot(g["N"][index], g["M"][index], "k*", ms=5, zorder=5)
-            corners.append(g.loc[index].to_dict())
+            found = _draw_curve(ax, g, sweep, label=label)
+            if found is not None:
+                corners.append(found)
 
         if grouping:
             legend = ax.legend(loc="best")
@@ -574,6 +631,96 @@ def plot_lcurve(
         ax.set_xlabel(norm_axis_label(df))
         ax.set_ylabel(r"data misfit  $M$ (m yr$^{-1}$)")
         ax.set_title("L-curve")
+        ax.grid(True, which="both", alpha=0.3)
+        fig.tight_layout()
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_file, dpi=dpi)
+        plt.close(fig)
+    logger.info("wrote %s", output_file)
+    return pd.DataFrame(corners)
+
+
+def plot_combined(
+    df: pd.DataFrame,
+    parameters: list[str],
+    output_file: Path,
+    log: bool = False,
+    dpi: int = 300,
+) -> pd.DataFrame:
+    """
+    Overlay every phase of an alternating co-inversion on one L-curve.
+
+    The phases of an alternating run share a misfit and differ only in their
+    model norm, so putting them on one pair of axes shows directly which
+    design variable the regularization is biting on, and whether their
+    corners agree on a penalty weight. This is only meaningful when the norms
+    are commensurate — under PISM's default ``exp`` parameterization every
+    norm is the dimensionless norm of zeta, so they are. Under
+    ``param = "ident"`` they carry the fields' own units (Pa against
+    Pa s^(1/n)) and the figure is refused rather than drawn misleadingly.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Table from :func:`collect_lcurve`, covering more than one design
+        variable.
+    parameters : list of str
+        Dotted ``pism_config`` keys behind the table's parameter columns; the
+        first one is the abscissa of the sweep.
+    output_file : pathlib.Path
+        Where to write the figure; the suffix picks the format.
+    log : bool, optional
+        Use logarithmic axes, the space the corner is computed in.
+    dpi : int, optional
+        Resolution of raster output.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The corner rows, one per design variable. Empty when the figure was
+        refused because the norms are not comparable.
+    """
+    units = sorted(set(df["norm_units"]))
+    if len(units) > 1:
+        logger.warning(
+            "not drawing the combined L-curve: the norms are not comparable (%s)",
+            ", ".join(u or "dimensionless" for u in units),
+        )
+        return pd.DataFrame()
+
+    columns = [short_name(p) for p in parameters]
+    sweep, grouping = columns[0], columns[1:]
+    corners: list[dict[str, Any]] = []
+    with mpl.rc_context(rc=rc_params):
+        fig, ax = plt.subplots(figsize=(3.2, 2.4))
+        for index, (design, rows) in enumerate(df.groupby("design", sort=True)):
+            color, marker = DESIGN_STYLE.get(str(design), (f"C{index}", "o"))
+            for key, group in rows.groupby(grouping, sort=True) if grouping else [((), rows)]:
+                g = group.sort_values(sweep).reset_index(drop=True)
+                extra = ", ".join(f"{c}={v:g}" for c, v in zip(grouping, np.atleast_1d(key))) if grouping else ""
+                found = _draw_curve(
+                    ax,
+                    g,
+                    sweep,
+                    label=f"{design}{', ' + extra if extra else ''}",
+                    color=color,
+                    marker=marker,
+                    # Stagger the point labels so the overlaid curves' do not
+                    # land on top of each other.
+                    offset=(3, 3) if index % 2 == 0 else (3, -9),
+                )
+                if found is not None:
+                    corners.append(found)
+
+        legend = ax.legend(loc="best")
+        legend.get_frame().set_linewidth(0.0)
+        legend.get_frame().set_alpha(0.0)
+        if log:
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+        ax.set_xlabel(norm_axis_label(df, mixed_ok=True))
+        ax.set_ylabel(r"data misfit  $M$ (m yr$^{-1}$)")
+        ax.set_title("L-curve, both phases")
         ax.grid(True, which="both", alpha=0.3)
         fig.tight_layout()
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -622,6 +769,11 @@ def main() -> None:
         "co-inversion.",
         type=str,
         default=None,
+    )
+    parser.add_argument(
+        "--no-combined",
+        help="Skip the extra figure overlaying every phase of an alternating co-inversion " "on one pair of axes.",
+        action="store_true",
     )
     parser.add_argument(
         "--log",
@@ -680,6 +832,13 @@ def main() -> None:
         if not corners.empty:
             print("L-curve corner:")
             print(corners.to_string(index=False))
+
+    if len(found) > 1 and not options.no_combined:
+        combined_file = output_file.with_name(f"{output_file.stem}_combined{output_file.suffix}")
+        combined = plot_combined(df, parameters, combined_file, log=options.log, dpi=options.dpi)
+        if not combined.empty:
+            print("\n=== both phases ===")
+            print(f"wrote {combined_file}")
 
 
 if __name__ == "__main__":

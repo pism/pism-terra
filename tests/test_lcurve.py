@@ -46,6 +46,7 @@ from pism_terra.lcurve import (
     data_misfit,
     main,
     model_norm,
+    plot_combined,
     plot_lcurve,
 )
 
@@ -571,3 +572,124 @@ def test_main_writes_a_curve_per_phase(tmp_path: Path, monkeypatch: pytest.Monke
     )
     main()
     assert {p.name for p in single.parent.iterdir()} >= {"lcurve.png", "lcurve.csv"}
+
+
+def _two_phase_ensemble(tmp_path: Path, param: str = "exp") -> list[Path]:
+    """
+    Write a full alternating sweep whose phases have different norms.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    param : str, optional
+        Value of ``inverse.design.param``; ``"ident"`` gives the phases their
+        fields' own, incommensurate units.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The member files.
+    """
+    return [
+        write_member(
+            tmp_path / f"alt_{p:g}.nc",
+            p,
+            residual=np.full((3, 3), m),
+            j_design=np.array([1.0, 1.0]),
+            param=param,
+            alternating={"c0_tauc": t, "c0_hardav": h},
+        )
+        for p, m, t, h in [
+            (0.1, 110.0, 0.01, 0.04),
+            (1.0, 80.0, 0.09, 0.25),
+            (10.0, 50.0, 0.64, 1.0),
+            (100.0, 38.0, 4.0, 2.25),
+        ]
+    ]
+
+
+def test_plot_combined_overlays_the_phases(tmp_path: Path) -> None:
+    """
+    Draw one curve per phase on shared axes, each with its own corner.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    df = collect_lcurve(_two_phase_ensemble(tmp_path), [PENALTY])
+    output_file = tmp_path / "figures" / "combined.png"
+    corners = plot_combined(df, [PENALTY], output_file)
+    assert output_file.exists()
+    assert sorted(corners["design"]) == ["hardav", "tauc"]
+
+
+def test_plot_combined_refuses_incommensurate_norms(tmp_path: Path) -> None:
+    """
+    Refuse to overlay Pa against Pa s^(1/n) under ``param = "ident"``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    df = collect_lcurve(_two_phase_ensemble(tmp_path, param="ident"), [PENALTY])
+    # The two phases carry their fields' own units, which do not compare.
+    assert set(df["norm_units"]) == {"Pa", "Pa s^(1/3)"}
+    output_file = tmp_path / "refused.png"
+    assert plot_combined(df, [PENALTY], output_file).empty
+    assert not output_file.exists()
+
+
+def test_main_writes_the_combined_figure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Add the combined figure for a co-inversion, and skip it when told to.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to set ``sys.argv``.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    files = _two_phase_ensemble(tmp_path)
+    out = tmp_path / "with" / "lcurve.png"
+    monkeypatch.setattr("sys.argv", ["pism-inverse-lcurve", "-o", str(out)] + [str(f) for f in files])
+    main()
+    assert {p.name for p in out.parent.glob("*.png")} == {
+        "lcurve_tauc.png",
+        "lcurve_hardav.png",
+        "lcurve_combined.png",
+    }
+
+    without = tmp_path / "without" / "lcurve.png"
+    monkeypatch.setattr(
+        "sys.argv", ["pism-inverse-lcurve", "--no-combined", "-o", str(without)] + [str(f) for f in files]
+    )
+    main()
+    assert {p.name for p in without.parent.glob("*.png")} == {"lcurve_tauc.png", "lcurve_hardav.png"}
+
+    # A single-design run has nothing to combine.
+    single = tmp_path / "single" / "lcurve.png"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["pism-inverse-lcurve", "--design-variable", "tauc", "-o", str(single)] + [str(f) for f in files],
+    )
+    main()
+    assert {p.name for p in single.parent.glob("*.png")} == {"lcurve.png"}
