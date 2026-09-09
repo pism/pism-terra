@@ -71,7 +71,11 @@ repos:
     hooks:
     - id: pytest
       name: pytest
-      entry: pytest tests
+      # ``language: system`` resolves ``pytest`` off PATH, so a shell without
+      # the project env active runs some other interpreter's pytest and dies
+      # on an import error that says nothing about the code. Probe a module
+      # that needs the project's real dependencies first, and say what to do.
+      entry: bash -c 'python -c "import pism_terra.lcurve" 2>/dev/null || { echo "activate the pism-terra conda env first, this interpreter cannot import the project dependencies"; exit 1; }; pytest tests'
       language: system
       types: [python]
       exclude: ^venv/ ^.git/ ^.vscode/ ^.DS_Store ^uq/ ^hindcasts/
