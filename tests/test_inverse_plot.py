@@ -41,7 +41,9 @@ import xarray as xr
 
 from pism_terra.inverse_plot import (
     FIELDS,
-    field_name,
+    completed_phases,
+    field_items,
+    item_key,
     main,
     plot_field,
     read_member,
@@ -61,6 +63,8 @@ def write_member(
     residual: float = 20.0,
     zeta: float = 1.5,
     complete: bool = True,
+    alternating: bool = False,
+    completed: str = "c1_hardav",
 ) -> Path:
     """
     Write a synthetic inversion output with distinguishable masked regions.
@@ -89,6 +93,13 @@ def write_member(
         negation, so a sign-preserving diverging scale is testable.
     complete : bool, optional
         If False, the residual is left out, as in a member still running.
+    alternating : bool, optional
+        Write both phases of a tauc/hardav co-inversion — both fields, both
+        priors and a per-phase ``zeta_inv_<design>`` — instead of a
+        single-design run's plain ``zeta_inv``.
+    completed : str, optional
+        Value of the ``pismi_alternation_completed`` stamp, written only for
+        an alternating run.
 
     Returns
     -------
@@ -99,18 +110,28 @@ def write_member(
     free = np.zeros((ny, nx), dtype=bool)
     free[:, : nx // 2] = True
 
+    field = np.where(free, tauc_free, tauc_fixed)[np.newaxis, ...]
+    zeta_field = np.where(free, zeta, -zeta)[np.newaxis, ...]
     data: dict[str, Any] = {
         "pism_config": ((), np.int8(0), {PENALTY: np.float64(penalty_weight)}),
-        design: (("time", "y", "x"), np.where(free, tauc_free, tauc_fixed)[np.newaxis, ...]),
-        f"{design}_prior": (("time", "y", "x"), np.full((1, ny, nx), tauc_fixed)),
-        "zeta_inv": (("time", "y", "x"), np.where(free, zeta, -zeta)[np.newaxis, ...]),
         "zeta_fixed_mask": (("time", "y", "x"), np.where(free, 0.0, 1.0)[np.newaxis, ...]),
         "vel_misfit_weight": (("time", "y", "x"), free.astype(float)[np.newaxis, ...]),
     }
+    designs = ("tauc", "hardav") if alternating else (design,)
+    for name in designs:
+        data[name] = (("time", "y", "x"), field)
+        data[f"{name}_prior"] = (("time", "y", "x"), np.full((1, ny, nx), tauc_fixed))
+        if alternating:
+            data[f"zeta_inv_{name}"] = (("time", "y", "x"), zeta_field)
+    if not alternating:
+        data["zeta_inv"] = (("time", "y", "x"), zeta_field)
     if complete:
         data["inv_residual"] = (("time", "y", "x"), np.where(free, residual, 2 * residual)[np.newaxis, ...])
     coords = {"x": np.arange(nx, dtype=float) * 100.0, "y": np.arange(ny, dtype=float) * 100.0}
-    xr.Dataset(data, coords=coords).to_netcdf(path)
+    ds = xr.Dataset(data, coords=coords)
+    if alternating:
+        ds.attrs["pismi_alternation_completed"] = completed
+    ds.to_netcdf(path)
     return path
 
 
@@ -153,14 +174,14 @@ def test_read_member_masks_to_the_inverted_region(ensemble: list[Path]) -> None:
     """
     member = read_member(ensemble[0], [PENALTY], list(FIELDS))
     assert member is not None
-    assert member["design_name"] == "tauc"
     assert member["penalty_weight"] == 10.0
     # Every field keeps the same left half and drops the same right half.
-    for key in FIELDS:
+    for key in ("design:tauc", "zeta:tauc", "residual"):
         assert np.isnan(member[key]).sum() == member[key].size // 2, key
-    assert np.nanmin(member["design"]) == np.nanmax(member["design"]) == 3.0e5
-    assert np.nanmin(member["zeta"]) == np.nanmax(member["zeta"]) == 3.0
+    assert np.nanmin(member["design:tauc"]) == np.nanmax(member["design:tauc"]) == 3.0e5
+    assert np.nanmin(member["zeta:tauc"]) == np.nanmax(member["zeta:tauc"]) == 3.0
     assert np.nanmin(member["residual"]) == np.nanmax(member["residual"]) == 5.0
+    assert member["designs"] == ["tauc"]
 
 
 def test_read_member_reads_only_what_is_asked(ensemble: list[Path]) -> None:
@@ -179,8 +200,8 @@ def test_read_member_reads_only_what_is_asked(ensemble: list[Path]) -> None:
     """
     member = read_member(ensemble[0], [PENALTY], ["zeta"])
     assert member is not None
-    assert "zeta" in member
-    assert "design" not in member and "residual" not in member
+    assert "zeta:tauc" in member
+    assert "design:tauc" not in member and "residual" not in member
 
 
 def test_read_member_unmasked_keeps_everything(ensemble: list[Path]) -> None:
@@ -199,9 +220,9 @@ def test_read_member_unmasked_keeps_everything(ensemble: list[Path]) -> None:
     """
     member = read_member(ensemble[0], [PENALTY], list(FIELDS), mask=False)
     assert member is not None
-    assert not np.isnan(member["design"]).any()
-    assert set(np.unique(member["design"])) == {3.0e5, 1.4e5}
-    assert set(np.unique(member["zeta"])) == {3.0, -3.0}
+    assert not np.isnan(member["design:tauc"]).any()
+    assert set(np.unique(member["design:tauc"])) == {3.0e5, 1.4e5}
+    assert set(np.unique(member["zeta:tauc"])) == {3.0, -3.0}
 
 
 def test_read_member_skips_incomplete(ensemble: list[Path]) -> None:
@@ -242,19 +263,25 @@ def test_read_member_skips_unknown_parameter(ensemble: list[Path]) -> None:
     assert read_member(ensemble[0], ["surface.pdd.factor_ice"], list(FIELDS)) is None
 
 
-def test_field_name_substitutes_the_design_variable() -> None:
+def test_field_items_expand_over_the_design_variables() -> None:
     """
-    Name each field's file after the variable it plots.
+    Give the design variable and zeta a figure per phase, the residual one.
 
     Returns
     -------
     None
         Asserts only.
     """
-    assert field_name("design", "tauc") == "tauc"
-    assert field_name("design", "hardav") == "hardav"
-    assert field_name("zeta", "tauc") == "zeta_inv"
-    assert field_name("residual", "tauc") == "inv_residual"
+    assert field_items(list(FIELDS), ["tauc"]) == [("design", "tauc"), ("zeta", "tauc"), ("residual", None)]
+    assert field_items(list(FIELDS), ["tauc", "hardav"]) == [
+        ("design", "tauc"),
+        ("design", "hardav"),
+        ("zeta", "tauc"),
+        ("zeta", "hardav"),
+        ("residual", None),
+    ]
+    assert item_key("zeta", "hardav") == "zeta:hardav"
+    assert item_key("residual", None) == "residual"
 
 
 def test_shared_limits_pool_across_members() -> None:
@@ -328,11 +355,13 @@ def test_plot_field_writes_one_file_per_variable(ensemble: list[Path], tmp_path:
     members = [m for m in (read_member(f, [PENALTY], list(FIELDS)) for f in ensemble) if m is not None]
     members.sort(key=lambda m: m["penalty_weight"])
     base = tmp_path / "figures" / "maps.png"
-    written = [plot_field(members, key, "penalty_weight", base) for key in FIELDS]
+    written = [
+        plot_field(members, key, design, "penalty_weight", base) for key, design in field_items(list(FIELDS), ["tauc"])
+    ]
     assert [p.name for p in written] == ["maps_tauc.png", "maps_zeta_inv.png", "maps_inv_residual.png"]
     assert all(p.exists() for p in written)
 
-    single = plot_field(members[:1], "design", "penalty_weight", tmp_path / "one.pdf", scale="linear")
+    single = plot_field(members[:1], "design", "tauc", "penalty_weight", tmp_path / "one.pdf", scale="linear")
     assert single.name == "one_tauc.pdf" and single.exists()
 
 
@@ -354,11 +383,11 @@ def test_plot_field_wraps_onto_a_grid(ensemble: list[Path], tmp_path: Path) -> N
     """
     members = [m for m in (read_member(f, [PENALTY], ["zeta"]) for f in ensemble) if m is not None]
     # Four members over two columns: a full grid.
-    assert plot_field(members, "zeta", "penalty_weight", tmp_path / "full.png", ncols=2).exists()
+    assert plot_field(members, "zeta", "tauc", "penalty_weight", tmp_path / "full.png", ncols=2).exists()
     # Three over two: the fourth cell must be hidden rather than left empty.
-    assert plot_field(members[:3], "zeta", "penalty_weight", tmp_path / "partial.png", ncols=2).exists()
+    assert plot_field(members[:3], "zeta", "tauc", "penalty_weight", tmp_path / "partial.png", ncols=2).exists()
     # More columns than members still gives one row.
-    assert plot_field(members[:2], "zeta", "penalty_weight", tmp_path / "wide.png", ncols=8).exists()
+    assert plot_field(members[:2], "zeta", "tauc", "penalty_weight", tmp_path / "wide.png", ncols=8).exists()
 
 
 def test_main_end_to_end(ensemble: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -447,3 +476,172 @@ def test_main_exits_when_nothing_is_usable(
     )
     with pytest.raises(SystemExit, match="yielded a panel"):
         main()
+
+
+@pytest.fixture(name="alternating")
+def fixture_alternating(tmp_path: Path) -> list[Path]:
+    """
+    Two-member alternating co-inversion, plus one still in its first phase.
+
+    The unfinished member carries only ``zeta_inv_tauc``, as ``pismi`` writes
+    mid-cycle.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The member files.
+    """
+    files = [
+        write_member(tmp_path / f"alt_{p:g}.nc", p, zeta=z, alternating=True) for p, z in [(1.0, 1.5), (10.0, 3.0)]
+    ]
+    partial = xr.open_dataset(files[0]).load()
+    partial = partial.drop_vars(["tauc", "hardav", "tauc_prior", "hardav_prior", "zeta_inv_hardav", "inv_residual"])
+    partial["pism_config"].attrs[PENALTY] = np.float64(100.0)
+    partial.to_netcdf(tmp_path / "alt_partial.nc")
+    files.append(tmp_path / "alt_partial.nc")
+    return files
+
+
+def test_alternating_yields_a_figure_per_phase(alternating: list[Path], tmp_path: Path) -> None:
+    """
+    Read both phases of a co-inversion and name each figure after its field.
+
+    Parameters
+    ----------
+    alternating : list of pathlib.Path
+        Alternating ensemble from the fixture.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    member = read_member(alternating[0], [PENALTY], list(FIELDS))
+    assert member is not None
+    assert member["designs"] == ["tauc", "hardav"]
+    assert member["resolved"]["zeta:tauc"] == "zeta_inv_tauc"
+    assert member["resolved"]["zeta:hardav"] == "zeta_inv_hardav"
+
+    members = [m for m in (read_member(f, [PENALTY], list(FIELDS)) for f in alternating[:2]) if m is not None]
+    base = tmp_path / "alt.png"
+    written = [
+        plot_field(members, key, design, "penalty_weight", base)
+        for key, design in field_items(list(FIELDS), members[0]["designs"])
+    ]
+    assert [p.name for p in written] == [
+        "alt_tauc.png",
+        "alt_hardav.png",
+        "alt_zeta_inv_tauc.png",
+        "alt_zeta_inv_hardav.png",
+        "alt_inv_residual.png",
+    ]
+    assert all(p.exists() for p in written)
+
+
+def test_alternating_subset_and_partial_members(
+    alternating: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Skip a member that has not reached a phase, but keep it for one it has.
+
+    Parameters
+    ----------
+    alternating : list of pathlib.Path
+        Alternating ensemble from the fixture.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to set ``sys.argv``.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    # The half-finished member has no hardav phase yet.
+    assert read_member(alternating[-1], [PENALTY], list(FIELDS)) is None
+    # ... but its tauc zeta is there, so a zeta-only run keeps all three.
+    base = tmp_path / "phase" / "alt.png"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["pism-inverse-plot", "--variables", "zeta", "--design-variable", "tauc", "-o", str(base)]
+        + [str(f) for f in alternating],
+    )
+    main()
+    assert {p.name for p in base.parent.glob("*.png")} == {"alt_zeta_inv_tauc.png"}
+
+
+def test_design_variable_takes_a_list(alternating: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Accept a comma-separated ``--design-variable``, and reject a bad name.
+
+    Parameters
+    ----------
+    alternating : list of pathlib.Path
+        Alternating ensemble from the fixture.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to set ``sys.argv``.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    base = tmp_path / "both" / "alt.png"
+    argv = [
+        "pism-inverse-plot",
+        "--variables",
+        "design",
+        "--design-variable",
+        "tauc,hardav",
+        "-o",
+        str(base),
+    ] + [str(f) for f in alternating[:2]]
+    monkeypatch.setattr("sys.argv", argv)
+    main()
+    assert {p.name for p in base.parent.glob("*.png")} == {"alt_tauc.png", "alt_hardav.png"}
+
+    monkeypatch.setattr("sys.argv", argv[:4] + ["tauc,speed"] + argv[5:])
+    with pytest.raises(SystemExit):
+        main()
+
+
+def test_completed_phases_reads_the_alternation_stamp(tmp_path: Path) -> None:
+    """
+    Tell an inverted phase from one still holding its prior.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    cases = {
+        # Each cycle runs tauc then hardav.
+        "c0_tauc": {"tauc"},
+        "c0_hardav": {"tauc", "hardav"},
+        "c1_tauc": {"tauc", "hardav"},
+        "c1_hardav": {"tauc", "hardav"},
+    }
+    for stamp, expected in cases.items():
+        path = write_member(tmp_path / f"{stamp}.nc", 1.0, alternating=True, completed=stamp)
+        with xr.open_dataset(path) as ds:
+            assert completed_phases(ds) == expected, stamp
+
+    # A single-design run carries no stamp.
+    plain = write_member(tmp_path / "plain.nc", 1.0)
+    with xr.open_dataset(plain) as ds:
+        assert completed_phases(ds) is None

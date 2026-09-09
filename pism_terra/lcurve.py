@@ -119,17 +119,45 @@ def short_name(parameter: str) -> str:
     return parameter.split(".")[-1]
 
 
-def design_variable(ds: xr.Dataset) -> str | None:
+def design_variables(ds: xr.Dataset) -> list[str]:
     """
-    Which field the inversion solved for: ``tauc`` or ``hardav``.
+    Which fields the inversion solved for: ``tauc``, ``hardav``, or both.
 
     ``pismi``'s ``-inv_design`` is a plain option rather than a configuration
     parameter, so it is not recorded in ``pism_config`` and has to be read off
     the variables the run wrote. An alternating co-inversion names its design
-    variable per phase (``zeta_inv_tauc`` / ``zeta_inv_hardav``); a
+    variable per phase (``zeta_inv_tauc`` *and* ``zeta_inv_hardav``); a
     single-design run writes ``zeta_inv`` and a ``<design>_prior``. The plain
     field is the last resort, since a ``tauc`` inversion of a Blatter forward
-    problem may carry a prescribed ``hardav`` alongside it.
+    problem may carry a prescribed ``hardav`` alongside it, and an alternating
+    run carries both fields whichever phase it is in.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output.
+
+    Returns
+    -------
+    list of str
+        The design variables, in :data:`DESIGN_VARIABLES` order — two for an
+        alternating co-inversion, one for a single-design run, none when the
+        file names neither.
+    """
+    names = set(ds.variables)
+    for candidates in (
+        [v for v in DESIGN_VARIABLES if f"zeta_inv_{v}" in names],
+        [v for v in DESIGN_VARIABLES if f"{v}_prior" in names],
+        [v for v in DESIGN_VARIABLES if v in names],
+    ):
+        if candidates:
+            return candidates
+    return []
+
+
+def design_variable(ds: xr.Dataset) -> str | None:
+    """
+    Give the single field the inversion solved for, if there is just one.
 
     Parameters
     ----------
@@ -140,19 +168,61 @@ def design_variable(ds: xr.Dataset) -> str | None:
     -------
     str or None
         ``"tauc"`` or ``"hardav"``, or ``None`` when the file names neither
-        or names both (an alternating run inverts for both in turn).
+        or names both — an alternating run inverts for both in turn, so no
+        single name describes it. Use :func:`design_variables` there.
     """
-    names = set(ds.variables)
-    for candidates in (
-        [v for v in DESIGN_VARIABLES if f"zeta_inv_{v}" in names],
-        [v for v in DESIGN_VARIABLES if f"{v}_prior" in names],
-        [v for v in DESIGN_VARIABLES if v in names],
-    ):
-        if len(candidates) == 1:
-            return candidates[0]
-        if len(candidates) > 1:
-            return None
-    return None
+    found = design_variables(ds)
+    return found[0] if len(found) == 1 else None
+
+
+def design_units(ds: xr.Dataset, design: str) -> str:
+    """
+    Give a design variable's units, with the Glen exponent filled in.
+
+    ``hardav`` is the vertically-averaged hardness B = A^(-1/n), so PISM
+    writes its units as the literal ``Pa s^(1/n)`` — a string UDUNITS cannot
+    parse, which is why PISM sets it without validation. Substitute the flow
+    law's ``n`` when the file records one.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output carrying ``pism_config``.
+    design : str
+        Design variable, a key of :data:`DESIGN_VARIABLES`.
+
+    Returns
+    -------
+    str
+        Units, e.g. ``"Pa"`` for ``tauc`` and ``"Pa s^(1/3)"`` for ``hardav``
+        under the usual Glen exponent.
+    """
+    units = DESIGN_VARIABLES[design]
+    if "1/n" not in units:
+        return units
+    config = ds["pism_config"].attrs
+    for key in _GLEN_EXPONENT_KEYS:
+        if key in config:
+            return units.replace("1/n", f"1/{float(config[key]):g}")
+    return units
+
+
+def mathtext_units(units: str) -> str:
+    """
+    Typeset a units string's ``^(...)`` exponents as mathtext.
+
+    Parameters
+    ----------
+    units : str
+        Units as PISM writes them, e.g. ``"Pa s^(1/3)"``.
+
+    Returns
+    -------
+    str
+        The same units with the exponent in mathtext, so an axis shows
+        ``Pa s^{1/3}`` rather than the caret and parentheses.
+    """
+    return re.sub(r"\^\(([^)]*)\)", r"$^{\1}$", units)
 
 
 def model_norm_units(ds: xr.Dataset, design: str | None) -> str | None:
@@ -183,13 +253,7 @@ def model_norm_units(ds: xr.Dataset, design: str | None) -> str | None:
     config = ds["pism_config"].attrs
     if design is None or str(config.get("inverse.design.param", "")).lower() != "ident":
         return None
-    units = DESIGN_VARIABLES[design]
-    if "1/n" not in units:
-        return units
-    for key in _GLEN_EXPONENT_KEYS:
-        if key in config:
-            return units.replace("1/n", f"1/{float(config[key]):g}")
-    return units
+    return design_units(ds, design)
 
 
 def data_misfit(ds: xr.Dataset) -> float:
@@ -361,10 +425,7 @@ def norm_axis_label(df: pd.DataFrame) -> str:
     # parameterized zeta, not of the field itself (see model_norm_units).
     if len(units) != 1:
         return f"{base}, {designs[0]} (dimensionless $\\zeta$)"
-    # PISM writes the exponent as ``s^(1/3)``; typeset it rather than
-    # printing the caret and parentheses literally on the axis.
-    shown = re.sub(r"\^\(([^)]*)\)", r"$^{\1}$", units[0])
-    return f"{base}, {designs[0]} ({shown})"
+    return f"{base}, {designs[0]} ({mathtext_units(units[0])})"
 
 
 def plot_lcurve(

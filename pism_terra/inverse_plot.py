@@ -47,6 +47,17 @@ pism-inverse-plot --parameters inverse.tikhonov.penalty_weight \
 
 writes ``maps_tauc.png``, ``maps_zeta_inv.png`` and ``maps_inv_residual.png``.
 
+An alternating ``tauc``/``hardav`` co-inversion solves for both, so the
+design variable and zeta each get a figure per phase — ``maps_tauc.png``,
+``maps_hardav.png``, ``maps_zeta_inv_tauc.png``, ``maps_zeta_inv_hardav.png``
+— while the residual stays shared. ``--design-variable`` takes a
+comma-separated subset when only one phase is wanted. A field no member has
+reached yet is skipped rather than half-drawn, so asking for ``--variables
+zeta --design-variable tauc`` will map a sweep that is still in its first
+cycle. A phase the run has not reached is warned about rather than passed off
+as a result: until ``pismi`` has inverted for ``hardav``, the ``hardav`` in
+the file is the prior it computed from enthalpy.
+
 The design variable and zeta are masked to the cells the inversion was free
 to change (``zeta_fixed_mask == 0``) and the residual to the misfit area PISM
 actually fit (``vel_misfit_weight > 0``) — elsewhere the field is just the
@@ -59,6 +70,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from dataclasses import dataclass
@@ -76,8 +88,10 @@ from matplotlib.colors import LogNorm, Normalize
 from pism_terra.lcurve import (
     DEFAULT_PARAMETERS,
     DESIGN_VARIABLES,
-    design_variable,
+    design_units,
+    design_variables,
     fontsize,
+    mathtext_units,
     rc_params,
     short_name,
 )
@@ -139,7 +153,7 @@ FIELDS = {
     # writes the plain name.
     "zeta": FieldSpec(
         ("zeta_inv", "zeta_inv_{design}"),
-        r"$\zeta$ (design variable)",
+        r"$\zeta$ ({design})",
         "1",
         "cmc.broc",
         "diverging",
@@ -147,6 +161,55 @@ FIELDS = {
     ),
     "residual": FieldSpec(("inv_residual",), "inversion residual", "m yr$^{-1}$", "magma", "linear", MISFIT_AREA_MASKS),
 }
+
+
+def field_items(fields: list[str], designs: list[str]) -> list[tuple[str, str | None]]:
+    """
+    Expand field keys over the design variables they depend on.
+
+    An alternating co-inversion solves for both ``tauc`` and ``hardav``, so
+    the design variable and zeta each become one figure per phase; the
+    residual is shared and stays single.
+
+    Parameters
+    ----------
+    fields : list of str
+        Keys of :data:`FIELDS`.
+    designs : list of str
+        Design variables the run solved for.
+
+    Returns
+    -------
+    list of tuple
+        ``(field key, design variable or None)`` pairs, one per figure.
+    """
+    items: list[tuple[str, str | None]] = []
+    for key in fields:
+        spec = FIELDS[key]
+        if any("{design}" in variable for variable in spec.variables):
+            items.extend((key, design) for design in designs)
+        else:
+            items.append((key, None))
+    return items
+
+
+def item_key(key: str, design: str | None) -> str:
+    """
+    Key one expanded field takes in a member dict.
+
+    Parameters
+    ----------
+    key : str
+        Field key, one of :data:`FIELDS`.
+    design : str or None
+        Design variable the field belongs to, or ``None`` when it is shared.
+
+    Returns
+    -------
+    str
+        ``"zeta:hardav"`` for a per-design field, ``"residual"`` otherwise.
+    """
+    return f"{key}:{design}" if design else key
 
 
 def _slice2d(ds: xr.Dataset, name: str) -> np.ndarray:
@@ -168,7 +231,7 @@ def _slice2d(ds: xr.Dataset, name: str) -> np.ndarray:
     return ds[name].squeeze().values.astype(float)
 
 
-def _resolve(spec: FieldSpec, ds: xr.Dataset, design: str) -> str | None:
+def _resolve(spec: FieldSpec, ds: xr.Dataset, design: str | None) -> str | None:
     """
     Find the first of a field's candidate variables that the file carries.
 
@@ -178,8 +241,8 @@ def _resolve(spec: FieldSpec, ds: xr.Dataset, design: str) -> str | None:
         Field being read.
     ds : xarray.Dataset
         Inversion output.
-    design : str
-        Design variable the run inverted for.
+    design : str or None
+        Design variable this figure belongs to; ``None`` for a shared field.
 
     Returns
     -------
@@ -187,7 +250,7 @@ def _resolve(spec: FieldSpec, ds: xr.Dataset, design: str) -> str | None:
         Variable name, or ``None`` when the file carries none of them.
     """
     for candidate in spec.variables:
-        name = candidate.replace("{design}", design)
+        name = candidate.replace("{design}", design or "")
         if name in ds:
             return name
     return None
@@ -231,7 +294,7 @@ def read_member(
     parameters: list[str],
     fields: list[str],
     *,
-    variable: str | None = None,
+    designs: list[str] | None = None,
     mask: bool = True,
 ) -> dict[str, Any] | None:
     """
@@ -247,23 +310,25 @@ def read_member(
     fields : list of str
         Keys of :data:`FIELDS` to read. A file missing any of them is
         skipped, so ask only for what will be plotted.
-    variable : str or None, optional
-        Design variable, or ``None`` to detect it per file with
-        :func:`pism_terra.lcurve.design_variable`.
+    designs : list of str or None, optional
+        Design variables to read, or ``None`` to detect them per file with
+        :func:`pism_terra.lcurve.design_variables`. An alternating
+        co-inversion yields both, and each gets its own entry.
     mask : bool, optional
         Mask each field to where it is meaningful.
 
     Returns
     -------
     dict or None
-        One entry per requested field, plus ``design_name``, ``x``, ``y``,
-        ``file`` and one entry per parameter — or ``None`` when the file
-        cannot contribute a panel, which is logged.
+        One entry per expanded field, keyed by :func:`item_key`, plus
+        ``designs``, ``resolved`` (the variable each entry came from), ``x``,
+        ``y``, ``file`` and one entry per parameter — or ``None`` when the
+        file cannot contribute a panel, which is logged.
     """
     try:
         with xr.open_dataset(path) as ds:
-            design = variable or design_variable(ds)
-            if design is None:
+            found = designs or design_variables(ds)
+            if not found:
                 logger.warning("%s: skipped, cannot tell tauc from hardav; pass --design-variable", path.name)
                 return None
             config = ds["pism_config"].attrs
@@ -273,19 +338,26 @@ def read_member(
                 return None
 
             member: dict[str, Any] = {short_name(p): float(config[p]) for p in parameters}
-            for key in fields:
+            resolved: dict[str, str] = {}
+            for key, design in field_items(fields, found):
                 spec = FIELDS[key]
                 name = _resolve(spec, ds, design)
                 if name is None:
                     logger.warning(
-                        "%s: skipped, none of %s present",
+                        "%s: skipped, no %s field — none of %s present, so this phase is not written yet",
                         path.name,
-                        ", ".join(v.replace("{design}", design) for v in spec.variables),
+                        item_key(key, design),
+                        ", ".join(v.replace("{design}", design or "") for v in spec.variables),
                     )
                     return None
                 values = _slice2d(ds, name)
-                member[key] = _apply_mask(ds, values, spec, path.name, key) if mask else values
-            member["design_name"] = design
+                entry = item_key(key, design)
+                member[entry] = _apply_mask(ds, values, spec, path.name, entry) if mask else values
+                resolved[entry] = name
+            member["designs"] = found
+            member["resolved"] = resolved
+            member["units"] = {d: design_units(ds, d) for d in found}
+            _warn_unfinished_phases(ds, found, path.name)
             member["x"] = ds["x"].values
             member["y"] = ds["y"].values
             member["file"] = path.name
@@ -293,6 +365,65 @@ def read_member(
     except (OSError, KeyError, ValueError) as error:
         logger.warning("%s: skipped, %s", path.name, error)
         return None
+
+
+def completed_phases(ds: xr.Dataset) -> set[str] | None:
+    """
+    Which phases of an alternating co-inversion have finished.
+
+    ``pismi`` stamps the output with ``pismi_alternation_completed``, the last
+    phase it got through, as ``c<cycle>_<design>``. Each cycle runs ``tauc``
+    then ``hardav``, so finishing ``c0_hardav`` means both are done, while
+    finishing ``c0_tauc`` means ``hardav`` has never been inverted — the
+    ``hardav`` in the file is then still the prior computed from enthalpy, not
+    a result.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output.
+
+    Returns
+    -------
+    set of str or None
+        The design variables that have been inverted at least once, or
+        ``None`` when the file carries no alternation stamp (a single-design
+        run, or one that has not finished a phase).
+    """
+    stamp = str(ds.attrs.get("pismi_alternation_completed", ""))
+    match = re.fullmatch(r"c(\d+)_(\w+)", stamp)
+    if match is None:
+        return None
+    cycle, design = int(match.group(1)), match.group(2)
+    if design == "hardav":
+        return {"tauc", "hardav"}
+    return {"tauc", "hardav"} if cycle >= 1 else {"tauc"}
+
+
+def _warn_unfinished_phases(ds: xr.Dataset, designs: list[str], filename: str) -> None:
+    """
+    Warn when a design variable in the file was never actually inverted.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output.
+    designs : list of str
+        Design variables being read.
+    filename : str
+        File name, for the warning.
+    """
+    done = completed_phases(ds)
+    if done is None:
+        return
+    for design in designs:
+        if design not in done:
+            logger.warning(
+                "%s: %s has not been inverted yet (alternation reached %s); its field is still the prior",
+                filename,
+                design,
+                ds.attrs.get("pismi_alternation_completed"),
+            )
 
 
 def shared_limits(
@@ -357,29 +488,10 @@ def shared_limits(
     return low, high
 
 
-def field_name(key: str, design: str) -> str:
-    """
-    Name a field takes in the output filename.
-
-    Parameters
-    ----------
-    key : str
-        Field key, one of :data:`FIELDS`.
-    design : str
-        Design variable the run inverted for.
-
-    Returns
-    -------
-    str
-        The field's first candidate variable name, with the design variable
-        substituted — e.g. ``"tauc"``, ``"zeta_inv"``, ``"inv_residual"``.
-    """
-    return FIELDS[key].variables[0].replace("{design}", design)
-
-
 def plot_field(
     members: list[dict[str, Any]],
     key: str,
+    design: str | None,
     sweep: str,
     output_file: Path,
     *,
@@ -401,11 +513,15 @@ def plot_field(
         Member dicts from :func:`read_member`, in plotting order.
     key : str
         Field to draw, a key of :data:`FIELDS`.
+    design : str or None
+        Design variable this figure belongs to; ``None`` for a shared field
+        such as the residual.
     sweep : str
         Column naming the swept parameter; its value titles each panel.
     output_file : pathlib.Path
-        Base path; the field's variable name is appended to its stem, so
-        ``maps.png`` becomes e.g. ``maps_tauc.png``.
+        Base path; the name of the variable actually plotted is appended to
+        its stem, so ``maps.png`` becomes e.g. ``maps_tauc.png`` or
+        ``maps_zeta_inv_hardav.png``.
     cmap : str or None, optional
         Colormap, defaulting to the field's own.
     scale : str or None, optional
@@ -427,16 +543,15 @@ def plot_field(
         The file written.
     """
     spec = FIELDS[key]
-    design_name = members[0]["design_name"]
-    names = {m["design_name"] for m in members}
-    if len(names) > 1:
-        logger.warning(
-            "members disagree on the design variable (%s); labelling as %s", ", ".join(sorted(names)), design_name
-        )
-    label = spec.label.replace("{design}", design_name)
-    units = spec.units.replace("{design_units}", DESIGN_VARIABLES.get(design_name, ""))
+    entry = item_key(key, design)
+    # The design variable names the field for a "design" figure; for zeta it
+    # names the phase. Either way the resolved variable names the file, so an
+    # alternating run's two zeta figures do not collide.
+    label = spec.label.replace("{design}", design or "")
+    units = mathtext_units(spec.units.replace("{design_units}", members[0]["units"].get(design or "", "")))
+    variable = members[0]["resolved"][entry]
     scale = scale or spec.scale
-    low, high = shared_limits([m[key] for m in members], percentile=percentile, vmin=vmin, vmax=vmax, scale=scale)
+    low, high = shared_limits([m[entry] for m in members], percentile=percentile, vmin=vmin, vmax=vmax, scale=scale)
     norm = LogNorm(vmin=low, vmax=high) if scale == "log" else Normalize(vmin=low, vmax=high)
 
     with mpl.rc_context(rc=rc_params):
@@ -454,7 +569,7 @@ def plot_field(
         flat = axs.ravel()
         for ax, member in zip(flat, members):
             image = ax.imshow(
-                member[key],
+                member[entry],
                 origin="lower",
                 extent=extent,
                 cmap=cmap or spec.cmap,
@@ -473,12 +588,32 @@ def plot_field(
         colorbar.set_label(f"{label} ({units})" if units else label, fontsize=fontsize)
         colorbar.ax.tick_params(labelsize=fontsize)
 
-        path = output_file.with_name(f"{output_file.stem}_{field_name(key, design_name)}{output_file.suffix}")
+        path = output_file.with_name(f"{output_file.stem}_{variable}{output_file.suffix}")
         path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(path, dpi=dpi)
         plt.close(fig)
     logger.info("wrote %s", path)
     return path
+
+
+def _in_every(item: tuple[str, str | None], members: list[dict[str, Any]]) -> bool:
+    """
+    Check that every member carries one expanded field.
+
+    Parameters
+    ----------
+    item : tuple
+        ``(field key, design variable or None)`` from :func:`field_items`.
+    members : list of dict
+        Member dicts from :func:`read_member`.
+
+    Returns
+    -------
+    bool
+        True when every member has the field, so the figure would be
+        complete.
+    """
+    return all(item_key(*item) in member for member in members)
 
 
 def main() -> None:
@@ -521,8 +656,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--design-variable",
-        help="Design variable to plot. The default reads it from each file.",
-        choices=sorted(DESIGN_VARIABLES),
+        help=f"Comma-separated design variables to plot ({', '.join(DESIGN_VARIABLES)}), each getting its "
+        "own figure. The default reads them from each file, which yields both phases of an "
+        "alternating co-inversion.",
+        type=str,
         default=None,
     )
     for key, spec in FIELDS.items():
@@ -577,6 +714,15 @@ def main() -> None:
     unknown = [f for f in fields if f not in FIELDS]
     if unknown or not fields:
         parser.error(f"--variables takes any of {', '.join(FIELDS)}; got {', '.join(unknown) or 'nothing'}")
+    designs = None
+    if options.design_variable:
+        designs = [d.strip() for d in options.design_variable.split(",") if d.strip()]
+        unknown = [d for d in designs if d not in DESIGN_VARIABLES]
+        if unknown or not designs:
+            parser.error(
+                f"--design-variable takes any of {', '.join(DESIGN_VARIABLES)}; "
+                f"got {', '.join(unknown) or 'nothing'}"
+            )
 
     output_file = Path(options.output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -585,8 +731,7 @@ def main() -> None:
     members = [
         member
         for member in (
-            read_member(Path(f), parameters, fields, variable=options.design_variable, mask=not options.no_mask)
-            for f in options.INFILES
+            read_member(Path(f), parameters, fields, designs=designs, mask=not options.no_mask) for f in options.INFILES
         )
         if member is not None
     ]
@@ -599,10 +744,14 @@ def main() -> None:
     members.sort(key=lambda m: tuple(m[short_name(p)] for p in parameters))
     logger.info("plotting %d of %d files", len(members), len(options.INFILES))
 
-    for key in fields:
+    # Members may disagree on which phases they have reached, so plot only
+    # the fields every one of them carries.
+    items = [item for item in field_items(fields, members[0]["designs"]) if _in_every(item, members)]
+    for key, design in items:
         path = plot_field(
             members,
             key,
+            design,
             sweep,
             output_file,
             cmap=getattr(options, f"{key}_cmap"),

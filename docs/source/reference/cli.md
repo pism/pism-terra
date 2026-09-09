@@ -84,7 +84,8 @@ keeps their outputs apart.
 * - `pism-inverse-plot`
   - Map an inversion ensemble field by field — the inverted field (`tauc` or
     `hardav`), the design variable `zeta`, and the velocity residual — one
-    figure each, every member on one shared color scale.
+    figure each, every member on one shared color scale. An alternating
+    co-inversion gets a figure per phase.
 ```
 
 ## ISMIP7 Greenland
