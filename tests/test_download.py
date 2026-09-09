@@ -15,12 +15,20 @@
 # You should have received a copy of the GNU General Public License
 # along with PISM; if not, write to the Free Software
 
+# pylint: disable=protected-access
+
 """
-Tests for the USGS benchmark-glacier download. No network access.
+Tests for the USGS benchmark-glacier download and the CDS request cache.
+
+No network access.
 """
 
 import zipfile
 from pathlib import Path
+
+import numpy as np
+import pytest
+import xarray as xr
 
 from pism_terra import download as dl
 
@@ -92,3 +100,75 @@ def test_download_uses_resolved_urls(tmp_path, monkeypatch):
 
     dl.download_usgs_benchmark(tmp_path)
     assert len(fetched) == 2
+
+
+def test_empty_cache_is_not_reused(tmp_path):
+    """
+    Reject a cached NetCDF that holds no data variables.
+
+    A CDS download in which every year failed leaves ``xr.merge([])`` behind:
+    a valid, empty dataset. It opens cleanly and carries whatever request key
+    it was stamped with, so without this check it would be reused forever.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    """
+    empty = tmp_path / "empty.nc"
+    ds = xr.merge([])
+    ds.attrs["cds_request_key"] = "abc"
+    ds.to_netcdf(empty)
+    # It passes every other gate, which is exactly why it needs its own.
+    assert dl._cache_key_matches(empty, "abc")
+    assert not dl._has_variables(empty)
+
+    real = tmp_path / "real.nc"
+    xr.Dataset(
+        {"t2m": (("latitude", "longitude"), np.zeros((3, 4)))},
+        coords={"latitude": np.arange(3.0), "longitude": np.arange(4.0)},
+    ).to_netcdf(real)
+    assert dl._has_variables(real)
+
+    assert not dl._has_variables(tmp_path / "absent.nc")
+
+
+def test_download_request_refuses_an_empty_result(tmp_path, monkeypatch):
+    """
+    Raise, and cache nothing, when every year of a CDS request fails.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to replace the CDS download.
+    """
+
+    def no_downloads(*args, **kwargs):  # pylint: disable=unused-argument
+        """
+        Stand in for a CDS download whose every year failed.
+
+        Parameters
+        ----------
+        *args : tuple
+            Ignored.
+        **kwargs : dict
+            Ignored.
+
+        Returns
+        -------
+        list
+            No files, as ``_cds_download_years`` returns when it has logged
+            and omitted every year.
+        """
+        return []
+
+    monkeypatch.setattr(dl, "_cds_download_years", no_downloads)
+    monkeypatch.setattr(dl, "_DatastoresClient", lambda *a, **k: object())
+
+    out = tmp_path / "era5.nc"
+    with pytest.raises(RuntimeError, match="no data downloaded"):
+        dl.download_request(area=(62.0, -145.0, 61.0, -141.0), year=[2000, 2001], file_path=out)
+    # Nothing cached, so the next run retries instead of reusing a husk.
+    assert not out.exists()
