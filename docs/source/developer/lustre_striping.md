@@ -96,11 +96,24 @@ numbers, the date and the PISM version in the harness README when you set
 them: the answer depends on how PISM writes and on how loaded the filesystem
 is, and both change.
 
-```{admonition} Not yet measured
+```{admonition} Measure repeatedly, not once
 :class: warning
 
-Nothing here has been run on chinook yet — the split above is derived from
-how the two templates invoke PISM and from the UAF guidance, not from
-timings. Treat the recommended candidates as the first things to test, not
-as settings to adopt.
+`/import/c1` is shared and, as of 2026-09-10, **90 % full**. A first probe
+with one measurement per setting came back non-monotonic — the best and the
+worst single-stream figures were both at stripe count 1 — which is what
+neighbouring load looks like, not a stripe effect. `stripe_probe.sh
+--repeats` runs each setting several times in shuffled order and reports the
+median with its range; judge any difference against that range before
+believing it. The recorded numbers and what they do and do not show are in
+the harness README.
+```
+
+```{admonition} A full filesystem is its own problem
+:class: note
+
+Lustre's allocator degrades and starts steering away from the fullest OSTs
+well before 100 %. At 90 % this is a plausible reason wide stripes may not
+pay off, and it means a layout tuned today is tuned against today's fill
+level. Worth re-checking after any large cleanup.
 ```
