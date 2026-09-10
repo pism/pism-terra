@@ -285,6 +285,10 @@ model = "null"
 'inverse.stress_balance.tauc_max' = 5e7
 'inverse.stress_balance.tauc_min' = 1e2
 'inverse.stress_balance.velocity_scale' = 1e2
+# Gradient-norm stopping criterion. The default (1e-10) is never reached, so
+# phases run to max_iterations; at 1e-5 the S4F runs stop once the misfit
+# changes by less than ~1e-4 per iteration (a few 0.1% above the final value).
+'inverse.tikhonov.atol' = 1e-5
 'inverse.tikhonov.penalty_weight' = 100
 'inverse.tikhonov.rtol' = 0.1
 'inverse.use_zeta_fixed_mask' = "yes"
