@@ -43,6 +43,7 @@ TEMPLATE_DIR = REPO / "pism_terra" / "templates"
 FREE_HY = CONFIG_DIR / "ismip7_greenland_2007_historical_free.toml"
 C003 = CONFIG_DIR / "ismip7_greenland_c003.toml"
 C009 = CONFIG_DIR / "ismip7_greenland_c009.toml"
+C004 = CONFIG_DIR / "ismip7_greenland_c004.toml"
 C011 = CONFIG_DIR / "ismip7_greenland_c011.toml"
 
 
@@ -661,3 +662,57 @@ def test_forward_script_without_a_counter_keeps_the_pathway_name(tmp_path):
     (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
     assert script.name.startswith("submit_g")
     assert "_C0" not in script.name
+
+
+def test_counters_do_not_share_an_init_state(tmp_path):
+    """
+    Two counters sharing a forcing GCM write their legs to separate trees.
+
+    Every counter runs its own init leg, and that leg's state is named for
+    the GCM rather than the counter — so C002 and C004, both MRI-ESM2-0,
+    would write one path at once when submitted together. The per-leg
+    directories therefore hang off ``output/<counter>/``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    states = {}
+    for counter in ("C002", "C004"):
+        # C004 is MRI-ESM2-0; re-stamp it as C002 to get the pair that
+        # collides, with the init leg shortened to one year.
+        text = C004.read_text()
+        text = text.replace('init_start = "1980-01-01"', 'init_start = "1985-01-01"', 1)
+        text = text.replace('init_end = "1985-01-01"', 'init_end = "1986-01-01"', 1)
+        text = text.replace("'run_info.counter' = \"C004\"", f"'run_info.counter' = \"{counter}\"", 1)
+        cfg_dir = tmp_path / counter
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg = cfg_dir / "config.toml"
+        cfg.write_text(text)
+        out = cfg_dir / "run"
+        _render_forward(out, cfg, sample="MRI-ESM2-0")
+        (script,) = (out / "run_scripts").glob("submit_*.sh")
+        init = _legs(script.read_text())[0]
+        states[counter] = _search(r"-output\.file (\S+state_\S+1985-01-01_1986-01-01\.nc)", init)
+
+    # Same file name — that is the collision — but under different counters.
+    assert Path(states["C002"]).name == Path(states["C004"]).name
+    assert Path(states["C002"]).parent != Path(states["C004"]).parent
+    assert Path(states["C002"]).parent.parent.name == "C002"
+    assert Path(states["C004"]).parent.parent.name == "C004"
+
+
+def test_run_without_a_counter_keeps_the_flat_output_tree(tmp_path):
+    """
+    A run with no counter writes to ``output/state`` as before.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script_text = _render_forward(tmp_path, FREE_HY, sample=0)
+    state = _search(r"-output\.file (\S+state_\S+\.nc)", script_text)
+    assert Path(state).parent.name == "state"
+    assert Path(state).parent.parent.name == "output"
