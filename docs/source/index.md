@@ -111,6 +111,7 @@ examples/index
 :hidden:
 
 developer/documentation
+developer/lustre_striping
 developer/ensemble_output_store
 ```
 
