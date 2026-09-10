@@ -612,3 +612,52 @@ def test_init_leg_carries_the_bed_deformation_model(tmp_path):
 
     for leg in (init, hist, proj):
         assert "-bed_deformation.model lc" in leg
+
+
+def test_forward_script_is_named_after_the_counter(tmp_path):
+    """
+    A counter-driven forward run is named by its Core-experiment counter.
+
+    The counter is what identifies the experiment: it names the config that
+    configured the run and the ``CORE/<counter>/`` tree the submission goes
+    into, whereas the (GCM, experiment_id) pair it resolves to has to be
+    looked up. The init leg keeps the GCM-only tag, since every counter
+    sharing a forcing GCM restarts from the same init state.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = _c003_with_init(tmp_path)
+    script_text = _render_forward(
+        tmp_path,
+        cfg,
+        sample="MRI-ESM2-0",
+        proj_overrides={"atmosphere.given.file": "proj_climate.nc"},
+    )
+    (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
+    assert script.name.endswith("_id_C003.sh"), script.name
+
+    init, hist, proj = _legs(script_text)
+    # The shared init leg is still keyed on the GCM alone.
+    assert "id_MRI-ESM2-0_1985-01-01_1986-01-01" in init
+    # The forward legs' flat outputs carry the counter.
+    for leg in (hist, proj):
+        assert "id_C003_" in leg
+        assert "id_MRI-ESM2-0_ssp370" not in leg
+
+
+def test_forward_script_without_a_counter_keeps_the_pathway_name(tmp_path):
+    """
+    A single-pathway run has no counter, so it is still named by the pathway.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    _render_forward(tmp_path, FREE_HY, sample=0)
+    (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
+    assert script.name.startswith("submit_g")
+    assert "_C0" not in script.name

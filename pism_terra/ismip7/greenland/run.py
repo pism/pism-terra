@@ -755,7 +755,15 @@ def _render_forward_run(
     if sample is None:
         name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
     else:
-        name_options = f"id_{sample}_{experiment}"
+        # A counter-driven run *is* one Core experiment, so name it after its
+        # counter: the run script and the flat (non-ISMIP7) outputs then carry
+        # the same C-code as the CORE/<counter>/ submission tree and the
+        # ismip7_greenland_<counter>.toml that configured them, rather than
+        # the (gcm, experiment_id) pair the counter happens to resolve to.
+        # The init leg is tagged separately, below, and stays keyed on the GCM
+        # alone so counters sharing a forcing GCM reuse one init state.
+        counter = cfg.run_info.counter
+        name_options = f"id_{counter}" if counter else f"id_{sample}_{experiment}"
 
     uq_clean = normalize_row(uq) if uq is not None else {}
     # Prefer explicit `sample` arg; else default from uq['sample']
