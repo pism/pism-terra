@@ -71,32 +71,6 @@ pism-glacier-run-inverse --resolution 200m --ntasks 48 --tasks 24 \
 
 Each writes one `output/inverse/inv_g200m_*_uq_*.nc` per member.
 
-### What the three configs actually differ in
-
-They are the same file bar the inversion block, so the comparison is clean:
-
-| option | `tauc` | `hardav` | `alt` |
-| --- | --- | --- | --- |
-| `inverse.design.variable` | `tauc` | `hardav` | — (set per phase) |
-| `inverse.alternating_cycles` | — | — | 2 |
-| `inverse.adjoint.method` | `exact` | `exact` | `approximate` |
-| `inverse.stress_balance.tauc_max` | 1e8 Pa | 1e8 Pa | 5e7 Pa |
-
-`inverse.stress_balance.length_scale` is 1 km here rather than Greenland's
-50 km — it sets the scale below which structure counts as roughness, and a
-valley glacier's sticky spots are two orders of magnitude smaller than an ice
-stream's.
-
-```{admonition} The alternating run uses the approximate adjoint
-:class: note
-
-`inverse.adjoint.method = "approximate"` solves the symmetrized Newton
-Jacobian rather than transposing it, which is faster and works with any
-preconditioner but is not the exact gradient. It is what makes two cycles of
-co-inversion affordable; if the alternating result looks off, that is the
-first thing to vary.
-```
-
 ## Reading the L-curves
 
 `pism-inverse-lcurve` takes the members straight from the command line, so no
