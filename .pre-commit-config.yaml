@@ -35,7 +35,8 @@ repos:
       - id: numpydoc-validation
         # sphinx-gallery examples open with an RST title, not a numpydoc
         # summary — the title is what the gallery hangs its label on.
-        exclude: ^(docs/source/conf\.py|examples/.*\.py)$
+        # benchmarks/ holds stand-alone measurement scripts, not API.
+        exclude: ^(docs/source/conf\.py|examples/.*\.py|benchmarks/.*\.py)$
 
   # Can run individually with `pre-commit run mypy --all-files`
   - repo: https://github.com/pre-commit/mirrors-mypy
@@ -63,7 +64,6 @@ repos:
           [
             "-rn", # Only display messages
             "-sn", # Don't display the score
-            "--extension-pkg-whitelist=scipy,netCDF4",
           ]
 
 
@@ -71,7 +71,12 @@ repos:
     hooks:
     - id: pytest
       name: pytest
-      entry: pytest tests
+      # ``language: system`` resolves the entry off PATH, so a shell without
+      # the project env active would run some other interpreter's pytest and
+      # die on an import error that says nothing about the code. Run pytest
+      # as ``python -m`` so it is always the active interpreter's, and probe a
+      # module needing the project's real dependencies first to say what to do.
+      entry: bash -c 'python -c "import pism_terra.lcurve" 2>/dev/null || { echo "activate the pism-terra conda env first, this interpreter cannot import the project dependencies"; exit 1; }; python -m pytest tests'
       language: system
       types: [python]
       exclude: ^venv/ ^.git/ ^.vscode/ ^.DS_Store ^uq/ ^hindcasts/

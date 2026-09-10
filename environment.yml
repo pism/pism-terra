@@ -13,7 +13,9 @@ dependencies:
   - cfgrib
   - cftime
   - cmap
+  - cmcrameri
   - cmweather
+  - cycler
   - dask
   - distributed   # dask[distributed,dataframe] is dask and distributed for conda
   - dem_stitcher

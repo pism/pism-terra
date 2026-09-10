@@ -33,6 +33,7 @@ from pathlib import Path
 
 import pytest
 
+from pism_terra.inversion import inversion_uses_hardav
 from pism_terra.ismip7.greenland.run import _render_forward_run, _render_inverse_run
 
 REPO = Path(__file__).resolve().parents[1]
@@ -175,6 +176,45 @@ def test_inverse_chained_script_single_pathway(tmp_path):
     assert "mohr_coulomb" not in fwd
     assert "-time.start 2007-01-01" in fwd
     assert "-time.end 2015-01-01" in fwd
+
+
+def test_inverse_alternating_regrids_hardav(tmp_path):
+    """
+    An alternating tauc/hardav inversion feeds ``hardav`` to the forward leg.
+
+    With ``inverse.alternating_cycles > 0`` the forward leg must regrid both
+    inverted fields and switch the Blatter solver to the prescribed hardness.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Output directory (pytest fixture).
+    """
+    text = FREE_HY.read_text().replace("[inverse]\n", "[inverse]\n'inverse.alternating_cycles' = 2\n", 1)
+    cfg = tmp_path / "alternating.toml"
+    cfg.write_text(text)
+
+    script = _render_inverse(tmp_path, cfg)
+    init, inv, fwd = _legs(script)
+
+    assert "-inverse.alternating_cycles 2" in inv
+    assert "-input.regrid.vars tauc,hardav" in fwd
+    assert "-stress_balance.averaged_hardness.enabled yes" in fwd
+    # The init leg is unaffected.
+    assert "averaged_hardness" not in init
+    assert "-input.regrid.vars litho_temp,enthalpy,age,tillwat" in init
+
+
+def test_inversion_uses_hardav():
+    """``inversion_uses_hardav`` recognises alternation and hardness inversions."""
+    assert not inversion_uses_hardav({})
+    assert not inversion_uses_hardav({"inverse.alternating_cycles": 0, "inv_design": "tauc"})
+    assert inversion_uses_hardav({"inverse.alternating_cycles": 3})
+    assert inversion_uses_hardav({"inverse.alternating_cycles": "1"})
+    assert inversion_uses_hardav({"inv_design": "hardav"})
+    assert inversion_uses_hardav({"inverse.design.variable": "hardav"})
+    assert not inversion_uses_hardav({"inverse.design.variable": "tauc", "inv_design": "hardav"})
+    assert not inversion_uses_hardav({"inverse.alternating_cycles": "not-a-number"})
 
 
 def test_inverse_missing_init_bounds_raises(tmp_path):
@@ -546,3 +586,78 @@ def test_forward_init_leg_counter(tmp_path):
     assert "-time.start 2015-01-01" in proj
     assert "-atmosphere.given.file proj_climate.nc" in proj
     assert "-atmosphere.given.file proj_climate.nc" not in hist
+
+
+def test_init_leg_carries_the_bed_deformation_model(tmp_path):
+    """
+    The init leg runs the same bed deformation model as the legs restarting from it.
+
+    C003 selects Lingle-Clark. On a restart that model reads its displacement
+    fields from the input file instead of bootstrapping them, so an init
+    state written with the no-op model cannot be continued.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = _c003_with_init(tmp_path)
+    script = _render_inverse(
+        tmp_path,
+        cfg,
+        sample="MRI-ESM2-0",
+        proj_overrides={"atmosphere.given.file": "proj_climate.nc"},
+    )
+    init, _, hist, proj = _legs(script)
+
+    for leg in (init, hist, proj):
+        assert "-bed_deformation.model lc" in leg
+
+
+def test_forward_script_is_named_after_the_counter(tmp_path):
+    """
+    A counter-driven forward run is named by its Core-experiment counter.
+
+    The counter is what identifies the experiment: it names the config that
+    configured the run and the ``CORE/<counter>/`` tree the submission goes
+    into, whereas the (GCM, experiment_id) pair it resolves to has to be
+    looked up. The init leg keeps the GCM-only tag, since every counter
+    sharing a forcing GCM restarts from the same init state.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = _c003_with_init(tmp_path)
+    script_text = _render_forward(
+        tmp_path,
+        cfg,
+        sample="MRI-ESM2-0",
+        proj_overrides={"atmosphere.given.file": "proj_climate.nc"},
+    )
+    (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
+    assert script.name.endswith("_id_C003.sh"), script.name
+
+    init, hist, proj = _legs(script_text)
+    # The shared init leg is still keyed on the GCM alone.
+    assert "id_MRI-ESM2-0_1985-01-01_1986-01-01" in init
+    # The forward legs' flat outputs carry the counter.
+    for leg in (hist, proj):
+        assert "id_C003_" in leg
+        assert "id_MRI-ESM2-0_ssp370" not in leg
+
+
+def test_forward_script_without_a_counter_keeps_the_pathway_name(tmp_path):
+    """
+    A single-pathway run has no counter, so it is still named by the pathway.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    _render_forward(tmp_path, FREE_HY, sample=0)
+    (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
+    assert script.name.startswith("submit_g")
+    assert "_C0" not in script.name

@@ -1568,6 +1568,46 @@ class StressBalanceConfig(ModelWithOptions):
     SECTION = "stress_balance"
 
 
+def version_tag(value: Any) -> str:
+    """
+    Render an ISMIP7 forcing version as the ``"v<n>"`` tag used in filenames.
+
+    Parameters
+    ----------
+    value : Any
+        ``3``, ``"3"`` or ``"v3"`` (case-insensitive, surrounding whitespace
+        ignored).
+
+    Returns
+    -------
+    str
+        ``"v3"`` for any of the inputs above.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is not a non-negative integer in one of those forms.
+
+    Examples
+    --------
+    >>> version_tag(3), version_tag("3"), version_tag(" V3 ")
+    ('v3', 'v3', 'v3')
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"invalid forcing version {value!r}")
+    if isinstance(value, int):
+        number = value
+    else:
+        text = str(value).strip().lower()
+        text = text[1:] if text.startswith("v") else text
+        if not text.isdigit():
+            raise ValueError(f"invalid forcing version {value!r}; expected an integer or a 'v<n>' tag")
+        number = int(text)
+    if number < 0:
+        raise ValueError(f"invalid forcing version {value!r}")
+    return f"v{number}"
+
+
 class CampaignConfig(BaseModel):
     """
     Campaign-level metadata describing the simulation experiment.
@@ -1640,7 +1680,10 @@ class CampaignConfig(BaseModel):
     present_day_forcings : str, list, or None
         Present-day forcing identifier(s).
     regrid_file : str or None
-        Path to a file used for regridding (relative to the input directory).
+        State file to regrid from while bootstrapping. ISMIP7: a filename in
+        the bucket (relative to the input directory), downloaded by staging.
+        Glacier runs: a local path or S3/HTTP URI, overridden by
+        ``--regrid-file``.
     retreat_file : str or None
         Path to the retreat NetCDF file (relative to the input directory).
     rgi_complex_file : str or None
@@ -1688,6 +1731,17 @@ class CampaignConfig(BaseModel):
     ocean_version : str or None
         Same as ``climate_version`` for the ocean forcing filenames — the
         two datasets are published on independent version tracks.
+    forcing_versions : dict or None
+        Per-GCM version tags of the ISMIP7 forcing *filenames*, keyed by GCM
+        and then by forcing product (``climate`` — also used for the
+        climate-gradient file — and ``ocean``), e.g.
+        ``{"CESM2-WACCM": {"climate": 3, "ocean": 2}}``. These are the same
+        numbers as ``[gcms.<GCM>.source]`` in ``setup_ismip7_greenland.toml``;
+        values may be integers, digit strings or ``"v<n>"`` tags and are
+        normalised to ``"v<n>"``. Staging uses them verbatim instead of picking
+        "the newest file present", which silently selects a stale product when
+        an older tag is still on S3 or in the input directory. Takes precedence
+        over ``climate_version`` / ``ocean_version``.
     """
 
     bathymetry: str | None = Field(default=None)
@@ -1729,6 +1783,46 @@ class CampaignConfig(BaseModel):
     version: str | None = Field(default=None)
     climate_version: str | None = Field(default=None)
     ocean_version: str | None = Field(default=None)
+    forcing_versions: dict[str, dict[str, str]] | None = Field(default=None)
+
+    @field_validator("forcing_versions", mode="before")
+    @classmethod
+    def _normalise_forcing_versions(cls, value: Any) -> Any:
+        """
+        Normalise the per-GCM forcing version tags to ``"v<n>"`` strings.
+
+        Parameters
+        ----------
+        value : Any
+            Raw ``forcing_versions`` mapping from the TOML (or ``None``).
+
+        Returns
+        -------
+        Any
+            The mapping with every version rendered as ``"v<n>"``, or ``None``.
+
+        Raises
+        ------
+        ValueError
+            If the mapping is malformed or names an unknown forcing product.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("campaign.forcing_versions must be a table keyed by GCM name")
+        allowed = {"climate", "ocean"}
+        result: dict[str, dict[str, str]] = {}
+        for gcm, per_forcing in value.items():
+            if not isinstance(per_forcing, dict):
+                raise ValueError(f"campaign.forcing_versions.{gcm} must be a table like {{climate = 3, ocean = 2}}")
+            unknown = set(per_forcing) - allowed
+            if unknown:
+                raise ValueError(
+                    f"campaign.forcing_versions.{gcm}: unknown forcing(s) {sorted(unknown)}; "
+                    f"expected {sorted(allowed)}"
+                )
+            result[str(gcm)] = {forcing: version_tag(v) for forcing, v in per_forcing.items()}
+        return result
 
     def as_params(self, **extra: Any) -> dict[str, Any]:
         """

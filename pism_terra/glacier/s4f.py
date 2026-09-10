@@ -45,7 +45,11 @@ from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
 from pism_terra.glacier.climate import era5, snap
 from pism_terra.glacier.dem import boot_file_from_grid
-from pism_terra.glacier.observations import dh_from_tif, fetch_dh_raster
+from pism_terra.glacier.observations import (
+    dh_from_tif,
+    fetch_dh_raster,
+    glacier_velocities_from_grid,
+)
 from pism_terra.glacier.stage import staged_rgi_outlines
 from pism_terra.raster import apply_perimeter_band, write_cog
 from pism_terra.vector import (
@@ -59,6 +63,12 @@ from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_la
 xr.set_options(keep_attrs=True)
 
 CLIMATE: Mapping[str, Callable] = {"era5": era5, "snap": snap}
+
+#: Planning products that are not boot variables; ``variables`` may name them.
+PLANNING_PRODUCTS = ("surface_clipped", "dh", "velocity")
+
+#: Observed velocity fields shipped as COGs by :func:`write_velocity_cogs`.
+VELOCITY_VARIABLES = ("v", "vx", "vy", "vx_error", "vy_error")
 
 
 def main():
@@ -97,9 +107,9 @@ def main():
     )
     parser.add_argument(
         "--variables",
-        help="Comma-separated products to write (boot variable names plus 'surface_clipped' and 'dh'); "
-        "default: all. On aggregate-sized domains restrict to e.g. 'bed,surface,surface_clipped,dh' "
-        "to keep peak memory down.",
+        help="Comma-separated products to write (boot variable names plus 'surface_clipped', 'dh' and "
+        "'velocity'); default: all. On aggregate-sized domains restrict to e.g. "
+        "'bed,surface,surface_clipped,dh' to keep peak memory down.",
         type=str,
         default=None,
     )
@@ -170,9 +180,16 @@ def main():
     print(f"Total size of {len(all_nc_files)} NetCDF files: {size}")
 
     bucket = config["bucket"]
-    prefix = config["prefix"]
+    # Planning products live under the project's own prefix
+    # (``<project_directory>/planning``, e.g. ``s4f/planning``), not under the
+    # ``prefix`` the staged model inputs are downloaded from.
+    planning_prefix = f"{config.get('project_directory') or config['prefix']}/planning"
+    # Sync only this glacier's directory (and the RGI outline written next to
+    # it), not all of ``path``: an output path like ``data/`` typically holds
+    # unrelated files that must not end up in the planning bucket.
     print("Now run")
-    print(f"""aws s3 sync {path} s3://{bucket}/{prefix}/planning --exclude "*/staging/*" """)
+    print(f"""aws s3 sync {glacier_path} s3://{bucket}/{planning_prefix}/{rgi_id} --exclude "staging/*" """)
+    print(f"aws s3 cp {rgi_cloud} s3://{bucket}/{planning_prefix}/{rgi_cloud.name}")
 
 
 def cog_profile(da: xr.DataArray) -> dict:
@@ -281,6 +298,93 @@ def write_dh_cogs(
     return written
 
 
+def write_velocity_cogs(
+    config: dict,
+    rgi_id: str,
+    grid_ds: xr.Dataset,
+    geometries,
+    path: Path,
+    staging_path: Path,
+    force_overwrite: bool = False,
+) -> dict[str, Path]:
+    """
+    Write COGs of the observed surface velocity and its errors for one complex.
+
+    Fetches the velocity product named by ``campaign.velocity`` (ITS_LIVE)
+    through :func:`pism_terra.glacier.observations.glacier_velocities_from_grid`,
+    which aligns it to the planning grid, rotates the components into the
+    grid's axes and clips to the outline, and writes one COG per field in
+    :data:`VELOCITY_VARIABLES` as ``{rgi_id}_{product}_{var}.tif``. The
+    product name keeps the speed apart from the zero-filled ``v`` the boot
+    dataset carries. Cells without an observation (off ice, or ITS_LIVE
+    nodata) are NaN so viewers mask them; the boot ``v`` has them as 0.
+
+    The clipped dataset is cached as ``obs_{rgi_id}.nc`` in ``staging_path``,
+    the same file the boot builder reads for ``v``, so the download happens
+    once per complex.
+
+    Parameters
+    ----------
+    config : dict
+        Campaign configuration; ``"velocity"`` selects the product. A missing
+        or ``"none"`` value writes nothing.
+    rgi_id : str
+        Glacier complex identifier.
+    grid_ds : xarray.Dataset
+        Planning grid (with a projected CRS) the fields are aligned to.
+    geometries : iterable of shapely geometries
+        Glacier outline(s) in the grid's CRS; cells outside stay NaN.
+    path : pathlib.Path
+        Output directory for the COGs.
+    staging_path : pathlib.Path
+        Cache directory for the clipped velocity dataset.
+    force_overwrite : bool, default ``False``
+        Re-fetch the product even when a cached copy exists.
+
+    Returns
+    -------
+    dict[str, pathlib.Path]
+        Mapping from ``f"{rgi_id}_{product}_{var}"`` to the written COG
+        paths; empty when no velocity product is configured.
+    """
+    print("")
+    print("Generate Velocity")
+    print("-" * 120)
+    product = config.get("velocity", "none")
+    if not product or product == "none":
+        print(f"No velocity product configured (velocity = {product!r}), skipping")
+        return {}
+    print(f"Velocity product: {product}")
+
+    ds_vel = glacier_velocities_from_grid(
+        grid_ds,
+        geometries,
+        product_name=product,
+        path=Path(staging_path) / f"obs_{rgi_id}.nc",
+        force_overwrite=force_overwrite,
+        rgi_id=rgi_id,
+    )
+    # The obs file zeroes unobserved cells so PISM can read them; a planning
+    # raster wants them masked instead.
+    observed = ds_vel["vel_misfit_weight"] == 1 if "vel_misfit_weight" in ds_vel else None
+
+    written: dict[str, Path] = {}
+    for var in VELOCITY_VARIABLES:
+        if var not in ds_vel:
+            print(f"Warning: {product} has no {var!r} for {rgi_id}; skipping")
+            continue
+        da = ds_vel[var].astype("float32")
+        if observed is not None:
+            da = da.where(observed)
+        da = da.rio.write_crs(grid_ds.rio.crs).rio.write_nodata(np.nan)
+        m_id = f"{rgi_id}_{product}_{var}"
+        cog_path = Path(path) / f"{m_id}.tif"
+        write_cog(da, cog_path, **cog_profile(da))
+        print(cog_path)
+        written[m_id] = cog_path
+    return written
+
+
 def s4f_glacier(
     config: dict,
     rgi_id: str,
@@ -303,7 +407,9 @@ def s4f_glacier(
     (4) writes one Cloud Optimized GeoTIFF per spatial variable in the boot
         dataset (plus a NetCDF copy of ``bed`` and a clipped surface tif),
         and — when the campaign sets ``dh`` — COGs of the observed 2000-2020
-        elevation change and its error (see :func:`write_dh_cogs`),
+        elevation change and its error (see :func:`write_dh_cogs`), and —
+        when it sets ``velocity`` — COGs of the observed speed, velocity
+        components and their errors (see :func:`write_velocity_cogs`),
     and (5) returns a mapping of variable identifiers to written file paths.
 
     Parameters
@@ -340,8 +446,8 @@ def s4f_glacier(
         the (large) outlines once instead of once per glacier. Defaults to
         ``staging_path``.
     variables : list of str or None, optional
-        Products to write (boot variable names plus ``"surface_clipped"``
-        and ``"dh"``). ``None`` (default) writes everything. On very large
+        Products to write (boot variable names plus ``"surface_clipped"``,
+        ``"dh"`` and ``"velocity"``). ``None`` (default) writes everything. On very large
         domains (an S4F aggregate at 100 m) restricting to e.g.
         ``["bed", "surface", "surface_clipped", "dh"]`` skips the mask and
         till fields entirely, cutting peak memory by several full-grid
@@ -426,33 +532,43 @@ def s4f_glacier(
     # Restricting the product list keeps unneeded full-grid fields (masks,
     # tillwat) from ever being built — the difference between fitting in
     # memory and an OOM kill on an aggregate-sized 100 m domain.
-    # ``surface_clipped``/``dh`` are planning-level products; the rest are
-    # boot variables (``surface_clipped`` needs ``surface`` built).
+    # ``surface_clipped``/``dh``/``velocity`` are planning-level products; the
+    # rest are boot variables (``surface_clipped`` needs ``surface`` built).
     boot_variables: list[str] | None = None
     if variables is not None:
-        boot_wanted = {v for v in variables if v not in ("surface_clipped", "dh")}
+        boot_wanted = {v for v in variables if v not in PLANNING_PRODUCTS}
         if "surface_clipped" in variables:
             boot_wanted.add("surface")
         boot_variables = sorted(boot_wanted)
 
-    # Build boot dataset (DEM/thickness/bed) — caches go to staging
-    boot_ds = boot_file_from_grid(
-        grid_ds,
-        rgi_id,
-        glacier_projected.geometry,
-        dem_dataset=config["dem"],
-        ice_thickness_dataset=config["ice_thickness"],
-        velocity_dataset=config["velocity"],
-        bathymetry_dataset=config["bathymetry"],
-        forcing_mask=config["forcing_mask"] if config["forcing_mask"] else None,
-        ocean_moat=config.get("ocean_moat", "no"),
-        path=staging_path,
-        force_overwrite=force_overwrite,
-        bucket=config["bucket"],
-        prefix=config["prefix"],
-        project_directory=config.get("project_directory"),
-        variables=boot_variables,
-    )
+    # Build boot dataset (DEM/thickness/bed) — caches go to staging. When
+    # only planning products were requested (e.g. ``--variables velocity``)
+    # there is nothing to boot: skip the DEM/thickness build entirely rather
+    # than spend an hour mosaicking tiles for an empty dataset.
+    if boot_variables is not None and not boot_variables:
+        print("")
+        print("Generate DEM")
+        print("-" * 120)
+        print("No boot variables requested, skipping")
+        boot_ds = xr.Dataset()
+    else:
+        boot_ds = boot_file_from_grid(
+            grid_ds,
+            rgi_id,
+            glacier_projected.geometry,
+            dem_dataset=config["dem"],
+            ice_thickness_dataset=config["ice_thickness"],
+            velocity_dataset=config["velocity"],
+            bathymetry_dataset=config["bathymetry"],
+            forcing_mask=config["forcing_mask"] if config["forcing_mask"] else None,
+            ocean_moat=config.get("ocean_moat", "no"),
+            path=staging_path,
+            force_overwrite=force_overwrite,
+            bucket=config["bucket"],
+            prefix=config["prefix"],
+            project_directory=config.get("project_directory"),
+            variables=boot_variables,
+        )
 
     print("")
     print("Saving Cloud Optimized GeoTIFFs")
@@ -487,6 +603,18 @@ def s4f_glacier(
     if variables is None or "dh" in variables:
         boot_files.update(
             write_dh_cogs(
+                config,
+                rgi_id,
+                grid_ds,
+                glacier_projected.geometry,
+                path,
+                staging_path,
+                force_overwrite=force_overwrite,
+            )
+        )
+    if variables is None or "velocity" in variables:
+        boot_files.update(
+            write_velocity_cogs(
                 config,
                 rgi_id,
                 grid_ds,

@@ -82,6 +82,23 @@ SOURCE_COOP_PREFIX = "ismip/ismip7-gris-forcing/data"
 # Trailing ``_YYYY.nc`` year tag of the per-year forcing files.
 _YEAR_RE = re.compile(r"_(\d{4})\.nc$")
 
+# Units the ISMIP7 publication does not spell consistently, keyed by ISMIP7
+# variable name and stamped onto the renamed PISM variable. PISM parses units
+# with UDUNITS-2, which rejects both of the published spellings:
+#
+# - ``so`` ships as ``"psu"`` (practical salinity unit), which UDUNITS does not
+#   know. ``g/kg`` is numerically identical and parses.
+# - ``tf`` ships as ``"deg_C"`` in some trees and ``"deg C"`` in others — e.g.
+#   CESM2-WACCM v2 uses ``deg_C`` for ``historical`` but ``deg C`` for every
+#   ssp pathway, while MRI-ESM2-0 v1 uses ``deg_C`` throughout. UDUNITS reads
+#   whitespace as multiplication, so ``deg C`` is a syntax error (there is no
+#   ``deg``), and PISM aborts on the projection legs of some GCMs but not
+#   others. Normalize to the ``deg_C`` the historical files already use.
+#
+# Both are upstream bugs, but normalize here regardless: an upstream fix would
+# only reach us on a re-publication, and files already downloaded stay wrong.
+UNIT_OVERRIDES = {"so": "g/kg", "tf": "deg_C"}
+
 
 def _split_source_spec(spec: str | None) -> tuple[str | None, str]:
     """
@@ -719,14 +736,12 @@ def _process_single_forcing(
         # single-variable structure; the grid is re-attached by ``-setgrid`` below.
         merge_inputs = f"-apply,-selname,{k} [ " + " ".join(str(p) for p in paths) + " ]"
         mergetime_chain = f"{tas_replace}{fill_op} -setgrid,{str(grid_file)} -mergetime {merge_inputs}"
-        if m_var == "so":
-            # CMIP6 sea-water salinity ships with ``units = "psu"`` (practical
-            # salinity unit). PISM's ``ocean.th`` requires the numerically
-            # identical but udunits-parsable ``g/kg`` and refuses to read the
-            # file otherwise. Patch the attribute on the renamed variable in
-            # the same cdo invocation so we don't pay an extra read/write.
+        units = UNIT_OVERRIDES.get(m_var)
+        if units is not None:
+            # Patch the attribute on the renamed variable in the same cdo
+            # invocation so we don't pay an extra read/write.
             cdo.setattribute(
-                f"{v}@units=g/kg",
+                f"{v}@units={units}",
                 input=f"-chname,{k},{v} {mergetime_chain}",
                 output=str(out.resolve()),
                 options="-f nc4 -z zip_2",

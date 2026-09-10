@@ -133,6 +133,18 @@ python docs/make_data/lcurve_fixture.py \
 Nine 2 GB files become a 98 KB fixture — which is what this page reads, so the
 figures below are real output rather than a sketch.
 
+For a quick look at a sweep without building a fixture, `pism-inverse-lcurve`
+reads the members directly and writes the plot below, its underlying table, and
+the corner it picks:
+
+```bash
+pism-inverse-lcurve --log -o lcurve.png greenland_lcurve/output/inverse/inv_*.nc
+```
+
+It reads the swept parameters straight out of each file's `pism_config`, so a
+sweep over something other than η only needs `--parameters`; a second
+parameter draws one curve per value of it.
+
 ```{code-cell} ipython3
 import numpy as np
 import xarray as xr

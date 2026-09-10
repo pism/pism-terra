@@ -365,6 +365,15 @@ def boot_file_from_grid(
         Retrieve observed surface velocities for the glacier domain.
     """
 
+    # ``variables=None`` keeps everything; otherwise only the requested
+    # fields are built and merged — each skipped field saves several
+    # full-grid arrays of peak memory on very large domains. An empty
+    # selection would spend the whole DEM/thickness build on a dataset with
+    # no variables (and no spatial dims), so reject it before doing any work.
+    want = set(variables) if variables is not None else None
+    if want is not None and not want:
+        raise ValueError("boot_file_from_grid: `variables` must be None or name at least one data variable")
+
     print("")
     print("Generate DEM")
     print("-" * 120)
@@ -414,11 +423,6 @@ def boot_file_from_grid(
         bed = bed.where(~moat, -2000.0)
         bed.name = "bed"
         bed.attrs.update({"standard_name": "bedrock_altitude", "units": "m"})
-
-    # ``variables=None`` keeps everything; otherwise only the requested
-    # fields are built and merged — each skipped field saves several
-    # full-grid arrays of peak memory on very large domains.
-    want = set(variables) if variables is not None else None
 
     def _wanted(name: str) -> bool:
         """
@@ -482,7 +486,7 @@ def boot_file_from_grid(
         merge_list.append(tillwat)
 
     ds = xr.merge(merge_list, compat="no_conflicts")
-    if velocity_dataset not in ("none", None) and (_wanted("v") or _wanted("tillwat")):
+    if velocity_dataset not in ("none", None) and (_wanted("v")) or _wanted("tillwat"):
         v_filename = path / Path(f"obs_{rgi_id}.nc")
         v = glacier_velocities_from_grid(target_grid, geometries, path=v_filename, rgi_id=rgi_id)
         _v = v["v"].fillna(0)

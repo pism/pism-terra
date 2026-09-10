@@ -39,10 +39,67 @@ from shapely.geometry import Polygon
 from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3, list_s3_keys, local_to_s3
-from pism_terra.config import load_config
+from pism_terra.config import load_config, version_tag
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+
+def forcing_filename(forcing: str, pathway: str, gcm: str, version: str, start_year: int, end_year: int) -> str:
+    """
+    Build the conventional name of one ISMIP7 Greenland forcing file.
+
+    Parameters
+    ----------
+    forcing : str
+        ``"climate"``, ``"climate_gradient"``, or ``"ocean"``.
+    pathway : str
+        ``"historical"`` or the projection pathway (e.g. ``"ssp370"``).
+    gcm : str
+        GCM name (e.g. ``"MRI-ESM2-0"``).
+    version : str
+        Version tag embedded in the filename (e.g. ``"v2"``).
+    start_year, end_year : int
+        Inclusive year range embedded in the filename.
+
+    Returns
+    -------
+    str
+        E.g. ``"ismip7_greenland_ocean_historical_MRI-ESM2-0_v1_1900_2014.nc"``.
+    """
+    return f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{version}_{start_year}_{end_year}.nc"
+
+
+def explicit_forcing_version(config: dict, gcm: str, forcing: str) -> str | None:
+    """
+    Return the forcing version the campaign config pins for one GCM, if any.
+
+    Precedence: ``campaign.forcing_versions[gcm][product]`` (with the
+    climate-gradient file sharing the ``climate`` entry), then the
+    campaign-wide ``climate_version`` / ``ocean_version`` (which the Core
+    Experiment counter fills for its single ESM). ``None`` means nothing is
+    pinned and the caller has to discover the file.
+
+    Parameters
+    ----------
+    config : dict
+        Campaign section as exported by ``CampaignConfig.as_params()``.
+    gcm : str
+        GCM name (e.g. ``"CESM2-WACCM"``).
+    forcing : str
+        ``"climate"``, ``"climate_gradient"``, or ``"ocean"``.
+
+    Returns
+    -------
+    str or None
+        The ``"v<n>"`` tag, or ``None`` when the config pins nothing.
+    """
+    product = "climate" if forcing == "climate_gradient" else forcing
+    per_gcm = (config.get("forcing_versions") or {}).get(gcm) or {}
+    value = per_gcm.get(product)
+    if value is None:
+        value = config.get(f"{product}_version")
+    return version_tag(value) if value is not None else None
 
 
 def resolve_forcing_name(
@@ -53,6 +110,7 @@ def resolve_forcing_name(
     start_year: int,
     end_year: int,
     fallback_version: str,
+    version: str | None = None,
 ) -> str:
     """
     Pick the actual filename of one (forcing, pathway, gcm, epoch) product.
@@ -60,9 +118,12 @@ def resolve_forcing_name(
     Forcing filenames carry the *forcing product's* per-GCM version (set in
     the prepare setup TOML, e.g. ``_v2_`` for MRI-ESM2-0 while CESM2-WACCM
     ships ``_v3_``), which is independent of the campaign ``version`` that
-    selects the S3 subdirectory. The name is therefore discovered from what
-    actually exists rather than assumed; when several versions of one file
-    are present, the newest wins.
+    selects the S3 subdirectory. When the campaign pins that version
+    (``version``), the conventional name is used verbatim: superseded
+    products keep their old tags on S3 and in shared input directories, so
+    "the newest file present" is not reliably the current one. Without a
+    pinned version the name is discovered from what actually exists, and
+    when several versions of one file are present the newest wins.
 
     Parameters
     ----------
@@ -77,17 +138,21 @@ def resolve_forcing_name(
     start_year, end_year : int
         Inclusive year range embedded in the filename.
     fallback_version : str
-        Expected version tag (e.g. ``"v2"``) used to build the conventional
-        name when no candidate matches — the caller passes the per-forcing
-        ``campaign.climate_version`` / ``ocean_version`` (which fall back to
-        the campaign ``version``); the later download then fails with that
-        name in the message.
+        Version tag (e.g. ``"v2"``) used to build the conventional name when
+        nothing is pinned and no candidate matches — typically the campaign
+        ``version``; the later download then fails with that name in the
+        message.
+    version : str or None, optional
+        Pinned version tag (see :func:`explicit_forcing_version`). When
+        given, ``candidates`` are not consulted.
 
     Returns
     -------
     str
         The resolved (or fallback) filename.
     """
+    if version is not None:
+        return forcing_filename(forcing, pathway, gcm, version, start_year, end_year)
     pattern = re.compile(
         rf"^ismip7_greenland_{re.escape(forcing)}_{re.escape(pathway)}_{re.escape(gcm)}"
         rf"_v(\d+)_{start_year}_{end_year}\.nc$"
@@ -98,7 +163,7 @@ def resolve_forcing_name(
         if match and int(match.group(1)) > best_version:
             best, best_version = name, int(match.group(1))
     if best is None:
-        return f"ismip7_greenland_{forcing}_{pathway}_{gcm}_{fallback_version}_{start_year}_{end_year}.nc"
+        return forcing_filename(forcing, pathway, gcm, fallback_version, start_year, end_year)
     return best
 
 
@@ -133,9 +198,15 @@ def stage(
             GCM model name(s).
         - ``"version"`` : str
             Dataset version, naming the S3 directory (``<prefix>/<version>/``).
+        - ``"forcing_versions"`` : dict, optional
+            Per-GCM version tags inside the forcing filenames,
+            ``{gcm: {"climate": "v3", "ocean": "v2"}}`` (the climate-gradient
+            file shares the ``climate`` tag). Pinned tags are used verbatim.
         - ``"climate_version"`` / ``"ocean_version"`` : str, optional
-            Per-ESM, per-forcing version tags inside the forcing filenames
-            (each falls back to ``version``).
+            Campaign-wide fallback for the same tags (filled from the Core
+            Experiment counter). GCMs with neither pinned are discovered from
+            the files present, newest version first, and finally assumed to
+            carry ``version``.
         - ``"historical_start_year"`` : int
             First year of the historical forcing file.
         - ``"historical_end_year"`` : int
@@ -209,15 +280,27 @@ def stage(
     gcms = config["gcms"]
     gcms = [gcms] if isinstance(gcms, str) else gcms
     version = config["version"]
-    # Version tags inside the forcing *filenames* are per-ESM and
-    # per-forcing (see CoreExperiment.climate_version / ocean_version);
-    # ``version`` only names the S3 directory. Non-counter configs fall
-    # back to the directory version.
-    forcing_versions = {
-        "climate": config.get("climate_version") or version,
-        "climate_gradient": config.get("climate_version") or version,
-        "ocean": config.get("ocean_version") or version,
+    # Version tags inside the forcing *filenames* are per-GCM and
+    # per-forcing (``campaign.forcing_versions``, or the counter-filled
+    # ``climate_version`` / ``ocean_version``); ``version`` only names the S3
+    # directory. A pinned tag is used verbatim; a GCM with nothing pinned is
+    # discovered from the files present and, failing that, assumed to carry
+    # the directory version.
+    pinned_versions: dict[tuple[str, str], str | None] = {
+        (gcm, forcing): explicit_forcing_version(config, gcm, forcing)
+        for gcm in gcms
+        for forcing in ("climate", "climate_gradient", "ocean")
     }
+    for gcm in gcms:
+        tags = {f: pinned_versions[(gcm, f)] for f in ("climate", "ocean")}
+        if all(tags.values()):
+            print(f"{gcm}: forcing versions pinned by the config: climate {tags['climate']}, ocean {tags['ocean']}")
+        else:
+            missing = [f for f, tag in tags.items() if tag is None]
+            print(
+                f"{gcm}: no forcing version pinned for {', '.join(missing)}; picking the newest file present. "
+                f"Set [campaign.forcing_versions] {gcm} = {{climate = <n>, ocean = <n>}} to make this explicit."
+            )
     # Historical and projection year ranges. End years are inclusive per
     # the campaign-config convention (see CampaignConfig). Projection years are
     # only needed when the projection epoch is staged (forward runs).
@@ -263,24 +346,31 @@ def stage(
         proj_end = int(config["projection_end_year"])
         epoch_specs.append((pathway, proj_start, proj_end, "proj"))
     # Forcing filenames carry a per-GCM version independent of the campaign
-    # ``version`` (which only names the S3 subdirectory); resolve the actual
-    # names against what exists — locally staged files first, then the bucket
-    # (see :func:`resolve_forcing_name`).
-    candidates = {p.name for p in input_path.glob("ismip7_greenland_*.nc")}
-    try:
-        candidates |= {key.rsplit("/", 1)[-1] for key in list_s3_keys(bucket, prefix)}
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        print(
-            f"Could not list s3://{bucket}/{prefix} ({exc}); "
-            f"assuming {sorted(set(forcing_versions.values()))} forcing filenames"
-        )
+    # ``version`` (which only names the S3 subdirectory). Pinned versions are
+    # used as-is; anything unpinned is resolved against what exists — locally
+    # staged files first, then the bucket (see :func:`resolve_forcing_name`).
+    # The listing is only needed for the unpinned case.
+    candidates: set[str] = set()
+    if not all(pinned_versions.values()):
+        candidates = {p.name for p in input_path.glob("ismip7_greenland_*.nc")}
+        try:
+            candidates |= {key.rsplit("/", 1)[-1] for key in list_s3_keys(bucket, prefix)}
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(f"Could not list s3://{bucket}/{prefix} ({exc}); assuming {version} forcing filenames")
 
     forcing_names: dict[tuple[str, str, str], str] = {}
     for gcm in gcms:
         for epoch_pathway, ep_start, ep_end, _ in epoch_specs:
             for forcing in ("climate", "climate_gradient", "ocean"):
                 rel = resolve_forcing_name(
-                    candidates, forcing, epoch_pathway, gcm, ep_start, ep_end, forcing_versions[forcing]
+                    candidates,
+                    forcing,
+                    epoch_pathway,
+                    gcm,
+                    ep_start,
+                    ep_end,
+                    version,
+                    version=pinned_versions[(gcm, forcing)],
                 )
                 forcing_names[(gcm, epoch_pathway, forcing)] = rel
                 required_files.append((rel, input_path / rel))

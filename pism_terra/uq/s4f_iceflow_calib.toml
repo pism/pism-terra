@@ -20,8 +20,8 @@ distribution = "uniform"
 
 ['basal_yield_stress.mohr_coulomb.till_phi_default']
 
-loc = 15
-scale = 30
+loc = 20
+scale = 20
 distribution = "uniform"
 
 ['stress_balance.blatter.enhancement_factor']

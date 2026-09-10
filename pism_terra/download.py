@@ -371,6 +371,33 @@ def _cache_key_matches(file_path: Path, cache_key: str) -> bool:
         return False
 
 
+def _has_variables(file_path: Path) -> bool:
+    """
+    Check whether a cached NetCDF actually holds any data.
+
+    A CDS download in which every year failed leaves an empty dataset —
+    ``xr.merge([])`` is valid and empty rather than an error — and such a file
+    opens cleanly, passes the sampled health check, and carries whatever
+    request key it was stamped with. Only the variable count tells it apart
+    from a real download.
+
+    Parameters
+    ----------
+    file_path : pathlib.Path
+        Cached NetCDF written by :func:`download_request`.
+
+    Returns
+    -------
+    bool
+        ``True`` if the file has at least one data variable.
+    """
+    try:
+        with xr.open_dataset(file_path, decode_times=False) as cached:
+            return len(cached.data_vars) > 0
+    except Exception:
+        return False
+
+
 def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suffix: str = ".nc") -> Path:
     """
     Build a collision-resistant cache filename for a per-year CDS download.
@@ -760,7 +787,15 @@ def download_request(
     # that no longer covers the domain.
     cache_key = _request_key({**request, "_years": sorted(str(y) for y in request["year"])})
 
-    reuse_cache = (not force_overwrite) and check_xr_lazy(file_path) and _cache_key_matches(file_path, cache_key)
+    # An empty cache file is worse than none: it opens cleanly, carries a
+    # matching request key, and so would be reused forever (see
+    # ``_has_variables``).
+    reuse_cache = (
+        (not force_overwrite)
+        and check_xr_lazy(file_path)
+        and _cache_key_matches(file_path, cache_key)
+        and _has_variables(file_path)
+    )
 
     if not reuse_cache:
         client = _DatastoresClient()
@@ -788,6 +823,20 @@ def download_request(
             dss.append(ds_part)
 
         ds = xr.merge(dss, join="outer", compat="no_conflicts").drop_vars(["number", "expver"], errors="ignore")
+
+        # ``_cds_download_years`` logs a failed year and carries on, so every
+        # year failing leaves ``dss`` empty — and ``xr.merge([])`` is a valid,
+        # empty Dataset, not an error. Writing that out would cache a file
+        # that opens cleanly and passes the request-key check, poisoning every
+        # later run with a dataset that has no coordinates at all.
+        if not ds.data_vars:
+            failed = len(years) - len(downloaded)
+            raise RuntimeError(
+                f"{dataset}: no data downloaded for {file_path.name} "
+                f"({failed} of {len(years)} years failed, {len(downloaded)} file(s) retrieved). "
+                "See the 'Failed to download year' lines above for the reason; "
+                "nothing was cached, so re-running will retry."
+            )
 
         if "latitude" in ds.coords:
             ds = ds.sortby("latitude")

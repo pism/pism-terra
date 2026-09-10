@@ -34,6 +34,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.inversion import inversion_uses_hardav
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.stage import stage
 from pism_terra.ismip7.naming import ISMIP7Names, member_ids
@@ -95,18 +96,21 @@ def _make_output_paths(path: str | Path, *, inverse: bool = False) -> dict[str, 
     return paths
 
 
-def _base_run_dict(cfg, *, bed_deformation: bool = True) -> dict:
+def _base_run_dict(cfg) -> dict:
     """
     Merge the config sections shared by every forward PISM invocation.
+
+    Every leg gets the same ``[bed_deformation]`` model. The init leg used to
+    omit it, but the main legs *restart* from the init state and the
+    Lingle-Clark model reads its ``viscous_bed_displacement`` /
+    ``elastic_bed_displacement`` from the restart file rather than
+    bootstrapping them, so an init state written without the model cannot be
+    continued with it ("Can't find 'viscous_bed_displacement'").
 
     Parameters
     ----------
     cfg : PismConfig
         Loaded configuration.
-    bed_deformation : bool, optional
-        Include ``cfg.bed_deformation.selected()``. The inverse init/prior
-        leg historically omits it; forward legs include it. Default is
-        ``True``.
 
     Returns
     -------
@@ -125,8 +129,7 @@ def _base_run_dict(cfg, *, bed_deformation: bool = True) -> dict:
     ):
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
-    if bed_deformation:
-        run.update(cfg.bed_deformation.selected())
+    run.update(cfg.bed_deformation.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.ocean.selected())
     run.update(cfg.frontal_melt.selected())
@@ -203,7 +206,7 @@ def _build_init_leg(
     ValueError
         If ``init_surface_model`` names no ``[surface.options.*]`` table.
     """
-    run_init = _base_run_dict(cfg, bed_deformation=False)
+    run_init = _base_run_dict(cfg)
     run_init.pop("time.start", None)
     run_init.pop("time.end", None)
     run_init.update({"time.start": init_start, "time.end": init_end})
@@ -752,7 +755,15 @@ def _render_forward_run(
     if sample is None:
         name_options = f"surface_{surface}_energy_{energy}_stress_balance_{stress_balance}"
     else:
-        name_options = f"id_{sample}_{experiment}"
+        # A counter-driven run *is* one Core experiment, so name it after its
+        # counter: the run script and the flat (non-ISMIP7) outputs then carry
+        # the same C-code as the CORE/<counter>/ submission tree and the
+        # ismip7_greenland_<counter>.toml that configured them, rather than
+        # the (gcm, experiment_id) pair the counter happens to resolve to.
+        # The init leg is tagged separately, below, and stays keyed on the GCM
+        # alone so counters sharing a forcing GCM reuse one init state.
+        counter = cfg.run_info.counter
+        name_options = f"id_{counter}" if counter else f"id_{sample}_{experiment}"
 
     uq_clean = normalize_row(uq) if uq is not None else {}
     # Prefer explicit `sample` arg; else default from uq['sample']
@@ -1113,6 +1124,11 @@ def _render_inverse_run(
     run_fwd["basal_yield_stress.model"] = "constant"
     for key in [k for k in run_fwd if k.startswith("basal_yield_stress.mohr_coulomb.")]:
         run_fwd.pop(key)
+    # An inversion that also produced a vertically-averaged hardness: regrid
+    # it and make the Blatter solver use it (see pism_terra.inversion.inversion_uses_hardav).
+    if inversion_uses_hardav(inv):
+        run_fwd["input.regrid.vars"] = "tauc,hardav"
+        run_fwd["stress_balance.averaged_hardness.enabled"] = "yes"
 
     leg_params = _build_forward_legs(
         cfg,

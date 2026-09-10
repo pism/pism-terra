@@ -201,6 +201,44 @@ def _build_climate(
     return copied
 
 
+def campaign_years(start: pd.Timestamp, end: pd.Timestamp) -> list[int]:
+    """
+    Calendar years a run spans, for the forcing downloads that cover it.
+
+    PISM's ``time.end`` is exclusive — ``"2025-01-01"`` stops at midnight on
+    Jan 1, so 2025 itself is not simulated — hence the ``- 1`` when the end
+    lands exactly on Jan 1.
+
+    Parameters
+    ----------
+    start : pandas.Timestamp
+        First simulated instant.
+    end : pandas.Timestamp
+        Exclusive end of the run.
+
+    Returns
+    -------
+    list of int
+        Every calendar year the run touches.
+
+    Raises
+    ------
+    SystemExit
+        If the span covers no year at all. Left unguarded this reaches the
+        CDS layer as a request for nothing, which used to come back as an
+        empty dataset and get cached as if it were real data.
+    """
+    last_year = end.year - 1 if (end.month == 1 and end.day == 1) else end.year
+    years = list(range(start.year, last_year + 1))
+    if not years:
+        raise SystemExit(
+            f"empty year range: the run spans {start.date()} to {end.date()}, which covers no "
+            "calendar year. A model-year override (e.g. --end 0051-01-01) against a calendar-year "
+            "config, or the two given the other way round, is the usual cause."
+        )
+    return years
+
+
 def stage_glacier(
     config: dict,
     rgi_id: str,
@@ -573,13 +611,7 @@ def main():
     rgi_id = options.RGI_ID[0]
 
     cfg = load_config(config_file)
-    # Cover every calendar year touched by the simulation. PISM's time.end is
-    # exclusive (e.g. "2025-01-01" means stop at midnight Jan 1, so 2025
-    # itself is not simulated), hence the - 1 when end is exactly Jan 1.
-    start = pd.Timestamp(cfg.time.time_start)
-    end = pd.Timestamp(cfg.time.time_end)
-    last_year = end.year - 1 if (end.month == 1 and end.day == 1) else end.year
-    years = list(range(start.year, last_year + 1))
+    years = campaign_years(pd.Timestamp(cfg.time.time_start), pd.Timestamp(cfg.time.time_end))
     config = cfg.campaign.as_params()
     config["years"] = years
 
