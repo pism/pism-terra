@@ -362,7 +362,9 @@ def preprocess_netcdf(
         If True, store ``pism_config`` as a JSON-encoded coordinate over the identifier
         dimensions, decoded with :func:`decode_pism_config` (the JSON blob in the
         variable's data, falling back to its attributes). If False, simply drop the
-        pism_config variable and axis without re-adding it. By default True.
+        pism_config variable and axis without re-adding it. By default True. A file
+        that carries no ``pism_config`` at all — an ISMIP7 submission file, say — is
+        handled as if this were False, rather than raising.
 
     Returns
     -------
@@ -382,8 +384,10 @@ def preprocess_netcdf(
     expand_dims: list[str] = []
     expand_coords: dict[str, list[str]] = {}
 
-    if process_config:
-        p_config = ds["pism_config"]
+    # Output that PISM did not write directly — an ISMIP7 submission file, say —
+    # carries no ``pism_config``. Skip the config rather than failing: the
+    # identifiers are the point of this function, and they come from the path.
+    p_config = ds["pism_config"] if process_config and "pism_config" in ds else None
 
     ds = ds.drop_vars(["pism_config"], errors="ignore").drop_dims(["pism_config_axis"], errors="ignore")
 
@@ -409,7 +413,7 @@ def preprocess_netcdf(
 
     ds = ds.expand_dims(expand_coords)
 
-    if process_config:
+    if p_config is not None:
         # One JSON string per (uq_id, exp_id, ...), decoded from the blob PISM writes
         # (attributes only as a fallback). An absent or empty retreat file is
         # recorded as "false" so that the retreat method can be read off the config.

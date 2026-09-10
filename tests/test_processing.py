@@ -699,3 +699,32 @@ def test_decode_pism_config_scalar_string_and_fallback():
 
     not_json = xr.DataArray(np.array(b"garbage", dtype="S7"), attrs={"grid.dx": "1200"})
     assert decode_pism_config(not_json) == {"grid.dx": "1200"}
+
+
+def test_preprocess_without_pism_config(tmp_path):
+    """
+    Handle a file that carries no ``pism_config`` at all.
+
+    ISMIP7 submission output is written by the post-processing rather than by
+    PISM, so it has no config variable. The identifiers are still the point of
+    the call and still come from the path, so this must not raise.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    core = tmp_path / "CORE" / "C008"
+    core.mkdir(parents=True)
+    path = core / "tendacabf_GrIS_UAF_PISM_m001_MRI-ESM2-0_f001_ssp585_C008_2015-2024.nc"
+    xr.Dataset(
+        {"tendacabf": ("time", np.zeros(3))},
+        coords={"time": pd.date_range("2015-07-01", periods=3, freq="YS")},
+    ).to_netcdf(path)
+
+    ds = preprocess_netcdf(xr.open_dataset(path), exp_regexp=r"/CORE/(C\d+)/")
+
+    assert ds["exp_id"].values.tolist() == ["C008"]
+    # Nothing to record, so nothing is re-added.
+    assert "pism_config" not in ds
+    assert "tendacabf" in ds
