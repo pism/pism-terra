@@ -1,0 +1,34 @@
+{"layout": "A_pism_today", "n": 200, "engine": "netcdf4", "parallel": "threads", "preprocess": "full", "combine": "by_coords", "chunks": "{}", "decode": true, "t_open": 17.77, "t_load": null, "rss_gb": 1.15, "dims": {"rgi_id": 1, "uq_id": 200, "exp_id": 1, "time": 2, "nv": 2, "y": 512, "x": 512}, "ntasks": 1400}
+{"layout": "B_postproc_default", "n": 200, "engine": "netcdf4", "parallel": "threads", "preprocess": "full", "combine": "by_coords", "chunks": "{}", "decode": true, "t_open": 18.16, "t_load": null, "rss_gb": 1.12, "dims": {"rgi_id": 1, "uq_id": 200, "exp_id": 1, "time": 2, "nv": 2, "y": 512, "x": 512}, "ntasks": 1400}
+{"layout": "C_exp_id_char", "engine": "netcdf4", "parallel": "threads", "preprocess": "full", "error": "ValueError: Dimension exp_id already exists."}
+{"layout": "A_pism_today", "n": 200, "engine": "netcdf4", "parallel": "none", "preprocess": "full", "combine": "by_coords", "chunks": "{}", "decode": true, "t_open": 12.64, "t_load": null, "rss_gb": 1.26, "dims": {"rgi_id": 1, "uq_id": 200, "exp_id": 1, "time": 2, "nv": 2, "y": 512, "x": 512}, "ntasks": 1400}
+{"layout": "B_postproc_default", "n": 200, "engine": "netcdf4", "parallel": "none", "preprocess": "full", "combine": "by_coords", "chunks": "{}", "decode": true, "t_open": 12.42, "t_load": null, "rss_gb": 1.24, "dims": {"rgi_id": 1, "uq_id": 200, "exp_id": 1, "time": 2, "nv": 2, "y": 512, "x": 512}, "ntasks": 1400}
+{"layout": "C_exp_id_char", "engine": "netcdf4", "parallel": "none", "preprocess": "full", "error": "ValueError: Dimension exp_id already exists."}
+{"layout": "A_pism_today", "n": 200, "engine": "h5netcdf", "parallel": "threads", "preprocess": "full", "combine": "by_coords", "chunks": "{}", "decode": true, "t_open": 48.07, "t_load": null, "rss_gb": 0.51, "dims": {"rgi_id": 1, "uq_id": 200, "exp_id": 1, "time": 2, "nv": 2, "y": 512, "x": 512}, "ntasks": 1400}
+{"layout": "A_pism_today", "n": 200, "engine": "h5netcdf", "parallel": "none", "preprocess": "full", "combine": "by_coords", "chunks": "{}", "decode": true, "t_open": 28.78, "t_load": null, "rss_gb": 0.58, "dims": {"rgi_id": 1, "uq_id": 200, "exp_id": 1, "time": 2, "nv": 2, "y": 512, "x": 512}, "ntasks": 1400}
+{"layout": "A_pism_today", "engine": "netcdf4", "parallel": "processes", "preprocess": "full", "error": "concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending."}
+{"layout": "A_pism_today", "engine": "netcdf4", "parallel": "distributed", "preprocess": "full", "error": "timeout"}
+{"layout": "A_pism_today", "engine": "h5netcdf", "parallel": "distributed", "preprocess": "full", "error": "timeout"}
+{"layout": "D_uq_id_int", "engine": "netcdf4", "parallel": "none", "preprocess": "full", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "E_uq_id_fixed_time", "engine": "netcdf4", "parallel": "none", "preprocess": "full", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "full", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "G_uq_id_no_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "full", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "D_uq_id_int", "engine": "netcdf4", "parallel": "none", "preprocess": "none", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "E_uq_id_fixed_time", "engine": "netcdf4", "parallel": "none", "preprocess": "none", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "none", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "G_uq_id_no_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "none", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "D_uq_id_int", "engine": "netcdf4", "parallel": "none", "preprocess": "light", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "E_uq_id_fixed_time", "engine": "netcdf4", "parallel": "none", "preprocess": "light", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "light", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "G_uq_id_no_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "light", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "h5netcdf", "parallel": "none", "preprocess": "none", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "G_uq_id_no_cfg", "engine": "h5netcdf", "parallel": "none", "preprocess": "none", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "A_pism_today", "n": 200, "engine": "netcdf4", "parallel": "none", "preprocess": "full", "combine": "nested+fast", "chunks": "{}", "decode": true, "t_open": 11.85, "t_load": null, "rss_gb": 1.21, "dims": {"rgi_id": 1, "uq_id": 200, "exp_id": 1, "time": 2, "nv": 2, "y": 512, "x": 512}, "ntasks": 1400}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "full", "combine": "nested", "fast-combine": true, "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "none", "combine": "nested", "fast-combine": true, "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "none", "combine": "nested", "fast-combine": true, "no-decode": true, "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "none", "chunks": "auto", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "none", "preprocess": "none", "chunks": "none", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "distributed", "preprocess": "none", "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "distributed", "preprocess": "none", "combine": "nested", "fast-combine": true, "error": "ValueError: invalid literal for int() with base 10: 'id'"}
+{"layout": "F_uq_id_json_cfg", "engine": "netcdf4", "parallel": "processes", "preprocess": "none", "combine": "nested", "fast-combine": true, "error": "ValueError: invalid literal for int() with base 10: 'id'"}

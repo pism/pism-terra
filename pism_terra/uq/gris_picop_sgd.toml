@@ -1,0 +1,11 @@
+samples = 4
+
+['ocean.picop.power_alpha']
+
+choices = [0.33333333, 0.54]
+distribution = "choices"
+
+['ocean.picop.power_beta']
+
+choices = [1.28, 2.0]
+distribution = "choices"

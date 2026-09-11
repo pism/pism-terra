@@ -1,0 +1,73 @@
+# -*- mode: yaml -*-
+#
+# Run
+#
+# git shortlog -sn --no-merges `branch`
+#
+# to list contributors to a `branch` and the number of non-merge commits they made.
+#
+# Output as of 2026-05-01 (branch=dev)
+#
+#   244  Andy Aschwanden
+#    50  Joseph H Kennedy
+#     1  Bruno Belotti
+#     1  dependabot[bot]
+#
+# Total: 7
+#
+# Overall total: 32
+#
+# To validate this document, install `cffconvert`
+#
+# python3 -m pip install cffconvert --user
+#
+# and run
+#
+# cffconvert --validate
+#
+# Note: the CITATION.cff format does not allow for extra information, so
+# "contribution-areas" below are commented out. These lines *are* needed to generate the
+# list of authors in the manual, though. Each author should have a list of contribution
+# areas *one one line*, indented so that the substitution "s/# contrib/contrib/g" will
+# produce a valid YAML document.
+#
+# See doc/sphinx/Makefile and doc/sphinx/authorship.py for details.
+
+cff-version: 1.2.0
+title: 'PISM Terra'
+type: software
+doi: 10.5281/zenodo.1199019
+contact:
+  - email: uaf-pism@alaska.edu
+    name: "PISM developers at UAF"
+authors:
+  - given-names: Andy
+    family-names: Aschwanden
+    email: aaschwanden@alaska.edu
+    affiliation: University of Alaska Fairbanks
+    orcid: 'https://orcid.org/0000-0001-8149-2315'
+  - given-names: Joseph H
+    family-names: Kennedy
+    email: jhkennedy@alaska.edu
+    affiliation: University of Alaska Fairbanks
+    orcid: https://orcid.org/0000-0002-9348-693X'
+
+repository-code: 'https://github.com/pism/pism-terra'
+url: 'https://www.pism.io'
+
+abstract: The Parallel Ice Sheet Model (PISM) is an open-source modelling framework for
+  ice sheets and glaciers. Its features include a hierarchy of available stress balances,
+  marine ice sheet physics with dynamic calving fronts, an enthalpy-based conservation of
+  energy scheme, bed deformation and subglacial hydrology components, extensible coupling
+  to atmospheric and ocean models, and comprehensive user documentation. PISM uses
+  distributed-memory (PETSc- and MPI-based) parallelism for high-resolution simulations.
+
+  PISM is jointly developed at the University of Alaska, Fairbanks (UAF) and the Potsdam
+  Institute for Climate Impact Research (PIK).
+
+keywords:
+  - ice sheet model
+  - open source
+  - geophysics
+  - sea level
+license: GPL-3.0-or-later

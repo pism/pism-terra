@@ -135,9 +135,9 @@ class ProfilesMethods:
         Parameters
         ----------
         obs_var : str, optional
-            The observed data variable name in the xarray Dataset, by default "v".
+            The observed data variable name in the xarray Dataset, by default "obs_v_normal".
         sim_var : str, optional
-            The simulated data variable name in the xarray Dataset, by default "velsurf_mag".
+            The simulated data variable name in the xarray Dataset, by default "sim_v_normal".
         dim : str, optional
             The dimension along which to calculate the statistics, by default "profile_axis".
         stats : List[str], optional
