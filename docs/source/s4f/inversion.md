@@ -241,16 +241,6 @@ bridges the two and defaults to the campaign these figures came from.
 `--rgi-id`, `--resolution` and `--dpi` are there for a different glacier or a
 different-looking page.
 
-```{admonition} These sweeps are incomplete
-:class: warning
-
-As of writing, roughly half of each nine-member sweep had finished: the
-figures above are built from 5 (`tauc`), 3 (`hardav`) and 4 (`alt`) members.
-Both tools print how many members went into each figure and warn by name about
-the ones they skipped — read those counts before drawing conclusions, and in
-particular do not trust a corner from a sweep with three points, where only
-one interior point exists to have curvature at all.
-```
 
 ## Using the result
 
