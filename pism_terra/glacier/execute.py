@@ -1,13 +1,25 @@
 """Execute the pism-run scripts."""
 
+import shutil
 import subprocess
 import sys
+import threading
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
+from types import TracebackType
 from typing import Tuple
 
+import boto3
+from botocore.config import Config
+
 from pism_terra.aws import local_to_s3, s3_to_local
+
+#: Seconds between publishes of the growing run log.
+PROGRESS_INTERVAL = 30.0
+
+#: Name of the run log, under ``<RGI dir>/logs/`` both locally and on S3.
+PROGRESS_NAME = "progress.log"
 
 
 def find_first_and_execute(work_dir: Path = Path.cwd()):
@@ -27,7 +39,127 @@ def find_first_and_execute(work_dir: Path = Path.cwd()):
     execute(run_scripts[0])
 
 
-def execute(script: Path):
+class ProgressPublisher:
+    """
+    Copy a growing local log file to S3 while the run is still going.
+
+    The job's own CloudWatch stream already holds everything the run prints,
+    but reading it needs AWS credentials, which the people submitting through
+    the notebook do not have. The same text published into the job's S3
+    prefix is readable the way the run scripts themselves already are, so the
+    app can show progress with nothing but an Earthdata login.
+
+    Publishing is best-effort: a failed upload is reported and the run
+    continues. Losing the live view is not a reason to lose the simulation.
+
+    Parameters
+    ----------
+    log_file : pathlib.Path
+        Local file being appended to.
+    bucket : str
+        Destination bucket.
+    key : str
+        Destination key.
+    interval : float, optional
+        Seconds between publishes.
+    """
+
+    def __init__(self, log_file: Path, bucket: str, key: str, interval: float = PROGRESS_INTERVAL):
+        """
+        Initialize the ProgressPublisher class.
+
+        Parameters
+        ----------
+        log_file : pathlib.Path
+            Local file being appended to.
+        bucket : str
+            Destination bucket.
+        key : str
+            Destination key.
+        interval : float, optional
+            Seconds between publishes.
+        """
+        self.log_file = Path(log_file)
+        self.bucket = bucket
+        self.key = key
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._s3 = boto3.client("s3", config=Config(retries={"max_attempts": 3}))
+
+    def publish(self) -> None:
+        """
+        Upload the log file as it currently stands.
+
+        Errors are printed rather than raised — this runs alongside the
+        simulation and must never be the thing that stops it.
+        """
+        try:
+            body = self.log_file.read_bytes()
+        except OSError:
+            return
+        try:
+            self._s3.put_object(
+                Bucket=self.bucket,
+                Key=self.key,
+                Body=body,
+                ContentType="text/plain; charset=utf-8",
+                # Not ``file_type=product``: this is a log, and everything
+                # tagged as a product is offered to the user as a result.
+                Tagging="file_type=log",
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(f"progress publish to s3://{self.bucket}/{self.key} failed: {exc}", file=sys.stderr)
+
+    def _loop(self) -> None:
+        """
+        Publish every ``interval`` seconds until asked to stop.
+        """
+        while not self._stop.wait(self.interval):
+            self.publish()
+
+    def __enter__(self) -> "ProgressPublisher":
+        """
+        Start the background publisher.
+
+        Returns
+        -------
+        ProgressPublisher
+            This instance.
+        """
+        print(f"Publishing progress to s3://{self.bucket}/{self.key} every {self.interval:.0f}s")
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """
+        Stop the publisher and publish once more.
+
+        The final publish runs whether or not the run succeeded: a failed
+        run is exactly when someone wants to read the log.
+
+        Parameters
+        ----------
+        exc_type : type of BaseException or None
+            Exception class, if the block raised.
+        exc : BaseException or None
+            Exception instance, if the block raised.
+        traceback : types.TracebackType or None
+            Traceback, if the block raised.
+        """
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval)
+        self.publish()
+
+
+def execute(script: Path, log_file: Path | None = None):
     """
     Execute a script.
 
@@ -35,15 +167,53 @@ def execute(script: Path):
     ----------
     script : Path
         Path to a script to execute.
+    log_file : pathlib.Path or None, optional
+        When given, the script's combined output is written here as well as
+        to this process' stdout, so it can be published while the run is
+        still going. Without it the output goes straight to stdout, as before.
+
+    Raises
+    ------
+    subprocess.CalledProcessError
+        If the script exits non-zero.
+    RuntimeError
+        If the child's output pipe cannot be opened.
     """
     print("Executing script: ", script)
-    subprocess.run(
-        f"bash -ex {script.resolve()}",
-        stdout=sys.stdout,
-        stderr=sys.stderr,
+    command = f"bash -ex {script.resolve()}"
+    if log_file is not None and shutil.which("stdbuf"):
+        # Line-buffer the legs so the published log tracks the run instead of
+        # arriving one pipe buffer at a time. Only an improvement, not a
+        # guarantee: a program that buffers on its own still buffers.
+        command = f"stdbuf -oL -eL {command}"
+
+    if log_file is None:
+        subprocess.run(command, stdout=sys.stdout, stderr=sys.stderr, shell=True, check=True)
+        return
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with subprocess.Popen(  # pylint: disable=consider-using-with
+        command,
         shell=True,
-        check=True,
-    )
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    ) as proc:
+        stream = proc.stdout
+        if stream is None:  # pragma: no cover - stdout=PIPE always gives one
+            raise RuntimeError("could not capture the run script's output")
+        with log_file.open("w", encoding="utf-8") as handle:
+            for line in stream:
+                # Everything still reaches stdout, so the CloudWatch stream
+                # stays complete for whoever does have AWS credentials.
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                handle.write(line)
+                handle.flush()
+
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, command)
 
 
 def ensure_pism_terra_structure(script_uri: str) -> Tuple[str | None, str, Path]:
@@ -125,7 +295,17 @@ def main():
 
         s3_to_local(staging_bucket, staging_prefix if staging_prefix != "." else "", work_dir)
 
-    execute(local_run_script)
+    # The log lives where the final sync would put it anyway, so publishing it
+    # live and uploading it at the end write the same key rather than two.
+    rgi_dir = local_run_script.parents[1]
+    log_file = work_dir / rgi_dir / "logs" / PROGRESS_NAME
+
+    if args.bucket:
+        key = "/".join(part for part in (args.bucket_prefix.strip("/"), rgi_dir.name, "logs", PROGRESS_NAME) if part)
+        with ProgressPublisher(log_file, args.bucket, key):
+            execute(local_run_script, log_file=log_file)
+    else:
+        execute(local_run_script, log_file=log_file)
 
     if args.bucket:
         local_to_s3(work_dir, args.bucket, args.bucket_prefix)

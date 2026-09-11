@@ -470,12 +470,13 @@ def test_forward_init_leg_surface_model(tmp_path):
 
 def test_forward_c011_ocx(tmp_path):
     """
-    C011 (OCX) renders init -> hist -> OCX product leg on shared forcing.
+    C011 (OCX) renders init -> one continuous historical leg, no 2015 split.
 
-    The init leg spins up 1980..1990 with ``ismip7_forcing``; the historical
-    leg runs 1990..2015 (flat names); the OCX leg continues 2015..2025 as the
-    ISMIP7 product, reusing the historical reanalysis forcing (no separate
-    projection file exists, so no ``proj_overrides`` are passed).
+    The init leg spins up 1980..1990 with ``ismip7_forcing``; the forward leg
+    then runs the config's whole ``time.start``..``time.end`` (1990..2025) in
+    one PISM invocation, because the reanalysis forcing is a single unbroken
+    record. That leg is the ISMIP7 product, named with ``experiment_id``
+    ``"OCX"``.
 
     Parameters
     ----------
@@ -492,8 +493,8 @@ def test_forward_c011_ocx(tmp_path):
         },
     )
     legs = _legs(script)
-    assert [leg.split()[0] for leg in legs] == ["pism", "pism", "pism"]
-    init, hist, proj = legs
+    assert [leg.split()[0] for leg in legs] == ["pism", "pism"]
+    init, fwd = legs
 
     # Init leg: 1980..1990 with the swapped ismip7_forcing surface model.
     assert "-time.start 1980-01-01" in init
@@ -501,22 +502,37 @@ def test_forward_c011_ocx(tmp_path):
     assert "-surface.force_to_thickness.file boot.nc" in init
     assert "-surface.ismip7.file ocx_climate.nc" in init
 
-    # Historical leg: restarts from the init state, 1990 to the 2015 split.
+    # Forward leg: restarts from the init state and spans the full config range.
     init_state = _search(r"-output\.file (\S+state_\S+1980-01-01_1990-01-01\.nc)", init)
-    assert f"-input.file {init_state}" in hist
-    assert "-time.start 1990-01-01" in hist
-    assert "-time.end 2015-01-01" in hist
-    assert '-run_info.experiment "historical"' in hist
-    assert "force_to_thickness" not in hist
+    assert f"-input.file {init_state}" in fwd
+    assert "-time.start 1990-01-01" in fwd
+    assert "-time.end 2025-01-01" in fwd
+    assert "-time.end 2015-01-01" not in fwd
+    assert '-run_info.experiment "OCX"' in fwd
+    assert "-surface.ismip7.file ocx_climate.nc" in fwd
+    assert "force_to_thickness" not in fwd
 
-    # OCX product leg: 2015..2025, same forcing file as the historical leg.
-    hist_state = _search(r"-output\.file (\S+state_\S+1990-01-01_2015-01-01\.nc)", hist)
-    assert f"-input.file {hist_state}" in proj
-    assert "-time.start 2015-01-01" in proj
-    assert "-time.end 2025-01-01" in proj
-    assert '-run_info.experiment "OCX"' in proj
-    assert "-surface.ismip7.file ocx_climate.nc" in proj
-    assert "force_to_thickness" not in proj
+    # The one leg is the ISMIP7 product: submission names, spanning 1990-2024.
+    assert "/CORE/C011/" in fwd
+    assert "_OCX_C011_1990-2024.nc" in fwd
+
+
+def test_forward_c011_ocx_postprocesses_the_submission_fluxes(tmp_path):
+    """
+    The OCX single leg still gets the per-basin flux integration.
+
+    Routing C011 through the single-leg path must not cost it the ISMIP7
+    post-processing that the two-leg counters get.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, C011, OUTLINE, sample="OCX")
+    assert _postprocess_commands(script) == ["pism-ismip7-postprocess-flux"]
+    flux = next(line for line in script.splitlines() if line.startswith("pism-ismip7-postprocess-flux"))
+    assert flux.split()[1].endswith("/CORE/C011")
 
 
 def test_forward_c009_ctrl(tmp_path):
@@ -786,13 +802,15 @@ def test_counter_run_postprocesses_the_submission_fluxes(tmp_path):
     assert destination.endswith("/output/basins")
 
 
-def test_single_leg_ismip7_run_keeps_both_postprocessing_steps(tmp_path):
+def test_single_leg_ismip7_run_postprocesses_only_the_fluxes(tmp_path):
     """
-    Adding the flux step must not displace the per-basin scalar step.
+    An ISMIP7-named single leg gets the flux step, not the scalar one.
 
-    A run with ISMIP7 naming but no counter is single-leg, so it sets its own
-    ``pism-postprocess-scalar`` command before the ISMIP7 block is reached.
-    The flux command is appended to it rather than assigned over it.
+    ``pism-postprocess-scalar`` opens its input with ``xr.open_dataset``, and
+    the ISMIP7 tree's ``output.spatial.file`` is a ``{var}`` pattern PISM
+    expands into one file per variable — there is no single file at that path
+    to open. The per-basin numbers come from ``pism-ismip7-postprocess-flux``
+    over the submission directory instead.
 
     Parameters
     ----------
@@ -801,7 +819,26 @@ def test_single_leg_ismip7_run_keeps_both_postprocessing_steps(tmp_path):
     """
     cfg = _single_leg_with_ismip7_naming(tmp_path)
     script = _render_forward(tmp_path / "run", cfg, OUTLINE, sample="CESM2-WACCM")
-    assert _postprocess_commands(script) == ["pism-postprocess-scalar", "pism-ismip7-postprocess-flux"]
+    assert _postprocess_commands(script) == ["pism-ismip7-postprocess-flux"]
+
+
+def test_single_leg_flat_run_postprocesses_the_spatial_file(tmp_path):
+    """
+    A flat single leg gets the scalar step and no flux step.
+
+    With ISMIP7 naming off the spatial output is a single combined file, so
+    ``pism-postprocess-scalar`` can open it, and there is no submission tree
+    for the flux step to walk.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg_path = _single_leg_with_ismip7_naming(tmp_path)
+    cfg_path.write_text(cfg_path.read_text().replace("'output.ISMIP' = \"yes\"", "'output.ISMIP' = \"no\""))
+    script = _render_forward(tmp_path / "run", cfg_path, OUTLINE, sample="CESM2-WACCM")
+    assert _postprocess_commands(script) == ["pism-postprocess-scalar"]
 
 
 def test_run_without_outlines_postprocesses_nothing(tmp_path):

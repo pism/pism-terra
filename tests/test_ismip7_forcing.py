@@ -86,17 +86,51 @@ def test_forcing_tasks_from_shipped_config():
     assert by_key[("OCX", "historical", "ocean")] == ("v1", 1958, 2024, "ocean-1000m", "EN4")
 
     # CTRL2015 (C009/C010) runs 2015-2300 off the same subtrees and version
-    # tags as the projections, but upstream publishes no ``mrro`` under ctrl,
-    # so the pathway overrides the climate field list.
+    # tags as the projections. ``mrro`` appeared under ctrl upstream on
+    # 2026-09-11, so ctrl now takes the same climate field list as the rest.
     assert by_key[("CESM2-WACCM", "ctrl", "climate")] == ("v3", 2015, 2300, "SDBN1-1000m", None)
     assert by_key[("MRI-ESM2-0", "ctrl", "ocean")] == ("v1", 2015, 2300, "ocean-1000m", None)
-    assert "mrro" not in fields_by_key[("CESM2-WACCM", "ctrl", "climate")]
-    assert "mrro" not in fields_by_key[("MRI-ESM2-0", "ctrl", "climate")]
-    assert "mrro" in fields_by_key[("CESM2-WACCM", "ssp585", "climate")]
+    for gcm in ("CESM2-WACCM", "MRI-ESM2-0"):
+        assert fields_by_key[(gcm, "ctrl", "climate")] == fields_by_key[(gcm, "ssp585", "climate")]
+        assert "mrro" in fields_by_key[(gcm, "ctrl", "climate")]
     assert fields_by_key[("MRI-ESM2-0", "ctrl", "ocean")] == ["tf", "so"]
 
     # The GCM-level ``source``/``version`` keys must not be mistaken for pathways.
     assert not [t for t in tasks if t[4] in ("source", "version")]
+
+
+def test_select_forcing_tasks_narrows_to_one_corner():
+    """
+    Select a single (pathway, forcing) pair out of the shipped expansion.
+
+    This is what a rerun uses after a variable appears upstream: regenerate
+    the two ctrl climate files and leave the other twenty tasks alone.
+    """
+    config = toml.loads((CONFIG_DIR / "setup_ismip7_greenland.toml").read_text("utf-8"))
+    tasks = forcing._forcing_tasks(config)
+
+    selected = forcing.select_forcing_tasks(tasks, pathways="ctrl", forcings="climate")
+    assert [(t[1], t[4], t[2]) for t in selected] == [
+        ("CESM2-WACCM", "ctrl", "climate"),
+        ("MRI-ESM2-0", "ctrl", "climate"),
+    ]
+
+    # Case-insensitive, and comma-separated lists combine.
+    assert len(forcing.select_forcing_tasks(tasks, gcms="cesm2-waccm", pathways="CTRL,ssp585")) == 4
+
+    # An unset selector is not a filter at all.
+    assert forcing.select_forcing_tasks(tasks) == tasks
+    assert forcing.select_forcing_tasks(tasks, gcms="", pathways=None) == tasks
+
+
+def test_select_forcing_tasks_rejects_a_selector_that_matches_nothing():
+    """
+    Fail loudly on a typo rather than quietly doing no work.
+    """
+    config = toml.loads((CONFIG_DIR / "setup_ismip7_greenland.toml").read_text("utf-8"))
+    tasks = forcing._forcing_tasks(config)
+    with pytest.raises(SystemExit, match="no forcing task matches"):
+        forcing.select_forcing_tasks(tasks, gcms="CESM2-WACM")
 
 
 def test_forcing_tasks_pathway_overrides_and_legacy_short_hand():
