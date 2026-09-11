@@ -65,51 +65,69 @@ writing is a large share of the run.
 
 ### Probe, 2026-09-10, `/import/c1` (lustre2, 15 OSTs, 90 % full)
 
-A first pass with one measurement per setting, before `--repeats` existed:
+Medians of 5 shuffled repeats per setting, 2 GiB per stream, MB/s:
 
-| count | size | single MB/s | 8-stream MB/s |
-|---|---|---|---|
-| 1 | 1m | 154.8 | 649.9 |
-| 1 | 32m | 795.6 | 575.3 |
-| 2 | 1m | 653.9 | 1122.2 |
-| 2 | 32m | 598.0 | 1513.0 |
-| 4 | 1m | 282.8 | 940.2 |
-| 4 | 32m | 294.0 | 1758.5 |
-| 8 | 1m | 420.1 | 752.0 |
-| 8 | 32m | 375.8 | 1064.2 |
-| 15 | 1m | 351.6 | 1101.9 |
-| 15 | 32m | 252.2 | 1060.0 |
+| count | size | single | (range) | 8-stream | (range) |
+|---|---|---|---|---|---|
+| 1 | 1m | 507 | 77–1128 | 911 | 577–1282 |
+| 1 | 32m | 467 | 107–1033 | 1093 | 577–1175 |
+| 2 | 1m | 243 | 131–661 | 794 | 592–971 |
+| 2 | 32m | 748 | 198–830 | 747 | 612–1693 |
+| 4 | 1m | 228 | 159–346 | 722 | 523–935 |
+| 4 | 32m | 283 | 193–406 | 1277 | 784–1379 |
+| 8 | 1m | 407 | 326–462 | 1221 | 679–1460 |
+| 8 | 32m | 417 | 334–495 | 883 | 711–1192 |
+| 15 | 1m | 524 | 279–545 | 878 | 753–1204 |
+| 15 | 32m | 467 | 396–545 | 1046 | 751–1322 |
 
-**These do not rank the settings.** They are non-monotonic in ways no stripe
-effect explains — `c=1/32m` is the best single-stream figure and `c=1/1m` the
-worst, `c=2/1m` beats `c=4/1m`, and the 8-stream column peaks at `c=4` then
-falls back at `c=8` and `c=15`. One shot per setting, run in a fixed order on
-a filesystem shared with everyone else, cannot separate a layout from a busy
-neighbour; the first cell measured (154.8) is very likely cold-start cost.
-`--repeats` with shuffled trial order exists because of this run.
+**No setting is faster than any other, to the precision available.** The
+best and worst single-stream cells (c=2/32m at 748, c=4/1m at 228) have
+ranges that still overlap by 148 MB/s; the 8-stream extremes overlap by 151.
+Every pair in between overlaps more. Whatever stripe count and stripe size do
+on this filesystem is smaller than what the other users on it do, and five
+repeats cannot see past that.
 
-Two things it does establish:
+**What does survive is the scatter.** Relative spread of the single-stream
+measurement, range width over median:
 
-- **The aggregate ceiling is around 1.7 GB/s** and a **single writer tops out
-  near 0.8 GB/s** — so the async setup's one serial process gives up roughly
-  half the bandwidth the OSTs can absorb, whatever the striping. That is a
-  point about the two templates, not about layout.
-- **The filesystem is 90 % full** (OSTs 88–93 %). Lustre allocation degrades
-  at that fill level and steers away from the fullest OSTs, which is a
-  plausible reason wide stripes did not win. Any tuning done now is tuning
-  against that state.
+| count | 1m | 32m |
+|---|---|---|
+| 1 | 2.07 | 1.98 |
+| 2 | 2.18 | 0.84 |
+| 4 | 0.82 | 0.75 |
+| 8 | 0.33 | 0.39 |
+| 15 | 0.51 | 0.32 |
 
-Re-run with repeats before drawing conclusions:
+A single writer on one stripe is hostage to whichever OST it landed on and to
+whatever else is hitting that OST: throughput ranged over a factor of 15
+(77–1128 MB/s) across five identical writes. Spread over 8–15 OSTs the same
+write varies by well under a factor of two. The effect is consistent down
+both stripe-size columns, which is more than any of the medians manage —
+though with five samples the min–max is a crude estimate and this is a
+tendency, not a measurement.
 
-```bash
-srun -n1 -p t2small --time=01:00:00 --pty \
-    benchmarks/lustre_striping/stripe_probe.sh \
-    --path /import/c1/ICESHEET/ICESHEET/pism-terra --repeats 5
-```
+So, for this filesystem in this state:
+
+- **Striping will not make PISM write faster.** Do not expect a win.
+- **A wide stripe makes the async path predictable.** `-c 8` or `-c 15` is
+  worth setting on output directories for the single-writer template, for
+  wall times that vary less between otherwise identical jobs. It also
+  satisfies the UAF guide's "avoid leaving very large files on 1–2 OSTs".
+- **Stripe size does not separate.** 1m and 32m are interchangeable here.
+- **The 8-stream aggregate (~0.7–1.3 GB/s) is roughly twice the single-writer
+  figure**, unchanged from the first pass: the async writer forfeits about
+  half the available bandwidth by being one process, which is a bigger lever
+  than any layout.
 
 ### Matrix
 
-Not yet run. Fill this in from `results.csv`, then set the winning layout in
+Not run, and on this evidence not worth 16 node-hours: the probe cannot
+separate the settings at the filesystem level, and an end-to-end PISM run
+adds compute noise on top of the same I/O noise. Worth revisiting if the
+filesystem empties out or if a run turns out to be write-bound in a way the
+probe does not capture (filtered collective HDF5 is not modelled by `dd`).
+
+Fill this in from `results.csv` if it does get run, then set the layout in
 `pism_terra/templates/chinook-apptainer.j2` and `chinook-apptainer-async.j2`
 and note the date and the PISM version here — the answer depends on both the
 filesystem's state and on how PISM writes.

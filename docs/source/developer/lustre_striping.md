@@ -86,27 +86,33 @@ Striping has to be set on the output directory *before* PISM writes into it,
 which means in the run script, before the `mpiexec` lines:
 
 ```bash
-lfs setstripe -c 15 -S 32m "{{ output_path }}"
+lfs setstripe -c 8 -S 1m "{{ output_path }}"
 ```
 
 Both templates already create the output tree through
-`pism-glacier-run-forward`, so the `lfs setstripe` belongs alongside that —
-with the count and size that won the matrix for *that* template. Record the
-numbers, the date and the PISM version in the harness README when you set
-them: the answer depends on how PISM writes and on how loaded the filesystem
-is, and both change.
+`pism-glacier-run-forward`, so the `lfs setstripe` belongs alongside that.
+On the 2026-09-10 measurement the count is there for consistency rather than
+speed, and the size may as well stay at the filesystem default — nothing
+separated 1m from 32m. Re-measure before treating either as settled: the
+answer depends on how PISM writes and on how loaded the filesystem is, and
+both change.
 
-```{admonition} Measure repeatedly, not once
-:class: warning
+```{admonition} Measured 2026-09-10: striping does not make writes faster here
+:class: important
 
-`/import/c1` is shared and, as of 2026-09-10, **90 % full**. A first probe
-with one measurement per setting came back non-monotonic — the best and the
-worst single-stream figures were both at stripe count 1 — which is what
-neighbouring load looks like, not a stripe effect. `stripe_probe.sh
---repeats` runs each setting several times in shuffled order and reports the
-median with its range; judge any difference against that range before
-believing it. The recorded numbers and what they do and do not show are in
-the harness README.
+Five shuffled repeats per setting could not separate any two layouts. The
+fastest and slowest single-stream cells still overlap by ~150 MB/s, and so
+does every pair between them — whatever striping does on `/import/c1` is
+smaller than what the filesystem's other users do.
+
+One thing did survive: **a single writer on one stripe is wildly
+inconsistent**, ranging over a factor of 15 across five identical writes
+(77–1128 MB/s), while at 8–15 stripes the same write varies by under a factor
+of two. So a wide stripe buys *predictable* wall times for the async
+template, not faster ones. Stripe size made no difference at all.
+
+The numbers, and the reasoning behind reading them that way, are in the
+harness README.
 ```
 
 ```{admonition} A full filesystem is its own problem
