@@ -604,11 +604,15 @@ def _build_forward_legs(
         # conformance, and a per-basin file is not a submission product.
         if outline_file != "none":
             _nt = postprocess_ntasks(config_cli)
-            post_process_str = (
+            flux_command = (
                 f"pism-ismip7-postprocess-flux "
                 f"{submission_dir} {(output_path / 'basins').resolve()} {outline_file} "
                 f"--total-name GIS{_nt}"
             )
+            # Appended, not assigned: a single-leg run with ISMIP7 naming on
+            # reaches here having already put its own pism-postprocess-scalar
+            # command in post_process_str, and both steps should run.
+            post_process_str = "\n".join(c for c in (post_process_str, flux_command) if c)
     else:
         ism_checker_str = ""
         post_scalar_str = ""
