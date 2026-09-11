@@ -82,20 +82,34 @@ solver.
 
 ## Applying the answer
 
-Striping has to be set on the output directory *before* PISM writes into it,
-which means in the run script, before the `mpiexec` lines:
+Striping has to be set before PISM writes, which means in the run script,
+after the `ulimit` block and before the first `mpiexec`:
 
 ```bash
-lfs setstripe -c 8 -S 1m "{{ output_path }}"
+command -v lfs >/dev/null 2>&1 && find "$(dirname "{{ output_path }}")/output" -type d -exec lfs setstripe -c 8 {} \; 2>/dev/null || true
 ```
 
-Both templates already create the output tree through
-`pism-glacier-run-forward`, so the `lfs setstripe` belongs alongside that.
-On the 2026-09-10 measurement the count is there for consistency rather than
-speed, and the size may as well stay at the filesystem default — nothing
-separated 1m from 32m. Re-measure before treating either as settled: the
-answer depends on how PISM writes and on how loaded the filesystem is, and
-both change.
+Two things about that line are not obvious, and both will bite a simpler
+version of it:
+
+- **`{{ output_path }}` is the *logs* directory**, not the output tree. The
+  templates use it for `#SBATCH --output=`, and `run.py` binds it to
+  `log_path`. The output tree is its sibling, hence the `dirname`.
+- **Every subdirectory has to be named.** `pism-glacier-run-forward` creates
+  `output/{state,spatial,scalar,inverse}` when it renders the script, so they
+  already exist by the time the job starts. A directory's default layout is
+  inherited **at creation**; setting one on the parent afterwards does not
+  reach subdirectories that are already there. Hence `find -type d` rather
+  than a single `setstripe` on the root.
+
+The guards matter too: the templates run under `set -e`, and the line has to
+be harmless on a host with no Lustre client.
+
+On the 2026-09-10 measurement the count is there for consistent wall times
+rather than faster ones, and the stripe size is left at the filesystem
+default because nothing separated 1m from 32m. Re-measure before treating
+either as settled: the answer depends on how PISM writes and on how loaded
+the filesystem is, and both change.
 
 ```{admonition} Measured 2026-09-10: striping does not make writes faster here
 :class: important
