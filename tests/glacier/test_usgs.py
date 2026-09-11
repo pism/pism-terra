@@ -25,6 +25,7 @@ bookkeeping that turns PISM's reporting intervals into calendar dates.
 from pathlib import Path
 
 import cftime
+import matplotlib.pylab as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -180,3 +181,60 @@ def test_score_on_plain_arrays():
     short = usgs.score(np.array([1.0, 2.0]), np.array([1.0, 1.0]))
     assert short["n"] == 2 and np.isnan(short["r"]) and short["mae"] == pytest.approx(0.5)
     assert usgs.score(np.array([np.nan]), np.array([1.0]))["n"] == 0
+
+
+def test_plot_year_reads_dates_and_years():
+    """
+    Reduce a ``--plot-start`` value to a position on the balance-year axis.
+
+    These plots put the balance year on the x axis as a number, so a date
+    has to become one; the day of the year carries through as a fraction so
+    a mid-year date does not silently round to January.
+    """
+    assert usgs.plot_year("1986-01-01") == 1986.0
+    assert usgs.plot_year("1986") == 1986.0
+    # Roughly mid-year, and strictly inside it.
+    mid = usgs.plot_year("1986-07-01")
+    assert mid is not None and 1986.4 < mid < 1986.6
+    end_of_year = usgs.plot_year("2020-12-31")
+    assert end_of_year is not None and end_of_year < 2021.0
+    # 2020 is a leap year, so its days divide by 366.
+    assert usgs.plot_year("2020-07-01") == pytest.approx(2020 + 182 / 366)
+
+
+def test_plot_year_passes_through_nothing():
+    """
+    Leave an end of the axis alone when it was not asked for.
+    """
+    assert usgs.plot_year(None) is None
+    assert usgs.plot_year("") is None
+    assert usgs.plot_year("  ") is None
+
+
+def test_plot_year_rejects_nonsense():
+    """
+    Report an unreadable value rather than silently dropping the limit.
+    """
+    with pytest.raises(ValueError, match="1986 or 1986-01-01"):
+        usgs.plot_year("last tuesday")
+
+
+def test_apply_plot_years_leaves_an_absent_end_alone():
+    """
+    Set only the ends that were given, keeping the data's own on the other.
+    """
+    _, ax = plt.subplots()
+    ax.plot([1970, 2020], [0, 1])
+    before = ax.get_xlim()
+
+    usgs.apply_plot_years(ax, (None, None))
+    assert ax.get_xlim() == before
+
+    usgs.apply_plot_years(ax, (1986.0, None))
+    left, right = ax.get_xlim()
+    assert left == 1986.0 and right == before[1]
+
+    usgs.apply_plot_years(ax, (None, 2010.0))
+    left, right = ax.get_xlim()
+    assert left == 1986.0 and right == 2010.0
+    plt.close("all")

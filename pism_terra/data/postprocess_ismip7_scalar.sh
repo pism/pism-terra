@@ -73,7 +73,6 @@ do
   ncap2 -s "${var}=float(${var})" -O ${output} ${output}
   # set _FillValue
   ncatted -a _FillValue,${var},c,f,${fill_value} \
-          -a units,${var},m,c,"kg s-1" \
           -O ${output} ${output}
   # correct the time dimension
   pism-ismip7-fix-time-flux-variables ${output}

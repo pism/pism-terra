@@ -41,6 +41,18 @@ ulimit -l unlimited || true
 ulimit -s unlimited || true
 ulimit
 
+# Spread PISM's output over several OSTs before anything is written. On
+# chinook's Lustre this does not make writes faster, but it stops a single
+# writer's throughput from depending on which OST it happened to land on:
+# see docs/source/developer/lustre_striping.md. Two subtleties —
+# ``{{ output_path }}`` is the *logs* directory (the templates use it for
+# --output= above) and the output tree is its sibling; and the run's
+# subdirectories already exist, having been created when this script was
+# rendered, so each needs its own layout rather than inheriting one set on
+# the parent. Inert where there is no Lustre client.
+command -v lfs >/dev/null 2>&1 && find "$(dirname "{{ output_path }}")/output" -type d \
+    -exec lfs setstripe -c 8 {} \; 2>/dev/null || true
+
 pismtasks=$(( SLURM_NTASKS - 4 ))
 
 {% if run_init_str %}

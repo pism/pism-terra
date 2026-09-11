@@ -43,6 +43,9 @@ TEMPLATE_DIR = REPO / "pism_terra" / "templates"
 FREE_HY = CONFIG_DIR / "ismip7_greenland_2007_historical_free.toml"
 C003 = CONFIG_DIR / "ismip7_greenland_c003.toml"
 C009 = CONFIG_DIR / "ismip7_greenland_c009.toml"
+C004 = CONFIG_DIR / "ismip7_greenland_c004.toml"
+C005 = CONFIG_DIR / "ismip7_greenland_c005.toml"
+OUTLINE = REPO / "pism_terra" / "data" / "mouginot_basins_w_shelves.gpkg"
 C011 = CONFIG_DIR / "ismip7_greenland_c011.toml"
 
 
@@ -322,7 +325,7 @@ def test_inverse_uq_routing(tmp_path):
     assert "mohr_coulomb" not in fwd
 
 
-def _render_forward(tmp_path: Path, config_file: Path, **kwargs) -> str:
+def _render_forward(tmp_path: Path, config_file: Path, outline_file: Path | None = None, **kwargs) -> str:
     """
     Render a forward script into ``tmp_path`` and return the script text.
 
@@ -332,6 +335,9 @@ def _render_forward(tmp_path: Path, config_file: Path, **kwargs) -> str:
         Output directory (pytest fixture).
     config_file : pathlib.Path
         PISM configuration TOML.
+    outline_file : pathlib.Path or None, optional
+        Outlines for the post-processing steps; without them those steps are
+        not emitted at all.
     **kwargs
         Forwarded to :func:`_render_forward_run`.
 
@@ -343,7 +349,7 @@ def _render_forward(tmp_path: Path, config_file: Path, **kwargs) -> str:
     _render_forward_run(
         config_file,
         TEMPLATE_DIR / "debug-ismip7.j2",
-        None,
+        outline_file,
         path=tmp_path,
         **kwargs,
     )
@@ -661,3 +667,151 @@ def test_forward_script_without_a_counter_keeps_the_pathway_name(tmp_path):
     (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
     assert script.name.startswith("submit_g")
     assert "_C0" not in script.name
+
+
+def test_counters_do_not_share_an_init_state(tmp_path):
+    """
+    Two counters sharing a forcing GCM write their legs to separate trees.
+
+    Every counter runs its own init leg, and that leg's state is named for
+    the GCM rather than the counter — so C002 and C004, both MRI-ESM2-0,
+    would write one path at once when submitted together. The per-leg
+    directories therefore hang off ``output/<counter>/``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    states = {}
+    for counter in ("C002", "C004"):
+        # C004 is MRI-ESM2-0; re-stamp it as C002 to get the pair that
+        # collides, with the init leg shortened to one year.
+        text = C004.read_text()
+        text = text.replace('init_start = "1980-01-01"', 'init_start = "1985-01-01"', 1)
+        text = text.replace('init_end = "1985-01-01"', 'init_end = "1986-01-01"', 1)
+        text = text.replace("'run_info.counter' = \"C004\"", f"'run_info.counter' = \"{counter}\"", 1)
+        cfg_dir = tmp_path / counter
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg = cfg_dir / "config.toml"
+        cfg.write_text(text)
+        out = cfg_dir / "run"
+        _render_forward(out, cfg, sample="MRI-ESM2-0")
+        (script,) = (out / "run_scripts").glob("submit_*.sh")
+        init = _legs(script.read_text())[0]
+        states[counter] = _search(r"-output\.file (\S+state_\S+1985-01-01_1986-01-01\.nc)", init)
+
+    # Same file name — that is the collision — but under different counters.
+    assert Path(states["C002"]).name == Path(states["C004"]).name
+    assert Path(states["C002"]).parent != Path(states["C004"]).parent
+    assert Path(states["C002"]).parent.parent.name == "C002"
+    assert Path(states["C004"]).parent.parent.name == "C004"
+
+
+def test_run_without_a_counter_keeps_the_flat_output_tree(tmp_path):
+    """
+    A run with no counter writes to ``output/state`` as before.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script_text = _render_forward(tmp_path, FREE_HY, sample=0)
+    state = _search(r"-output\.file (\S+state_\S+\.nc)", script_text)
+    assert Path(state).parent.name == "state"
+    assert Path(state).parent.parent.name == "output"
+
+
+def _single_leg_with_ismip7_naming(tmp_path: Path) -> Path:
+    """
+    Write a config that is single-leg but still uses ISMIP7 naming.
+
+    Dropping the counter makes the run single-leg; ``output.ISMIP`` stays on,
+    which is what gives it an ISMIP7 submission tree. Without a counter the
+    config has to state ``time.end`` and ``run_info.experiment`` itself.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write the config into.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the config.
+    """
+    text = C005.read_text()
+    text = re.sub(r"'run_info\.counter'\s*=\s*\"C005\"\n", "", text, count=1)
+    text = text.replace("[time]\n", "[time]\n'time.end' = '2100-01-01'\n", 1)
+    text = text.replace("'run_info.domain'", "'run_info.experiment' = 'ssp126'\n'run_info.domain'", 1)
+    cfg = tmp_path / "single_leg_ismip7.toml"
+    cfg.write_text(text)
+    return cfg
+
+
+def _postprocess_commands(script_text: str) -> list[str]:
+    """
+    List the post-processing commands a rendered script runs.
+
+    Parameters
+    ----------
+    script_text : str
+        The rendered run script.
+
+    Returns
+    -------
+    list of str
+        Command names, in the order they appear.
+    """
+    wanted = ("pism-postprocess-scalar", "pism-ismip7-postprocess-flux")
+    return [line.split()[0] for line in script_text.splitlines() if line.startswith(wanted)]
+
+
+def test_counter_run_postprocesses_the_submission_fluxes(tmp_path):
+    """
+    A counter-driven run integrates its submission fluxes over the basins.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, C005, OUTLINE, sample="CESM2-WACCM")
+    assert _postprocess_commands(script) == ["pism-ismip7-postprocess-flux"]
+    # Out of the submission tree, whose contents are checked for conformance.
+    flux = next(line for line in script.splitlines() if line.startswith("pism-ismip7-postprocess-flux"))
+    source, destination = flux.split()[1], flux.split()[2]
+    assert source.endswith("/CORE/C005")
+    assert destination.endswith("/output/basins")
+
+
+def test_single_leg_ismip7_run_keeps_both_postprocessing_steps(tmp_path):
+    """
+    Adding the flux step must not displace the per-basin scalar step.
+
+    A run with ISMIP7 naming but no counter is single-leg, so it sets its own
+    ``pism-postprocess-scalar`` command before the ISMIP7 block is reached.
+    The flux command is appended to it rather than assigned over it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = _single_leg_with_ismip7_naming(tmp_path)
+    script = _render_forward(tmp_path / "run", cfg, OUTLINE, sample="CESM2-WACCM")
+    assert _postprocess_commands(script) == ["pism-postprocess-scalar", "pism-ismip7-postprocess-flux"]
+
+
+def test_run_without_outlines_postprocesses_nothing(tmp_path):
+    """
+    Both post-processing steps need outlines to reduce over.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, C005, sample="CESM2-WACCM")
+    assert _postprocess_commands(script) == []

@@ -61,7 +61,7 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 # ``OSError: [Errno 24] Too many open files`` before any work starts. The
 # post-processing is a per-basin clip + field sum, so a handful of workers is
 # plenty regardless of how wide the PISM run was.
-def _make_output_paths(path: str | Path, *, inverse: bool = False) -> dict[str, Path]:
+def _make_output_paths(path: str | Path, *, inverse: bool = False, counter: str | None = None) -> dict[str, Path]:
     """
     Create the run's output directory tree and return the paths.
 
@@ -72,6 +72,15 @@ def _make_output_paths(path: str | Path, *, inverse: bool = False) -> dict[str, 
     inverse : bool, optional
         Also create the ``output/inverse`` subdirectory used for pismi
         products. Default is ``False``.
+    counter : str or None, optional
+        ISMIP7 Core counter, e.g. ``"C003"``. When given, the per-leg
+        directories move under ``output/<counter>/``, so that counters run
+        concurrently cannot write each other's files: every counter runs its
+        own init leg, and that leg's state is named for the forcing GCM
+        rather than the counter, so all five counters sharing a GCM would
+        otherwise write one path at once. ``output`` itself does not move —
+        it roots the ISMIP7 submission tree, which is already keyed by
+        counter one level down.
 
     Returns
     -------
@@ -82,15 +91,16 @@ def _make_output_paths(path: str | Path, *, inverse: bool = False) -> dict[str, 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     output_path = path / Path("output")
+    leg_path = output_path / Path(counter) if counter else output_path
     paths = {
         "log": path / Path("logs"),
         "output": output_path,
-        "scalar": output_path / Path("scalar"),
-        "spatial": output_path / Path("spatial"),
-        "state": output_path / Path("state"),
+        "scalar": leg_path / Path("scalar"),
+        "spatial": leg_path / Path("spatial"),
+        "state": leg_path / Path("state"),
     }
     if inverse:
-        paths["inverse"] = output_path / Path("inverse")
+        paths["inverse"] = leg_path / Path("inverse")
     for p in paths.values():
         p.mkdir(parents=True, exist_ok=True)
     return paths
@@ -588,6 +598,21 @@ def _build_forward_legs(
         if run_projection and proj_ismip7 and scalar_proj is not None:
             post_scalars.append(scalar_proj)
         post_scalar_str = "\n".join(f"bash {post_script} {s.resolve()}" for s in post_scalars)
+        # Integrate the submission's per-area flux variables over the basins.
+        # The result goes to output/basins/ rather than into the submission
+        # directory: everything under the latter is checked for ISMIP7
+        # conformance, and a per-basin file is not a submission product.
+        if outline_file != "none":
+            _nt = postprocess_ntasks(config_cli)
+            flux_command = (
+                f"pism-ismip7-postprocess-flux "
+                f"{submission_dir} {(output_path / 'basins').resolve()} {outline_file} "
+                f"--total-name GIS{_nt}"
+            )
+            # Appended, not assigned: a single-leg run with ISMIP7 naming on
+            # reaches here having already put its own pism-postprocess-scalar
+            # command in post_process_str, and both steps should run.
+            post_process_str = "\n".join(c for c in (post_process_str, flux_command) if c)
     else:
         ism_checker_str = ""
         post_scalar_str = ""
@@ -700,7 +725,7 @@ def _render_forward_run(
         cfg.grid.dy = None
 
     path = Path(path)
-    paths = _make_output_paths(path)
+    paths = _make_output_paths(path, counter=cfg.run_info.counter)
     log_path = paths["log"]
     output_path = paths["output"]
     scalar_path = paths["scalar"]
@@ -991,7 +1016,7 @@ def _render_inverse_run(
         cfg.grid.dy = None
 
     path = Path(path)
-    paths = _make_output_paths(path, inverse=True)
+    paths = _make_output_paths(path, inverse=True, counter=cfg.run_info.counter)
     log_path = paths["log"]
     output_path = paths["output"]
     scalar_path = paths["scalar"]

@@ -423,3 +423,47 @@ def test_gradient_fit_recovers_a_hinged_profile():
     assert np.isnan(fit["gradient_below"])
     assert ubs.fit_gradient(b[:3], z[:3]) is None
     assert ubs.fit_gradient(b, np.full_like(z, 1500.0)) is None
+
+
+def test_plot_window_reaches_the_pipeline(tmp_path, monkeypatch):
+    """
+    Thread --plot_start/--plot_end through to the plotting as balance years.
+
+    Both spellings are accepted, since the dashed form matches the other
+    options and the underscored one is what gets typed.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Replaces the pipeline with a recorder.
+    """
+    seen = {}
+
+    def recorder(*args, **kwargs):  # pylint: disable=unused-argument
+        """
+        Stand in for the pipeline and capture its arguments.
+
+        Parameters
+        ----------
+        *args : tuple
+            Ignored.
+        **kwargs : dict
+            Captured.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Empty, which main only prints.
+        """
+        seen.update(kwargs)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(ubs, "run_pipeline", recorder)
+    ubs.main(["--output-dir", str(tmp_path), "--plot_start", "1986-01-01", "--plot-end", "2010"])
+    assert seen["plot_years"] == (1986.0, 2010.0)
+
+    seen.clear()
+    ubs.main(["--output-dir", str(tmp_path)])
+    assert seen["plot_years"] == (None, None)
