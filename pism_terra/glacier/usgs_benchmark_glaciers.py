@@ -61,6 +61,7 @@ from pism_terra.glacier.usgs import (
     SKILL_COLUMNS,
     SPECIFIC_LABEL,
     SPECIFIC_UNITS,
+    apply_plot_years,
     datetime_encoding,
     ensemble_line,
     find_model_files,
@@ -76,6 +77,7 @@ from pism_terra.glacier.usgs import (
     match_rgi_ids,
     mean_years,
     open_pism,
+    plot_year,
     rgi_output_dir,
     run_label,
     score,
@@ -675,6 +677,7 @@ def plot_glacier(
     seasons: xr.Dataset | None = None,
     skill: pd.DataFrame | None = None,
     area_km2: float | None = None,
+    plot_years: tuple[float | None, float | None] = (None, None),
 ) -> Path:
     """
     Plot observed seasonal and annual balances with the modelled mass-change rate.
@@ -707,6 +710,10 @@ def plot_glacier(
     area_km2 : float or None, optional
         Glacier area the right-hand Gt/yr axis is scaled with. Defaults to
         the mean of ``obs["area"]``.
+    plot_years : tuple, optional
+        ``(left, right)`` balance-year limits from
+        :func:`pism_terra.glacier.usgs.plot_year`; a None end is left to the
+        data.
 
     Returns
     -------
@@ -807,6 +814,7 @@ def plot_glacier(
 
         ax.axhline(y=0, color="k", ls="dotted", lw=0.5)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        apply_plot_years(ax, plot_years)
         ax.set_xlabel("Balance year")
         ax.set_ylabel("Mass balance (m w.e. yr$^{-1}$)")
         if area_km2 is not None and np.isfinite(area_km2) and area_km2 > 0:
@@ -837,6 +845,7 @@ def run_pipeline(
     uncertainty: float | None = None,
     n_jobs: int = 1,
     force_overwrite: bool = False,
+    plot_years: tuple[float | None, float | None] = (None, None),
 ) -> pd.DataFrame:
     """
     Download, match, convert and plot every glacier in the release.
@@ -861,6 +870,9 @@ def run_pipeline(
         :func:`pism_terra.glacier.usgs.map_files`).
     force_overwrite : bool, default False
         Re-download the archives.
+    plot_years : tuple, optional
+        ``(left, right)`` balance-year limits for the time series, from
+        :func:`pism_terra.glacier.usgs.plot_year`.
 
     Returns
     -------
@@ -938,7 +950,16 @@ def run_pipeline(
             for line in format_skill(skill, units=SPECIFIC_LABEL).splitlines():
                 logger.info("%s: %s", row.glacier, line)
         glacier_dir = rgi_output_dir(output_dir, row.rgi_id)
-        png = plot_glacier(obs, model_mwe, row.glacier, row.rgi_id, glacier_dir, seasons=seasons_mwe, skill=skill)
+        png = plot_glacier(
+            obs,
+            model_mwe,
+            row.glacier,
+            row.rgi_id,
+            glacier_dir,
+            seasons=seasons_mwe,
+            skill=skill,
+            plot_years=plot_years,
+        )
         figures.append(str(png))
         n_runs.append(0 if model is None else int(model.sizes["run"]))
 
@@ -1028,6 +1049,18 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         default=4,
         help="Worker processes for reading the model files; 1 runs serially.",
     )
+    parser.add_argument(
+        "--plot-start",
+        "--plot_start",
+        default=None,
+        help="Left end of the balance-year axis, as a date (1986-01-01) or a year (1986).",
+    )
+    parser.add_argument(
+        "--plot-end",
+        "--plot_end",
+        default=None,
+        help="Right end of the balance-year axis, as a date or a year.",
+    )
     parser.add_argument("--force-overwrite", action="store_true", default=False, help="Re-download the archives.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -1043,6 +1076,7 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         uncertainty=args.uncertainty,
         n_jobs=args.n_jobs,
         force_overwrite=args.force_overwrite,
+        plot_years=(plot_year(args.plot_start), plot_year(args.plot_end)),
     )
     print(matches.to_string(index=False))
     return matches

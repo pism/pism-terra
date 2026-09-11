@@ -64,6 +64,7 @@ from pism_terra.glacier.usgs import (
     SEASON_DATE_COLUMNS,
     SPECIFIC_LABEL,
     SPECIFIC_UNITS,
+    apply_plot_years,
     datetime_encoding,
     find_model_files,
     grid_spacing,
@@ -77,6 +78,7 @@ from pism_terra.glacier.usgs import (
     map_files,
     match_rgi_ids,
     open_pism,
+    plot_year,
     rgi_output_dir,
     run_label,
     score,
@@ -673,7 +675,12 @@ def _site_order(table: pd.DataFrame) -> list[str]:
 
 
 def plot_stakes(
-    table: pd.DataFrame, glacier: str, rgi_id: str, output_dir: Path | str, skill: pd.DataFrame | None = None
+    table: pd.DataFrame,
+    glacier: str,
+    rgi_id: str,
+    output_dir: Path | str,
+    skill: pd.DataFrame | None = None,
+    plot_years: tuple[float | None, float | None] = (None, None),
 ) -> Path:
     """
     Plot every site of a glacier: observed balances as markers, modelled as lines.
@@ -691,6 +698,10 @@ def plot_stakes(
     skill : pandas.DataFrame or None, optional
         Scores from :func:`stake_skill`; the annual r and MAE of each site
         are written into its panel.
+    plot_years : tuple, optional
+        ``(left, right)`` balance-year limits from
+        :func:`pism_terra.glacier.usgs.plot_year`; a None end is left to the
+        data.
 
     Returns
     -------
@@ -762,6 +773,8 @@ def plot_stakes(
                         ha="left",
                         va="bottom",
                     )
+        # The panels share an x axis, so one call covers the grid.
+        apply_plot_years(axes.ravel()[0], plot_years)
         for ax in axes.ravel()[len(sites) :]:
             ax.set_visible(False)
         # the lowest visible panel of each column carries the axis label
@@ -1255,6 +1268,7 @@ def run_pipeline(
     method: str = "nearest",
     n_jobs: int = 1,
     force_overwrite: bool = False,
+    plot_years: tuple[float | None, float | None] = (None, None),
 ) -> pd.DataFrame:
     """
     Download, match, sample, integrate, score and plot every glacier's stakes.
@@ -1278,6 +1292,9 @@ def run_pipeline(
         :func:`pism_terra.glacier.usgs.map_files`).
     force_overwrite : bool, default False
         Re-download the archives.
+    plot_years : tuple, optional
+        ``(left, right)`` balance-year limits for the per-site time series.
+        The scatter and gradient plots have no time axis and ignore it.
 
     Returns
     -------
@@ -1371,7 +1388,7 @@ def run_pipeline(
             for line in skill[skill["site"] == POOLED].itertuples(index=False):
                 r = f"r={line.r:.2f}" if np.isfinite(line.r) else "r=n/a"
                 logger.info("%s: %-12s %s MAE=%.3g %s n=%d", glacier, line.season, r, line.mae, SPECIFIC_LABEL, line.n)
-        png = plot_stakes(table, glacier, row.rgi_id, glacier_dir, skill=skill)
+        png = plot_stakes(table, glacier, row.rgi_id, glacier_dir, skill=skill, plot_years=plot_years)
         plot_scatter(table, glacier, row.rgi_id, glacier_dir, skill=skill)
         fits = gradient_fits(table)
         plot_gradient(table, glacier, row.rgi_id, glacier_dir, fits=fits)
@@ -1445,6 +1462,18 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         default=4,
         help="Worker processes for sampling the spatial files; 1 runs serially.",
     )
+    parser.add_argument(
+        "--plot-start",
+        "--plot_start",
+        default=None,
+        help="Left end of the balance-year axis, as a date (1986-01-01) or a year (1986).",
+    )
+    parser.add_argument(
+        "--plot-end",
+        "--plot_end",
+        default=None,
+        help="Right end of the balance-year axis, as a date or a year.",
+    )
     parser.add_argument("--force-overwrite", action="store_true", default=False, help="Re-download the archives.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -1460,6 +1489,7 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         method=args.method,
         n_jobs=args.n_jobs,
         force_overwrite=args.force_overwrite,
+        plot_years=(plot_year(args.plot_start), plot_year(args.plot_end)),
     )
     print(matches.to_string(index=False))
     return matches

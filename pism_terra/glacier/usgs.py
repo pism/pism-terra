@@ -701,6 +701,62 @@ def year_of(t: Any) -> int:
     return int(t.year)
 
 
+def plot_year(value: str | None) -> float | None:
+    """
+    Turn a ``--plot-start``/``--plot-end`` value into a balance-year bound.
+
+    These plots put the balance year on the x axis as a number, so a date has
+    to be reduced to one. A date part carries through as a fraction, so
+    ``"1986-07-01"`` is half way along 1986 and ``"1986-01-01"`` is exactly
+    1986; a bare ``"1986"`` is the year itself.
+
+    Parameters
+    ----------
+    value : str or None
+        ISO date, or a bare year. ``None`` passes through, meaning "leave
+        this end of the axis alone".
+
+    Returns
+    -------
+    float or None
+        The bound in balance years, or None.
+
+    Raises
+    ------
+    ValueError
+        If *value* is neither a year nor a date pandas can parse.
+    """
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip()
+    if text.isdigit():
+        return float(text)
+    try:
+        stamp = pd.Timestamp(text)
+    except ValueError as error:
+        raise ValueError(f"cannot read {value!r} as a year or a date (try 1986 or 1986-01-01)") from error
+    start_of_year = pd.Timestamp(year=stamp.year, month=1, day=1)
+    days_in_year = 366.0 if stamp.is_leap_year else 365.0
+    return stamp.year + (stamp - start_of_year).days / days_in_year
+
+
+def apply_plot_years(ax: Any, limits: tuple[float | None, float | None]) -> None:
+    """
+    Set whichever ends of a balance-year axis were asked for.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes whose x axis carries the balance year.
+    limits : tuple
+        ``(left, right)`` from :func:`plot_year`; a None end keeps whatever
+        the data gave it.
+    """
+    left, right = limits
+    if left is not None or right is not None:
+        ax.set_xlim(left=left, right=right)
+
+
 def mean_years(ds: xr.Dataset) -> np.ndarray:
     """
     Label each reporting interval by the calendar year it covers.
