@@ -111,6 +111,26 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         default=None,
     )
     add_include_argument(parser, ISMIP7_DATASETS)
+    # Narrow the ``forcings`` step to one corner of the tree, for reruns that
+    # only need to pick up a variable that has appeared upstream.
+    parser.add_argument(
+        "--gcm",
+        metavar="GCM[,GCM...]",
+        default=None,
+        help="Only process these GCMs in the 'forcings' step; default is all of them.",
+    )
+    parser.add_argument(
+        "--pathway",
+        metavar="PATHWAY[,PATHWAY...]",
+        default=None,
+        help="Only process these pathways (e.g. 'ctrl') in the 'forcings' step; default is all of them.",
+    )
+    parser.add_argument(
+        "--forcing",
+        metavar="FORCING[,FORCING...]",
+        default=None,
+        help="Only process these forcings ('climate', 'ocean') in the 'forcings' step; default is both.",
+    )
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -230,6 +250,9 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 config,
                 data_path=data_path,
                 staging_path=staging_path,
+                gcms=args.gcm,
+                pathways=args.pathway,
+                forcings=args.forcing,
             )
         )
         logger.info("Forcing files: %s", forcing_files)

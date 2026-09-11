@@ -45,8 +45,9 @@ projections and otherwise set up like one (SMB-height feedback, calving and GIA
 all active). They therefore expand exactly like C005–C008, with ``"ctrl"`` as
 both the forcing pathway and the ISMIP7 ``experiment_id``; the forcing is staged
 from the ``ctrl`` subtree of the source.coop mirror (see the ``ctrl`` pathway
-under ``[gcms.*]`` in ``setup_ismip7_greenland.toml``). Upstream publishes no
-``mrro`` under ctrl, so the staged ctrl climate file carries no ``runoff_rate``.
+under ``[gcms.*]`` in ``setup_ismip7_greenland.toml``). Upstream published no
+``mrro`` under ctrl until 2026-09-11; ctrl climate files staged before then
+carry no ``runoff_rate`` and need regenerating.
 
 C011 (OCX, the Observationally Constrained Experiment) is included: a
 reanalysis-forced run (RACMO2.3p2-ERA atmosphere, EN4 ocean, staged under the

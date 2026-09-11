@@ -31,11 +31,8 @@ y_bounds = [-3412550.0, -604550.0]
 
 [gcms.CESM2-WACCM]
 
-# CTRL2015 (C009): 2015 conditions held fixed, 2015-2300. Upstream publishes no
-# ``mrro`` under ctrl (only acabf, dacabfdz, dmrrodz, ts, dtsdz, sgd and the
-# anomalies), so the field list is overridden here; drop the override once the
-# variable appears.
-ctrl = {start = 2015, end = 2300, fields = {climate = ["acabf", "dacabfdz", "ts", "dmrrodz", "dtsdz"]}}
+# CTRL2015 (C009): 2015 conditions held fixed, 2015-2300.
+ctrl = {start = 2015, end = 2300}
 historical = {start = 1900, end = 2014}
 ssp126 = {start = 2015, end = 2300}
 ssp370 = {start = 2015, end = 2100}
@@ -48,8 +45,7 @@ ocean = {dataset = "ocean-1000m", version = 2}
 
 [gcms.MRI-ESM2-0]
 
-# CTRL2015 (C010); see the CESM2-WACCM ctrl note on the missing ``mrro``.
-ctrl = {start = 2015, end = 2300, fields = {climate = ["acabf", "dacabfdz", "ts", "dmrrodz", "dtsdz"]}}
+ctrl = {start = 2015, end = 2300}
 historical = {start = 1900, end = 2014}
 ssp126 = {start = 2015, end = 2300}
 ssp370 = {start = 2015, end = 2100}

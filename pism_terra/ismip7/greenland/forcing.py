@@ -1406,7 +1406,8 @@ def _forcing_tasks(config: dict) -> list[tuple]:
     ``source`` and ``version`` may sit at the GCM level (defaults for every
     pathway) with optional per-pathway overrides. A pathway may also carry
     ``fields = {climate = [...]}`` to override the ``[forcing]`` field list
-    for that pathway alone (the ctrl pathways publish no ``mrro``). ``source`` maps each
+    for that pathway alone, for a pathway upstream publishes fewer variables
+    under than the rest of the tree. ``source`` maps each
     forcing to its subtree and (optionally) a per-forcing version label:
     the table form ``{climate = {dataset = "SDBN1-1000m", version = 3}}``
     carries both, while a plain string (``{climate = "SDBN1-1000m"}``)
@@ -1449,8 +1450,7 @@ def _forcing_tasks(config: dict) -> list[tuple]:
             end_year = int(_pathway_config["end"])
             sources = {**gcm_sources, **_pathway_config.get("source", {})}
             # Per-pathway field list, for pathways that are published with a
-            # different set of variables than the rest of the tree (the ctrl
-            # runs carry no ``mrro``).
+            # different set of variables than the rest of the tree.
             field_overrides = _pathway_config.get("fields", {})
             for forcing, forcing_dict in config["forcing"].items():
                 fields = field_overrides.get(forcing, forcing_dict["fields"])
@@ -1489,6 +1489,95 @@ def _forcing_tasks(config: dict) -> list[tuple]:
     return tasks
 
 
+def _parse_selector(value: str | Sequence[str] | None) -> set[str] | None:
+    """
+    Normalise one comma-separated task selector to a lower-case set.
+
+    Parameters
+    ----------
+    value : str or sequence of str or None
+        Raw selector, either ``"ctrl,ssp585"`` or an already-split sequence.
+        ``None`` and the empty string both mean "no restriction".
+
+    Returns
+    -------
+    set of str or None
+        Lower-cased selections, or ``None`` for "match everything".
+    """
+    if value is None:
+        return None
+    parts = value.split(",") if isinstance(value, str) else list(value)
+    wanted = {p.strip().lower() for p in parts if p.strip()}
+    return wanted or None
+
+
+def select_forcing_tasks(
+    tasks: Sequence[tuple],
+    gcms: str | Sequence[str] | None = None,
+    pathways: str | Sequence[str] | None = None,
+    forcings: str | Sequence[str] | None = None,
+) -> list[tuple]:
+    """
+    Narrow the expanded forcing tasks to the ones asked for.
+
+    Lets a rerun touch a single corner of the tree — ``pathways="ctrl"``,
+    ``forcings="climate"`` after a variable appears upstream — instead of
+    regenerating all of it. Matching is case-insensitive; an unset selector
+    matches everything.
+
+    Parameters
+    ----------
+    tasks : sequence of tuple
+        Tasks as :func:`_forcing_tasks` returns them.
+    gcms : str or sequence of str or None, optional
+        GCM names to keep, e.g. ``"CESM2-WACCM,MRI-ESM2-0"``.
+    pathways : str or sequence of str or None, optional
+        Pathways to keep, e.g. ``"ctrl"``.
+    forcings : str or sequence of str or None, optional
+        Forcings to keep, ``"climate"`` and/or ``"ocean"``.
+
+    Returns
+    -------
+    list of tuple
+        The matching tasks, in their original order.
+
+    Raises
+    ------
+    SystemExit
+        If the selectors match nothing. A typo in a GCM name would otherwise
+        look exactly like a successful run that had nothing to do.
+    """
+    wanted = {
+        "gcm": _parse_selector(gcms),
+        "pathway": _parse_selector(pathways),
+        "forcing": _parse_selector(forcings),
+    }
+    if not any(wanted.values()):
+        return list(tasks)
+
+    # Task layout: (ice_sheet, gcm, forcing, version, pathway, ...).
+    positions = {"gcm": 1, "forcing": 2, "pathway": 4}
+    selected = [
+        task
+        for task in tasks
+        if all(names is None or task[positions[key]].lower() in names for key, names in wanted.items())
+    ]
+    if not selected:
+        available = {key: sorted({task[position] for task in tasks}) for key, position in sorted(positions.items())}
+        asked = ", ".join(f"{key}={sorted(names)}" for key, names in sorted(wanted.items()) if names)
+        raise SystemExit(
+            f"no forcing task matches {asked}. Available: "
+            + "; ".join(f"{key} {', '.join(values)}" for key, values in available.items())
+        )
+    logger.info(
+        "Selected %d of %d forcing task(s): %s",
+        len(selected),
+        len(tasks),
+        ", ".join(f"{task[1]}/{task[4]}/{task[2]}" for task in selected),
+    )
+    return selected
+
+
 def prepare_ismip7_forcing(
     base_path: Path | str,
     output_path: Path | str,
@@ -1496,6 +1585,9 @@ def prepare_ismip7_forcing(
     data_path: Path | str | None = None,
     n_workers: int = 2,
     staging_path: Path | str | None = None,
+    gcms: str | Sequence[str] | None = None,
+    pathways: str | Sequence[str] | None = None,
+    forcings: str | Sequence[str] | None = None,
 ) -> Sequence[Path | str]:
     """
     Process forcing data for all GCMs and forcings in parallel.
@@ -1524,6 +1616,13 @@ def prepare_ismip7_forcing(
         after each forcing finishes, so the only artifact left on disk is
         the final merged file in ``output_path``. Defaults to
         ``output_path`` when omitted, matching the legacy behavior.
+    gcms : str or sequence of str or None, optional
+        Restrict to these GCMs (comma-separated string accepted). ``None``
+        processes every GCM in ``config``.
+    pathways : str or sequence of str or None, optional
+        Restrict to these pathways, e.g. ``"ctrl"``.
+    forcings : str or sequence of str or None, optional
+        Restrict to ``"climate"`` and/or ``"ocean"``.
 
     Returns
     -------
@@ -1541,7 +1640,7 @@ def prepare_ismip7_forcing(
         staging_path.mkdir(parents=True, exist_ok=True)
 
     ismip7_to_pism = config["ismip7_to_pism"]
-    tasks = _forcing_tasks(config)
+    tasks = select_forcing_tasks(_forcing_tasks(config), gcms=gcms, pathways=pathways, forcings=forcings)
 
     # Process in parallel using dask.distributed
     with Client(n_workers=n_workers, threads_per_worker=1) as client:
