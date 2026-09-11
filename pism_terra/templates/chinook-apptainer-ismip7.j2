@@ -95,6 +95,14 @@ mpiexec -n 1  apptainer run ${container} pism_ismip7_writer -r 1 : -n ${pismtask
 {{ post_scalar_str }}
 {% endif %}
 
+{% if post_process_str %}
+# ###############################################################################
+# BASIN FLUX POSTPROCESSING
+# ###############################################################################
+
+{{ post_process_str }}
+{% endif %}
+
 {% if ism_checker_str %}
 # ###############################################################################
 # COMPLIANCE CHECKER

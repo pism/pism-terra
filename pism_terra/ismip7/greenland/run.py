@@ -598,6 +598,17 @@ def _build_forward_legs(
         if run_projection and proj_ismip7 and scalar_proj is not None:
             post_scalars.append(scalar_proj)
         post_scalar_str = "\n".join(f"bash {post_script} {s.resolve()}" for s in post_scalars)
+        # Integrate the submission's per-area flux variables over the basins.
+        # The result goes to output/basins/ rather than into the submission
+        # directory: everything under the latter is checked for ISMIP7
+        # conformance, and a per-basin file is not a submission product.
+        if outline_file != "none":
+            _nt = postprocess_ntasks(config_cli)
+            post_process_str = (
+                f"pism-ismip7-postprocess-flux "
+                f"{submission_dir} {(output_path / 'basins').resolve()} {outline_file} "
+                f"--total-name GIS{_nt}"
+            )
     else:
         ism_checker_str = ""
         post_scalar_str = ""
