@@ -278,7 +278,9 @@ def _build_forward_legs(
     Build the forward leg command line(s) and post-processing strings.
 
     Owns the single-leg vs counter-driven two-leg (historical ->
-    projection) split, ISMIP7 submission naming and product-leg gating,
+    projection) split — a counter whose ``single_forward_leg`` is set (OCX)
+    takes the single-leg path while keeping its ISMIP7 identity — plus
+    ISMIP7 submission naming and product-leg gating,
     and the generation of the checker / scalar-splitter / per-basin
     post-processing commands. Shared by the forward renderer (where
     ``run_hist`` is the bootstrap run) and the inverse renderer (where
@@ -295,9 +297,10 @@ def _build_forward_legs(
         place: ``time.end``, ``run_info.experiment`` and the ``output.*``
         files are (re)set here.
     start, end : str
-        Time bounds (``YYYY-MM-DD``) of the forward span. ``end`` is only
-        used verbatim for single-leg runs; a counter-driven historical leg
-        always stops at 2015-01-01 and the projection leg runs to ``end``.
+        Time bounds (``YYYY-MM-DD``) of the forward span. ``end`` is used
+        verbatim for single-leg runs — including OCX (C011), whose counter
+        sets ``single_forward_leg``; every other counter-driven historical
+        leg stops at 2015-01-01 and its projection leg runs to ``end``.
     resolution : str
         Grid resolution tag (e.g. ``"900m"``), for filenames.
     name_options : str
@@ -329,8 +332,12 @@ def _build_forward_legs(
     # template slot (``run_hist_str`` for a historical pathway, ``run_proj_str``
     # for a projection pathway).
     counter = cfg.run_info.counter
+    spec = resolve_counter(counter) if counter else None
     pathway = (cfg.campaign.pathway or "").strip().lower()
-    single_leg = not counter
+    # OCX (C011) is counter-driven but has no 2015 split: its reanalysis
+    # forcing is one unbroken record, so it takes the single-leg path below
+    # while keeping the counter's ISMIP7 identity (set_counter, experiment_id).
+    single_leg = spec is None or spec.single_forward_leg
     single_is_historical = pathway in ("", "historical")
 
     run_hist.pop("time.end", None)
@@ -339,7 +346,14 @@ def _build_forward_legs(
     run_hist.update({"time.end": end if single_leg else "2015-01-01"})
     # Match InfoConfig._quote()'s output shape so both hist and proj write
     # ``run_info.experiment`` the same way (see run_proj below).
-    hist_experiment = pathway if (single_leg and not single_is_historical) else "historical"
+    # A counter-driven single leg carries the counter's ``experiment_id``
+    # (``"OCX"``), not the pathway its forcing was staged under.
+    if single_leg and spec is not None:
+        hist_experiment = spec.experiment_id
+    elif single_leg and not single_is_historical:
+        hist_experiment = pathway
+    else:
+        hist_experiment = "historical"
     run_hist.update({"run_info.experiment": f'"{hist_experiment}"'})
 
     # ISMIP7 submission naming (conventions doc section 8): when output.ISMIP is
@@ -360,8 +374,8 @@ def _build_forward_legs(
     # is the submission product (the other leg gets flat filenames). ``None`` keeps
     # the legacy behavior: both legs use ISMIP7 names when ``output.ISMIP`` is set.
     product_leg: str | None = None
-    if counter:
-        product_leg = resolve_counter(counter).product_leg
+    if spec is not None:
+        product_leg = spec.product_leg
 
     use_ismip = str(run_hist.get("output.ISMIP", "no")).strip().strip("\"'").lower() in ("yes", "true", "1")
     ismip7_ctx: dict | None = None
@@ -467,7 +481,7 @@ def _build_forward_legs(
         # time.start..time.end, into the template slot that matches
         # campaign.pathway. ``run_hist`` already carries the common sections,
         # bootstrap, and (historical) forcing overrides applied above.
-        experiment_id = "historical" if single_is_historical else pathway
+        experiment_id = spec.experiment_id if spec is not None else ("historical" if single_is_historical else pathway)
         proj_experiment = experiment_id
         run_projection = False
         state_one, spatial_one, scalar_one, basin_one = _output_files(experiment_id, start, end, ismip7=True)
@@ -498,8 +512,11 @@ def _build_forward_legs(
         scalar_hist = scalar_one
         scalar_proj = None
         # Clip the (combined) spatial output to basins and write per-basin
-        # scalar sums. Needs a real outline; skip if none was supplied.
-        if outline_file != "none":
+        # scalar sums. Needs a real outline, and a spatial file that can be
+        # opened: the ISMIP7 tree writes one file per variable through a
+        # ``{var}`` placeholder PISM expands, so those runs get the per-basin
+        # flux integration below instead.
+        if outline_file != "none" and "{var}" not in str(spatial_one):
             _nt = postprocess_ntasks(config_cli)
             post_process_str = (
                 f"pism-postprocess-scalar "
@@ -930,10 +947,11 @@ def _render_inverse_run(
        leg's state (no bootstrap), regridding ``tauc`` from the inversion
        output, with ``basal_yield_stress.model = "constant"`` (the
        ``basal_yield_stress.mohr_coulomb.*`` options are dropped). For a
-       config without an ISMIP7 counter this single leg spans the config's
+       config without an ISMIP7 counter — or one whose counter sets
+       ``single_forward_leg`` (OCX) — this single leg spans the config's
        ``time.start``..``time.end``.
-    4. **Projection** (``run_proj_str``): for counter-driven ISMIP7 configs
-       only — the forward leg stops at 2015-01-01 and this continuation runs
+    4. **Projection** (``run_proj_str``): for the counter-driven ISMIP7
+       configs that split — the forward leg stops at 2015-01-01 and this continuation runs
        to ``time.end``, with the projection-epoch forcing from
        ``proj_overrides``; ISMIP7 submission naming, product-leg gating and
        post-processing match :func:`_render_forward_run` exactly.

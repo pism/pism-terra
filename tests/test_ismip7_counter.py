@@ -97,12 +97,17 @@ def test_ocx_counter():
     assert spec.pathway == "historical"
     assert spec.esm_id == "OCX"
     assert spec.proj_end_year == 2025
-    assert spec.product_leg == "projection"
     assert spec.climate_version == "v1"
     assert spec.ocean_version == "v1"
     assert spec.has_projection_forcing is False
-    # The other counters all carry a stageable projection forcing.
-    assert all(s.has_projection_forcing for c, s in CORE_EXPERIMENTS.items() if c != "C011")
+    # No 2015 split: one continuous forward leg over the config time range,
+    # and that leg is the submission product.
+    assert spec.product_leg == "historical"
+    assert spec.single_forward_leg is True
+    # The other counters all carry a stageable projection forcing and split.
+    others = [s for c, s in CORE_EXPERIMENTS.items() if c != "C011"]
+    assert all(s.has_projection_forcing for s in others)
+    assert not any(s.single_forward_leg for s in others)
 
 
 def test_ctrl_counters():

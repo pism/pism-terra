@@ -51,9 +51,15 @@ carry no ``runoff_rate`` and need regenerating.
 
 C011 (OCX, the Observationally Constrained Experiment) is included: a
 reanalysis-forced run (RACMO2.3p2-ERA atmosphere, EN4 ocean, staged under the
-pseudo-GCM ``"OCX"``) that behaves like a projection ending in 2025 — the
-2015..2025 leg is the ISMIP7 product and there is no separate projection
-forcing file (the single historical-epoch file spans the whole run).
+pseudo-GCM ``"OCX"``), whose point is to separate ISM error from ESM forcing
+error. The protocol requires it to *start before 2015 and end in 2025*, and
+lets groups start as early as they like. So it is the one counter with no 2015
+split: the init leg is followed by one continuous historical leg spanning the
+config's ``time.start``..``time.end``, and that whole leg is the ISMIP7 product
+(``single_forward_leg=True``). We start it in 1990, which puts the submitted
+range at 1990-2024; the staged forcing covers 1958-2024, so an earlier
+``time.start`` (with ``campaign.init_start``/``init_end`` moved to match) is
+available without restaging.
 
 This module is deliberately dependency-free (it must not import
 :mod:`pism_terra.config`) so it can be imported from the config resolver without
@@ -103,8 +109,14 @@ class CoreExperiment:  # pylint: disable=too-many-instance-attributes
         tracks (e.g. CESM2-WACCM climate ``"v3"`` vs ocean ``"v2"``).
     has_projection_forcing : bool
         Whether a separate projection-epoch forcing file exists and needs
-        staging. ``False`` for OCX (C011): its single historical-epoch
-        reanalysis file drives both forward legs.
+        staging. ``False`` for OCX (C011): one historical-epoch reanalysis
+        file covers the whole run.
+    single_forward_leg : bool
+        Whether the forward run is one continuous PISM invocation spanning
+        ``time.start``..``time.end`` instead of the protocol's historical
+        (to 2015-01-01) plus projection split. ``True`` for OCX (C011),
+        whose reanalysis forcing is a single unbroken record and whose
+        submission product is the whole span, not its post-2015 tail.
     """
 
     experiment_id: str
@@ -115,6 +127,7 @@ class CoreExperiment:  # pylint: disable=too-many-instance-attributes
     climate_version: str
     ocean_version: str
     has_projection_forcing: bool = True
+    single_forward_leg: bool = False
 
 
 # Core Experiment Overview (ISMIP7 Protocol Overview, updated 2026-06-29), C001–C008;
@@ -133,9 +146,22 @@ CORE_EXPERIMENTS: dict[str, CoreExperiment] = {
     "C009": CoreExperiment("ctrl", "ctrl", "CESM2-WACCM", 2300, "projection", "v3", "v2"),
     "C010": CoreExperiment("ctrl", "ctrl", "MRI-ESM2-0", 2300, "projection", "v2", "v1"),
     # OCX (Observationally Constrained Experiment): reanalysis forcing staged
-    # as pseudo-GCM "OCX" (single historical-epoch file, 1958-2024); runs like
-    # a projection ending 2025 with the 2015..2025 leg as the ISMIP7 product.
-    "C011": CoreExperiment("OCX", "historical", "OCX", 2025, "projection", "v1", "v1", has_projection_forcing=False),
+    # as pseudo-GCM "OCX" (single historical-epoch file, 1958-2024). Unlike
+    # every other counter it has no 2015 split -- the protocol asks only that
+    # it start before 2015 and end in 2025 -- so the init leg is followed by
+    # one continuous historical leg over the config's time.start..time.end,
+    # and that leg is the submission product.
+    "C011": CoreExperiment(
+        "OCX",
+        "historical",
+        "OCX",
+        2025,
+        "historical",
+        "v1",
+        "v1",
+        has_projection_forcing=False,
+        single_forward_leg=True,
+    ),
 }
 
 
