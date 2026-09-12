@@ -314,3 +314,6 @@ bp_snes_ksp_ew_version = 3
 bp_snes_rtol = 1e-4
 inv_adj_ksp_type = "gmres"
 inv_adj_pc_type = "jacobi"
+# TAO gradient-reduction stop: ||g_proj|| / ||g_0|| < gttol. Fires on glaciers whose
+# Tikhonov rtol floor never drops below 0.15 (misfit within 0.1% of its plateau).
+tao_gttol = 1e-3
