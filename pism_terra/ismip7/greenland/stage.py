@@ -40,6 +40,7 @@ from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3, list_s3_keys, local_to_s3
 from pism_terra.config import load_config, version_tag
+from pism_terra.ismip7.greenland.observations import prepare_observations
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
@@ -514,6 +515,12 @@ def main():
         default=False,
     )
     parser.add_argument(
+        "--no-observations",
+        help="Skip preparing the observed mass balance into <output-path>/output/observations.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -533,6 +540,19 @@ def main():
     is_df = stage(config, path=path, force_overwrite=force_overwrite, data_path=data_path)
     input_dir = Path(data_path) if data_path is not None else path / Path("input")
     is_df.to_csv(input_dir / Path("ismip7_greenland_files.csv"))
+
+    # Observed mass balance, for validating the run against afterwards. The
+    # cache sits beside the staged inputs, which is already the directory
+    # shared between runs, so the ~500 MB is fetched once and not per run.
+    # ``skip_errors``: these are not run inputs, and the GRACE Tellus product
+    # needs an Earthdata login, so a missing one must not fail the staging.
+    if not options.no_observations:
+        prepare_observations(
+            path,
+            cache_path=input_dir / Path("observations"),
+            force_overwrite=force_overwrite,
+            skip_errors=True,
+        )
 
     if options.bucket:
         prefix = f"{options.bucket_prefix}/ismip7_greenland" if options.bucket_prefix else "ismip7_greenland"
