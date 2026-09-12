@@ -30,6 +30,7 @@ import pandas as pd
 import xarray as xr
 
 from pism_terra.filtering import importance_sampling
+from pism_terra.likelihood import REDUCTIONS
 
 
 def decorrelation_length(field_2d, pixel_size, threshold=1.0 / np.e):
@@ -206,7 +207,36 @@ def block_bootstrap_rmse(sim, obs, block_size, n_boot=500, seed=0, *, dim="exp_i
     return bootstrap_rmse_from_blocks(block_sums, block_counts, sim[dim].values, n_boot=n_boot, seed=seed, dim=dim)
 
 
-def rank_by_bootstrap_rmse(sim, obs, *, n_boot=500, seed=0, dim="exp_id", pctls=(0.05, 0.95), threshold=1.0 / np.e):
+def block_size_from_field(obs, threshold=1.0 / np.e):
+    """
+    Block side, in cells, that makes blocks of a field approximately independent.
+
+    Parameters
+    ----------
+    obs : xarray.DataArray
+        Observed field with dims ``(y, x)``; a ``time`` dimension is averaged out.
+    threshold : float, default ``1 / e``
+        ACF level defining the decorrelation length.
+
+    Returns
+    -------
+    float
+        Decorrelation length in the grid's units (NaN when the field is empty).
+    int
+        Block side in cells, at least 1.
+    """
+    if "time" in obs.dims:
+        obs = obs.mean(dim="time")
+    obs = obs.compute()
+    pixel_size = float(abs(obs.x.diff("x").mean()))
+    length = decorrelation_length(obs.values, pixel_size, threshold=threshold)
+    block_size = max(1, int(np.ceil(length / pixel_size))) if np.isfinite(length) else 1
+    return float(length), block_size
+
+
+def rank_by_bootstrap_rmse(
+    sim, obs, *, n_boot=500, seed=0, dim="exp_id", pctls=(0.05, 0.95), threshold=1.0 / np.e, block_size=None
+):
     """
     Rank members by block-bootstrap RMSE and flag the ones tied with the best.
 
@@ -232,6 +262,8 @@ def rank_by_bootstrap_rmse(sim, obs, *, n_boot=500, seed=0, dim="exp_id", pctls=
         Lower and upper percentiles of the RMSE interval.
     threshold : float, default ``1 / e``
         ACF level defining the decorrelation length.
+    block_size : int or None, optional
+        Block side in cells; computed from ``obs`` with :func:`block_size_from_field` when None.
 
     Returns
     -------
@@ -241,9 +273,8 @@ def rank_by_bootstrap_rmse(sim, obs, *, n_boot=500, seed=0, dim="exp_id", pctls=
         ``block_size`` (pixels) and ``best`` (label of the leader).
     """
     obs = obs.compute()
-    pixel_size = float(abs(obs.x.diff("x").mean()))
-    length = decorrelation_length(obs.values, pixel_size, threshold=threshold)
-    block_size = max(1, int(np.ceil(length / pixel_size))) if np.isfinite(length) else 1
+    length, auto_block = block_size_from_field(obs, threshold=threshold)
+    block_size = auto_block if block_size is None else int(block_size)
     rmse_boot = block_bootstrap_rmse(sim, obs, block_size, n_boot=n_boot, seed=seed, dim=dim)
     rmse_mean = rmse_boot.mean(dim="boot")
     rmse_lo = rmse_boot.quantile(pctls[0], dim="boot").drop_vars("quantile")
@@ -368,6 +399,8 @@ def importance_weights(
     seed=0,
     dim="exp_id",
     sum_dims=("time", "x", "y"),
+    reduction="blocks",
+    block_size=None,
 ):
     """
     Importance-sample one field for several fudge factors on its error.
@@ -399,17 +432,35 @@ def importance_weights(
     dim : str, default ``"exp_id"``
         Ensemble dimension.
     sum_dims : sequence of str, default ``("time", "x", "y")``
-        Dimensions the log-likelihood is averaged over; missing ones are skipped.
+        Dimensions the log-likelihood is reduced over; missing ones are skipped.
+    reduction : {"blocks", "mean", "sum"}, default ``"blocks"``
+        How the cells are collapsed (:func:`pism_terra.likelihood.reduce_log_likelihood`).
+        ``"blocks"`` sums one independent sample per decorrelation-length block,
+        ``"mean"`` averages (the former behaviour, a strongly tempered posterior)
+        and ``"sum"`` treats every cell as independent.
+    block_size : int or None, optional
+        Block side in cells for ``"blocks"``; computed from the observed field
+        with :func:`block_size_from_field` when None.
 
     Returns
     -------
     xarray.Dataset
         ``log_likelihood``, ``weights`` and ``counts`` on ``(fudge_factor, dim)``
-        and ``ess`` on ``fudge_factor``.
+        and ``ess`` on ``fudge_factor``; attrs ``reduction`` and ``block_size``.
+
+    Raises
+    ------
+    ValueError
+        If ``reduction`` is unknown.
     """
+    if reduction not in REDUCTIONS:
+        raise ValueError(f"reduction must be one of {REDUCTIONS}, got {reduction!r}")
     obs_var = var if obs_var is None else obs_var
     obs_std_var = f"{obs_var}_error" if obs_std_var is None else obs_std_var
     dims = [d for d in sum_dims if d in sim[var].dims]
+    if reduction == "blocks" and block_size is None:
+        _, block_size = block_size_from_field(obs[obs_var])
+    likelihood_kwargs = {"reduction": reduction, "block_size": 1 if block_size is None else int(block_size)}
     log_likes = []
     for fudge_factor in fudge_factors:
         filtered = importance_sampling(
@@ -419,6 +470,7 @@ def importance_weights(
             obs_mean_var=obs_var,
             obs_std_var=obs_std_var,
             sum_dims=dims,
+            likelihood_kwargs=likelihood_kwargs,
             fudge_factor=fudge_factor,
             n_samples=1,
             seed=seed,
@@ -428,7 +480,9 @@ def importance_weights(
         ll = ll.squeeze([d for d in ll.dims if d != dim and ll.sizes[d] == 1], drop=True)
         log_likes.append(ll.transpose(dim))
     log_likelihood = xr.concat(log_likes, dim="fudge_factor").assign_coords(fudge_factor=list(fudge_factors))
-    return weights_from_log_likelihood(log_likelihood, dim=dim, n_samples=n_samples, seed=seed)
+    weighted = weights_from_log_likelihood(log_likelihood, dim=dim, n_samples=n_samples, seed=seed)
+    weighted.attrs.update({"reduction": reduction, "block_size": likelihood_kwargs["block_size"]})
+    return weighted
 
 
 def joint_log_likelihood(per_glacier: Mapping[str, xr.DataArray], dim="uq_id") -> tuple[xr.DataArray, list]:
@@ -436,8 +490,10 @@ def joint_log_likelihood(per_glacier: Mapping[str, xr.DataArray], dim="uq_id") -
     Sum log-likelihoods over glaciers for the members every glacier has.
 
     The ensemble members are shared parameter draws, so their evidence adds
-    up across glaciers. Each glacier's log-likelihood is a mean over its
-    cells, which gives every glacier the same weight regardless of size.
+    up across glaciers. How much each glacier counts follows from the
+    reduction used per glacier: with ``"blocks"`` a glacier contributes one
+    independent sample per decorrelation-length block, so larger glaciers
+    weigh more; with ``"mean"`` every glacier weighs the same.
 
     Parameters
     ----------
@@ -565,6 +621,7 @@ def short_labels(columns: Iterable[str]) -> dict[str, str]:
 
 __all__: Sequence[str] = (
     "block_bootstrap_rmse",
+    "block_size_from_field",
     "bootstrap_rmse_from_blocks",
     "decorrelation_length",
     "importance_weights",

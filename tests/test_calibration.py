@@ -314,3 +314,23 @@ def test_posterior_table_joins_parameters(ensemble):
     assert list(table.index) == [0, 1, 2, 3]
     assert {"p", "weights_ff_1", "counts_ff_10", "log_likelihood_ff_1"} <= set(table.columns)
     np.testing.assert_allclose(table["weights_ff_1"].sum(), 1.0)
+
+
+def test_importance_weights_blocks_is_sharper_than_mean(ensemble):
+    """
+    The default block reduction separates the members more than the mean reduction did.
+
+    Parameters
+    ----------
+    ensemble : tuple of xarray.Dataset
+        ``(sim, obs)`` fixture.
+    """
+    sim, obs = ensemble
+    blocks = importance_weights(sim, obs, "smb", fudge_factors=(1.0,), n_samples=100)
+    mean = importance_weights(sim, obs, "smb", fudge_factors=(1.0,), n_samples=100, reduction="mean")
+    assert blocks.attrs["reduction"] == "blocks" and blocks.attrs["block_size"] >= 1
+    assert mean.attrs["reduction"] == "mean"
+    assert blocks["ess"].item() < mean["ess"].item()
+    assert blocks["weights"].argmax("exp_id").item() == 0
+    with pytest.raises(ValueError, match="reduction"):
+        importance_weights(sim, obs, "smb", reduction="median")

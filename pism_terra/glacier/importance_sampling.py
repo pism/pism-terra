@@ -39,6 +39,7 @@ import pint_xarray  # pylint: disable=unused-import
 import xarray as xr
 
 from pism_terra.calibration import (
+    block_size_from_field,
     importance_weights,
     joint_log_likelihood,
     plot_parameter_histograms,
@@ -49,6 +50,7 @@ from pism_terra.calibration import (
 )
 from pism_terra.glacier.observations import DH_END, DH_START
 from pism_terra.glacier.usgs import find_model_files, rgi_output_dir
+from pism_terra.likelihood import REDUCTIONS
 from pism_terra.processing import preprocess_netcdf
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,7 @@ DEFAULT_VARIABLES: tuple[tuple[str, str, str], ...] = (("usurf", "dh", "dh_err")
 DEFAULT_FUDGE_FACTORS = (1.0, 3.0, 10.0)
 DEFAULT_N_SAMPLES = 10_000
 DEFAULT_N_BOOT = 500
+DEFAULT_REDUCTION = "blocks"
 
 
 def parse_variable(spec: str) -> tuple[str, str, str]:
@@ -345,6 +348,7 @@ def benchmark_glacier(
     seed: int = 0,
     n_boot: int = DEFAULT_N_BOOT,
     bootstrap: bool = True,
+    reduction: str = DEFAULT_REDUCTION,
 ) -> tuple[xr.Dataset, pd.DataFrame, pd.DataFrame]:
     """
     Importance-sample and rank one glacier's ensemble, writing its outputs.
@@ -373,6 +377,9 @@ def benchmark_glacier(
         Bootstrap resamples of the RMSE ranking.
     bootstrap : bool, optional
         Skip the block-bootstrap ranking when False.
+    reduction : {"blocks", "mean", "sum"}, optional
+        How the likelihood collapses the cells; ``"blocks"`` sums one independent
+        sample per decorrelation-length block of the observed field.
 
     Returns
     -------
@@ -393,6 +400,9 @@ def benchmark_glacier(
             logger.warning("%s: skipping %s:%s:%s, variable missing", rgi_id, sim_var, obs_var, obs_std)
             continue
         members = uq_df.reindex(sim[MEMBER_DIM].values)
+        sim_mean = sim[sim_var].mean(dim="time") if "time" in sim[sim_var].dims else sim[sim_var]
+        obs_mean = obs[obs_var].mean(dim="time") if "time" in obs[obs_var].dims else obs[obs_var]
+        length, block_size = block_size_from_field(obs_mean)
         weighted = importance_weights(
             sim,
             obs,
@@ -403,26 +413,23 @@ def benchmark_glacier(
             n_samples=n_samples,
             seed=seed,
             dim=MEMBER_DIM,
+            reduction=reduction,
+            block_size=block_size,
         )
-        sim_mean = sim[sim_var].mean(dim="time") if "time" in sim[sim_var].dims else sim[sim_var]
-        obs_mean = obs[obs_var].mean(dim="time") if "time" in obs[obs_var].dims else obs[obs_var]
         rmse = plain_rmse(sim[sim_var], obs[obs_var]).compute()
         n_valid, n_glacier = coverage(obs_mean, sim_mean.isel({MEMBER_DIM: 0}).compute(), landice)
         result = weighted.assign(rmse=rmse)
         table = posterior_table(weighted, members, dim=MEMBER_DIM).assign(rmse=rmse.to_pandas())
-        extra: dict[str, object] = {}
+        extra: dict[str, object] = {"decorrelation_length": length, "block_size": block_size}
         if bootstrap:
-            ranking = rank_by_bootstrap_rmse(sim_mean, obs_mean, n_boot=n_boot, seed=seed, dim=MEMBER_DIM)
+            ranking = rank_by_bootstrap_rmse(
+                sim_mean, obs_mean, n_boot=n_boot, seed=seed, dim=MEMBER_DIM, block_size=block_size
+            )
             result = result.assign(**{v: ranking[v] for v in ranking.data_vars})
             table = table.join(ranking.to_dataframe())
             best = ranking.attrs["best"]
             tied = ranking["tied_with_best"].to_pandas().astype(int)
-            extra = {
-                "best_rmse_uq_id": best,
-                "n_tied": int(tied.sum()),
-                "decorrelation_length": ranking.attrs["decorrelation_length"],
-                "block_size": ranking.attrs["block_size"],
-            }
+            extra.update({"best_rmse_uq_id": best, "n_tied": int(tied.sum())})
             logger.info(
                 "%s/%s: best member %s, %d tied within the 5-95%% CI, block %d px",
                 rgi_id,
@@ -474,6 +481,7 @@ def benchmark_glacier(
                     "rgi_id": rgi_id,
                     "variable": sim_var,
                     "fudge_factor": float(fudge_factor),
+                    "reduction": reduction,
                     "n_members": int(w.sizes[MEMBER_DIM]),
                     "ess": ess,
                     "top_uq_id": str(top),
@@ -494,7 +502,14 @@ def benchmark_glacier(
     out = xr.concat(per_variable, dim="variable")
     for column in uq_df.columns:
         out[column] = ("uq_id", uq_df.reindex(out[MEMBER_DIM].values)[column].values)
-    out.attrs.update({"rgi_id": rgi_id, "fudge_factors": list(map(float, fudge_factors)), "n_samples": n_samples})
+    out.attrs.update(
+        {
+            "rgi_id": rgi_id,
+            "fudge_factors": list(map(float, fudge_factors)),
+            "n_samples": n_samples,
+            "reduction": reduction,
+        }
+    )
     out.to_netcdf(glacier_dir / f"importance_sampling_{rgi_id}.nc")
     return out, pd.DataFrame(rows), pd.concat(tables)
 
@@ -551,6 +566,7 @@ def run_pipeline(
     n_boot: int = DEFAULT_N_BOOT,
     bootstrap: bool = True,
     min_members: int = 2,
+    reduction: str = DEFAULT_REDUCTION,
     start: str = DH_START,
     end: str = DH_END,
 ) -> pd.DataFrame:
@@ -583,6 +599,9 @@ def run_pipeline(
     min_members : int, optional
         Glaciers with fewer finished members are skipped: a single member has no
         posterior, and it would shrink the joint posterior to that member.
+    reduction : {"blocks", "mean", "sum"}, optional
+        How the likelihood collapses the cells of a field; see
+        :func:`pism_terra.likelihood.reduce_log_likelihood`.
     start : str, optional
         Start date of the ``dh`` files.
     end : str, optional
@@ -636,6 +655,7 @@ def run_pipeline(
             seed=seed,
             n_boot=n_boot,
             bootstrap=bootstrap,
+            reduction=reduction,
         )
         summaries.append(summary)
         tables.append(table)
@@ -677,6 +697,7 @@ def run_pipeline(
                                 "rgi_id": "joint",
                                 "variable": variable,
                                 "fudge_factor": float(fudge_factor),
+                                "reduction": reduction,
                                 "n_members": int(w.sizes[MEMBER_DIM]),
                                 "ess": ess,
                                 "top_uq_id": str(w.idxmax(dim=MEMBER_DIM).values),
@@ -688,7 +709,7 @@ def run_pipeline(
                 )
             joint_results.append(weighted.expand_dims(variable=[variable]))
         joint = xr.concat(joint_results, dim="variable")
-        joint.attrs.update({"glaciers": sorted(uq_frames), "n_samples": n_samples})
+        joint.attrs.update({"glaciers": sorted(uq_frames), "n_samples": n_samples, "reduction": reduction})
         joint.to_netcdf(joint_dir / "importance_sampling_joint.nc")
 
     summary = pd.concat(summaries, ignore_index=True)
@@ -765,6 +786,13 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
     )
     parser.add_argument("--seed", type=int, default=0, help="Seed of the resampler and the bootstrap.")
     parser.add_argument(
+        "--reduction",
+        choices=REDUCTIONS,
+        default=DEFAULT_REDUCTION,
+        help="How the likelihood collapses the cells: 'blocks' sums one independent sample per "
+        "decorrelation-length block, 'mean' averages (tempered), 'sum' treats every cell as independent.",
+    )
+    parser.add_argument(
         "--min-members", type=int, default=2, help="Skip glaciers with fewer finished ensemble members than this."
     )
     parser.add_argument("--start", default=DH_START, help="Start date in the dh file names.")
@@ -785,6 +813,7 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         n_boot=args.n_boot,
         bootstrap=not args.no_bootstrap,
         min_members=args.min_members,
+        reduction=args.reduction,
         start=args.start,
         end=args.end,
     )

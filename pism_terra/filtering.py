@@ -194,7 +194,10 @@ def importance_sampling(
     log_likelihood : Callable, optional
         The log-likelihood function to use for filtering, by default log_normal_xr.
     likelihood_kwargs : dict, optional
-        Additional keyword arguments to pass to the log-likelihood function, by default {}.
+        Additional keyword arguments to pass to the log-likelihood function, by default {}. For the
+        default likelihood, ``{"reduction": "blocks", "block_size": n}`` sums the cells as one independent
+        sample per ``n`` by ``n`` block instead of averaging them; see
+        :func:`pism_terra.likelihood.reduce_log_likelihood`.
     dim : str, optional
         The variable name in `simulated` that identifies each ensemble member, by default "exp_id".
     sum_dims : list, optional
