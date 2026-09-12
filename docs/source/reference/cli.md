@@ -41,7 +41,8 @@ runnable as `python -m <module>`. The full list lives in
     log-likelihoods of the shared members) to `joint/`, summary tables to
     the top level. `--variable SIM:OBS[:OBS_STD]` selects other fields;
     `--reduction blocks|mean|sum` sets how the likelihood collapses the
-    cells (one independent sample per decorrelation-length block by default).
+    cells (one independent sample per decorrelation-length block by default)
+    and `--acf-threshold` the autocorrelation level that sets the block side.
 * - `pism-glacier-usgs-benchmark-glaciers`
   - Download the USGS benchmark-glacier mass balances, match each glacier to
     its RGI v7 ID, convert to Gt/yr and plot against any `scalar_G_*.nc`

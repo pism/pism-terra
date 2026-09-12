@@ -62,6 +62,7 @@ DEFAULT_FUDGE_FACTORS = (1.0, 3.0, 10.0)
 DEFAULT_N_SAMPLES = 10_000
 DEFAULT_N_BOOT = 500
 DEFAULT_REDUCTION = "blocks"
+DEFAULT_ACF_THRESHOLD = 1.0 / np.e
 
 
 def parse_variable(spec: str) -> tuple[str, str, str]:
@@ -349,6 +350,7 @@ def benchmark_glacier(
     n_boot: int = DEFAULT_N_BOOT,
     bootstrap: bool = True,
     reduction: str = DEFAULT_REDUCTION,
+    acf_threshold: float = DEFAULT_ACF_THRESHOLD,
 ) -> tuple[xr.Dataset, pd.DataFrame, pd.DataFrame]:
     """
     Importance-sample and rank one glacier's ensemble, writing its outputs.
@@ -380,6 +382,9 @@ def benchmark_glacier(
     reduction : {"blocks", "mean", "sum"}, optional
         How the likelihood collapses the cells; ``"blocks"`` sums one independent
         sample per decorrelation-length block of the observed field.
+    acf_threshold : float, optional
+        Autocorrelation level that defines the decorrelation length, and with
+        it the block side; lower values give longer blocks.
 
     Returns
     -------
@@ -402,7 +407,7 @@ def benchmark_glacier(
         members = uq_df.reindex(sim[MEMBER_DIM].values)
         sim_mean = sim[sim_var].mean(dim="time") if "time" in sim[sim_var].dims else sim[sim_var]
         obs_mean = obs[obs_var].mean(dim="time") if "time" in obs[obs_var].dims else obs[obs_var]
-        length, block_size = block_size_from_field(obs_mean)
+        length, block_size = block_size_from_field(obs_mean, threshold=acf_threshold)
         weighted = importance_weights(
             sim,
             obs,
@@ -420,7 +425,11 @@ def benchmark_glacier(
         n_valid, n_glacier = coverage(obs_mean, sim_mean.isel({MEMBER_DIM: 0}).compute(), landice)
         result = weighted.assign(rmse=rmse)
         table = posterior_table(weighted, members, dim=MEMBER_DIM).assign(rmse=rmse.to_pandas())
-        extra: dict[str, object] = {"decorrelation_length": length, "block_size": block_size}
+        extra: dict[str, object] = {
+            "decorrelation_length": length,
+            "block_size": block_size,
+            "acf_threshold": acf_threshold,
+        }
         if bootstrap:
             ranking = rank_by_bootstrap_rmse(
                 sim_mean, obs_mean, n_boot=n_boot, seed=seed, dim=MEMBER_DIM, block_size=block_size
@@ -508,6 +517,7 @@ def benchmark_glacier(
             "fudge_factors": list(map(float, fudge_factors)),
             "n_samples": n_samples,
             "reduction": reduction,
+            "acf_threshold": acf_threshold,
         }
     )
     out.to_netcdf(glacier_dir / f"importance_sampling_{rgi_id}.nc")
@@ -567,6 +577,7 @@ def run_pipeline(
     bootstrap: bool = True,
     min_members: int = 2,
     reduction: str = DEFAULT_REDUCTION,
+    acf_threshold: float = DEFAULT_ACF_THRESHOLD,
     start: str = DH_START,
     end: str = DH_END,
 ) -> pd.DataFrame:
@@ -602,6 +613,8 @@ def run_pipeline(
     reduction : {"blocks", "mean", "sum"}, optional
         How the likelihood collapses the cells of a field; see
         :func:`pism_terra.likelihood.reduce_log_likelihood`.
+    acf_threshold : float, optional
+        Autocorrelation level defining the decorrelation length and block side.
     start : str, optional
         Start date of the ``dh`` files.
     end : str, optional
@@ -656,6 +669,7 @@ def run_pipeline(
             n_boot=n_boot,
             bootstrap=bootstrap,
             reduction=reduction,
+            acf_threshold=acf_threshold,
         )
         summaries.append(summary)
         tables.append(table)
@@ -793,6 +807,13 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         "decorrelation-length block, 'mean' averages (tempered), 'sum' treats every cell as independent.",
     )
     parser.add_argument(
+        "--acf-threshold",
+        type=float,
+        default=DEFAULT_ACF_THRESHOLD,
+        help="Autocorrelation level that defines the decorrelation length and hence the block side; "
+        "lower values give longer blocks and a softer posterior.",
+    )
+    parser.add_argument(
         "--min-members", type=int, default=2, help="Skip glaciers with fewer finished ensemble members than this."
     )
     parser.add_argument("--start", default=DH_START, help="Start date in the dh file names.")
@@ -814,6 +835,7 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         bootstrap=not args.no_bootstrap,
         min_members=args.min_members,
         reduction=args.reduction,
+        acf_threshold=args.acf_threshold,
         start=args.start,
         end=args.end,
     )

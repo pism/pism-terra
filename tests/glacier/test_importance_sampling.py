@@ -119,6 +119,7 @@ def test_pipeline_weights_members_and_combines_glaciers(project: Path) -> None:
         assert "surface.pdd.factor_ice" in ds
         np.testing.assert_allclose(ds["weights"].sum("uq_id"), 1.0)
 
+    assert set(summary["reduction"]) == {"blocks"}
     joint = summary[(summary.rgi_id == "joint") & (summary.fudge_factor == 1.0)]
     assert joint["top_uq_id"].item() == "1"
     assert joint["n_members"].item() == 3  # member 3 is missing from the second glacier
@@ -152,6 +153,10 @@ def test_cli_returns_zero_and_honours_no_bootstrap(project: Path) -> None:
                 "5",
                 "--fudge-factors",
                 "3",
+                "--reduction",
+                "mean",
+                "--acf-threshold",
+                "0.1",
             ]
         )
         == 0
@@ -159,6 +164,9 @@ def test_cli_returns_zero_and_honours_no_bootstrap(project: Path) -> None:
     summary = pd.read_csv(out / "importance_sampling_summary.csv")
     assert "best_rmse_uq_id" not in summary.columns
     assert list(summary["fudge_factor"].unique()) == [3.0]
+    assert set(summary["reduction"]) == {"mean"}
+    assert (summary["block_size"].dropna() >= 1).all()
+    assert (summary["acf_threshold"].dropna() == 0.1).all()
 
 
 def test_parse_variable_defaults_the_uncertainty() -> None:

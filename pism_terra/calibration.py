@@ -401,6 +401,7 @@ def importance_weights(
     sum_dims=("time", "x", "y"),
     reduction="blocks",
     block_size=None,
+    threshold=1.0 / np.e,
 ):
     """
     Importance-sample one field for several fudge factors on its error.
@@ -441,6 +442,9 @@ def importance_weights(
     block_size : int or None, optional
         Block side in cells for ``"blocks"``; computed from the observed field
         with :func:`block_size_from_field` when None.
+    threshold : float, default ``1 / e``
+        ACF level defining the decorrelation length when ``block_size`` is
+        computed; lower values give longer blocks and a softer posterior.
 
     Returns
     -------
@@ -459,7 +463,7 @@ def importance_weights(
     obs_std_var = f"{obs_var}_error" if obs_std_var is None else obs_std_var
     dims = [d for d in sum_dims if d in sim[var].dims]
     if reduction == "blocks" and block_size is None:
-        _, block_size = block_size_from_field(obs[obs_var])
+        _, block_size = block_size_from_field(obs[obs_var], threshold=threshold)
     likelihood_kwargs = {"reduction": reduction, "block_size": 1 if block_size is None else int(block_size)}
     log_likes = []
     for fudge_factor in fudge_factors:
