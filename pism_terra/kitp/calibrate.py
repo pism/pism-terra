@@ -584,7 +584,7 @@ def main():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Calibrate KITP surface mass balance ensembles."
     parser.add_argument(
-        "--data-dir",
+        "--data-path",
         help="Root directory holding the KITP calibration inputs and outputs.",
         type=str,
         default=DEFAULT_DATA_DIR,
@@ -618,7 +618,7 @@ def main():
     options = parser.parse_args()
 
     calibrate(
-        options.data_dir,
+        options.data_path,
         fudge_factors=options.fudge_factors,
         n_samples=options.n_samples,
         relative_error=options.relative_error,

@@ -346,9 +346,9 @@ def test_cli_end_to_end(tmp_path, stake_release, usgs_rgi, monkeypatch):
 
     argv = [
         str(runs),
-        "--data-dir",
+        "--data-path",
         str(tmp_path),
-        "--output-dir",
+        "--output-path",
         str(output_dir),
         "--rgi-glacier-file",
         str(rgi_file),
@@ -392,7 +392,8 @@ def test_cli_end_to_end(tmp_path, stake_release, usgs_rgi, monkeypatch):
     # Observations alone still produce the per-site figure.
     obs_only = tmp_path / "obs_only"
     assert (
-        ubs.cli(["--data-dir", str(tmp_path), "--output-dir", str(obs_only), "--rgi-glacier-file", str(rgi_file)]) == 0
+        ubs.cli(["--data-path", str(tmp_path), "--output-path", str(obs_only), "--rgi-glacier-file", str(rgi_file)])
+        == 0
     )
     assert (obs_only / GLACIER_A / f"{stem}.png").exists()
     assert not (obs_only / GLACIER_A / f"{stem}_scatter.png").exists()
@@ -461,9 +462,9 @@ def test_plot_window_reaches_the_pipeline(tmp_path, monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(ubs, "run_pipeline", recorder)
-    ubs.main(["--output-dir", str(tmp_path), "--plot_start", "1986-01-01", "--plot-end", "2010"])
+    ubs.main(["--output-path", str(tmp_path), "--plot_start", "1986-01-01", "--plot-end", "2010"])
     assert seen["plot_years"] == (1986.0, 2010.0)
 
     seen.clear()
-    ubs.main(["--output-dir", str(tmp_path)])
+    ubs.main(["--output-path", str(tmp_path)])
     assert seen["plot_years"] == (None, None)

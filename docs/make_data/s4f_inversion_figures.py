@@ -130,7 +130,7 @@ def main() -> int:
         default=DEFAULT_PREFIX,
     )
     parser.add_argument(
-        "--output-dir",
+        "--output-path",
         help="Where the figures are written; the page reads them from here.",
         type=Path,
         default=Path(__file__).resolve().parents[1] / "source" / "_static" / "s4f",
@@ -142,7 +142,7 @@ def main() -> int:
     parser.add_argument("--dpi", help="Figure resolution; the page does not need print quality.", type=int, default=300)
     options = parser.parse_args()
 
-    options.output_dir.mkdir(parents=True, exist_ok=True)
+    options.output_path.mkdir(parents=True, exist_ok=True)
     written = 0
     for name, (directory, designs) in EXPERIMENTS.items():
         directory = f"{options.prefix}{directory}"
@@ -153,7 +153,7 @@ def main() -> int:
         print(f"{name}: {len(files)} members")
         paths = [str(f) for f in files]
         run(
-            ["pism-inverse-lcurve", "--dpi", str(options.dpi), "-o", str(options.output_dir / f"{name}_lcurve.png")]
+            ["pism-inverse-lcurve", "--dpi", str(options.dpi), "-o", str(options.output_path / f"{name}_lcurve.png")]
             + paths
         )
         run(
@@ -164,18 +164,18 @@ def main() -> int:
                 "--dpi",
                 str(options.dpi),
                 "-o",
-                str(options.output_dir / f"{name}_maps.png"),
+                str(options.output_path / f"{name}_maps.png"),
             ]
             + paths
         )
-        figures = sorted(options.output_dir.glob(f"{name}_*.png"))
+        figures = sorted(options.output_path.glob(f"{name}_*.png"))
         for figure in figures:
             print(f"  {figure.name}")
         written += len(figures)
 
     # The tools drop a table beside each figure and a log beside that; neither
     # belongs in the documentation's static tree.
-    for byproduct in list(options.output_dir.glob("*.csv")) + list(options.output_dir.glob("*.log")):
+    for byproduct in list(options.output_path.glob("*.csv")) + list(options.output_path.glob("*.log")):
         byproduct.unlink()
 
     if not written:

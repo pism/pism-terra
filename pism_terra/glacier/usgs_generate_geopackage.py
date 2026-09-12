@@ -143,7 +143,7 @@ def main(argv: Sequence[str] | None = None) -> Path:
         "'sites', 'stakes' (seasonal bw/ba per site and year) and 'subseasonal' (db between two visits)."
     )
     parser.add_argument("OUTPUT_GPKG", help="GeoPackage to write (replaced if it exists).")
-    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Cache for the USGS archives.")
+    parser.add_argument("--data-path", default=DEFAULT_DATA_DIR, help="Cache for the USGS archives.")
     parser.add_argument("--force-overwrite", action="store_true", default=False, help="Re-download the archives.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -151,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     setup_logging(output.with_suffix(".log"))
 
-    paths = download_usgs_benchmark(args.data_dir, force_overwrite=args.force_overwrite)
+    paths = download_usgs_benchmark(args.data_path, force_overwrite=args.force_overwrite)
     layers = build_stake_layers(paths["data"], load_sites(paths["sites"]))
     return write_stake_geopackage(layers, output)
 

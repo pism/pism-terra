@@ -109,9 +109,9 @@ def test_cli_end_to_end(tmp_path, usgs_release, usgs_rgi, monkeypatch, scalar_fi
         ub.cli(
             [
                 str(tmp_path / "runs"),
-                "--data-dir",
+                "--data-path",
                 str(tmp_path),
-                "--output-dir",
+                "--output-path",
                 str(output_dir),
                 "--rgi-glacier-file",
                 str(rgi_file),
@@ -267,9 +267,9 @@ def test_plot_window_reaches_the_pipeline(tmp_path, monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(ub, "run_pipeline", recorder)
-    ub.main(["--output-dir", str(tmp_path), "--plot_start", "1986-01-01", "--plot-end", "2010"])
+    ub.main(["--output-path", str(tmp_path), "--plot_start", "1986-01-01", "--plot-end", "2010"])
     assert seen["plot_years"] == (1986.0, 2010.0)
 
     seen.clear()
-    ub.main(["--output-dir", str(tmp_path)])
+    ub.main(["--output-path", str(tmp_path)])
     assert seen["plot_years"] == (None, None)
