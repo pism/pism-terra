@@ -13,7 +13,15 @@ the same job to named nodes and times, per node:
 3. a netCDF append benchmark shaped like the spatial output;
 4. a short forward leg (default four years) in three variants:
    ``async`` (production: separate ``pism_async_writer`` process),
-   ``sync`` (PISM writes its own output) and ``noout`` (no spatial output).
+   ``sync`` (PISM writes its own output in the production format),
+   ``noout`` (no spatial output), ``sync_nc3`` (PISM writes classic
+   NetCDF-3 through rank 0, no HDF5), ``sync_nc4s`` (serial NetCDF-4) and
+   ``async_nc3`` (the production writer, but PISM's own scalar and state
+   files in classic NetCDF-3). The monthly scalar flush is the step the
+   two slow variants share and the fast one lacks, so the format variants
+   separate HDF5-on-Lustre from the writer. ``async_nolock`` and
+   ``sync_nolock`` export ``HDF5_USE_FILE_LOCKING=FALSE`` before the
+   forward leg, the usual remedy for HDF5 stalls on Lustre.
 
 Usage on chinook::
 
@@ -37,7 +45,7 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Sequence
 from pathlib import Path
 
-VARIANTS = ("async", "sync", "noout")
+VARIANTS = ("async", "sync", "noout", "sync_nc3", "sync_nc4s", "async_nc3", "async_nolock", "sync_nolock")
 
 BENCH_NC = '''"""Append records to a netCDF-4 file the way the async writer does."""
 import sys
@@ -134,9 +142,13 @@ def variant_command(command: str, variant: str, end: str, outputs: dict[str, Pat
     cmd = re.sub(r"-output\.scalar\.file \S+", f"-output.scalar.file {outputs['scalar']}", cmd)
     cmd = re.sub(r"-output\.spatial\.file \S+", f"-output.spatial.file {outputs['spatial']}", cmd)
     cmd = re.sub(r"\s*-output\.checkpoint\.interval \S+\s*\\\n", "\n", cmd)
-    if variant in ("sync", "noout"):
+    if variant not in ("async", "async_nc3", "async_nolock"):
         cmd = re.sub(r"^mpiexec -n 1\s+apptainer run \$\{container\} pism_async_writer : -n", "mpiexec -n", cmd)
         cmd = cmd.replace(" -output.asynchronous", "")
+    if variant in ("sync_nc3", "async_nc3"):
+        cmd = re.sub(r"-output\.format \S+", "-output.format netcdf3", cmd)
+    if variant == "sync_nc4s":
+        cmd = re.sub(r"-output\.format \S+", "-output.format netcdf4_serial", cmd)
     if variant == "noout":
         cmd = re.sub(r"^\s*-output\.spatial\.\S+ \S+\s*\\\n", "", cmd, flags=re.M)
     return cmd
@@ -174,6 +186,7 @@ def job_script(
     """
     name = f"iotest_{node}_{variant}"
     out = test_dir / "output"
+    nolock = "export HDF5_USE_FILE_LOCKING=FALSE\n" if variant.endswith("_nolock") else ""
     return f"""#!/bin/sh
 #SBATCH --partition={partition}
 #SBATCH --nodelist={node}
@@ -205,11 +218,11 @@ rm -f {out}/dd_{name}_$SLURM_JOB_ID.bin
 dd_s=$(secs $t0 $t1); echo "IOTEST dd_512MB_s $dd_s"
 
 # 3. netCDF append benchmark shaped like the spatial output (48 records, 9 variables)
-ncbench=$(apptainer run ${{container}} python3 {test_dir}/bench_nc.py {out}/ncbench_{name}_$SLURM_JOB_ID.nc 48 112 84 | tee /dev/stderr | awk '/IOTEST ncbench_s/ {{print $3}}')
+ncbench=$(apptainer run ${{container}} python3 {test_dir}/bench_nc.py {out}/ncbench_{name}_$SLURM_JOB_ID.nc 48 112 84 | tee -a /dev/stderr | awk '/IOTEST ncbench_s/ {{print $3}}')
 rm -f {out}/ncbench_{name}_$SLURM_JOB_ID.nc
 
 # 4. the forward leg, variant {variant}
-rm -f {out}/{name}_state.nc {out}/{name}_scalar.nc {out}/{name}_spatial.nc
+{nolock}rm -f {out}/{name}_state.nc {out}/{name}_scalar.nc {out}/{name}_spatial.nc
 t0=$(date +%s.%N); stamp forward_start
 {command}
 t1=$(date +%s.%N); stamp forward_end
@@ -295,10 +308,10 @@ def analyze(args) -> int:
     steps, cpu_model = {}, {}
     for log in (test_dir / "logs").glob("iotest_*"):
         text = log.read_text(encoding="utf-8", errors="replace")
-        job = re.search(r"IOTEST node \S+ job (\d+)", text)
-        if not job:
+        try:
+            jobid = int(log.suffix.lstrip("."))
+        except ValueError:
             continue
-        jobid = int(job.group(1))
         main = text[text.rfind("PISM (basic evolution run mode)") :]
         steps[jobid] = len(re.findall(r"^S \d{4}-\d{2}-\d{2}", main, re.M))
         model = re.search(r"IOTEST lscpu Model name:\s*(.*)", text)
@@ -350,7 +363,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     gen = sub.add_parser("generate", help="Write (and optionally submit) one test job per node and variant.")
     gen.add_argument("RUN_SCRIPT", help="Production submit_*.sh whose environment and main leg are reused.")
     gen.add_argument("--nodes", required=True, help="Comma-separated node names, e.g. n31,n34,n112,n115.")
-    gen.add_argument("--variants", default=",".join(VARIANTS), help="Comma-separated subset of async,sync,noout.")
+    gen.add_argument(
+        "--variants", default="async,sync,noout", help="Comma-separated subset of " + ",".join(VARIANTS) + "."
+    )
     gen.add_argument("--test-dir", required=True, help="Directory for scripts, logs, outputs and results.csv.")
     gen.add_argument("--end", default="1990-01-01", help="time.end of the shortened forward leg.")
     gen.add_argument("--partition", default="t2small", help="Slurm partition.")
