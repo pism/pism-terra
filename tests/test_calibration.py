@@ -1,5 +1,5 @@
 """
-Tests for the KITP calibration metric.
+Tests for the shared calibration module (block-bootstrap RMSE and importance sampling).
 
 The block-bootstrap RMSE was rewritten as a streaming ``coarsen`` reduction so
 that a dask-backed ensemble is never materialised in memory. These tests pin
@@ -8,15 +8,20 @@ eager paths agree exactly.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
-from pism_terra.kitp.calibrate import (
+from pism_terra.calibration import (
     block_bootstrap_rmse,
     decorrelation_length,
     importance_weights,
+    joint_log_likelihood,
     observation_uncertainty,
+    posterior_table,
+    rank_by_bootstrap_rmse,
     squared_error_blocks,
+    weights_from_log_likelihood,
 )
 
 
@@ -223,7 +228,7 @@ def test_importance_weights_rank_members_by_misfit(ensemble):
 
     out = importance_weights(sim, obs, "smb", fudge_factors=(1.0, 100.0), n_samples=4000)
 
-    assert set(out.data_vars) == {"weights", "counts", "ess"}
+    assert set(out.data_vars) == {"log_likelihood", "weights", "counts", "ess"}
     assert out["weights"].dims == ("fudge_factor", "exp_id")
     np.testing.assert_allclose(out["weights"].sum(dim="exp_id"), 1.0)
     assert (out["counts"].sum(dim="exp_id") == 4000).all()
@@ -237,3 +242,75 @@ def test_importance_weights_rank_members_by_misfit(ensemble):
     # A huge fudge factor washes the differences out: weights near uniform.
     assert ess[1] > ess[0]
     np.testing.assert_allclose(out["weights"].sel(fudge_factor=100.0), 0.25, atol=0.02)
+
+
+def test_weights_from_log_likelihood_normalises_and_resamples():
+    """
+    Normalise the weights per fudge factor and resample them into n_samples counts.
+    """
+    ll = xr.DataArray(
+        [[0.0, -1.0, -2.0], [0.0, -0.01, -0.02]],
+        dims=["fudge_factor", "uq_id"],
+        coords={"fudge_factor": [1.0, 100.0], "uq_id": ["0", "1", "2"]},
+    )
+    out = weights_from_log_likelihood(ll, dim="uq_id", n_samples=1000, seed=1)
+    np.testing.assert_allclose(out["weights"].sum(dim="uq_id"), 1.0)
+    np.testing.assert_allclose(out["weights"].sel(fudge_factor=1.0), np.exp([0, -1, -2]) / np.exp([0, -1, -2]).sum())
+    assert (out["counts"].sum(dim="uq_id") == 1000).all()
+    assert out["ess"].sel(fudge_factor=100.0) > out["ess"].sel(fudge_factor=1.0)
+    assert list(out["counts"].uq_id.values) == ["0", "1", "2"]
+
+
+def test_rank_by_bootstrap_rmse_flags_the_leader_as_tied(fields):
+    """
+    The best member is tied with itself and the ranking carries its block metadata.
+
+    Parameters
+    ----------
+    fields : tuple of xarray.DataArray
+        The ``(sim, obs)`` pair from the fixture.
+    """
+    sim, obs = fields
+    ranking = rank_by_bootstrap_rmse(sim, obs, n_boot=40, seed=2)
+    assert set(ranking.data_vars) == {"rmse_mean", "rmse_lo", "rmse_hi", "tied_with_best"}
+    best = ranking["rmse_mean"].idxmin(dim="exp_id").values
+    assert str(best) == ranking.attrs["best"]
+    assert bool(ranking["tied_with_best"].sel(exp_id=best))
+    assert ranking.attrs["block_size"] >= 1
+    assert (ranking["rmse_lo"] <= ranking["rmse_hi"]).all()
+
+
+def test_joint_log_likelihood_uses_common_members_only():
+    """
+    Combine glaciers with different member sets over their intersection, summing per member.
+    """
+    a = xr.DataArray(
+        [[1.0, 2.0, 3.0]], dims=["fudge_factor", "uq_id"], coords={"fudge_factor": [1.0], "uq_id": ["0", "1", "2"]}
+    )
+    b = xr.DataArray(
+        [[10.0, 20.0]], dims=["fudge_factor", "uq_id"], coords={"fudge_factor": [1.0], "uq_id": ["2", "0"]}
+    )
+    total, members = joint_log_likelihood({"g1": a, "g2": b}, dim="uq_id")
+    assert members == ["0", "2"]
+    np.testing.assert_allclose(total.sel(uq_id="0"), 21.0)
+    np.testing.assert_allclose(total.sel(uq_id="2"), 13.0)
+    with pytest.raises(ValueError, match="no ensemble member"):
+        joint_log_likelihood({"g1": a, "g3": a.assign_coords(uq_id=["7", "8", "9"])}, dim="uq_id")
+
+
+def test_posterior_table_joins_parameters(ensemble):
+    """
+    The table has one row per member with parameters and per-fudge-factor columns.
+
+    Parameters
+    ----------
+    ensemble : tuple of xarray.Dataset
+        ``(sim, obs)`` fixture.
+    """
+    sim, obs = ensemble
+    weighted = importance_weights(sim, obs, "smb", fudge_factors=(1.0, 10.0), n_samples=100)
+    uq_df = pd.DataFrame({"p": [0.1, 0.2, 0.3, 0.4]}, index=pd.Index(np.arange(4), name="exp_id"))
+    table = posterior_table(weighted, uq_df, dim="exp_id")
+    assert list(table.index) == [0, 1, 2, 3]
+    assert {"p", "weights_ff_1", "counts_ff_10", "log_likelihood_ff_1"} <= set(table.columns)
+    np.testing.assert_allclose(table["weights_ff_1"].sum(), 1.0)

@@ -20,16 +20,26 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from functools import partial
 from pathlib import Path
 
-import dask
 import matplotlib.pylab as plt
-import numpy as np
 import pandas as pd
 import pint_xarray  # pylint: disable=unused-import
 import xarray as xr
 import xarray_regrid.methods.conservative  # pylint: disable=unused-import
 from dask.diagnostics import ProgressBar
 
-from pism_terra.filtering import importance_sampling
+# The metric and the importance sampling live in pism_terra.calibration so the
+# glacier driver can share them; the names stay importable from here.
+from pism_terra.calibration import (  # pylint: disable=unused-import
+    block_bootstrap_rmse,
+    bootstrap_rmse_from_blocks,
+    decorrelation_length,
+    importance_weights,
+    observation_uncertainty,
+    plot_parameter_histograms,
+    posterior_table,
+    rank_by_bootstrap_rmse,
+    squared_error_blocks,
+)
 from pism_terra.processing import preprocess_netcdf as preprocess
 
 debm_uq_vars = {
@@ -39,295 +49,6 @@ debm_uq_vars = {
     "surface.debm_simple.air_temp_all_precip_as_rain": "as_rain",
     "surface.debm_simple.refreeze": "refreeze",
 }
-
-
-def decorrelation_length(field_2d, pixel_size, threshold=1.0 / np.e):
-    """
-    Radially-averaged spatial-ACF decorrelation length for a 2D field.
-
-    Pixel-wise RMSE treats every cell as independent, but glaciological
-    fields are smooth on scales of many cells. The lag at which the
-    radially-averaged autocorrelation first falls below ``threshold`` is a
-    practical block side for bootstrap resampling: blocks of that side are
-    statistically (approximately) independent.
-
-    Parameters
-    ----------
-    field_2d : numpy.ndarray
-        The two-dimensional field to analyse. Non-finite values are filled
-        with the field's mean before the FFT; if every entry is non-finite
-        the function returns ``nan``.
-    pixel_size : float
-        Side length of one cell in physical units (typically metres). The
-        returned decorrelation length is in the same units.
-    threshold : float, default ``1 / e``
-        ACF level at which the decorrelation length is read off. Common
-        alternatives are ``0.1`` (longer block) or ``0.5`` (shorter block).
-
-    Returns
-    -------
-    float
-        Decorrelation length in the units of ``pixel_size``. Returns
-        ``nan`` when the input has no finite values.
-    """
-    a = np.asarray(field_2d, dtype=float)
-    finite = np.isfinite(a)
-    if not finite.any():
-        return float("nan")
-    a = np.where(finite, a, np.nanmean(a))
-    a = a - a.mean()
-    fft = np.fft.fft2(a)
-    acf = np.fft.fftshift(np.fft.ifft2(fft * np.conj(fft)).real)
-    acf = acf / acf.max()
-    ny, nx = a.shape
-    cy, cx = ny // 2, nx // 2
-    yy, xx = np.indices(a.shape)
-    r = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2).astype(int)
-    counts = np.maximum(np.bincount(r.ravel()), 1)
-    radial = np.bincount(r.ravel(), weights=acf.ravel()) / counts
-    rmax = min(cy, cx)
-    radial = radial[: rmax + 1]
-    below = np.where(radial < threshold)[0]
-    lag_pixels = below[0] if below.size else rmax
-    return float(lag_pixels) * float(pixel_size)
-
-
-def block_bootstrap_rmse(sim, obs, block_size, n_boot=500, seed=0):
-    """
-    Block-bootstrap spatial RMSE per experiment.
-
-    The domain is tiled into non-overlapping square blocks of side
-    ``block_size`` pixels. For each bootstrap iteration, blocks are drawn
-    with replacement and a single global RMSE is computed across the
-    resampled blocks for every experiment in ``sim``. Choosing
-    ``block_size`` ≳ ``decorrelation_length(obs) / pixel_size`` makes the
-    resampled blocks (approximately) independent, so the spread of
-    bootstrap RMSEs reflects sampling uncertainty under spatial
-    autocorrelation.
-
-    Parameters
-    ----------
-    sim : xarray.DataArray
-        Per-experiment simulated field with dims ``(exp_id, y, x)``.
-    obs : xarray.DataArray
-        Observed field with dims ``(y, x)`` aligned with ``sim``.
-    block_size : int
-        Block side in pixels. Must be ≥ 1; typically chosen as
-        ``ceil(L / pixel_size)`` where ``L`` is the decorrelation length.
-    n_boot : int, default ``500``
-        Number of bootstrap resamples.
-    seed : int, default ``0``
-        Seed for :class:`numpy.random.Generator`. Use a fixed value to
-        make the bootstrap deterministic.
-
-    Returns
-    -------
-    xarray.DataArray
-        RMSE distribution with dims ``(exp_id, boot)``, where ``boot``
-        ranges over the bootstrap resamples. Aggregate with
-        ``.mean(dim="boot")`` for the central RMSE and
-        ``.quantile([0.05, 0.95], dim="boot")`` for confidence bands.
-    """
-    block_sums, block_counts = squared_error_blocks(sim, obs, block_size)
-    return bootstrap_rmse_from_blocks(block_sums, block_counts, sim.exp_id, n_boot=n_boot, seed=seed)
-
-
-def squared_error_blocks(sim, obs, block_size):
-    """
-    Sum the squared simulation error over non-overlapping square blocks.
-
-    The reduction is expressed with :meth:`xarray.DataArray.coarsen`, so a
-    lazy (dask-backed) ``sim`` is streamed block by block: only the
-    per-block sums are materialised, never the full ``(exp_id, y, x)``
-    error field. Blocks that do not fit a whole ``block_size`` at the top
-    or right edge are trimmed, matching a plain tiling of the domain.
-
-    Parameters
-    ----------
-    sim : xarray.DataArray
-        Per-experiment simulated field with dims ``(exp_id, y, x)``. May be
-        dask-backed; it is computed exactly once.
-    obs : xarray.DataArray
-        Observed field with dims ``(y, x)`` aligned with ``sim``.
-    block_size : int
-        Block side in pixels; clamped to the domain so that at least one
-        block is produced.
-
-    Returns
-    -------
-    block_sums : numpy.ndarray
-        Summed squared error, shape ``(n_exp, n_blocks)``. Cells that are
-        non-finite in any experiment contribute zero.
-    block_counts : numpy.ndarray
-        Number of contributing cells per block, shape ``(n_blocks,)``.
-    """
-    block_y = max(1, min(block_size, sim.sizes["y"]))
-    block_x = max(1, min(block_size, sim.sizes["x"]))
-    sq_err = (sim - obs) ** 2
-    valid = np.isfinite(sq_err).all(dim="exp_id")
-    windows = {"y": block_y, "x": block_x, "boundary": "trim"}
-    sums = sq_err.where(valid, 0.0).coarsen(**windows).sum().stack(block=("y", "x"))
-    counts = valid.astype("int64").coarsen(**windows).sum().stack(block=("y", "x"))
-    # One compute: `sums` and `counts` share the `sq_err` sub-graph, so the
-    # inputs are read from disk a single time.
-    sums, counts = dask.compute(sums, counts)
-    return np.asarray(sums.transpose("exp_id", "block").values, dtype=float), np.asarray(counts.values, dtype=int)
-
-
-def bootstrap_rmse_from_blocks(block_sums, block_counts, exp_id, n_boot=500, seed=0):
-    """
-    Bootstrap RMSE from pre-computed per-block squared-error sums.
-
-    Parameters
-    ----------
-    block_sums : numpy.ndarray
-        Summed squared error per experiment and block, shape
-        ``(n_exp, n_blocks)``, as returned by :func:`squared_error_blocks`.
-    block_counts : numpy.ndarray
-        Contributing cells per block, shape ``(n_blocks,)``.
-    exp_id : array-like
-        Experiment labels used as the ``exp_id`` coordinate of the result.
-    n_boot : int, default ``500``
-        Number of bootstrap resamples.
-    seed : int, default ``0``
-        Seed for :class:`numpy.random.Generator`. Use a fixed value to
-        make the bootstrap deterministic.
-
-    Returns
-    -------
-    xarray.DataArray
-        RMSE distribution with dims ``(exp_id, boot)``.
-    """
-    valid_blocks = np.where(block_counts > 0)[0]
-    rng = np.random.default_rng(seed)
-    rmses = np.empty((block_sums.shape[0], n_boot))
-    for b in range(n_boot):
-        idx = rng.choice(valid_blocks, size=valid_blocks.size, replace=True)
-        s = block_sums[:, idx].sum(axis=1)
-        c = block_counts[idx].sum()
-        rmses[:, b] = np.sqrt(s / max(c, 1))
-    return xr.DataArray(
-        rmses,
-        dims=["exp_id", "boot"],
-        coords={"exp_id": exp_id, "boot": np.arange(n_boot)},
-    )
-
-
-def observation_uncertainty(obs, relative=0.10, floor=50.0):
-    """
-    Attach a ``<var>_error`` field to every variable of an observation set.
-
-    The RCM fields carry no uncertainty of their own, so the likelihood uses
-    a relative error with an absolute floor: ``max(relative * |obs|, floor)``.
-    The floor keeps near-zero cells (the accumulation zone in the melt
-    fields, the equilibrium line in the balance) from becoming infinitely
-    informative, which is what a purely relative error does there.
-
-    Parameters
-    ----------
-    obs : xarray.Dataset
-        Observed fields, all in the same units.
-    relative : float, default ``0.10``
-        Relative error as a fraction of the absolute value.
-    floor : float, default ``50.0``
-        Smallest error, in the units of ``obs`` (kg m^-2 yr^-1 for the
-        mass-balance fields: 5 cm w.e. per year).
-
-    Returns
-    -------
-    xarray.Dataset
-        ``obs`` with one ``<var>_error`` per data variable.
-    """
-    errors = {f"{v}_error": np.maximum(relative * abs(obs[v]), floor) for v in obs.data_vars}
-    return obs.assign(**errors)
-
-
-def importance_weights(sim, obs, var, *, fudge_factors=(1.0, 3.0, 10.0), n_samples=10_000, seed=0, dim="exp_id"):
-    """
-    Importance-sample one field for several fudge factors on its error.
-
-    Wraps :func:`pism_terra.filtering.importance_sampling`; the weights are
-    the Gaussian log-likelihood of ``var`` averaged over ``time``, ``y`` and
-    ``x``, with the observed error scaled by the fudge factor. Resampling
-    resolves the weights into counts; ``n_samples`` only sets that
-    resolution (the share of a member with weight *w* has standard error
-    ``sqrt(w (1 - w) / n_samples)``), so the default resolves shares to well
-    under one percent whatever the ensemble size.
-
-    Parameters
-    ----------
-    sim : xarray.Dataset
-        Ensemble with dims ``(dim, time, y, x)`` holding ``var``.
-    obs : xarray.Dataset
-        Observations on the same grid holding ``var`` and ``<var>_error``.
-    var : str
-        Field to compare.
-    fudge_factors : sequence of float, default ``(1, 3, 10)``
-        Multipliers on the observed error, one filter per value.
-    n_samples : int, default ``10_000``
-        Draws with replacement per fudge factor.
-    seed : int, default ``0``
-        Seed of the resampler.
-    dim : str, default ``"exp_id"``
-        Ensemble dimension.
-
-    Returns
-    -------
-    xarray.Dataset
-        ``weights`` and ``counts`` on ``(fudge_factor, dim)`` and ``ess`` on
-        ``fudge_factor``: the effective sample size ``1 / sum(w**2)``, which
-        equals the ensemble size when the field cannot tell the members apart
-        and 1 when a single member carries all the weight.
-    """
-    weights, counts = [], []
-    for fudge_factor in fudge_factors:
-        filtered = importance_sampling(
-            sim[[var]],
-            obs[[var, f"{var}_error"]],
-            sim_var=var,
-            obs_mean_var=var,
-            obs_std_var=f"{var}_error",
-            sum_dims=["time", "x", "y"],
-            fudge_factor=fudge_factor,
-            n_samples=n_samples,
-            seed=seed,
-            dim=dim,
-        )
-        w = filtered["weights"].squeeze(drop=True)
-        weights.append(w.transpose(dim))
-        sampled = filtered[f"{dim}_sampled"].values.ravel()
-        counts.append(xr.DataArray([(sampled == i).sum() for i in w[dim].values], dims=[dim], coords={dim: w[dim]}))
-    weights_da = xr.concat(weights, dim="fudge_factor").assign_coords(fudge_factor=list(fudge_factors))
-    counts_da = xr.concat(counts, dim="fudge_factor").assign_coords(fudge_factor=list(fudge_factors))
-    ess = 1.0 / (weights_da**2).sum(dim=dim)
-    return xr.Dataset({"weights": weights_da, "counts": counts_da, "ess": ess})
-
-
-def plot_parameter_histograms(uq_df, uq_vars, counts, filename):
-    """
-    Histogram each UQ parameter with every member repeated ``counts`` times.
-
-    Parameters
-    ----------
-    uq_df : pandas.DataFrame
-        Parameter values per member, indexed by experiment id.
-    uq_vars : dict
-        Mapping of parameter column to short label.
-    counts : pandas.Series
-        Repetitions per member (importance-sampling counts, or 0/1 for the
-        bootstrap tie test), indexed by experiment id.
-    filename : str or pathlib.Path
-        Output figure.
-    """
-    fig, axes = plt.subplots(1, len(uq_vars), sharey=True, figsize=(6.4, 1.8))
-    repeats = counts.reindex(uq_df.index, fill_value=0).values.astype(int)
-    for ax, (key, value) in zip(axes.flat, uq_vars.items()):
-        ax.hist(np.repeat(uq_df[key].values, repeats), bins=15)
-        ax.set_xlabel(value)
-        ax.set_xlim(uq_df[key].min(), uq_df[key].max())
-    fig.tight_layout()
-    fig.savefig(filename, dpi=300)
-    plt.close(fig)
 
 
 DEFAULT_DATA_DIR = "~/base/pism-terra"
@@ -472,39 +193,21 @@ def calibrate(
                         weighted["counts"].sel(fudge_factor=fudge_factor).to_pandas(),
                         f"{ebm}_{v}_ff_{fudge_factor:g}.png",
                     )
-                importance_df = pd.concat(
-                    {
-                        f"{name}_ff_{fudge_factor:g}": weighted[name].sel(fudge_factor=fudge_factor).to_pandas()
-                        for fudge_factor in weighted.fudge_factor.values
-                        for name in ("weights", "counts")
-                    },
-                    axis=1,
-                )
-                importance_df.index.name = "exp_id"
-                importance_df.join(ebm_uq_df, how="left").to_csv(f"{ebm}_{v}_importance.csv")
+                posterior_table(weighted, ebm_uq_df).to_csv(f"{ebm}_{v}_importance.csv")
 
-                # 1) Decorrelation length from the observed time-mean field.
+                # 1-3) Block-bootstrap RMSE per exp_id with the block side set by the
+                # observed field's decorrelation length; members whose 5-95 % CI
+                # overlaps the leader's are statistically tied with the best.
+                # ``sim_mean_all`` stays lazy: the ensemble is reduced to per-block
+                # sums as it streams off disk.
                 sim_mean_all = _ds[v].mean(dim="time")
                 obs_mean = _obs[v].mean(dim="time").squeeze().compute()
-                pixel_size = float(abs(_obs.x.diff("x").mean()))
-                L = decorrelation_length(obs_mean.values, pixel_size)
-                block_size = max(1, int(np.ceil(L / pixel_size)))
+                ranking = rank_by_bootstrap_rmse(sim_mean_all, obs_mean, n_boot=500)
+                L, block_size = ranking.attrs["decorrelation_length"], ranking.attrs["block_size"]
                 print(f"{ebm}/{v}: decorrelation length ≈ {L:.0f} m, block_size = {block_size} px")
-
-                # 2) Block-bootstrap RMSE per exp_id (honors spatial correlation).
-                # ``sim_mean_all`` stays lazy: the ensemble is reduced to
-                # per-block sums as it streams off disk, so peak memory does
-                # not grow with the number of experiments.
-                rmse_boot = block_bootstrap_rmse(sim_mean_all, obs_mean, block_size, n_boot=500)
-                rmse_mean = rmse_boot.mean(dim="boot")
-                rmse_lo = rmse_boot.quantile(0.05, dim="boot")
-                rmse_hi = rmse_boot.quantile(0.95, dim="boot")
-
-                # 3) Rank by bootstrap-mean RMSE; treat exp_ids whose CI overlaps
-                # the leader's upper bound as statistically tied with the best.
+                rmse_mean, rmse_lo, rmse_hi = ranking["rmse_mean"], ranking["rmse_lo"], ranking["rmse_hi"]
+                tied_mask = ranking["tied_with_best"]
                 best_id = rmse_mean.idxmin(dim="exp_id").values
-                best_hi = float(rmse_hi.sel(exp_id=best_id))
-                tied_mask = rmse_lo <= best_hi
                 tied_ids = list(rmse_mean.exp_id.where(tied_mask, drop=True).values)
                 print(f"{ebm}/{v}: best exp_id = {best_id}, n tied within 5-95% CI = {len(tied_ids)}")
 

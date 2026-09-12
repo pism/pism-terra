@@ -30,6 +30,16 @@ runnable as `python -m <module>`. The full list lives in
 * - `pism-glacier-mip4`
   - Build the per-region `RGI7_NN` aggregate complexes and shared inputs for
     GlacierMIP4.
+* - `pism-glacier-importance-sampling`
+  - Weigh every glacier UQ ensemble of a project against its observed
+    elevation change (`dh_*.nc` against the staged `obs_<rgi_id>.nc`):
+    Gaussian likelihood weights, resampling counts and effective sample
+    size per fudge factor, a plain and a block-bootstrap RMSE ranking with
+    the members tied with the best, and posterior histograms of the UQ
+    parameters from the run's `uq.csv`. Per-glacier outputs go to
+    `<rgi_id>/`, the joint posterior over all glaciers (summed
+    log-likelihoods of the shared members) to `joint/`, summary tables to
+    the top level. `--variable SIM:OBS[:OBS_STD]` selects other fields.
 * - `pism-glacier-usgs-benchmark-glaciers`
   - Download the USGS benchmark-glacier mass balances, match each glacier to
     its RGI v7 ID, convert to Gt/yr and plot against any `scalar_G_*.nc`
