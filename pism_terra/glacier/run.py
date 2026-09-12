@@ -175,7 +175,7 @@ def _dh_command(spatial_file: Path, output_path: Path, rgi_id: str, name_options
     """
     outfile = output_path / "dh" / f"dh_{rgi_id}_{name_options}_{DH_START}_{DH_END}.nc"
     return (
-        f"pism-glacier-postprocess-dh --start {DH_START} --end {DH_END} "
+        f"pism-glacier-postprocess-dh --vars usurf --start {DH_START} --end {DH_END} "
         f"{spatial_file.resolve()} {outfile.resolve()}"
     )
 

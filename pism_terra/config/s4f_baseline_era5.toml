@@ -280,7 +280,7 @@ model = "null"
 'inverse.stress_balance.tauc_min' = 1e2
 'inverse.stress_balance.velocity_scale' = 1e2
 'inverse.tikhonov.penalty_weight' = 1000
-'inverse.tikhonov.rtol' = 0.1
+'inverse.tikhonov.rtol' = 0.15
 'inverse.use_zeta_fixed_mask' = "yes"
 
 [solver.forward]

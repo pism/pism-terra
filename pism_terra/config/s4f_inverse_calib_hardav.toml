@@ -289,7 +289,7 @@ model = "null"
 # changes by less than ~1e-4 per iteration (a few 0.1% above the final value).
 'inverse.tikhonov.atol' = 1e-5
 'inverse.tikhonov.penalty_weight' = 1000
-'inverse.tikhonov.rtol' = 0.1
+'inverse.tikhonov.rtol' = 0.15
 'inverse.use_zeta_fixed_mask' = "yes"
 
 [solver.forward]
