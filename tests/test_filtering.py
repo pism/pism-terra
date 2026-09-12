@@ -10,9 +10,9 @@ from pism_terra import filtering
 from pism_terra.filtering import importance_sampling
 
 
-def _datasets(sim_units: str = "m", sim_scale: float = 1.0) -> tuple[xr.Dataset, xr.Dataset]:
+def _datasets(sim_units: str = "m", sim_scale: float = 1.0, sim_step: float = 100.0) -> tuple[xr.Dataset, xr.Dataset]:
     """
-    Build a three-member ensemble on a coarse grid and observations on a finer one.
+    Build a three-member ensemble and observations on a 100 m grid.
 
     Member 1 matches the observations, member 0 is biased low and member 2 high.
 
@@ -22,6 +22,8 @@ def _datasets(sim_units: str = "m", sim_scale: float = 1.0) -> tuple[xr.Dataset,
         Units attribute of the simulated variable.
     sim_scale : float
         Factor the simulated values are multiplied by (e.g. 100 to express metres in cm).
+    sim_step : float
+        Grid spacing of the ensemble; anything but 100 m puts it on a different grid.
 
     Returns
     -------
@@ -37,8 +39,8 @@ def _datasets(sim_units: str = "m", sim_scale: float = 1.0) -> tuple[xr.Dataset,
         },
         coords={"x": ("x", x_obs, {"units": "m"}), "y": ("y", y_obs, {"units": "m"})},
     )
-    x_sim = np.arange(0.0, 1000.0, 200.0)
-    y_sim = np.arange(0.0, 800.0, 200.0)
+    x_sim = np.arange(0.0, 1000.0, sim_step)
+    y_sim = np.arange(0.0, 800.0, sim_step)
     members = np.array([-3.0, -2.0, -1.0])[:, None, None] * np.ones((1, y_sim.size, x_sim.size))
     sim = xr.Dataset(
         {"usurf": (("exp_id", "y", "x"), members * sim_scale, {"units": sim_units})},
@@ -89,4 +91,13 @@ def test_plain_path_without_pint_xarray(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(filtering, "pint_xarray", None)
     reference_sim, reference_obs = _datasets()
     out = importance_sampling(reference_sim, reference_obs, **KW)
+    assert int(out.weights.argmax("exp_id")) == 1
+
+
+def test_mismatched_grids_are_rejected() -> None:
+    """An ensemble on a different grid raises instead of being interpolated silently."""
+    sim, obs = _datasets(sim_step=200.0)
+    with pytest.raises(ValueError, match="interp_like"):
+        importance_sampling(sim, obs, **KW)
+    out = importance_sampling(sim.interp_like(obs), obs, **KW)
     assert int(out.weights.argmax("exp_id")) == 1

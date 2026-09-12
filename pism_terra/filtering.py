@@ -128,17 +128,15 @@ def _is_quantified(ds: xr.Dataset, names: list[str]) -> bool:
     return any(ds[name].pint.units is not None for name in names if name in ds)
 
 
-def _interp_and_strip_units(
+def _strip_units(
     simulated: xr.Dataset, observed: xr.Dataset, sim_var: str, obs_mean_var: str, obs_std_var: str
 ) -> tuple[xr.Dataset, xr.Dataset]:
     """
-    Interpolate unit-aware and hand back plain arrays in the observed mean's units.
+    Express quantified input in the observed mean's units and hand back plain arrays.
 
-    pint-xarray keeps the units of indexed coordinates in a ``PintIndex`` that plain
-    :meth:`xarray.Dataset.interp_like` cannot read, so the accessor's own ``interp_like`` is used.
-    The simulated variable and the observed uncertainty are then converted to the units of the
-    observed mean and every quantity is stripped back into a ``units`` attribute, so the
-    likelihood below works on ordinary arrays exactly as it does for unquantified input.
+    The simulated variable and the observed uncertainty are converted to the units of the
+    observed mean, then every quantity is stripped back into a ``units`` attribute so the
+    likelihood works on ordinary arrays exactly as it does for unquantified input.
 
     Parameters
     ----------
@@ -156,12 +154,11 @@ def _interp_and_strip_units(
     Returns
     -------
     tuple of xr.Dataset
-        ``(simulated, observed)`` interpolated onto the observed grid, unit-free.
+        ``(simulated, observed)`` without pint quantities.
     """
     simulated = simulated.pint.quantify()
     observed = observed.pint.quantify()
     target = observed[obs_mean_var].pint.units
-    simulated = simulated.pint.interp_like(observed)
     if target is not None:
         simulated = simulated.pint.to({sim_var: target})
         observed = observed.pint.to({obs_std_var: target})
@@ -189,7 +186,9 @@ def importance_sampling(
     Parameters
     ----------
     simulated : xr.Dataset
-        An xarray Dataset containing the simulated data.
+        An xarray Dataset containing the simulated data, on the same coordinates as
+        ``observed`` along every shared dimension. Interpolate or reindex it first
+        (``simulated.interp_like(observed)``); no interpolation happens here.
     observed : xr.Dataset
         An xarray Dataset containing the observed data.
     log_likelihood : Callable, optional
@@ -223,6 +222,11 @@ def importance_sampling(
     xr.Dataset
         A dataset containing the selected members, log_likes, and weights the filtering process.
 
+    Raises
+    ------
+    ValueError
+        If ``simulated[sim_var]`` and the observed variables do not share their coordinates.
+
     Notes
     -----
     This function implements a filtering algorithm that uses a likelihood-based approach to select ensemble members
@@ -232,17 +236,24 @@ def importance_sampling(
     selection process.
 
     If pint-xarray is installed and ``simulated`` or ``observed`` carries pint quantities
-    (``.pint.quantify()``), the interpolation is unit-aware and the simulated variable and the
-    observed uncertainty are converted to the units of the observed mean before the likelihood
-    is evaluated. Without pint-xarray, or with plain arrays, nothing changes.
+    (``.pint.quantify()``), the simulated variable and the observed uncertainty are converted
+    to the units of the observed mean before the likelihood is evaluated. Without pint-xarray,
+    or with plain arrays, nothing changes.
     """
 
-    # Interpolate simulated data onto the observed grid. Quantified input (pint-xarray)
-    # goes through the unit-aware path and comes back as plain arrays in common units.
+    # Quantified input (pint-xarray) comes back as plain arrays in the observed mean's units.
     if _is_quantified(observed, [obs_mean_var, obs_std_var]) or _is_quantified(simulated, [sim_var]):
-        simulated, observed = _interp_and_strip_units(simulated, observed, sim_var, obs_mean_var, obs_std_var)
-    else:
-        simulated = simulated.interp_like(observed)
+        simulated, observed = _strip_units(simulated, observed, sim_var, obs_mean_var, obs_std_var)
+
+    # The caller aligns the grids; refuse silently broadcasting mismatched coordinates.
+    try:
+        xr.align(simulated[sim_var], observed[obs_mean_var], observed[obs_std_var], join="exact")
+    except ValueError as err:
+        raise ValueError(
+            f"'{sim_var}' and '{obs_mean_var}'/'{obs_std_var}' must share their coordinates: "
+            "interpolate or reindex the simulated ensemble onto the observed grid first, "
+            "e.g. simulated.interp_like(observed) or simulated.pint.interp_like(observed)"
+        ) from err
 
     # Calculate the observed mean and adjusted standard deviation
     obs_mean = observed[obs_mean_var]
