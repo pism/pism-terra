@@ -43,6 +43,14 @@ runnable as `python -m <module>`. The full list lives in
     `--reduction blocks|mean|sum` sets how the likelihood collapses the
     cells (one independent sample per decorrelation-length block by default)
     and `--acf-threshold` the autocorrelation level that sets the block side.
+* - `pism-s4f-report`
+  - Run `pism-glacier-importance-sampling`, `pism-glacier-usgs-benchmark-glaciers`
+    and `pism-glacier-usgs-benchmark-stakes` on a project, each into a
+    sub-directory of `--output-path`, and write an HTML report in the layout
+    of these docs with the Snow4Flow logo: `index.html` with one card per
+    tool and a page per tool with its summary tables and every glacier's
+    figures. A failing tool is reported with its traceback; `--skip` leaves
+    one out and `--no-run` renders from outputs already on disk.
 * - `pism-glacier-usgs-benchmark-glaciers`
   - Download the USGS benchmark-glacier mass balances, match each glacier to
     its RGI v7 ID, convert to Gt/yr and plot against any `scalar_G_*.nc`

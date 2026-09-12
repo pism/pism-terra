@@ -124,6 +124,7 @@ pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
 pism-kitp-stage = "pism_terra.kitp.stage:main"
 pism-glacier-mip4 = "pism_terra.glacier.glaciermip4:cli"
 pism-glacier-importance-sampling = "pism_terra.glacier.importance_sampling:cli"
+pism-s4f-report = "pism_terra.glacier.s4f_report:cli"
 pism-glacier-usgs-benchmark-glaciers = "pism_terra.glacier.usgs_benchmark_glaciers:cli"
 pism-glacier-usgs-benchmark-stakes = "pism_terra.glacier.usgs_benchmark_stakes:cli"
 pism-glacier-usgs-generate-geopackage = "pism_terra.glacier.usgs_generate_geopackage:cli"
@@ -137,7 +138,7 @@ include = ["pism_terra*"]
 py-modules = ["pism_terra"]
 
 [tool.setuptools.package-data]
-"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml', 'data/*.sh', 'grids/*.txt']
+"pism_terra" = ['logging.conf', 'data/*.txt', 'data/*.gpkg', 'data/*.toml', 'data/*.sh', 'grids/*.txt', 'templates/report/*']
 
 [tool.setuptools_scm]
 

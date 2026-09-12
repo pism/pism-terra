@@ -1,0 +1,33 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<h1>{{ page_title }}</h1>
+<p class="lead">{{ blurb }}</p>
+<p class="meta">Command line equivalent: <code>{{ command }}</code>{% if elapsed %} &middot; ran in {{ elapsed }}{% endif %}</p>
+{% if error %}
+<div class="admonition error"><div class="title">This step failed</div><pre>{{ error }}</pre></div>
+{% elif status == "skipped" %}
+<div class="admonition"><div class="title">Skipped</div>This step was not run.</div>
+{% elif status == "missing" %}
+<div class="admonition"><div class="title">No outputs</div>Nothing was found under <code>{{ output_dir }}</code>.</div>
+{% endif %}
+{% for table in tables %}
+<h2 id="{{ table.id }}">{{ table.label }}</h2>
+{% if table.note %}<p class="meta">{{ table.note | safe }}</p>{% endif %}
+<div class="table-wrap">{{ table.html | safe }}</div>
+{% endfor %}
+{% for section in sections if section.figures or section.tables %}
+<h2 id="{{ section.id }}">{{ section.label }}</h2>
+{% for table in section.tables %}
+<h3>{{ table.label }}</h3>
+{% if table.note %}<p class="meta">{{ table.note | safe }}</p>{% endif %}
+<div class="table-wrap">{{ table.html | safe }}</div>
+{% endfor %}
+{% if section.figures %}
+<div class="figures">
+{% for fig in section.figures %}
+  <figure class="figure"><a href="{{ fig.href }}"><img src="{{ fig.href }}" alt="{{ fig.caption }}" loading="lazy"></a><figcaption>{{ fig.caption }}</figcaption></figure>
+{% endfor %}
+</div>
+{% endif %}
+{% endfor %}
+{% endblock %}
