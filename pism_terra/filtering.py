@@ -32,6 +32,11 @@ import xarray as xr
 
 from pism_terra.likelihood import log_normal_xr
 
+try:
+    import pint_xarray  # pylint: disable=unused-import
+except ImportError:  # pragma: no cover - exercised only where pint-xarray is absent
+    pint_xarray = None  # pylint: disable=invalid-name
+
 
 def sample_with_replacement(weights: np.ndarray, exp_id: np.ndarray, n_samples: int, seed: int) -> np.ndarray:
     """
@@ -101,6 +106,68 @@ def sample_with_replacement_xr(weights, n_samples: int = 100, seed: int = 0, dim
     return da
 
 
+def _is_quantified(ds: xr.Dataset, names: list[str]) -> bool:
+    """
+    Tell whether any of ``names`` in ``ds`` carries pint units.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset to inspect.
+    names : list of str
+        Variables to check; names missing from ``ds`` are skipped.
+
+    Returns
+    -------
+    bool
+        ``True`` when pint-xarray is importable and at least one variable is a pint quantity;
+        always ``False`` without pint-xarray, so plain data takes the plain code path.
+    """
+    if pint_xarray is None:
+        return False
+    return any(ds[name].pint.units is not None for name in names if name in ds)
+
+
+def _interp_and_strip_units(
+    simulated: xr.Dataset, observed: xr.Dataset, sim_var: str, obs_mean_var: str, obs_std_var: str
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """
+    Interpolate unit-aware and hand back plain arrays in the observed mean's units.
+
+    pint-xarray keeps the units of indexed coordinates in a ``PintIndex`` that plain
+    :meth:`xarray.Dataset.interp_like` cannot read, so the accessor's own ``interp_like`` is used.
+    The simulated variable and the observed uncertainty are then converted to the units of the
+    observed mean and every quantity is stripped back into a ``units`` attribute, so the
+    likelihood below works on ordinary arrays exactly as it does for unquantified input.
+
+    Parameters
+    ----------
+    simulated : xr.Dataset
+        Simulated ensemble; quantified or plain.
+    observed : xr.Dataset
+        Observations; quantified or plain.
+    sim_var : str
+        Simulated variable to compare.
+    obs_mean_var : str
+        Observed mean; its units are the common units.
+    obs_std_var : str
+        Observed uncertainty, converted to the same units.
+
+    Returns
+    -------
+    tuple of xr.Dataset
+        ``(simulated, observed)`` interpolated onto the observed grid, unit-free.
+    """
+    simulated = simulated.pint.quantify()
+    observed = observed.pint.quantify()
+    target = observed[obs_mean_var].pint.units
+    simulated = simulated.pint.interp_like(observed)
+    if target is not None:
+        simulated = simulated.pint.to({sim_var: target})
+        observed = observed.pint.to({obs_std_var: target})
+    return simulated.pint.dequantify(), observed.pint.dequantify()
+
+
 def importance_sampling(
     simulated: xr.Dataset,
     observed: xr.Dataset,
@@ -163,10 +230,19 @@ def importance_sampling(
     the difference between the simulated and observed means, scaled by the observed standard deviation (adjusted by
     the fudge factor). This method allows for the incorporation of observational uncertainty into the ensemble
     selection process.
+
+    If pint-xarray is installed and ``simulated`` or ``observed`` carries pint quantities
+    (``.pint.quantify()``), the interpolation is unit-aware and the simulated variable and the
+    observed uncertainty are converted to the units of the observed mean before the likelihood
+    is evaluated. Without pint-xarray, or with plain arrays, nothing changes.
     """
 
-    # Interpolate simulated data to match the observed data's calendar
-    simulated = simulated.interp_like(observed)
+    # Interpolate simulated data onto the observed grid. Quantified input (pint-xarray)
+    # goes through the unit-aware path and comes back as plain arrays in common units.
+    if _is_quantified(observed, [obs_mean_var, obs_std_var]) or _is_quantified(simulated, [sim_var]):
+        simulated, observed = _interp_and_strip_units(simulated, observed, sim_var, obs_mean_var, obs_std_var)
+    else:
+        simulated = simulated.interp_like(observed)
 
     # Calculate the observed mean and adjusted standard deviation
     obs_mean = observed[obs_mean_var]
