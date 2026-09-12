@@ -29,6 +29,7 @@ from pism_terra.glacier.run import (
     _dh_command,
     _nullable_string,
     _postprocess_commands,
+    snapshot_project_file,
 )
 
 
@@ -128,3 +129,67 @@ def test_dh_filenames_stay_apart_across_ensemble_members():
 
     assert member_0.endswith(f"/out/dh/dh_RGI2000-v7.0-C-01-04374_id_0_uq_0_{DH_START}_{DH_END}.nc")
     assert member_0.rsplit(" ", 1)[-1] != member_1.rsplit(" ", 1)[-1]
+
+
+def test_snapshot_copies_and_is_idempotent(tmp_path: Path) -> None:
+    """
+    A project file is copied once; an identical re-run leaves the copy alone.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    """
+    src = tmp_path / "src" / "run.toml"
+    src.parent.mkdir()
+    src.write_text("a = 1\n")
+    dest_dir = tmp_path / "experiment" / "config"
+
+    copy = snapshot_project_file(src, dest_dir)
+
+    assert copy == (dest_dir / "run.toml").resolve()
+    assert copy.read_text() == "a = 1\n"
+    first_mtime = copy.stat().st_mtime_ns
+    assert snapshot_project_file(src, dest_dir) == copy
+    assert copy.stat().st_mtime_ns == first_mtime
+
+
+def test_snapshot_overwrites_a_stale_copy(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """
+    A copy whose contents differ from the source is refreshed with a notice.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    capsys : pytest.CaptureFixture
+        Captured stdout, checked for the update notice.
+    """
+    src = tmp_path / "run.toml"
+    src.write_text("a = 1\n")
+    dest_dir = tmp_path / "config"
+    snapshot_project_file(src, dest_dir)
+    src.write_text("a = 2\n")
+
+    copy = snapshot_project_file(src, dest_dir)
+
+    assert copy.read_text() == "a = 2\n"
+    assert "Updating snapshot" in capsys.readouterr().out
+
+
+def test_snapshot_of_a_file_already_in_place_is_a_no_op(tmp_path: Path) -> None:
+    """
+    Passing the snapshot itself (or a file inside dest) does not copy onto itself.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    """
+    dest_dir = tmp_path / "config"
+    dest_dir.mkdir()
+    src = dest_dir / "run.toml"
+    src.write_text("a = 1\n")
+
+    assert snapshot_project_file(src, dest_dir) == src.resolve()
+    assert src.read_text() == "a = 1\n"

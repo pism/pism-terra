@@ -24,6 +24,7 @@ Running.
 from __future__ import annotations
 
 import re
+import shutil
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
@@ -141,6 +142,42 @@ def _apply_regrid(run: dict, regrid_file: str | Path | None) -> None:
 #: Interval of the per-run elevation/mass-change extraction, matching the
 #: Hugonnet et al. (2021) observational record the output is compared against
 #: (re-exported from the observations module, which stages that record).
+
+
+def snapshot_project_file(src: str | Path, dest_dir: str | Path) -> Path:
+    """
+    Copy a project file (config, template, UQ spec) into an experiment directory.
+
+    An experiment's ``config/``, ``templates/`` and ``uq/`` directories record
+    which files generated its run scripts. :func:`file_localizer` only writes
+    there when it downloads a remote file, so local and package files are
+    copied explicitly here. An identical copy is left untouched; a copy whose
+    contents differ is overwritten with a notice, so re-running the generator
+    for another glacier of the same experiment keeps the snapshot current.
+
+    Parameters
+    ----------
+    src : str or pathlib.Path
+        File to snapshot.
+    dest_dir : str or pathlib.Path
+        Directory the copy goes to; created if missing.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path of the copy. Callers use it from here on, so the
+        generated scripts refer to the snapshot rather than the original.
+    """
+    src = Path(src).expanduser().resolve()
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = (dest_dir / src.name).resolve()
+    if dest.exists():
+        if dest.samefile(src) or dest.read_bytes() == src.read_bytes():
+            return dest
+        print(f"Updating snapshot {dest}: {src} changed since it was last copied")
+    shutil.copy2(src, dest)
+    return dest
 
 
 def _dh_command(spatial_file: Path, output_path: Path, rgi_id: str, name_options: str) -> str:
@@ -1319,10 +1356,17 @@ def _run(*, kind: str) -> None:
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
 
-    config_file = file_localizer(options.CONFIG_FILE, path / "config")
-    pism_config_cdl = file_localizer(options.pism_config_cdl, path / "config") if options.pism_config_cdl else None
-    template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
-    uq_file = file_localizer(options.UQ_FILE, path / "uq") if options.UQ_FILE else None
+    # Keep a copy of every file that shaped this experiment next to its
+    # outputs; the run uses the copies so the scripts point at the snapshot.
+    config_path, template_path, uq_path = path / "config", path / "templates", path / "uq"
+    config_file = snapshot_project_file(file_localizer(options.CONFIG_FILE, config_path), config_path)
+    pism_config_cdl = (
+        snapshot_project_file(file_localizer(options.pism_config_cdl, config_path), config_path)
+        if options.pism_config_cdl
+        else None
+    )
+    template_file = snapshot_project_file(file_localizer(options.TEMPLATE_FILE, template_path), template_path)
+    uq_file = snapshot_project_file(file_localizer(options.UQ_FILE, uq_path), uq_path) if options.UQ_FILE else None
 
     start_cli = options.start
     end_cli = options.end
