@@ -330,7 +330,7 @@ def plot_best_member(obs: xr.DataArray, best: xr.DataArray, title: str, filename
     filename : Path or str
         Output figure.
     """
-    vmax = float(np.nanmax(np.abs(np.concatenate([np.ravel(obs.values), np.ravel(best.values)])))) * 2.0 / 3.0
+    vmax = float(np.nanmax(np.abs(np.concatenate([np.ravel(obs.values), np.ravel(best.values)])))) * 1.0 / 2.0
     if not np.isfinite(vmax) or vmax == 0:
         vmax = 1.0
     with mpl.rc_context(rc=rc_params):
@@ -347,7 +347,7 @@ def plot_best_member(obs: xr.DataArray, best: xr.DataArray, title: str, filename
             ax.set_yticks([])
         # One colorbar to the right of the row, taking its space from all three
         # panels equally so they stay the same size.
-        cbar = fig.colorbar(mappable, ax=axes, location="right", shrink=0.8, pad=0.02)
+        cbar = fig.colorbar(mappable, ax=axes, location="right", shrink=0.65, pad=0.02)
         units = obs.attrs.get("units", "")
         cbar.set_label(f"{obs.name} ({units})" if units else str(obs.name or ""))
         fig.savefig(filename, dpi=300)

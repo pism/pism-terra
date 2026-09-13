@@ -24,6 +24,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 import dask
+import matplotlib as mpl
 import matplotlib.pylab as plt
 import numpy as np
 import pandas as pd
@@ -31,6 +32,16 @@ import xarray as xr
 
 from pism_terra.filtering import importance_sampling
 from pism_terra.likelihood import REDUCTIONS
+
+rc_params = {
+    "axes.linewidth": 0.15,
+    "xtick.major.size": 2.0,
+    "xtick.major.width": 0.15,
+    "ytick.major.size": 2.0,
+    "ytick.major.width": 0.15,
+    "hatch.linewidth": 0.15,
+    "font.size": 6,
+}
 
 
 def decorrelation_length(field_2d, pixel_size, threshold=1.0 / np.e):
@@ -575,26 +586,34 @@ def plot_parameter_histograms(uq_df, uq_vars, counts, filename, *, prior=False, 
     bins : int, default ``15``
         Histogram bins per parameter.
     """
-    fig, axes = plt.subplots(1, len(uq_vars), sharey=False, figsize=(1.6 * len(uq_vars) + 0.8, 1.9))
-    repeats = counts.reindex(uq_df.index, fill_value=0).values.astype(int)
-    for ax, (key, value) in zip(np.atleast_1d(axes).flat, uq_vars.items()):
-        lo, hi = float(uq_df[key].min()), float(uq_df[key].max())
-        edges = np.linspace(lo, hi, bins + 1) if hi > lo else bins
+    # At most four panels per row, 6.2 in wide for a full row; more parameters
+    # wrap onto further rows of the same panel size.
+    n_vars = max(len(uq_vars), 1)
+    ncols = min(n_vars, 4)
+    nrows = -(-n_vars // ncols)
+    with mpl.rc_context(rc=rc_params):
+        fig, axes = plt.subplots(nrows, ncols, sharey=False, squeeze=False, figsize=(6.2 * ncols / 4, 1.9 * nrows))
+        for ax in axes.flat[n_vars:]:
+            ax.set_visible(False)
+        repeats = counts.reindex(uq_df.index, fill_value=0).values.astype(int)
+        for ax, (key, value) in zip(axes.flat, uq_vars.items()):
+            lo, hi = float(uq_df[key].min()), float(uq_df[key].max())
+            edges = np.linspace(lo, hi, bins + 1) if hi > lo else bins
+            if prior:
+                ax.hist(uq_df[key].values, bins=edges, density=True, histtype="step", color="0.4", label="prior")
+            ax.hist(np.repeat(uq_df[key].values, repeats), bins=edges, density=True, alpha=0.7, label="posterior")
+            ax.set_xlabel(value)
+            if hi > lo:
+                ax.set_xlim(lo, hi)
+            ax.set_yticks([])
         if prior:
-            ax.hist(uq_df[key].values, bins=edges, density=True, histtype="step", color="0.4", label="prior")
-        ax.hist(np.repeat(uq_df[key].values, repeats), bins=edges, density=True, alpha=0.7, label="posterior")
-        ax.set_xlabel(value)
-        if hi > lo:
-            ax.set_xlim(lo, hi)
-        ax.set_yticks([])
-    if prior:
-        np.atleast_1d(axes).flat[0].legend(fontsize=6, frameon=False)
-    if title:
-        fig.suptitle(title, fontsize=7)
-    fig.tight_layout()
-    Path(filename).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(filename, dpi=300)
-    plt.close(fig)
+            axes.flat[0].legend(fontsize=6, frameon=False)
+        if title:
+            fig.suptitle(title, fontsize=7)
+        fig.tight_layout()
+        Path(filename).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
 
 
 def short_labels(columns: Iterable[str]) -> dict[str, str]:
