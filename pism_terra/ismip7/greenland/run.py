@@ -34,7 +34,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, load_config, load_uq
-from pism_terra.inversion import inversion_uses_hardav
+from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.observations import prepare_observations
 from pism_terra.ismip7.greenland.stage import stage
@@ -1159,20 +1159,12 @@ def _render_inverse_run(
     inv_str = dict2str(sort_dict_by_key(inv))
 
     # Leg-3 wiring, applied AFTER the uq overrides so it always wins: restart
-    # from the init state (no bootstrap) and regrid the inverted tauc, driven
-    # by the constant yield-stress model (the mohr_coulomb options only apply
-    # to legs 1/2, which produced the tauc field being read back here).
+    # from the init state (no bootstrap) and regrid exactly the fields the
+    # inversion wrote (tauc, hardav, or both), held fixed; see
+    # pism_terra.inversion.forward_leg_from_inversion.
     run_fwd.update({"input.file": state_init.resolve()})
     run_fwd.pop("input.bootstrap", None)
-    run_fwd.update({"input.regrid.file": inv_file.resolve(), "input.regrid.vars": "tauc"})
-    run_fwd["basal_yield_stress.model"] = "constant"
-    for key in [k for k in run_fwd if k.startswith("basal_yield_stress.mohr_coulomb.")]:
-        run_fwd.pop(key)
-    # An inversion that also produced a vertically-averaged hardness: regrid
-    # it and make the Blatter solver use it (see pism_terra.inversion.inversion_uses_hardav).
-    if inversion_uses_hardav(inv):
-        run_fwd["input.regrid.vars"] = "tauc,hardav"
-        run_fwd["stress_balance.averaged_hardness.enabled"] = "yes"
+    forward_leg_from_inversion(run_fwd, inv, inv_file.resolve())
 
     leg_params = _build_forward_legs(
         cfg,

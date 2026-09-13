@@ -40,7 +40,7 @@ from pism_terra.download import file_localizer
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.observations import DH_END, DH_START
 from pism_terra.glacier.stage import campaign_years, stage_glacier
-from pism_terra.inversion import inversion_uses_hardav
+from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     add_provenance,
@@ -712,21 +712,12 @@ def _render_inverse_run(
     inv_str = dict2str(sort_dict_by_key(inv))
 
     # Leg 3 (main run): restart from the init state (no bootstrap) and regrid
-    # the inverted tauc, held fixed by the constant yield-stress model. The
-    # ``basal_yield_stress.mohr_coulomb.*`` options only apply to legs 1/2,
-    # which produced the tauc field being read back here. Applied after the uq
-    # overrides so this wiring always wins. If the inversion also produced a
-    # vertically-averaged hardness (``hardav``), regrid it too and make the
-    # Blatter solver use it instead of the enthalpy-derived hardness.
+    # exactly the fields the inversion wrote (tauc, hardav, or both for an
+    # alternating inversion), held fixed. Applied after the uq overrides so
+    # this wiring always wins; see pism_terra.inversion.forward_leg_from_inversion.
     run["input.file"] = state_init.resolve()
     run.pop("input.bootstrap", None)
-    run.update({"input.regrid.file": inv_file.resolve(), "input.regrid.vars": "tauc"})
-    run["basal_yield_stress.model"] = "constant"
-    for key in [k for k in run if k.startswith("basal_yield_stress.mohr_coulomb.")]:
-        run.pop(key)
-    if inversion_uses_hardav(inv):
-        run["input.regrid.vars"] = "tauc,hardav"
-        run["stress_balance.averaged_hardness.enabled"] = "yes"
+    forward_leg_from_inversion(run, inv, inv_file.resolve())
 
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
