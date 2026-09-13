@@ -235,7 +235,9 @@ def job_script(
     command : str
         Main-leg command already adapted by :func:`variant_command`.
     node : str
-        Node(s) the job is pinned to with ``--nodelist``; several nodes joined by ``+``.
+        Node(s) the job is pinned to with ``--nodelist``, several joined by ``+``; a name
+        starting with ``any`` leaves the choice to Slurm. The results record the nodes
+        Slurm actually used.
     variant : str
         Output variant, used in file and job names.
     test_dir : Path
@@ -257,13 +259,12 @@ def job_script(
         The sbatch script.
     """
     name = f"iotest_{node.replace('+', '_')}_{variant}"
-    nodelist = node.replace("+", ",")
+    pin = f"#SBATCH --nodelist={node.replace('+', ',')}\n" if not node.startswith("any") else ""
     out = test_dir / "output"
     nolock = "export HDF5_USE_FILE_LOCKING=FALSE\n" if variant.endswith("_nolock") else ""
     return f"""#!/bin/sh
 #SBATCH --partition={partition}
-#SBATCH --nodelist={nodelist}
-#SBATCH --ntasks={ntasks}
+{pin}#SBATCH --ntasks={ntasks}
 #SBATCH --tasks-per-node={tasks_per_node}
 #SBATCH --time={walltime}
 #SBATCH --job-name={name}
@@ -301,7 +302,7 @@ t0=$(date +%s.%N); stamp forward_start
 t1=$(date +%s.%N); stamp forward_end
 forward_s=$(secs $t0 $t1)
 echo "IOTEST forward_s $forward_s"
-echo "{node},{variant},$SLURM_JOB_ID,$import_cold,$import_warm,$dd_s,$ncbench,$forward_s" >> {test_dir}/results.csv
+echo "$SLURM_JOB_NODELIST,{variant},$SLURM_JOB_ID,$import_cold,$import_warm,$dd_s,$ncbench,$forward_s" >> {test_dir}/results.csv
 """
 
 
@@ -346,7 +347,8 @@ def generate(args) -> int:
             "node,variant,jobid,import_cold_s,import_warm_s,dd_512MB_s,ncbench_s,forward_s\n", encoding="utf-8"
         )
     scripts = []
-    for node in args.nodes.split(","):
+    nodes = args.nodes.split(",") if args.nodes else [f"any{k}" for k in range(1, args.repeat + 1)]
+    for node in nodes:
         for variant in args.variants.split(","):
             name = f"iotest_{node.replace('+', '_')}_{variant}"
             outputs = {k: test_dir / "output" / f"{name}_{k}.nc" for k in ("state", "scalar", "spatial")}
@@ -368,11 +370,23 @@ def generate(args) -> int:
                 encoding="utf-8",
             )
             scripts.append(script)
+    failed = []
     for script in scripts:
         if args.submit:
-            subprocess.run(["sbatch", str(script)], check=True)
+            result = subprocess.run(["sbatch", str(script)], check=False, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"{result.stdout.strip()}: {script.name}")
+            else:
+                failed.append(script.name)
+                print(f"sbatch failed for {script.name}: {result.stderr.strip()}", file=sys.stderr)
         else:
             print(f"sbatch {script}")
+    if failed:
+        print(
+            f"{len(failed)} submission(s) failed. A 'Requested node configuration is not available' means the "
+            "node has fewer cores than --tasks-per-node; list core counts with: sinfo -N -o '%N %c %P' | sort -u",
+            file=sys.stderr,
+        )
     print(f"{len(scripts)} job scripts in {test_dir / 'scripts'}", file=sys.stderr)
     return 0
 
@@ -454,9 +468,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     gen.add_argument("RUN_SCRIPT", help="Production submit_*.sh whose environment and main leg are reused.")
     gen.add_argument(
         "--nodes",
-        required=True,
+        default=None,
         help="Comma-separated node names, one entry per job; join the nodes of a multi-node job with '+', "
-        "e.g. n31,n34 or n31+n34,n112+n115.",
+        "e.g. n31,n34 or n31+n34,n112+n115. Omit to let Slurm choose (see --repeat).",
+    )
+    gen.add_argument(
+        "--repeat", type=int, default=3, help="Without --nodes: jobs per variant, on whatever nodes Slurm picks."
     )
     gen.add_argument(
         "--variants", default="async,sync,noout", help="Comma-separated subset of " + ",".join(VARIANTS) + "."
