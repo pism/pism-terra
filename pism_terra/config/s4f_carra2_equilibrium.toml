@@ -249,9 +249,12 @@ model = "null"
 [inverse]
 
 'inverse.adjoint.method' =  "exact"
+'inverse.alternating_cycles' = 1
+'inverse.alternating_misfit_tol' = 0.01
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
 'inverse.design.param' = "exp"
+'inverse.design.variable' = "tauc"
 'inverse.file' = "none"
 'inverse.huber.delta' =  1e2
 'inverse.max_iterations' = 500
