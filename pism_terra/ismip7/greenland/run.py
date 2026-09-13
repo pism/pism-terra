@@ -36,6 +36,7 @@ from pyfiglet import Figlet
 from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.inversion import inversion_uses_hardav
 from pism_terra.ismip7.experiments import resolve_counter
+from pism_terra.ismip7.greenland.observations import prepare_observations
 from pism_terra.ismip7.greenland.stage import stage
 from pism_terra.ismip7.naming import ISMIP7Names, member_ids
 from pism_terra.sampling import generate_samples
@@ -1295,6 +1296,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--no-observations",
+        help="Skip preparing the observed mass balance into <output-path>/output/observations.",
+        action="store_true",
+        default=False,
+    )
     parser.add_argument("--queue", type=str, default=None, help="Overrides queue in config file.")
     parser.add_argument("--ntasks", type=int, default=None, help="Numbers of cores.")
     parser.add_argument("--tasks", type=int, default=None, help="Cores per node.")
@@ -1493,6 +1500,20 @@ def _run(*, kind: str) -> None:
         include_projection=include_projection,
         data_path=data_path,
     )
+
+    # The observed mass balance the run is validated against, staged into
+    # <output-path>/output/observations exactly as pism-ismip7-greenland-stage
+    # does it. The cache sits beside the shared inputs so the ~500 MB GSFC file
+    # is fetched once per campaign. Failures are logged, not raised: these are
+    # validation data, not run inputs, and GRACE Tellus needs an Earthdata login.
+    if not options.no_observations:
+        input_dir = Path(data_path) if data_path is not None else path / Path("input")
+        prepare_observations(
+            path,
+            cache_path=input_dir / Path("observations"),
+            force_overwrite=force_overwrite,
+            skip_errors=True,
+        )
 
     if uq_file is not None:
         rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file, samples=options.samples)
