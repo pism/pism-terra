@@ -32,6 +32,7 @@ from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 
+import matplotlib as mpl
 import matplotlib.pylab as plt
 import numpy as np
 import pandas as pd
@@ -63,6 +64,16 @@ DEFAULT_N_SAMPLES = 10_000
 DEFAULT_N_BOOT = 500
 DEFAULT_REDUCTION = "blocks"
 DEFAULT_ACF_THRESHOLD = 1.0 / np.e
+
+rc_params = {
+    "axes.linewidth": 0.15,
+    "xtick.major.size": 2.0,
+    "xtick.major.width": 0.15,
+    "ytick.major.size": 2.0,
+    "ytick.major.width": 0.15,
+    "hatch.linewidth": 0.15,
+    "font.size": 6,
+}
 
 
 def parse_variable(spec: str) -> tuple[str, str, str]:
@@ -319,21 +330,28 @@ def plot_best_member(obs: xr.DataArray, best: xr.DataArray, title: str, filename
     filename : Path or str
         Output figure.
     """
-    vmax = float(np.nanmax(np.abs(np.concatenate([np.ravel(obs.values), np.ravel(best.values)]))))
+    vmax = float(np.nanmax(np.abs(np.concatenate([np.ravel(obs.values), np.ravel(best.values)])))) * 2.0 / 3.0
     if not np.isfinite(vmax) or vmax == 0:
         vmax = 1.0
-    fig, axes = plt.subplots(1, 3, sharey=True, figsize=(12, 4))
-    obs.plot(ax=axes[0], vmin=-vmax, vmax=vmax, cmap="RdBu_r")
-    axes[0].set_title("Observed")
-    best.plot(ax=axes[1], vmin=-vmax, vmax=vmax, cmap="RdBu_r")
-    axes[1].set_title(title, fontsize=8)
-    (best - obs).plot(ax=axes[2], vmin=-vmax, vmax=vmax, cmap="RdBu")
-    axes[2].set_title("Difference")
-    for ax in axes:
-        ax.set_aspect("equal")
-    fig.tight_layout()
-    fig.savefig(filename, dpi=200)
-    plt.close(fig)
+    with mpl.rc_context(rc=rc_params):
+        fig, axes = plt.subplots(1, 3, sharex=True, sharey=True, figsize=(6.2, 2), layout="constrained")
+        panels = ((obs, "Observed"), (best, title), (best - obs, "Difference"))
+        mappable = None
+        for ax, (field, label) in zip(axes, panels):
+            mappable = field.plot(ax=ax, vmin=-vmax, vmax=vmax, cmap="RdBu", add_colorbar=False)
+            ax.set_title(label)
+            ax.set_aspect("equal")
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+            ax.set_xticks([])
+            ax.set_yticks([])
+        # One colorbar to the right of the row, taking its space from all three
+        # panels equally so they stay the same size.
+        cbar = fig.colorbar(mappable, ax=axes, location="right", shrink=0.8, pad=0.02)
+        units = obs.attrs.get("units", "")
+        cbar.set_label(f"{obs.name} ({units})" if units else str(obs.name or ""))
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
 
 
 def benchmark_glacier(
@@ -456,11 +474,10 @@ def benchmark_glacier(
                 title=f"{rgi_id} {sim_var}: members tied with the best RMSE (n={int(tied.sum())})",
             )
             best_field = sim_mean.sel({MEMBER_DIM: best}).compute()
-            params = ", ".join(f"{labels[k]}={members.loc[best, k]:.4g}" for k in members.columns)
             plot_best_member(
                 obs_mean,
                 best_field,
-                f"Best (uq_id={best}, RMSE={float(ranking['rmse_mean'].sel({MEMBER_DIM: best})):.2f})\n{params}",
+                f"Best (uq_id={best}, RMSE={float(ranking['rmse_mean'].sel({MEMBER_DIM: best})):.2f})",
                 glacier_dir / f"importance_{sim_var}_best_rmse.png",
             )
         for fudge_factor in weighted.fudge_factor.values:
