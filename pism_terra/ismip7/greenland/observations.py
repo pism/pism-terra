@@ -18,23 +18,20 @@
 """
 Observed Greenland mass balance, for validating ISMIP7 runs against.
 
-Three independent estimates of how much mass Greenland has lost, put on a
+Two independent estimates of how much mass Greenland has lost, put on a
 common footing so a run's ``basin_*`` output can be compared with them:
 
-- **GRACE GSFC mascons** — 0.5 degree equivalent-water-thickness fields,
-  integrated to mass per cell so they can be summed over any region.
 - **GRACE Tellus mascons** — the ice-sheet-wide time series PO.DAAC
   publishes, an independent processing of the same missions.
 - **Mankoff et al. (2021)** — the input-output estimate, per Mouginot basin
   and for the ice sheet as a whole, which resolves the flux components
   (discharge, SMB, basal melt) that GRACE only sees in sum.
 
-Downloads are cached and re-used: the GSFC file alone is ~500 MB, and the
-derived products are only rebuilt when missing or when ``--force-overwrite``
-is given. Point ``--cache-path`` at a shared directory to prepare these once
-for many runs.
+Downloads are cached and re-used: the derived products are only rebuilt
+when missing or when ``--force-overwrite`` is given. Point ``--cache-path``
+at a shared directory to prepare these once for many runs.
 
-The three products are copied into ``<OUTPUT_PATH>/output/observations/``
+The two products are copied into ``<OUTPUT_PATH>/output/observations/``
 beside a run's own output, which is where the analysis reads them from.
 ``pism-ismip7-greenland-stage`` does this as part of staging, so the
 observations are in place before the run starts; the console entry point
@@ -55,9 +52,6 @@ import numpy as np
 import pandas as pd
 import pint_xarray  # pylint: disable=unused-import  # noqa: F401  (registers the .pint accessor)
 import xarray as xr
-from pyproj import Proj, Transformer
-from shapely.geometry import Polygon
-from shapely.ops import transform
 
 from pism_terra.download import download_earthaccess, download_file, save_netcdf
 from pism_terra.log import setup_logging
@@ -65,11 +59,6 @@ from pism_terra.log import setup_logging
 logger = logging.getLogger(__name__)
 
 xr.set_options(keep_attrs=True)
-
-#: GSFC mascon solution, 0.5 degree, equivalent water thickness.
-GRACE_GSFC_URL = (
-    "https://earth.gsfc.nasa.gov/sites/default/files/geo/gsfc.glb_.200204_202410_rl06v2.0_obp-ice6gd_halfdegree.nc"
-)
 
 #: PO.DAAC collection holding the ice-sheet-wide GRACE Tellus time series.
 #: Collections are retired as releases land; RL06.1_V3 no longer resolves.
@@ -92,7 +81,7 @@ MANKOFF_BASIN_VARS: dict[str, str] = {
 }
 
 #: The same quantities for the ice sheet as a whole, concatenated on as
-#: basin ``"GIS"`` so one selection covers both.
+#: region ``"GIS"`` so one selection covers both.
 MANKOFF_GIS_VARS: dict[str, str] = {
     "D": "grounding_line_flux",
     "MB": "mass_balance",
@@ -110,49 +99,11 @@ MANKOFF_GIS_VARS: dict[str, str] = {
 #: subtraction and raises.
 MANKOFF_MISSING_UNITS = ("MB_err", "BMB_err", "MB_ROI", "MB_ROI_err", "BMB_ROI_err")
 
-#: Density of water, for turning equivalent water thickness into mass.
-#: The magnitude is kept separate: pint refuses a scaling factor inside a
-#: unit expression ("1000 kg m^-3" is a ValueError, not 1000 kg/m3).
-WATER_DENSITY = 1000.0
-WATER_DENSITY_UNITS = "kg m^-3"
-
-#: Filenames of the three products, in the order they are prepared.
+#: Filenames of the two products, in the order they are prepared.
 PRODUCTS = (
-    "grace_gsfc_greenland_mass_balance.nc",
     "grace_greenland_mass_balance.nc",
     "mankoff_greenland_mass_balance.nc",
 )
-
-#: Greenland, generously: the GSFC file is global.
-GREENLAND_BOUNDS = {"lon": slice(360 - 75, 360 - 10), "lat": slice(59, 84)}
-
-_WGS84 = Proj(proj="latlong", datum="WGS84")
-_EQUAL_AREA = Proj(proj="aea", lat_1=0, lat_2=90)
-_TO_EQUAL_AREA = Transformer.from_crs(_WGS84.crs, _EQUAL_AREA.crs, always_xy=True).transform
-
-
-def polygon_area(lat_0: float, lat_1: float, lon_0: float, lon_1: float) -> float:
-    """
-    Compute the area of one lat/lon cell on the ellipsoid.
-
-    The cell is projected into an Albers equal-area projection first, so a
-    cell near the pole is not counted as though it were at the equator —
-    over Greenland that is most of the signal.
-
-    Parameters
-    ----------
-    lat_0, lat_1 : float
-        Southern and northern edge of the cell, degrees north.
-    lon_0, lon_1 : float
-        Western and eastern edge of the cell, degrees east.
-
-    Returns
-    -------
-    float
-        Area in square metres.
-    """
-    polygon = Polygon([(lon_0, lat_0), (lon_1, lat_0), (lon_1, lat_1), (lon_0, lat_1)])
-    return transform(_TO_EQUAL_AREA, polygon).area
 
 
 def quantify_data_only(obj):
@@ -184,38 +135,6 @@ def quantify_data_only(obj):
         The same object with quantified data and untouched coordinates.
     """
     return obj.pint.quantify(**{name: None for name in obj.indexes})
-
-
-def cell_areas(ds: xr.Dataset) -> xr.DataArray:
-    """
-    Compute the area of every cell of a bounded lat/lon grid.
-
-    Parameters
-    ----------
-    ds : xr.Dataset
-        Dataset carrying ``lat_bounds`` and ``lon_bounds``.
-
-    Returns
-    -------
-    xr.DataArray
-        Per-cell area on the ``(lat, lon)`` grid, with ``units`` set.
-    """
-    lat_bounds, lon_bounds = xr.broadcast(ds["lat_bounds"], ds["lon_bounds"])
-    lat_bounds = lat_bounds.transpose("lat", "lon", "bounds")
-    lon_bounds = lon_bounds.transpose("lat", "lon", "bounds")
-    area = xr.apply_ufunc(
-        polygon_area,
-        lat_bounds.isel({"bounds": 0}),
-        lat_bounds.isel({"bounds": 1}),
-        lon_bounds.isel({"bounds": 0}),
-        lon_bounds.isel({"bounds": 1}),
-        vectorize=True,
-        dask="parallelized",
-        output_dtypes=[float],
-    )
-    area.name = "area"
-    area.attrs.update({"units": "m^2", "long_name": "area of grid cell"})
-    return area
 
 
 def decimal_year_to_datetime(decimal_year: float) -> datetime.datetime:
@@ -308,64 +227,6 @@ def _write(ds: xr.Dataset, path: Path) -> Path:
     return path
 
 
-def prepare_grace_gsfc(cache_path: Path, url: str = GRACE_GSFC_URL, force_overwrite: bool = False) -> Path:
-    """
-    Turn the GSFC mascon solution into per-cell mass over Greenland.
-
-    The published field is equivalent water thickness, which cannot be summed
-    over a region as it stands; multiplying by the true cell area and the
-    density of water gives a mass per cell that can.
-
-    Parameters
-    ----------
-    cache_path : pathlib.Path
-        Directory for the download and the derived product.
-    url : str, optional
-        Source of the global half-degree file.
-    force_overwrite : bool, optional
-        Rebuild even when the product is already there.
-
-    Returns
-    -------
-    pathlib.Path
-        The written product.
-    """
-    product = cache_path / "grace_gsfc_greenland_mass_balance.nc"
-    if product.exists() and not force_overwrite:
-        logger.info("Using existing %s", product)
-        return product
-
-    source = Path(download_file(url, cache_path / Path(url).name.split("?")[0], force_overwrite=force_overwrite))
-    with xr.open_dataset(source) as raw:
-        ds = raw.sel(GREENLAND_BOUNDS).load()
-
-    # "binary" is not a unit pint knows, and the mask is dimensionless anyway.
-    ds["land_mask"].attrs.update({"units": ""})
-    coord_units = {name: ds[name].attrs["units"] for name in ds.indexes if "units" in ds[name].attrs}
-    ds = quantify_data_only(ds)
-
-    area = cell_areas(ds)
-    water_density = xr.DataArray(WATER_DENSITY).pint.quantify(WATER_DENSITY_UNITS).pint.to("Gt m^-3")
-    ds["cumulative_mass_balance"] = (
-        ds["lwe_thickness"].where(ds["land_mask"]).pint.to("m") * quantify_data_only(area) * water_density
-    )
-    # Renamed before quantifying: the difference of ``ds.time`` is itself
-    # named ``time``, and quantify() would stamp seconds onto the ``time``
-    # *coordinate* as well, which no other operand shares.
-    interval = (ds.time.diff(dim="time") / np.timedelta64(1, "s")).rename("interval").pint.quantify("s").pint.to("year")
-    ds["mass_balance"] = ds["cumulative_mass_balance"].diff(dim="time") / interval
-    ds["lwe_thickness_err"] = xr.zeros_like(ds["lwe_thickness"]) + 4
-    ds["mass_balance_err"] = (
-        xr.zeros_like(ds["mass_balance"])
-        + xr.DataArray(4).pint.quantify("cm yr^-1").pint.to("m yr^-1") * quantify_data_only(area) * water_density
-    )
-
-    out = ds.pint.dequantify()
-    for name, units in coord_units.items():
-        out[name].attrs["units"] = units
-    return _write(out, product)
-
-
 def prepare_grace_tellus(
     cache_path: Path, short_name: str = GRACE_TELLUS_SHORT_NAME, force_overwrite: bool = False
 ) -> Path:
@@ -443,12 +304,12 @@ def prepare_mankoff(cache_path: Path, url: str = MANKOFF_URL, force_overwrite: b
     ds = quantify_data_only(ds)
 
     gis = ds[list(MANKOFF_GIS_VARS)].rename_vars(MANKOFF_GIS_VARS)[list(MANKOFF_GIS_VARS.values())]
-    gis = gis.expand_dims("basin")
-    gis["basin"] = ["GIS"]
+    gis = gis.expand_dims("region")
+    gis["region"] = ["GIS"]
 
-    basins = ds.rename_vars(MANKOFF_BASIN_VARS)[list(MANKOFF_BASIN_VARS.values())].rename({"region": "basin"})
-    ds = xr.concat([basins, gis], dim="basin")
-    ds["basin"] = ds["basin"].astype("<U3")
+    regions = ds.rename_vars(MANKOFF_BASIN_VARS)[list(MANKOFF_BASIN_VARS.values())]
+    ds = xr.concat([regions, gis], dim="region")
+    ds["region"] = ds["region"].astype("<U3")
 
     # The record is unevenly spaced: yearly until 1986, daily after, so the
     # running totals have to weight each step by its own length.
@@ -477,7 +338,7 @@ def prepare_observations(
     skip_errors: bool = False,
 ) -> list[Path]:
     """
-    Prepare all three observational products and place them beside a run.
+    Prepare both observational products and place them beside a run.
 
     Parameters
     ----------
@@ -499,14 +360,13 @@ def prepare_observations(
     -------
     list of pathlib.Path
         The products as they sit in the run's observations directory. Short
-        of three when ``skip_errors`` swallowed a failure.
+        of two when ``skip_errors`` swallowed a failure.
     """
     output_path = Path(output_path)
     cache_path = Path(cache_path) if cache_path is not None else output_path / "observations_cache"
     cache_path.mkdir(parents=True, exist_ok=True)
 
     builders = (
-        ("GRACE GSFC", prepare_grace_gsfc),
         ("GRACE Tellus", prepare_grace_tellus),
         ("Mankoff", prepare_mankoff),
     )

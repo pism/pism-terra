@@ -37,23 +37,9 @@ import xarray as xr
 from pism_terra.ismip7.greenland import observations as obs
 
 
-def test_cell_area_shrinks_toward_the_pole():
-    """
-    A degree of longitude is shorter at 80N than at the equator.
-
-    Summing equivalent water thickness without this is the difference
-    between a plausible Greenland mass loss and a badly wrong one.
-    """
-    equator = obs.polygon_area(0.0, 1.0, 0.0, 1.0)
-    greenland = obs.polygon_area(79.0, 80.0, 0.0, 1.0)
-    assert equator > greenland
-    # cos(79.5 deg) ~ 0.18, so roughly a fifth.
-    assert 0.1 < greenland / equator < 0.25
-
-
 def _bounded_grid(n_lat: int = 4, n_lon: int = 5) -> xr.Dataset:
     """
-    A small lat/lon dataset with bounds, like the GSFC mascon file.
+    A small lat/lon dataset with bounds and units on its coordinates.
 
     Parameters
     ----------
@@ -82,35 +68,23 @@ def _bounded_grid(n_lat: int = 4, n_lon: int = 5) -> xr.Dataset:
     )
 
 
-def test_cell_areas_covers_the_grid():
-    """
-    Every cell gets an area, carrying units.
-    """
-    ds = _bounded_grid()
-    area = obs.cell_areas(ds)
-    assert area.dims == ("lat", "lon")
-    assert area.shape == (4, 5)
-    assert area.attrs["units"] == "m^2"
-    assert float(area.min()) > 0
-
-
 def test_quantify_leaves_coordinates_alone_so_derived_arrays_align():
     """
     Quantified data must still multiply with something built by broadcast.
 
     pint-xarray >= 0.6 gives a quantified indexed coordinate a ``PintIndex``,
     while ``xr.broadcast``/``xr.apply_ufunc`` hand back a plain
-    ``PandasIndex``; mixing the two is an ``AlignmentError``. This is the
-    exact product the GSFC preparation forms.
+    ``PandasIndex``; mixing the two is an ``AlignmentError``.
     """
     ds = _bounded_grid()
     quantified = obs.quantify_data_only(ds)
     assert type(quantified.xindexes["lat"]).__name__ == "PandasIndex"
 
-    area = obs.cell_areas(quantified)
-    product = quantified["thickness"].pint.to("m") * obs.quantify_data_only(area)
+    width = xr.broadcast(ds["lat_bounds"], ds["lon_bounds"])[1].diff("bounds").squeeze("bounds", drop=True)
+    width.attrs["units"] = "m"
+    product = quantified["thickness"].pint.to("m") * obs.quantify_data_only(width)
     assert product.shape == (4, 5)
-    assert str(product.pint.units) == "meter ** 3"
+    assert str(product.pint.units) == "meter ** 2"
 
 
 def test_plain_quantify_is_what_we_are_avoiding():
@@ -207,7 +181,7 @@ def _fake_product(cache_path: Path, name: str) -> Path:
     return path
 
 
-def test_prepare_observations_places_all_three_beside_the_run(tmp_path: Path, monkeypatch):
+def test_prepare_observations_places_both_beside_the_run(tmp_path: Path, monkeypatch):
     """
     The products land in ``<output_path>/output/observations``.
 
@@ -216,18 +190,17 @@ def test_prepare_observations_places_all_three_beside_the_run(tmp_path: Path, mo
     tmp_path : pathlib.Path
         Pytest temporary directory.
     monkeypatch : pytest.MonkeyPatch
-        Used to stand in for the three downloads.
+        Used to stand in for the two downloads.
     """
     for builder, name in (
-        ("prepare_grace_gsfc", obs.PRODUCTS[0]),
-        ("prepare_grace_tellus", obs.PRODUCTS[1]),
-        ("prepare_mankoff", obs.PRODUCTS[2]),
+        ("prepare_grace_tellus", obs.PRODUCTS[0]),
+        ("prepare_mankoff", obs.PRODUCTS[1]),
     ):
         monkeypatch.setattr(obs, builder, lambda cache_path, name=name, **_kwargs: _fake_product(cache_path, name))
 
     placed = obs.prepare_observations(tmp_path / "run", cache_path=tmp_path / "cache")
     destination = tmp_path / "run" / "output" / "observations"
-    assert [p.parent for p in placed] == [destination] * 3
+    assert [p.parent for p in placed] == [destination] * 2
     assert sorted(p.name for p in destination.iterdir()) == sorted(obs.PRODUCTS)
     # A copy, not a move: the cache is shared and must survive.
     assert sorted(p.name for p in (tmp_path / "cache").iterdir()) == sorted(obs.PRODUCTS)
@@ -245,7 +218,7 @@ def test_prepare_observations_skips_a_failure_only_when_asked(tmp_path: Path, mo
     tmp_path : pathlib.Path
         Pytest temporary directory.
     monkeypatch : pytest.MonkeyPatch
-        Used to stand in for the three downloads.
+        Used to stand in for the two downloads.
     """
 
     def _boom(cache_path, **_kwargs):
@@ -261,12 +234,11 @@ def test_prepare_observations_skips_a_failure_only_when_asked(tmp_path: Path, mo
         """
         raise RuntimeError("no Earthdata login")
 
-    monkeypatch.setattr(obs, "prepare_grace_gsfc", lambda cache_path, **_k: _fake_product(cache_path, obs.PRODUCTS[0]))
     monkeypatch.setattr(obs, "prepare_grace_tellus", _boom)
-    monkeypatch.setattr(obs, "prepare_mankoff", lambda cache_path, **_k: _fake_product(cache_path, obs.PRODUCTS[2]))
+    monkeypatch.setattr(obs, "prepare_mankoff", lambda cache_path, **_k: _fake_product(cache_path, obs.PRODUCTS[1]))
 
     placed = obs.prepare_observations(tmp_path / "run", cache_path=tmp_path / "cache", skip_errors=True)
-    assert sorted(p.name for p in placed) == sorted([obs.PRODUCTS[0], obs.PRODUCTS[2]])
+    assert [p.name for p in placed] == [obs.PRODUCTS[1]]
 
     with pytest.raises(RuntimeError, match="no Earthdata login"):
         obs.prepare_observations(tmp_path / "run2", cache_path=tmp_path / "cache2")
