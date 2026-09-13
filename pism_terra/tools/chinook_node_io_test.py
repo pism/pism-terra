@@ -21,7 +21,15 @@ the same job to named nodes and times, per node:
    two slow variants share and the fast one lacks, so the format variants
    separate HDF5-on-Lustre from the writer. ``async_nolock`` and
    ``sync_nolock`` export ``HDF5_USE_FILE_LOCKING=FALSE`` before the
-   forward leg, the usual remedy for HDF5 stalls on Lustre.
+   forward leg, the usual remedy for HDF5 stalls on Lustre. ``async_nc4s``
+   keeps the production writer and puts PISM's own files in serial
+   NetCDF-4: the configuration the glacier runs moved to.
+
+Works for the glacier scripts (one node, ``pism_async_writer``) and the
+ISMIP7 ice-sheet scripts (two nodes, ``pism_ismip7_writer``, per-variable
+spatial files): the writer launch, task counts and partition are read from
+the production script. Nodes are given per job; join the nodes of one
+multi-node job with ``+`` (``--nodes n31+n34,n112+n115``).
 
 Usage on chinook::
 
@@ -43,9 +51,14 @@ import subprocess
 import sys
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
-VARIANTS = ("async", "sync", "noout", "sync_nc3", "sync_nc4s", "async_nc3", "async_nolock", "sync_nolock")
+VARIANTS = ("async", "sync", "noout", "sync_nc3", "sync_nc4s", "async_nc3", "async_nc4s", "async_nolock", "sync_nolock")
+ASYNC_VARIANTS = ("async", "async_nc3", "async_nc4s", "async_nolock")
+WRITER_RE = re.compile(
+    r"^(mpiexec -n 1\s+apptainer run \$\{container\} \S+.*?) : -n (\S+) apptainer run \$\{container\} pism\b"
+)
 
 BENCH_NC = '''"""Append records to a netCDF-4 file the way the async writer does."""
 import sys
@@ -69,6 +82,44 @@ for k in range(n_records):
 nc.close()
 print(f"IOTEST ncbench_s {time.time() - t0:.2f}")
 '''
+
+
+def sbatch_options(text: str) -> dict[str, str]:
+    """
+    Read the ``#SBATCH`` options of a run script.
+
+    Parameters
+    ----------
+    text : str
+        Script contents.
+
+    Returns
+    -------
+    dict
+        ``{"ntasks": "96", "tasks-per-node": "48", "partition": "t2small", ...}``.
+    """
+    options = {}
+    for m in re.finditer(r"^#SBATCH --([a-z-]+)=(\S+)", text, re.M):
+        options[m.group(1)] = m.group(2).strip('"')
+    return options
+
+
+def start_date(command: str) -> date | None:
+    """
+    Read ``-time.start`` from a main-leg command.
+
+    Parameters
+    ----------
+    command : str
+        Main-leg command.
+
+    Returns
+    -------
+    datetime.date or None
+        The start date, or ``None`` when the flag is absent.
+    """
+    m = re.search(r"-time\.start (\d{4})-(\d{2})-(\d{2})", command)
+    return date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 def split_run_script(text: str) -> tuple[str, str]:
@@ -100,9 +151,9 @@ def split_run_script(text: str) -> tuple[str, str]:
     except StopIteration as err:
         raise ValueError("no 'pismtasks=' line in the run script") from err
     env = "\n".join(l for l in lines[1 : end_env + 1] if not l.startswith("#SBATCH"))
-    starts = [i for i, l in enumerate(lines) if l.startswith("mpiexec") and "pism_async_writer" in l]
+    starts = [i for i, l in enumerate(lines) if l.startswith("mpiexec") and WRITER_RE.match(l)]
     if not starts:
-        raise ValueError("no 'mpiexec ... pism_async_writer' main leg in the run script")
+        raise ValueError("no 'mpiexec -n 1 ... <writer> : -n ... pism' main leg in the run script")
     start = starts[-1]
     end = start
     while lines[end].rstrip().endswith("\\"):
@@ -137,17 +188,24 @@ def variant_command(command: str, variant: str, end: str, outputs: dict[str, Pat
     """
     if variant not in VARIANTS:
         raise ValueError(f"variant must be one of {VARIANTS}, got {variant!r}")
+    m = WRITER_RE.match(command)
+    if m is None:
+        raise ValueError("the main leg does not launch a writer process alongside pism")
+    writer_prefix, tasks = m.group(1), m.group(2)
     cmd = re.sub(r"-time\.end \S+", f"-time.end {end}", command)
     cmd = re.sub(r"-output\.file \S+", f"-output.file {outputs['state']}", cmd)
     cmd = re.sub(r"-output\.scalar\.file \S+", f"-output.scalar.file {outputs['scalar']}", cmd)
-    cmd = re.sub(r"-output\.spatial\.file \S+", f"-output.spatial.file {outputs['spatial']}", cmd)
+    spatial = str(outputs["spatial"])
+    if re.search(r"-output\.spatial\.file \S*\{var\}", cmd):
+        spatial = spatial.replace(".nc", "_{var}.nc")
+    cmd = re.sub(r"-output\.spatial\.file \S+", f"-output.spatial.file {spatial}", cmd)
     cmd = re.sub(r"\s*-output\.checkpoint\.interval \S+\s*\\\n", "\n", cmd)
-    if variant not in ("async", "async_nc3", "async_nolock"):
-        cmd = re.sub(r"^mpiexec -n 1\s+apptainer run \$\{container\} pism_async_writer : -n", "mpiexec -n", cmd)
+    if variant not in ASYNC_VARIANTS:
+        cmd = cmd.replace(f"{writer_prefix} : -n {tasks}", f"mpiexec -n {tasks}", 1)
         cmd = cmd.replace(" -output.asynchronous", "")
     if variant in ("sync_nc3", "async_nc3"):
         cmd = re.sub(r"-output\.format \S+", "-output.format netcdf3", cmd)
-    if variant == "sync_nc4s":
+    if variant in ("sync_nc4s", "async_nc4s"):
         cmd = re.sub(r"-output\.format \S+", "-output.format netcdf4_serial", cmd)
     if variant == "noout":
         cmd = re.sub(r"^\s*-output\.spatial\.\S+ \S+\s*\\\n", "", cmd, flags=re.M)
@@ -155,7 +213,17 @@ def variant_command(command: str, variant: str, end: str, outputs: dict[str, Pat
 
 
 def job_script(
-    env: str, command: str, *, node: str, variant: str, test_dir: Path, partition: str, ntasks: int, walltime: str
+    env: str,
+    command: str,
+    *,
+    node: str,
+    variant: str,
+    test_dir: Path,
+    partition: str,
+    ntasks: int,
+    tasks_per_node: int,
+    walltime: str,
+    bench_grid: tuple[int, int] = (112, 84),
 ) -> str:
     """
     Render one test job for a node and a variant.
@@ -167,7 +235,7 @@ def job_script(
     command : str
         Main-leg command already adapted by :func:`variant_command`.
     node : str
-        Node the job is pinned to with ``--nodelist``.
+        Node(s) the job is pinned to with ``--nodelist``; several nodes joined by ``+``.
     variant : str
         Output variant, used in file and job names.
     test_dir : Path
@@ -175,23 +243,28 @@ def job_script(
     partition : str
         Slurm partition.
     ntasks : int
-        Tasks per job (one node).
+        Tasks per job.
+    tasks_per_node : int
+        Tasks per node.
     walltime : str
         Slurm time limit.
+    bench_grid : tuple of int, optional
+        ``(ny, nx)`` of the netCDF append benchmark.
 
     Returns
     -------
     str
         The sbatch script.
     """
-    name = f"iotest_{node}_{variant}"
+    name = f"iotest_{node.replace('+', '_')}_{variant}"
+    nodelist = node.replace("+", ",")
     out = test_dir / "output"
     nolock = "export HDF5_USE_FILE_LOCKING=FALSE\n" if variant.endswith("_nolock") else ""
     return f"""#!/bin/sh
 #SBATCH --partition={partition}
-#SBATCH --nodelist={node}
+#SBATCH --nodelist={nodelist}
 #SBATCH --ntasks={ntasks}
-#SBATCH --tasks-per-node={ntasks}
+#SBATCH --tasks-per-node={tasks_per_node}
 #SBATCH --time={walltime}
 #SBATCH --job-name={name}
 #SBATCH --output={test_dir}/logs/{name}.%j
@@ -217,8 +290,8 @@ t0=$(date +%s.%N); dd if=/dev/zero of={out}/dd_{name}_$SLURM_JOB_ID.bin bs=1M co
 rm -f {out}/dd_{name}_$SLURM_JOB_ID.bin
 dd_s=$(secs $t0 $t1); echo "IOTEST dd_512MB_s $dd_s"
 
-# 3. netCDF append benchmark shaped like the spatial output (48 records, 9 variables)
-ncbench=$(apptainer run ${{container}} python3 {test_dir}/bench_nc.py {out}/ncbench_{name}_$SLURM_JOB_ID.nc 48 112 84 | tee -a /dev/stderr | awk '/IOTEST ncbench_s/ {{print $3}}')
+# 3. netCDF append benchmark: 48 records of 9 variables on a {bench_grid[0]} x {bench_grid[1]} grid
+ncbench=$(apptainer run ${{container}} python3 {test_dir}/bench_nc.py {out}/ncbench_{name}_$SLURM_JOB_ID.nc 48 {bench_grid[0]} {bench_grid[1]} | tee -a /dev/stderr | awk '/IOTEST ncbench_s/ {{print $3}}')
 rm -f {out}/ncbench_{name}_$SLURM_JOB_ID.nc
 
 # 4. the forward leg, variant {variant}
@@ -248,6 +321,21 @@ def generate(args) -> int:
     """
     text = Path(args.RUN_SCRIPT).read_text(encoding="utf-8")
     env, command = split_run_script(text)
+    header = sbatch_options(text)
+    ntasks = args.ntasks or int(header.get("ntasks", 24))
+    tasks_per_node = args.tasks_per_node or int(header.get("tasks-per-node", ntasks))
+    partition = args.partition or header.get("partition", "t2small")
+    if args.end:
+        end = args.end
+    else:
+        start = start_date(command)
+        if start is None:
+            raise ValueError("the main leg has no -time.start; pass --end")
+        end = start.replace(year=start.year + args.years).isoformat()
+    print(
+        f"forward leg {start_date(command)} .. {end}, {ntasks} tasks, {tasks_per_node} per node, partition {partition}",
+        file=sys.stderr,
+    )
     test_dir = Path(args.test_dir).expanduser().resolve()
     for sub in ("logs", "output", "scripts"):
         (test_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -260,9 +348,9 @@ def generate(args) -> int:
     scripts = []
     for node in args.nodes.split(","):
         for variant in args.variants.split(","):
-            name = f"iotest_{node}_{variant}"
+            name = f"iotest_{node.replace('+', '_')}_{variant}"
             outputs = {k: test_dir / "output" / f"{name}_{k}.nc" for k in ("state", "scalar", "spatial")}
-            cmd = variant_command(command, variant, args.end, outputs)
+            cmd = variant_command(command, variant, end, outputs)
             script = test_dir / "scripts" / f"{name}.sh"
             script.write_text(
                 job_script(
@@ -271,9 +359,11 @@ def generate(args) -> int:
                     node=node,
                     variant=variant,
                     test_dir=test_dir,
-                    partition=args.partition,
-                    ntasks=args.ntasks,
+                    partition=partition,
+                    ntasks=ntasks,
+                    tasks_per_node=tasks_per_node,
                     walltime=args.walltime,
+                    bench_grid=args.bench_grid,
                 ),
                 encoding="utf-8",
             )
@@ -362,14 +452,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     gen = sub.add_parser("generate", help="Write (and optionally submit) one test job per node and variant.")
     gen.add_argument("RUN_SCRIPT", help="Production submit_*.sh whose environment and main leg are reused.")
-    gen.add_argument("--nodes", required=True, help="Comma-separated node names, e.g. n31,n34,n112,n115.")
+    gen.add_argument(
+        "--nodes",
+        required=True,
+        help="Comma-separated node names, one entry per job; join the nodes of a multi-node job with '+', "
+        "e.g. n31,n34 or n31+n34,n112+n115.",
+    )
     gen.add_argument(
         "--variants", default="async,sync,noout", help="Comma-separated subset of " + ",".join(VARIANTS) + "."
     )
     gen.add_argument("--test-dir", required=True, help="Directory for scripts, logs, outputs and results.csv.")
-    gen.add_argument("--end", default="1990-01-01", help="time.end of the shortened forward leg.")
-    gen.add_argument("--partition", default="t2small", help="Slurm partition.")
-    gen.add_argument("--ntasks", type=int, default=24, help="Tasks per job.")
+    gen.add_argument(
+        "--years", type=int, default=4, help="Length of the shortened forward leg from the script's time.start."
+    )
+    gen.add_argument("--end", default=None, help="Explicit time.end of the shortened forward leg; overrides --years.")
+    gen.add_argument("--partition", default=None, help="Slurm partition; defaults to the run script's.")
+    gen.add_argument("--ntasks", type=int, default=None, help="Tasks per job; defaults to the run script's.")
+    gen.add_argument("--tasks-per-node", type=int, default=None, help="Tasks per node; defaults to the run script's.")
+    gen.add_argument(
+        "--bench-grid",
+        type=lambda v: tuple(int(x) for x in v.split(",")),
+        default=(112, 84),
+        help="ny,nx of the netCDF append benchmark; use the model grid's size for a realistic record.",
+    )
     gen.add_argument("--walltime", default="03:00:00", help="Slurm time limit per job.")
     gen.add_argument("--submit", action="store_true", default=False, help="Run sbatch on each script.")
     gen.set_defaults(func=generate)
