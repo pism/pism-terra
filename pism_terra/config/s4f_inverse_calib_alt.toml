@@ -56,7 +56,7 @@ velocity = "its_live"
 
 'output.checkpoint.interval' = 24
 'output.compression_level'= 2
-'output.format' = "netcdf4_parallel"
+'output.format' = "netcdf4_serial"
 'output.scalar.times' = "daily"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
