@@ -27,6 +27,7 @@ import json
 import re
 from collections import OrderedDict
 from collections.abc import Hashable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import cftime
@@ -321,7 +322,10 @@ def preprocess_netcdf(
     sheet runs (``spatial_GIS_g1200m_id_HIRHAM5-ERA5_YMM_1990_2019_uq_0_...nc``) and
     GCM-forced runs (``..._id_gcm_CESM2_exp_pdSST-futArcSIC_...nc``) alike.
 
-    Patterns are matched against the path the dataset was opened from. `rgi_regexp`
+    Patterns are matched against the name of the file the dataset was opened from
+    first and, except for `uq_regexp`, against its full path next (the ISMIP7
+    submission tree keeps the counter in a directory); a project directory called
+    ``..._uq_50`` therefore cannot masquerade as a member id. `rgi_regexp`
     additionally falls back to the ``command`` attribute, where the RGI identifier
     shows up in the input paths of runs whose output file names do not carry it.
 
@@ -379,6 +383,12 @@ def preprocess_netcdf(
     """
 
     source = str(ds.encoding.get("source", ""))
+    # The file name is searched first. The member id comes from the name only:
+    # a project directory such as ``..._pdd_uq_50/`` would otherwise stamp
+    # ``uq_id = 50`` on every file. The other ids fall back to the full path,
+    # which the ISMIP7 submission tree relies on (``.../CORE/C008/<file>``),
+    # and the RGI id also to the ``command`` attribute.
+    name = Path(source).name if source else ""
     command = str(ds.attrs.get("command", ""))
 
     expand_dims: list[str] = []
@@ -394,9 +404,9 @@ def preprocess_netcdf(
     # Optional identifiers: a file name that does not carry one simply does not get
     # the dimension, so glacier, ice sheet and GCM-forced runs share one code path.
     for dim, regexp, sources in (
-        (rgi_dim, rgi_regexp, (source, command)),
-        (gcm_dim, gcm_regexp, (source,)),
-        (uq_dim, uq_regexp, (source,)),
+        (rgi_dim, rgi_regexp, (name, source, command)),
+        (gcm_dim, gcm_regexp, (name, source)),
+        (uq_dim, uq_regexp, (name,)),
     ):
         if dim is None or regexp is None:
             continue
@@ -405,7 +415,7 @@ def preprocess_netcdf(
             expand_dims.append(dim)
             expand_coords[dim] = [value]
 
-    m_exp_id = _search_id(exp_regexp, source)
+    m_exp_id = _search_id(exp_regexp, name, source)
     if m_exp_id is None:
         raise ValueError(f"{exp_regexp!r} does not match {source!r}")
     expand_dims.append(exp_dim)

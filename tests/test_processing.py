@@ -575,6 +575,34 @@ def test_preprocess_ids_from_filename(tmp_path, name, expected):
     assert {d: str(ds[d].values[0]) for d in ("rgi_id", "gcm_id", "uq_id", "exp_id") if d in ds.dims} == expected
 
 
+def test_preprocess_ids_ignore_the_directory_names(tmp_path):
+    """
+    A project directory named ``..._uq_50`` must not become the member id.
+
+    The ids are read from the file name only; every member of the ensemble
+    in such a project used to come out as ``uq_id = 50``, and opening the
+    files together then failed with "Could not find any dimension
+    coordinates to use to order the Dataset objects for concatenation".
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    project = (
+        tmp_path / "2026_09_s4f_historical_inv_baseline_era5_pdd_uq_50" / "RGI2000-v7.0-C-01-03383" / "output" / "dh"
+    )
+    project.mkdir(parents=True)
+    ids = []
+    for member in ("0", "1", "3"):
+        path = _write_run(project, f"dh_RGI2000-v7.0-C-01-03383_id_0_uq_{member}_2000-01-01_2020-01-01.nc")
+        ds = preprocess_netcdf(xr.open_dataset(path), process_config=False)
+        ids.append(str(ds["uq_id"].values[0]))
+        assert str(ds["exp_id"].values[0]) == "0"
+        assert str(ds["rgi_id"].values[0]) == "RGI2000-v7.0-C-01-03383"
+    assert ids == ["0", "1", "3"]
+
+
 def test_preprocess_rgi_id_falls_back_to_command(tmp_path):
     """
     Check the RGI identifier is taken from ``command`` when the file name lacks it.
