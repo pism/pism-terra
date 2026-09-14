@@ -187,7 +187,10 @@ def test_report_runs_all_tools_and_renders_pages(project: Path, monkeypatch: pyt
     assert "<table" not in sens  # figures only; the index tables stay in the CSV files
     importance = (out / "importance_sampling.html").read_text(encoding="utf-8")
     assert f"importance_sampling/{RGI}/importance_usurf_ff_3.png" in importance
-    assert "Summary" in importance and importance.count("<table") == 1  # the summary, not the member tables
+    assert "Summary" in importance
+    assert "How the joint posterior is formed" in importance and "<code>blocks</code>" in importance
+    assert "independent blocks" in importance
+    assert importance.count("<table") == 2  # the summary and the note's per-glacier block table, no member tables
     glaciers = (out / "usgs_glaciers.html").read_text(encoding="utf-8")
     assert f"usgs_glaciers/{RGI}/usgs_benchmark_Gulkana_{RGI}.png" in glaciers
     stakes = (out / "usgs_stakes.html").read_text(encoding="utf-8")

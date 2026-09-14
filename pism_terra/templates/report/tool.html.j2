@@ -3,6 +3,9 @@
 <h1>{{ page_title }}</h1>
 <p class="lead">{{ blurb }}</p>
 <p class="meta">Command line equivalent: <code>{{ command }}</code>{% if elapsed %} &middot; ran in {{ elapsed }}{% endif %}</p>
+{% for note in notes %}
+<div class="admonition"><div class="title">{{ note.title }}</div>{{ note.html | safe }}</div>
+{% endfor %}
 {% if error %}
 <div class="admonition error"><div class="title">This step failed</div><pre>{{ error }}</pre></div>
 {% elif status == "skipped" %}

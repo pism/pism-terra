@@ -58,7 +58,8 @@ TOOLS: tuple[dict[str, str], ...] = (
         "href": "importance_sampling.html",
         "label": "Importance sampling",
         "blurb": "Posterior weights, effective sample sizes and parameter histograms of the UQ ensemble "
-        "against the observed elevation change, per glacier and jointly.",
+        "against the observed elevation change, per glacier and jointly over all glaciers (the members are "
+        "shared parameter draws, so their per-glacier log-likelihoods add up; see the note below).",
     },
     {
         "key": "sensitivity",
@@ -177,6 +178,76 @@ def _glacier_sections(output_dir: Path, base: Path, table_specs: Sequence[tuple[
     return sections
 
 
+REDUCTION_TEXT = {
+    "blocks": "the per-cell log-likelihood is <em>summed</em> and divided by the square of the block side, i.e. "
+    "each block of decorrelation-length side counts as one independent observation. A glacier therefore enters "
+    "the joint posterior with a weight proportional to its number of independent blocks: large glaciers with "
+    "short-range correlation count more than small ones.",
+    "mean": "the per-cell log-likelihood is <em>averaged</em> over the cells, so every glacier enters the joint "
+    "posterior with the same weight whatever its size, and the posterior is strongly tempered.",
+    "sum": "the per-cell log-likelihood is <em>summed</em> over all cells, so every cell counts as an independent "
+    "observation and a glacier's weight in the joint posterior is proportional to its cell count.",
+}
+
+
+def joint_posterior_note(summary_csv: Path) -> dict[str, str] | None:
+    """
+    Explain how the joint posterior weighs the glaciers, with this run's numbers.
+
+    Parameters
+    ----------
+    summary_csv : Path
+        ``importance_sampling_summary.csv`` of the run.
+
+    Returns
+    -------
+    dict or None
+        ``{"title", "html"}`` for the page, or ``None`` when the summary is missing.
+    """
+    if not summary_csv.is_file():
+        return None
+    try:
+        df = pd.read_csv(summary_csv)
+    except pd.errors.EmptyDataError:
+        return None
+    glaciers = df[df["rgi_id"] != "joint"].drop_duplicates("rgi_id")
+    reduction = str(glaciers["reduction"].iloc[0]) if "reduction" in glaciers and len(glaciers) else "blocks"
+    html = [
+        "<p>Each ensemble member is one set of parameter values shared by every glacier, so the glaciers' "
+        "evidence about a member adds up: for every member that finished on <em>all</em> glaciers, the "
+        "per-glacier log-likelihoods are summed, and the sums are turned into weights, counts and an "
+        "effective sample size exactly as for a single glacier. The fudge factor scales the observed "
+        "uncertainty before the likelihood, per glacier and jointly alike.</p>",
+        f"<p>How much a glacier counts in that sum is fixed by the likelihood reduction, here "
+        f"<code>{reduction}</code>: {REDUCTION_TEXT.get(reduction, '')}</p>",
+    ]
+    cols = [c for c in ("n_valid_cells", "block_size", "decorrelation_length") if c in glaciers]
+    if cols and len(glaciers):
+        rows = []
+        for _, r in glaciers.iterrows():
+            n_valid = int(r["n_valid_cells"]) if pd.notna(r.get("n_valid_cells")) else None
+            block = int(r["block_size"]) if pd.notna(r.get("block_size")) else None
+            blocks = round(n_valid / block**2) if n_valid and block else None
+            length = f"{r['decorrelation_length'] / 1e3:.1f} km" if pd.notna(r.get("decorrelation_length")) else ""
+            rows.append(
+                f"<tr><td>{r['rgi_id']}</td><td>{n_valid if n_valid is not None else ''}</td><td>{length}</td>"
+                f"<td>{block if block is not None else ''}</td><td>{blocks if blocks is not None else ''}</td></tr>"
+            )
+        html.append(
+            '<div class="table-wrap"><table class="table"><thead><tr><th>glacier</th><th>cells with observations</th>'
+            "<th>decorrelation length</th><th>block side (cells)</th><th>independent blocks</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table></div>"
+        )
+        if reduction == "blocks":
+            html.append(
+                "<p>With the <code>blocks</code> reduction the last column is, up to the misfit itself, each "
+                "glacier's weight in the joint posterior.</p>"
+            )
+    if not (df["rgi_id"] == "joint").any():
+        html.append("<p>No joint posterior was formed: it needs at least two glaciers with a common member.</p>")
+    return {"title": "How the joint posterior is formed", "html": "".join(html)}
+
+
 def collect_importance(output_dir: Path, base: Path) -> dict[str, Any]:
     """
     Gather the importance-sampling outputs for its page.
@@ -201,7 +272,13 @@ def collect_importance(output_dir: Path, base: Path) -> dict[str, Any]:
     # The per-member tables run to hundreds of rows per glacier; they stay in the
     # CSV files next to the figures rather than on the page.
     glaciers = _glacier_sections(output_dir, base)
-    return {"tables": tables, "sections": sections + glaciers, "n_glaciers": len(glaciers)}
+    note = joint_posterior_note(output_dir / "importance_sampling_summary.csv")
+    return {
+        "tables": tables,
+        "sections": sections + glaciers,
+        "n_glaciers": len(glaciers),
+        "notes": [note] if note else [],
+    }
 
 
 def collect_usgs_glaciers(output_dir: Path, base: Path) -> dict[str, Any]:
@@ -552,6 +629,7 @@ def render(
                 output_dir=tool["subdir"],
                 tables=collected["tables"],
                 sections=collected["sections"],
+                notes=collected.get("notes", []),
             ),
             encoding="utf-8",
         )
