@@ -197,15 +197,10 @@ def collect_importance(output_dir: Path, base: Path) -> dict[str, Any]:
     sections = []
     joint = output_dir / "joint"
     if joint.is_dir():
-        joint_tables = [
-            t
-            for csv in sorted(joint.glob("importance_joint_*.csv"))
-            if (t := _table(csv, csv.stem, f"joint-{csv.stem}", index=True))
-        ]
-        sections.append(
-            {"id": "joint", "label": "Joint posterior", "figures": _figures(joint, base), "tables": joint_tables}
-        )
-    glaciers = _glacier_sections(output_dir, base, [("importance_*.csv", "Members")])
+        sections.append({"id": "joint", "label": "Joint posterior", "figures": _figures(joint, base), "tables": []})
+    # The per-member tables run to hundreds of rows per glacier; they stay in the
+    # CSV files next to the figures rather than on the page.
+    glaciers = _glacier_sections(output_dir, base)
     return {"tables": tables, "sections": sections + glaciers, "n_glaciers": len(glaciers)}
 
 
@@ -280,12 +275,13 @@ def collect_sensitivity(output_dir: Path, base: Path) -> dict[str, Any]:
     Returns
     -------
     dict
-        ``tables`` (summary), ``sections`` per complex with its figures and
-        per-kind tables, and ``n_glaciers``.
+        ``tables`` (none), ``sections`` per complex with its figures, and
+        ``n_glaciers``.
     """
-    tables = [t for t in (_table(output_dir / "sensitivity_indices_summary.csv", "Summary", "summary"),) if t]
-    glaciers = _glacier_sections(output_dir, base, [("sensitivity_*.csv", "Indices per glacier and parameter")])
-    return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers)}
+    # Figures only: the summary and per-glacier index tables run to hundreds of
+    # rows and stay in the CSV files next to the figures.
+    glaciers = _glacier_sections(output_dir, base)
+    return {"tables": [], "sections": glaciers, "n_glaciers": len(glaciers)}
 
 
 COLLECTORS = {
