@@ -43,9 +43,22 @@ runnable as `python -m <module>`. The full list lives in
     `--reduction blocks|mean|sum` sets how the likelihood collapses the
     cells (one independent sample per decorrelation-length block by default)
     and `--acf-threshold` the autocorrelation level that sets the block side.
+* - `pism-glacier-sensitivity-indices`
+  - First-order Sobol and Borgonovo delta sensitivity indices of a scalar
+    time series (`--target`, default `ice_mass`) to the UQ parameters, for
+    every glacier complex of a project with processed `scalar_C_*` and
+    `scalar_G_*` files: one set per complex and one per glacier of the
+    complex, at every instant of the yearly-averaged series, with bootstrap
+    confidence bands, computed on a process pool. Outputs go to `<rgi_id>/`
+    (NetCDF, CSV, one figure per glacier) plus a top-level summary.
+* - `pism-sensitivity-indices`
+  - The same analysis for one set of processed scalar files given on the
+    command line, with the run's `uq.csv` found above the files or given
+    with `--uq-csv`.
 * - `pism-s4f-report`
-  - Run `pism-glacier-importance-sampling`, `pism-glacier-usgs-benchmark-glaciers`
-    and `pism-glacier-usgs-benchmark-stakes` on a project, each into a
+  - Run `pism-glacier-importance-sampling`, `pism-glacier-sensitivity-indices`,
+    `pism-glacier-usgs-benchmark-glaciers` and `pism-glacier-usgs-benchmark-stakes`
+    on a project, each into a
     sub-directory of `--output-path`, and write an HTML report in the layout
     of these docs with the Snow4Flow logo: `index.html` with one card per
     tool and a page per tool with its summary tables and every glacier's

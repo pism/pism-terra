@@ -67,6 +67,45 @@ def fixture_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _stub_sensitivity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Replace the sensitivity pipeline by one that writes a figure and a summary.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Fixture.
+    """
+
+    def fake(run_dir, *, output_path, **kwargs):  # pylint: disable=unused-argument
+        """
+        Write one figure per complex and the summary table.
+
+        Parameters
+        ----------
+        run_dir : Path
+            Project directory, ignored.
+        output_path : Path
+            Where the outputs go.
+        **kwargs : dict
+            Pipeline options, ignored.
+
+        Returns
+        -------
+        pandas.DataFrame
+            An empty summary.
+        """
+        glacier = Path(output_path) / RGI
+        glacier.mkdir(parents=True, exist_ok=True)
+        (glacier / f"sensitivity_C_ice_mass_{RGI}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        pd.DataFrame({"rgi_id": [RGI], "kind": ["C"], "parameter": ["p"], "S1_mean": [0.5]}).to_csv(
+            Path(output_path) / "sensitivity_indices_summary.csv", index=False
+        )
+        return pd.DataFrame()
+
+    monkeypatch.setattr(s4f_report.sensitivity_indices, "run_pipeline", fake)
+
+
 def _stub_usgs(module, monkeypatch: pytest.MonkeyPatch, prefix: str, fail: bool = False) -> None:
     """
     Replace a USGS tool's pipeline by one that writes a figure and a skill table.
@@ -125,6 +164,7 @@ def test_report_runs_all_tools_and_renders_pages(project: Path, monkeypatch: pyt
     monkeypatch : pytest.MonkeyPatch
         Fixture.
     """
+    _stub_sensitivity(monkeypatch)
     _stub_usgs(s4f_report.usgs_benchmark_glaciers, monkeypatch, "usgs_benchmark")
     _stub_usgs(s4f_report.usgs_benchmark_stakes, monkeypatch, "usgs_benchmark_stakes", fail=True)
     out = project / "report"
@@ -133,14 +173,17 @@ def test_report_runs_all_tools_and_renders_pages(project: Path, monkeypatch: pyt
     assert [p.name for p in pages] == [
         "index.html",
         "importance_sampling.html",
+        "sensitivity_indices.html",
         "usgs_glaciers.html",
         "usgs_stakes.html",
     ]
     index = (out / "index.html").read_text(encoding="utf-8")
     assert 'src="_static/logo.svg"' in index and (out / "_static" / "logo.svg").is_file()
     assert (out / "_static" / "report.css").is_file()
-    assert index.count('class="status ok"') == 2 and 'class="status failed"' in index
+    assert index.count('class="status ok"') == 3 and 'class="status failed"' in index
     assert "no scalar files" in index
+    sens = (out / "sensitivity_indices.html").read_text(encoding="utf-8")
+    assert f"sensitivity_indices/{RGI}/sensitivity_C_ice_mass_{RGI}.png" in sens and "Summary" in sens
     importance = (out / "importance_sampling.html").read_text(encoding="utf-8")
     assert f"importance_sampling/{RGI}/importance_usurf_ff_3.png" in importance
     assert "Summary" in importance and "<table" in importance
@@ -161,6 +204,7 @@ def test_no_run_renders_existing_outputs_and_skip_marks_tools(project: Path, mon
     monkeypatch : pytest.MonkeyPatch
         Fixture.
     """
+    _stub_sensitivity(monkeypatch)
     _stub_usgs(s4f_report.usgs_benchmark_glaciers, monkeypatch, "usgs_benchmark")
     _stub_usgs(s4f_report.usgs_benchmark_stakes, monkeypatch, "usgs_benchmark_stakes")
     out = project / "report"
@@ -172,5 +216,5 @@ def test_no_run_renders_existing_outputs_and_skip_marks_tools(project: Path, mon
 
     s4f_report.main([str(project), "--output-path", str(out), "--no-run"])
     index = (out / "index.html").read_text(encoding="utf-8")
-    assert index.count('class="status ok"') == 2 and 'class="status skipped"' in index
+    assert index.count('class="status ok"') == 3 and 'class="status skipped"' in index
     assert s4f_report.cli([str(project), "--output-path", str(out), "--no-run"]) == 0

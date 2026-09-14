@@ -36,6 +36,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from pism_terra.glacier import (
     importance_sampling,
+    sensitivity_indices,
     usgs_benchmark_glaciers,
     usgs_benchmark_stakes,
 )
@@ -58,6 +59,14 @@ TOOLS: tuple[dict[str, str], ...] = (
         "label": "Importance sampling",
         "blurb": "Posterior weights, effective sample sizes and parameter histograms of the UQ ensemble "
         "against the observed elevation change, per glacier and jointly.",
+    },
+    {
+        "key": "sensitivity",
+        "subdir": "sensitivity_indices",
+        "href": "sensitivity_indices.html",
+        "label": "Sensitivity indices",
+        "blurb": "First-order Sobol and Borgonovo delta indices of the yearly ice mass (or another target) to the "
+        "UQ parameters, per complex and per glacier, with bootstrap confidence bands.",
     },
     {
         "key": "glaciers",
@@ -257,7 +266,34 @@ def collect_usgs_stakes(output_dir: Path, base: Path) -> dict[str, Any]:
     return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers)}
 
 
-COLLECTORS = {"importance": collect_importance, "glaciers": collect_usgs_glaciers, "stakes": collect_usgs_stakes}
+def collect_sensitivity(output_dir: Path, base: Path) -> dict[str, Any]:
+    """
+    Gather the sensitivity-index outputs for their page.
+
+    Parameters
+    ----------
+    output_dir : Path
+        ``<report>/sensitivity_indices``.
+    base : Path
+        Report root.
+
+    Returns
+    -------
+    dict
+        ``tables`` (summary), ``sections`` per complex with its figures and
+        per-kind tables, and ``n_glaciers``.
+    """
+    tables = [t for t in (_table(output_dir / "sensitivity_indices_summary.csv", "Summary", "summary"),) if t]
+    glaciers = _glacier_sections(output_dir, base, [("sensitivity_*.csv", "Indices per glacier and parameter")])
+    return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers)}
+
+
+COLLECTORS = {
+    "importance": collect_importance,
+    "sensitivity": collect_sensitivity,
+    "glaciers": collect_usgs_glaciers,
+    "stakes": collect_usgs_stakes,
+}
 
 
 def run_tools(
@@ -273,6 +309,7 @@ def run_tools(
     bootstrap: bool,
     n_jobs: int,
     plot_years: tuple[float | None, float | None],
+    target: str = sensitivity_indices.DEFAULT_TARGET,
 ) -> dict[str, dict[str, Any]]:
     """
     Run each tool into its sub-directory, recording status, elapsed time and errors.
@@ -301,6 +338,8 @@ def run_tools(
         Worker processes for the USGS tools.
     plot_years : tuple
         Plot limits for the USGS tools.
+    target : str, optional
+        Variable the sensitivity indices are computed for.
 
     Returns
     -------
@@ -326,6 +365,7 @@ def run_tools(
             bootstrap=bootstrap,
             n_jobs=n_jobs,
             plot_years=plot_years,
+            target=target,
         )
         logger.info("running %s -> %s", tool["label"], out)
         t0 = time.time()
@@ -385,6 +425,15 @@ def _tool_call(key: str, run_dir: Path, out: Path, **opts: Any) -> tuple[str, An
             )
 
         return command, call_importance
+    if key == "sensitivity":
+        command = f"pism-glacier-sensitivity-indices {run_dir} --output-path {out} --target {opts['target']}"
+
+        def call_sensitivity():
+            return sensitivity_indices.run_pipeline(
+                run_dir, output_path=out, target=opts["target"], n_jobs=opts["n_jobs"] if opts["n_jobs"] > 1 else None
+            )
+
+        return command, call_sensitivity
     module = usgs_benchmark_glaciers if key == "glaciers" else usgs_benchmark_stakes
     name = "glaciers" if key == "glaciers" else "stakes"
     command = f"pism-glacier-usgs-benchmark-{name} {run_dir} --data-path {opts['usgs_data_path']} --output-path {out}"
@@ -582,7 +631,10 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     parser.add_argument(
         "--no-bootstrap", action="store_true", default=False, help="Importance sampling: skip the RMSE ranking."
     )
-    parser.add_argument("--n-jobs", type=int, default=1, help="USGS tools: worker processes.")
+    parser.add_argument("--n-jobs", type=int, default=1, help="USGS tools and sensitivity indices: worker processes.")
+    parser.add_argument(
+        "--target", default=sensitivity_indices.DEFAULT_TARGET, help="Sensitivity indices: variable to analyze."
+    )
     parser.add_argument("--plot-start", default=None, help="USGS tools: first year of the plots.")
     parser.add_argument("--plot-end", default=None, help="USGS tools: last year of the plots.")
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -610,6 +662,7 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
             bootstrap=not args.no_bootstrap,
             n_jobs=args.n_jobs,
             plot_years=(plot_year(args.plot_start), plot_year(args.plot_end)),
+            target=args.target,
         )
     setup = [
         ("run directory", str(run_dir)),

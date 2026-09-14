@@ -59,6 +59,8 @@ dependencies = [
     "rioxarray",
     "s3fs",
     "scikit-learn",
+    "SALib",
+    "threadpoolctl",
     "scipy",
     "seaborn",
     "shapely",
@@ -124,6 +126,8 @@ pism-kitp-run-ensemble = "pism_terra.kitp.run:run_ensemble"
 pism-kitp-stage = "pism_terra.kitp.stage:main"
 pism-glacier-mip4 = "pism_terra.glacier.glaciermip4:cli"
 pism-glacier-importance-sampling = "pism_terra.glacier.importance_sampling:cli"
+pism-glacier-sensitivity-indices = "pism_terra.glacier.sensitivity_indices:cli"
+pism-sensitivity-indices = "pism_terra.sensitivity:cli"
 pism-s4f-report = "pism_terra.glacier.s4f_report:cli"
 pism-glacier-usgs-benchmark-glaciers = "pism_terra.glacier.usgs_benchmark_glaciers:cli"
 pism-glacier-usgs-benchmark-stakes = "pism_terra.glacier.usgs_benchmark_stakes:cli"
