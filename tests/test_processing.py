@@ -38,7 +38,12 @@ import pint_xarray  # pylint: disable=unused-import
 import pytest
 import xarray as xr
 
-from pism_terra.processing import decode_pism_config, integrate_rate, preprocess_netcdf
+from pism_terra.processing import (
+    decode_pism_config,
+    integrate_rate,
+    normalize_timeseries,
+    preprocess_netcdf,
+)
 
 # pint defines year as the Julian year; conversions out of Gt/yr use this.
 JULIAN_YEAR_DAYS = 365.25
@@ -728,3 +733,53 @@ def test_preprocess_without_pism_config(tmp_path):
     # Nothing to record, so nothing is re-added.
     assert "pism_config" not in ds
     assert "tendacabf" in ds
+
+
+def _cumulative() -> xr.Dataset:
+    """
+    Two cumulative series on a yearly time axis, one with pint units.
+
+    Returns
+    -------
+    xr.Dataset
+        ``a`` and ``b`` on ``time``, plus a time-independent ``c``.
+    """
+    time = pd.date_range("2010-07-01", periods=6, freq="YS-JUL")
+    ds = xr.Dataset(
+        {
+            "a": ("time", np.arange(6.0) * 10, {"units": "Gt", "long_name": "cumulative a"}),
+            "b": ("time", np.arange(6.0) + 100),
+            "c": ((), 7.0),
+        },
+        coords={"time": time},
+    )
+    return ds
+
+
+def test_normalize_timeseries_dataarray_keeps_name_attrs_and_units():
+    """A DataArray is normalized as a whole; ``variables`` is not needed."""
+    da = _cumulative()["a"].pint.quantify()
+    out = normalize_timeseries(da, reference_date="2012")
+    assert isinstance(out, xr.DataArray)
+    assert out.name == "a"
+    assert out.attrs["long_name"] == "cumulative a"
+    assert str(out.pint.units) == "gigametric_ton"
+    np.testing.assert_allclose(out.pint.dequantify().values, [-20, -10, 0, 10, 20, 30])
+
+
+def test_normalize_timeseries_dataset_defaults_to_every_time_variable():
+    """Without ``variables`` every variable on ``time`` is normalized; others are untouched."""
+    out = normalize_timeseries(_cumulative(), reference_date="2012-07-01")
+    np.testing.assert_allclose(out["a"].values, [-20, -10, 0, 10, 20, 30])
+    np.testing.assert_allclose(out["b"].values, [-2, -1, 0, 1, 2, 3])
+    assert float(out["c"]) == 7.0
+    assert out["a"].attrs["long_name"] == "cumulative a"
+
+    one = normalize_timeseries(_cumulative(), "a", "2012-07-01")
+    np.testing.assert_allclose(one["b"].values, np.arange(6.0) + 100)
+
+
+def test_normalize_timeseries_requires_a_reference_date():
+    """Omitting the reference date is an error, not a silent no-op."""
+    with pytest.raises(ValueError, match="reference_date"):
+        normalize_timeseries(_cumulative()["a"])
