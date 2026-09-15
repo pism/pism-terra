@@ -103,16 +103,19 @@ def test_no_outline_means_no_command():
 
 def test_dh_command_extracts_the_hugonnet_interval():
     """
-    One dh call over 2000-2020, all variables, into ``output/dh/``.
+    One dh call over 2000-2020, surface elevation only, into ``output/dh/``.
 
     Unlike the scalar reductions the extraction needs no outline, so the
-    command carries only the interval, the spatial file, and the output path.
+    command carries only the variable, the interval, the spatial file, and
+    the output path. ``usurf`` alone because dh *is* surface elevation
+    change: differencing every spatial variable would write a far larger
+    file, nearly all of it unused.
     """
     command = _dh_command(SPATIAL, Path("/out"), "RGI2000-v7.0-C-01-04374", "id_0")
 
     assert command.startswith("pism-glacier-postprocess-dh ")
     assert f"--start {DH_START} --end {DH_END}" in command
-    assert "--vars" not in command
+    assert "--vars usurf" in command
     assert str(SPATIAL.resolve()) in command
     assert command.endswith(f"/out/dh/dh_RGI2000-v7.0-C-01-04374_id_0_{DH_START}_{DH_END}.nc")
 

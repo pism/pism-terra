@@ -185,10 +185,12 @@ def _dh_command(spatial_file: Path, output_path: Path, rgi_id: str, name_options
     Build the per-run change-extraction (dh) command.
 
     Renders a ``pism-glacier-postprocess-dh`` call that reduces the run's
-    spatial output to the difference of all spatial variables between
+    spatial output to the change in surface elevation between
     :data:`DH_START` and :data:`DH_END` (the Hugonnet et al. (2021) record),
-    written to ``output/dh/``. Unlike the scalar reductions this needs no
-    outline, so a command is always emitted.
+    written to ``output/dh/``. Only ``usurf`` is differenced — that is what
+    dh means here, and differencing every spatial variable would write a far
+    larger file that nothing reads. Unlike the scalar reductions this needs
+    no outline, so a command is always emitted.
 
     Parameters
     ----------
