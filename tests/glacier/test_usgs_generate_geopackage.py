@@ -150,7 +150,7 @@ def test_cli_writes_datetime_fields(release, tmp_path, monkeypatch):
     """
     monkeypatch.setattr(us, "download_usgs_benchmark", lambda data_dir, force_overwrite=False: release)
     output = tmp_path / "out" / "stakes.gpkg"
-    assert us.cli([str(output), "--data-dir", str(tmp_path)]) == 0
+    assert us.cli([str(output), "--data-path", str(tmp_path)]) == 0
     assert output.exists()
 
     stakes = gpd.read_file(output, layer="stakes")
@@ -164,5 +164,5 @@ def test_cli_writes_datetime_fields(release, tmp_path, monkeypatch):
     assert gpd.list_layers(output)["name"].tolist() == ["sites", "stakes", "subseasonal"]
 
     # Running again replaces the file rather than appending to its layers.
-    assert us.cli([str(output), "--data-dir", str(tmp_path)]) == 0
+    assert us.cli([str(output), "--data-path", str(tmp_path)]) == 0
     assert len(gpd.read_file(output, layer="stakes")) == 3

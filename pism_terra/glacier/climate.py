@@ -2118,6 +2118,13 @@ def carra2(
 
 GLOBAL_ERA5_DATASET = "reanalysis-era5-single-levels-monthly-means"
 
+# Margin, in degrees, added on every side of an ERA5-Land request box. ERA5-Land
+# is a 0.1° grid, so 0.25° guarantees at least three grid points per axis even
+# for a domain smaller than one cell; PISM refuses to interpolate from a grid
+# with fewer than two points along an axis (RGI2000-v7.0-C-01-14094, 14 x 15 km,
+# came back as a single latitude row).
+ERA5_LAND_PAD = 0.25
+
 
 def pad_area(area: Sequence[float], pad: float = 1.0) -> list[float]:
     """
@@ -2506,7 +2513,7 @@ def era5(
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326")
-    area = t.transform_bounds(*bounds)
+    area = pad_area(t.transform_bounds(*bounds), pad=ERA5_LAND_PAD)
 
     print(f"Bounding box {area}")
 
@@ -2652,7 +2659,7 @@ def era5_mean(
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326")
-    area = t.transform_bounds(*bounds)
+    area = pad_area(t.transform_bounds(*bounds), pad=ERA5_LAND_PAD)
 
     print(f"Bounding box {area}")
 
@@ -2865,7 +2872,7 @@ def era5_monthly_mean(
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326")
-    area = t.transform_bounds(*bounds)
+    area = pad_area(t.transform_bounds(*bounds), pad=ERA5_LAND_PAD)
 
     print(f"Bounding box {area}")
 

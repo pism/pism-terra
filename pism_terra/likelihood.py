@@ -145,15 +145,71 @@ def log_normal(
     return -0.5 * ((x - mu) / (fudge_factor * std)) ** 2 - 0.5 * np.log(2 * np.pi * (fudge_factor * std) ** 2)
 
 
+REDUCTIONS = ("mean", "sum", "blocks")
+
+
+def reduce_log_likelihood(da: xr.DataArray, sum_dims, reduction: str = "mean", block_size: float = 1) -> xr.DataArray:
+    """
+    Collapse a per-cell log-likelihood over ``sum_dims``.
+
+    The three reductions differ in how many independent observations the
+    cells are taken to represent, which sets how sharp the resulting
+    posterior is:
+
+    * ``"mean"``: the average, i.e. the total divided by the number of
+      cells. Every ensemble member ends up within a few units of the others
+      whatever the misfit, a strongly tempered posterior.
+    * ``"sum"``: the total; every cell counts as an independent observation.
+      Right for a time series of independent values, far too sharp for a
+      gridded field whose cells are correlated over many pixels.
+    * ``"blocks"``: the total divided by ``block_size**2``, i.e. one
+      independent observation per block of ``block_size`` by ``block_size``
+      cells. With ``block_size`` set to the field's decorrelation length in
+      pixels this is the sum over effectively independent samples;
+      ``block_size=1`` equals ``"sum"``.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Per-cell log-likelihood; NaN marks cells without data.
+    sum_dims : sequence of str
+        Dimensions to reduce over; ones missing from ``da`` are ignored.
+    reduction : {"mean", "sum", "blocks"}, optional
+        How to collapse the cells, by default ``"mean"``.
+    block_size : float, optional
+        Block side in cells for ``"blocks"``, by default 1.
+
+    Returns
+    -------
+    xr.DataArray
+        Reduced log-likelihood; NaN where no cell had data.
+
+    Raises
+    ------
+    ValueError
+        If ``reduction`` is not one of :data:`REDUCTIONS`.
+    """
+    dims = [d for d in sum_dims if d in da.dims]
+    if reduction == "mean":
+        return da.mean(dim=dims)
+    if reduction == "sum":
+        return da.sum(dim=dims, skipna=True, min_count=1)
+    if reduction == "blocks":
+        return da.sum(dim=dims, skipna=True, min_count=1) / float(block_size) ** 2
+    raise ValueError(f"reduction must be one of {REDUCTIONS}, got {reduction!r}")
+
+
 def log_normal_xr(
     x: xr.DataArray,
     mu: xr.DataArray,
     std: float | xr.DataArray,
     fudge_factor: float = 3.0,
     sum_dims=["y", "x", "time"],
+    reduction: str = "mean",
+    block_size: float = 1,
 ) -> xr.DataArray:
     """
-    Calculate the log-likelihood of data given a Normal distribution, summed along sum_dims.
+    Calculate the log-likelihood of data given a Normal distribution, reduced along sum_dims.
 
     Parameters
     ----------
@@ -166,7 +222,11 @@ def log_normal_xr(
     fudge_factor : float, optional
         A multiplicative factor applied to the standard deviation, by default 3.0.
     sum_dims : list of str, optional
-        The dimensions to sum over when computing the log-likelihood, by default ["y", "x", "time"].
+        The dimensions to reduce over when computing the log-likelihood, by default ["y", "x", "time"].
+    reduction : {"mean", "sum", "blocks"}, optional
+        How the cells are collapsed, see :func:`reduce_log_likelihood`; by default ``"mean"``.
+    block_size : float, optional
+        Block side in cells for ``reduction="blocks"``, by default 1.
 
     Returns
     -------
@@ -178,7 +238,7 @@ def log_normal_xr(
     da = da.where(da != 0, np.nan)
     da.name = "log_likelihood"
     da.attrs.update({"units": "1", "long_name": "negative log likelihood"})
-    return da.mean(dim=sum_dims)
+    return reduce_log_likelihood(da, sum_dims, reduction=reduction, block_size=block_size)
 
 
 def log_pseudo_huber(
@@ -220,9 +280,11 @@ def log_pseudo_huber_xr(
     fudge_factor: float = 3.0,
     sum_dims=["y", "x", "time"],
     delta: float = 2.0,
+    reduction: str = "mean",
+    block_size: float = 1,
 ) -> xr.DataArray:
     """
-    Calculate the log-likelihood of data given a pseudo-Huber distribution, summed along sum_dims.
+    Calculate the log-likelihood of data given a pseudo-Huber distribution, reduced along sum_dims.
 
     Parameters
     ----------
@@ -235,9 +297,13 @@ def log_pseudo_huber_xr(
     fudge_factor : float, optional
         A multiplicative factor applied to the standard deviation, by default 3.0.
     sum_dims : list of str, optional
-        The dimensions to sum over when computing the log-likelihood, by default ["y", "x", "time"].
+        The dimensions to reduce over when computing the log-likelihood, by default ["y", "x", "time"].
     delta : float, optional
         The delta parameter for the pseudo-Huber loss function, by default 2.0.
+    reduction : {"mean", "sum", "blocks"}, optional
+        How the cells are collapsed, see :func:`reduce_log_likelihood`; by default ``"mean"``.
+    block_size : float, optional
+        Block side in cells for ``reduction="blocks"``, by default 1.
 
     Returns
     -------
@@ -249,4 +315,4 @@ def log_pseudo_huber_xr(
     da = da.where(da != 0, np.nan)
     da.name = "log_likelihood"
     da.attrs.update({"units": "1", "long_name": "negative log likelihood"})
-    return da.mean(dim=sum_dims)
+    return reduce_log_likelihood(da, sum_dims, reduction=reduction, block_size=block_size)

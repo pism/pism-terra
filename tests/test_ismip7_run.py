@@ -33,7 +33,11 @@ from pathlib import Path
 
 import pytest
 
-from pism_terra.inversion import inversion_uses_hardav
+from pism_terra.inversion import (
+    forward_leg_from_inversion,
+    inversion_uses_hardav,
+    inverted_variables,
+)
 from pism_terra.ismip7.greenland.run import _render_forward_run, _render_inverse_run
 
 REPO = Path(__file__).resolve().parents[1]
@@ -185,15 +189,18 @@ def test_inverse_alternating_regrids_hardav(tmp_path):
     """
     An alternating tauc/hardav inversion feeds ``hardav`` to the forward leg.
 
-    With ``inverse.alternating_cycles > 0`` the forward leg must regrid both
-    inverted fields and switch the Blatter solver to the prescribed hardness.
+    With ``inverse.design.variable`` naming a pair the forward leg must regrid
+    both inverted fields and switch the Blatter solver to the prescribed
+    hardness.
 
     Parameters
     ----------
     tmp_path : pathlib.Path
         Output directory (pytest fixture).
     """
-    text = FREE_HY.read_text().replace("[inverse]\n", "[inverse]\n'inverse.alternating_cycles' = 2\n", 1)
+    text = FREE_HY.read_text().replace(
+        "[inverse]\n", "[inverse]\n'inverse.design.variable' = \"tauc_hardav\"\n'inverse.alternating_cycles' = 2\n", 1
+    )
     cfg = tmp_path / "alternating.toml"
     cfg.write_text(text)
 
@@ -208,16 +215,56 @@ def test_inverse_alternating_regrids_hardav(tmp_path):
     assert "-input.regrid.vars litho_temp,enthalpy,age,tillwat" in init
 
 
-def test_inversion_uses_hardav():
-    """``inversion_uses_hardav`` recognises alternation and hardness inversions."""
-    assert not inversion_uses_hardav({})
-    assert not inversion_uses_hardav({"inverse.alternating_cycles": 0, "inv_design": "tauc"})
-    assert inversion_uses_hardav({"inverse.alternating_cycles": 3})
-    assert inversion_uses_hardav({"inverse.alternating_cycles": "1"})
-    assert inversion_uses_hardav({"inv_design": "hardav"})
-    assert inversion_uses_hardav({"inverse.design.variable": "hardav"})
-    assert not inversion_uses_hardav({"inverse.design.variable": "tauc", "inv_design": "hardav"})
-    assert not inversion_uses_hardav({"inverse.alternating_cycles": "not-a-number"})
+def test_inverted_variables_follow_the_design_variable():
+    """
+    The inverted fields come from ``inverse.design.variable`` alone, as in ``pismi``.
+
+    A single variable with a positive cycle count is still a single inversion:
+    the forward leg must not ask for a field the inversion never wrote.
+    """
+    assert inverted_variables({}) == ("tauc",)
+    assert inverted_variables({"inverse.design.variable": "tauc", "inverse.alternating_cycles": 1}) == ("tauc",)
+    assert inverted_variables({"inverse.design.variable": "hardav", "inverse.alternating_cycles": 1}) == ("hardav",)
+    assert inverted_variables({"inverse.design.variable": "tauc_hardav"}) == ("tauc", "hardav")
+    assert inverted_variables({"inverse.design.variable": "hardav_tauc"}) == ("hardav", "tauc")
+    assert inverted_variables({"inv_design": "hardav"}) == ("hardav",)
+    assert inverted_variables({"inverse.design.variable": "tauc", "inv_design": "hardav"}) == ("tauc",)
+    with pytest.raises(ValueError, match="inverse.design.variable"):
+        inverted_variables({"inverse.design.variable": "usurf"})
+
+    assert not inversion_uses_hardav({"inverse.alternating_cycles": 3})
+    assert inversion_uses_hardav({"inverse.design.variable": "hardav_tauc"})
+
+
+@pytest.mark.parametrize(
+    ("design", "regrid", "hardness"),
+    [
+        ("tauc", "tauc", False),
+        ("hardav", "hardav", True),
+        ("tauc_hardav", "tauc,hardav", True),
+        ("hardav_tauc", "hardav,tauc", True),
+    ],
+)
+def test_forward_leg_regrids_exactly_the_inverted_fields(design, regrid, hardness):
+    """
+    The forward leg holds fixed what the inversion wrote, and only that.
+
+    Parameters
+    ----------
+    design : str
+        ``inverse.design.variable`` of the inversion.
+    regrid : str
+        Expected ``input.regrid.vars``.
+    hardness : bool
+        Whether the Blatter solver is switched to the prescribed hardness.
+    """
+    run = {"basal_yield_stress.model": "mohr_coulomb", "basal_yield_stress.mohr_coulomb.till_phi_default": 30}
+    forward_leg_from_inversion(run, {"inverse.design.variable": design, "inverse.alternating_cycles": 1}, "inv.nc")
+    assert run["input.regrid.file"] == "inv.nc"
+    assert run["input.regrid.vars"] == regrid
+    assert run["basal_yield_stress.model"] == "constant"
+    assert not any(k.startswith("basal_yield_stress.mohr_coulomb.") for k in run)
+    assert ("stress_balance.averaged_hardness.enabled" in run) == hardness
 
 
 def test_inverse_missing_init_bounds_raises(tmp_path):

@@ -112,6 +112,7 @@ examples/index
 
 developer/documentation
 developer/lustre_striping
+developer/output_format
 developer/ensemble_output_store
 ```
 

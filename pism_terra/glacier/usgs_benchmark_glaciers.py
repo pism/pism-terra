@@ -1028,9 +1028,11 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         default=None,
         help="Directory searched recursively for scalar_G_*.nc files. Omit to plot the observations alone.",
     )
-    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Cache for the USGS archives and RGI outlines.")
+    parser.add_argument("--data-path", default=DEFAULT_DATA_DIR, help="Cache for the USGS archives and RGI outlines.")
     parser.add_argument(
-        "--output-dir", default=".", help="Directory for the tables; figures and NetCDF files go to <rgi_id>/ below it."
+        "--output-path",
+        default=".",
+        help="Directory for the tables; figures and NetCDF files go to <rgi_id>/ below it.",
     )
     parser.add_argument(
         "--rgi-glacier-file",
@@ -1064,13 +1066,13 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
     parser.add_argument("--force-overwrite", action="store_true", default=False, help="Re-download the archives.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    output_dir = Path(args.output_dir).expanduser()
+    output_dir = Path(args.output_path).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(output_dir / "usgs_benchmark.log")
 
     matches = run_pipeline(
         args.RUN_DIR,
-        data_dir=args.data_dir,
+        data_dir=args.data_path,
         output_dir=output_dir,
         rgi_file=args.rgi_glacier_file,
         uncertainty=args.uncertainty,

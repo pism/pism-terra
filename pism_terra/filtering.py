@@ -32,6 +32,11 @@ import xarray as xr
 
 from pism_terra.likelihood import log_normal_xr
 
+try:
+    import pint_xarray  # pylint: disable=unused-import
+except ImportError:  # pragma: no cover - exercised only where pint-xarray is absent
+    pint_xarray = None  # pylint: disable=invalid-name
+
 
 def sample_with_replacement(weights: np.ndarray, exp_id: np.ndarray, n_samples: int, seed: int) -> np.ndarray:
     """
@@ -101,6 +106,65 @@ def sample_with_replacement_xr(weights, n_samples: int = 100, seed: int = 0, dim
     return da
 
 
+def _is_quantified(ds: xr.Dataset, names: list[str]) -> bool:
+    """
+    Tell whether any of ``names`` in ``ds`` carries pint units.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset to inspect.
+    names : list of str
+        Variables to check; names missing from ``ds`` are skipped.
+
+    Returns
+    -------
+    bool
+        ``True`` when pint-xarray is importable and at least one variable is a pint quantity;
+        always ``False`` without pint-xarray, so plain data takes the plain code path.
+    """
+    if pint_xarray is None:
+        return False
+    return any(ds[name].pint.units is not None for name in names if name in ds)
+
+
+def _strip_units(
+    simulated: xr.Dataset, observed: xr.Dataset, sim_var: str, obs_mean_var: str, obs_std_var: str
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """
+    Express quantified input in the observed mean's units and hand back plain arrays.
+
+    The simulated variable and the observed uncertainty are converted to the units of the
+    observed mean, then every quantity is stripped back into a ``units`` attribute so the
+    likelihood works on ordinary arrays exactly as it does for unquantified input.
+
+    Parameters
+    ----------
+    simulated : xr.Dataset
+        Simulated ensemble; quantified or plain.
+    observed : xr.Dataset
+        Observations; quantified or plain.
+    sim_var : str
+        Simulated variable to compare.
+    obs_mean_var : str
+        Observed mean; its units are the common units.
+    obs_std_var : str
+        Observed uncertainty, converted to the same units.
+
+    Returns
+    -------
+    tuple of xr.Dataset
+        ``(simulated, observed)`` without pint quantities.
+    """
+    simulated = simulated.pint.quantify()
+    observed = observed.pint.quantify()
+    target = observed[obs_mean_var].pint.units
+    if target is not None:
+        simulated = simulated.pint.to({sim_var: target})
+        observed = observed.pint.to({obs_std_var: target})
+    return simulated.pint.dequantify(), observed.pint.dequantify()
+
+
 def importance_sampling(
     simulated: xr.Dataset,
     observed: xr.Dataset,
@@ -122,13 +186,18 @@ def importance_sampling(
     Parameters
     ----------
     simulated : xr.Dataset
-        An xarray Dataset containing the simulated data.
+        An xarray Dataset containing the simulated data, on the same coordinates as
+        ``observed`` along every shared dimension. Interpolate or reindex it first
+        (``simulated.interp_like(observed)``); no interpolation happens here.
     observed : xr.Dataset
         An xarray Dataset containing the observed data.
     log_likelihood : Callable, optional
         The log-likelihood function to use for filtering, by default log_normal_xr.
     likelihood_kwargs : dict, optional
-        Additional keyword arguments to pass to the log-likelihood function, by default {}.
+        Additional keyword arguments to pass to the log-likelihood function, by default {}. For the
+        default likelihood, ``{"reduction": "blocks", "block_size": n}`` sums the cells as one independent
+        sample per ``n`` by ``n`` block instead of averaging them; see
+        :func:`pism_terra.likelihood.reduce_log_likelihood`.
     dim : str, optional
         The variable name in `simulated` that identifies each ensemble member, by default "exp_id".
     sum_dims : list, optional
@@ -156,6 +225,11 @@ def importance_sampling(
     xr.Dataset
         A dataset containing the selected members, log_likes, and weights the filtering process.
 
+    Raises
+    ------
+    ValueError
+        If ``simulated[sim_var]`` and the observed variables do not share their coordinates.
+
     Notes
     -----
     This function implements a filtering algorithm that uses a likelihood-based approach to select ensemble members
@@ -163,10 +237,26 @@ def importance_sampling(
     the difference between the simulated and observed means, scaled by the observed standard deviation (adjusted by
     the fudge factor). This method allows for the incorporation of observational uncertainty into the ensemble
     selection process.
+
+    If pint-xarray is installed and ``simulated`` or ``observed`` carries pint quantities
+    (``.pint.quantify()``), the simulated variable and the observed uncertainty are converted
+    to the units of the observed mean before the likelihood is evaluated. Without pint-xarray,
+    or with plain arrays, nothing changes.
     """
 
-    # Interpolate simulated data to match the observed data's calendar
-    simulated = simulated.interp_like(observed)
+    # Quantified input (pint-xarray) comes back as plain arrays in the observed mean's units.
+    if _is_quantified(observed, [obs_mean_var, obs_std_var]) or _is_quantified(simulated, [sim_var]):
+        simulated, observed = _strip_units(simulated, observed, sim_var, obs_mean_var, obs_std_var)
+
+    # The caller aligns the grids; refuse silently broadcasting mismatched coordinates.
+    try:
+        xr.align(simulated[sim_var], observed[obs_mean_var], observed[obs_std_var], join="exact")
+    except ValueError as err:
+        raise ValueError(
+            f"'{sim_var}' and '{obs_mean_var}'/'{obs_std_var}' must share their coordinates: "
+            "interpolate or reindex the simulated ensemble onto the observed grid first, "
+            "e.g. simulated.interp_like(observed) or simulated.pint.interp_like(observed)"
+        ) from err
 
     # Calculate the observed mean and adjusted standard deviation
     obs_mean = observed[obs_mean_var]

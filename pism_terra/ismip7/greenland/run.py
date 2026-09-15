@@ -34,8 +34,9 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.config import JobConfig, load_config, load_uq
-from pism_terra.inversion import inversion_uses_hardav
+from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
+from pism_terra.ismip7.greenland.observations import prepare_observations
 from pism_terra.ismip7.greenland.stage import stage
 from pism_terra.ismip7.naming import ISMIP7Names, member_ids
 from pism_terra.sampling import generate_samples
@@ -1158,20 +1159,12 @@ def _render_inverse_run(
     inv_str = dict2str(sort_dict_by_key(inv))
 
     # Leg-3 wiring, applied AFTER the uq overrides so it always wins: restart
-    # from the init state (no bootstrap) and regrid the inverted tauc, driven
-    # by the constant yield-stress model (the mohr_coulomb options only apply
-    # to legs 1/2, which produced the tauc field being read back here).
+    # from the init state (no bootstrap) and regrid exactly the fields the
+    # inversion wrote (tauc, hardav, or both), held fixed; see
+    # pism_terra.inversion.forward_leg_from_inversion.
     run_fwd.update({"input.file": state_init.resolve()})
     run_fwd.pop("input.bootstrap", None)
-    run_fwd.update({"input.regrid.file": inv_file.resolve(), "input.regrid.vars": "tauc"})
-    run_fwd["basal_yield_stress.model"] = "constant"
-    for key in [k for k in run_fwd if k.startswith("basal_yield_stress.mohr_coulomb.")]:
-        run_fwd.pop(key)
-    # An inversion that also produced a vertically-averaged hardness: regrid
-    # it and make the Blatter solver use it (see pism_terra.inversion.inversion_uses_hardav).
-    if inversion_uses_hardav(inv):
-        run_fwd["input.regrid.vars"] = "tauc,hardav"
-        run_fwd["stress_balance.averaged_hardness.enabled"] = "yes"
+    forward_leg_from_inversion(run_fwd, inv, inv_file.resolve())
 
     leg_params = _build_forward_legs(
         cfg,
@@ -1292,6 +1285,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     parser.add_argument(
         "--force-overwrite",
         help="Force downloading all files.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--no-observations",
+        help="Skip preparing the observed mass balance into <output-path>/output/observations.",
         action="store_true",
         default=False,
     )
@@ -1493,6 +1492,20 @@ def _run(*, kind: str) -> None:
         include_projection=include_projection,
         data_path=data_path,
     )
+
+    # The observed mass balance the run is validated against, staged into
+    # <output-path>/output/observations exactly as pism-ismip7-greenland-stage
+    # does it. The cache sits beside the shared inputs so the ~500 MB GSFC file
+    # is fetched once per campaign. Failures are logged, not raised: these are
+    # validation data, not run inputs, and GRACE Tellus needs an Earthdata login.
+    if not options.no_observations:
+        input_dir = Path(data_path) if data_path is not None else path / Path("input")
+        prepare_observations(
+            path,
+            cache_path=input_dir / Path("observations"),
+            force_overwrite=force_overwrite,
+            skip_errors=True,
+        )
 
     if uq_file is not None:
         rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file, samples=options.samples)

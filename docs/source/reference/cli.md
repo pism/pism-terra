@@ -30,6 +30,40 @@ runnable as `python -m <module>`. The full list lives in
 * - `pism-glacier-mip4`
   - Build the per-region `RGI7_NN` aggregate complexes and shared inputs for
     GlacierMIP4.
+* - `pism-glacier-importance-sampling`
+  - Weigh every glacier UQ ensemble of a project against its observed
+    elevation change (`dh_*.nc` against the staged `obs_<rgi_id>.nc`):
+    Gaussian likelihood weights, resampling counts and effective sample
+    size per fudge factor, a plain and a block-bootstrap RMSE ranking with
+    the members tied with the best, and posterior histograms of the UQ
+    parameters from the run's `uq.csv`. Per-glacier outputs go to
+    `<rgi_id>/`, the joint posterior over all glaciers (summed
+    log-likelihoods of the shared members) to `joint/`, summary tables to
+    the top level. `--variable SIM:OBS[:OBS_STD]` selects other fields;
+    `--reduction blocks|mean|sum` sets how the likelihood collapses the
+    cells (one independent sample per decorrelation-length block by default)
+    and `--acf-threshold` the autocorrelation level that sets the block side.
+* - `pism-glacier-sensitivity-indices`
+  - First-order Sobol and Borgonovo delta sensitivity indices of a scalar
+    time series (`--target`, default `ice_mass`) to the UQ parameters, for
+    every glacier complex of a project with processed `scalar_C_*` and
+    `scalar_G_*` files: one set per complex and one per glacier of the
+    complex, at every instant of the yearly-averaged series, with bootstrap
+    confidence bands, computed on a process pool. Outputs go to `<rgi_id>/`
+    (NetCDF, CSV, one figure per glacier) plus a top-level summary.
+* - `pism-sensitivity-indices`
+  - The same analysis for one set of processed scalar files given on the
+    command line, with the run's `uq.csv` found above the files or given
+    with `--uq-csv`.
+* - `pism-s4f-report`
+  - Run `pism-glacier-importance-sampling`, `pism-glacier-sensitivity-indices`,
+    `pism-glacier-usgs-benchmark-glaciers` and `pism-glacier-usgs-benchmark-stakes`
+    on a project, each into a
+    sub-directory of `--output-path`, and write an HTML report in the layout
+    of these docs with the Snow4Flow logo: `index.html` with one card per
+    tool and a page per tool with its summary tables and every glacier's
+    figures. A failing tool is reported with its traceback; `--skip` leaves
+    one out and `--no-run` renders from outputs already on disk.
 * - `pism-glacier-usgs-benchmark-glaciers`
   - Download the USGS benchmark-glacier mass balances, match each glacier to
     its RGI v7 ID, convert to Gt/yr and plot against any `scalar_G_*.nc`

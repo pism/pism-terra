@@ -24,6 +24,7 @@ Running.
 from __future__ import annotations
 
 import re
+import shutil
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from pathlib import Path
@@ -39,7 +40,7 @@ from pism_terra.download import file_localizer
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.observations import DH_END, DH_START
 from pism_terra.glacier.stage import campaign_years, stage_glacier
-from pism_terra.inversion import inversion_uses_hardav
+from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     add_provenance,
@@ -143,15 +144,53 @@ def _apply_regrid(run: dict, regrid_file: str | Path | None) -> None:
 #: (re-exported from the observations module, which stages that record).
 
 
+def snapshot_project_file(src: str | Path, dest_dir: str | Path) -> Path:
+    """
+    Copy a project file (config, template, UQ spec) into an experiment directory.
+
+    An experiment's ``config/``, ``templates/`` and ``uq/`` directories record
+    which files generated its run scripts. :func:`file_localizer` only writes
+    there when it downloads a remote file, so local and package files are
+    copied explicitly here. An identical copy is left untouched; a copy whose
+    contents differ is overwritten with a notice, so re-running the generator
+    for another glacier of the same experiment keeps the snapshot current.
+
+    Parameters
+    ----------
+    src : str or pathlib.Path
+        File to snapshot.
+    dest_dir : str or pathlib.Path
+        Directory the copy goes to; created if missing.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path of the copy. Callers use it from here on, so the
+        generated scripts refer to the snapshot rather than the original.
+    """
+    src = Path(src).expanduser().resolve()
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = (dest_dir / src.name).resolve()
+    if dest.exists():
+        if dest.samefile(src) or dest.read_bytes() == src.read_bytes():
+            return dest
+        print(f"Updating snapshot {dest}: {src} changed since it was last copied")
+    shutil.copy2(src, dest)
+    return dest
+
+
 def _dh_command(spatial_file: Path, output_path: Path, rgi_id: str, name_options: str) -> str:
     """
     Build the per-run change-extraction (dh) command.
 
     Renders a ``pism-glacier-postprocess-dh`` call that reduces the run's
-    spatial output to the difference of all spatial variables between
+    spatial output to the change in surface elevation between
     :data:`DH_START` and :data:`DH_END` (the Hugonnet et al. (2021) record),
-    written to ``output/dh/``. Unlike the scalar reductions this needs no
-    outline, so a command is always emitted.
+    written to ``output/dh/``. Only ``usurf`` is differenced — that is what
+    dh means here, and differencing every spatial variable would write a far
+    larger file that nothing reads. Unlike the scalar reductions this needs
+    no outline, so a command is always emitted.
 
     Parameters
     ----------
@@ -175,7 +214,7 @@ def _dh_command(spatial_file: Path, output_path: Path, rgi_id: str, name_options
     """
     outfile = output_path / "dh" / f"dh_{rgi_id}_{name_options}_{DH_START}_{DH_END}.nc"
     return (
-        f"pism-glacier-postprocess-dh --start {DH_START} --end {DH_END} "
+        f"pism-glacier-postprocess-dh --vars usurf --start {DH_START} --end {DH_END} "
         f"{spatial_file.resolve()} {outfile.resolve()}"
     )
 
@@ -675,21 +714,12 @@ def _render_inverse_run(
     inv_str = dict2str(sort_dict_by_key(inv))
 
     # Leg 3 (main run): restart from the init state (no bootstrap) and regrid
-    # the inverted tauc, held fixed by the constant yield-stress model. The
-    # ``basal_yield_stress.mohr_coulomb.*`` options only apply to legs 1/2,
-    # which produced the tauc field being read back here. Applied after the uq
-    # overrides so this wiring always wins. If the inversion also produced a
-    # vertically-averaged hardness (``hardav``), regrid it too and make the
-    # Blatter solver use it instead of the enthalpy-derived hardness.
+    # exactly the fields the inversion wrote (tauc, hardav, or both for an
+    # alternating inversion), held fixed. Applied after the uq overrides so
+    # this wiring always wins; see pism_terra.inversion.forward_leg_from_inversion.
     run["input.file"] = state_init.resolve()
     run.pop("input.bootstrap", None)
-    run.update({"input.regrid.file": inv_file.resolve(), "input.regrid.vars": "tauc"})
-    run["basal_yield_stress.model"] = "constant"
-    for key in [k for k in run if k.startswith("basal_yield_stress.mohr_coulomb.")]:
-        run.pop(key)
-    if inversion_uses_hardav(inv):
-        run["input.regrid.vars"] = "tauc,hardav"
-        run["stress_balance.averaged_hardness.enabled"] = "yes"
+    forward_leg_from_inversion(run, inv, inv_file.resolve())
 
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
@@ -1319,10 +1349,17 @@ def _run(*, kind: str) -> None:
     output_path = glacier_path / "output"
     output_path.mkdir(parents=True, exist_ok=True)
 
-    config_file = file_localizer(options.CONFIG_FILE, path / "config")
-    pism_config_cdl = file_localizer(options.pism_config_cdl, path / "config") if options.pism_config_cdl else None
-    template_file = file_localizer(options.TEMPLATE_FILE, path / "templates")
-    uq_file = file_localizer(options.UQ_FILE, path / "uq") if options.UQ_FILE else None
+    # Keep a copy of every file that shaped this experiment next to its
+    # outputs; the run uses the copies so the scripts point at the snapshot.
+    config_path, template_path, uq_path = path / "config", path / "templates", path / "uq"
+    config_file = snapshot_project_file(file_localizer(options.CONFIG_FILE, config_path), config_path)
+    pism_config_cdl = (
+        snapshot_project_file(file_localizer(options.pism_config_cdl, config_path), config_path)
+        if options.pism_config_cdl
+        else None
+    )
+    template_file = snapshot_project_file(file_localizer(options.TEMPLATE_FILE, template_path), template_path)
+    uq_file = snapshot_project_file(file_localizer(options.UQ_FILE, uq_path), uq_path) if options.UQ_FILE else None
 
     start_cli = options.start
     end_cli = options.end

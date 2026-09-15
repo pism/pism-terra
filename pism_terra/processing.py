@@ -27,6 +27,7 @@ import json
 import re
 from collections import OrderedDict
 from collections.abc import Hashable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import cftime
@@ -321,7 +322,10 @@ def preprocess_netcdf(
     sheet runs (``spatial_GIS_g1200m_id_HIRHAM5-ERA5_YMM_1990_2019_uq_0_...nc``) and
     GCM-forced runs (``..._id_gcm_CESM2_exp_pdSST-futArcSIC_...nc``) alike.
 
-    Patterns are matched against the path the dataset was opened from. `rgi_regexp`
+    Patterns are matched against the name of the file the dataset was opened from
+    first and, except for `uq_regexp`, against its full path next (the ISMIP7
+    submission tree keeps the counter in a directory); a project directory called
+    ``..._uq_50`` therefore cannot masquerade as a member id. `rgi_regexp`
     additionally falls back to the ``command`` attribute, where the RGI identifier
     shows up in the input paths of runs whose output file names do not carry it.
 
@@ -379,6 +383,12 @@ def preprocess_netcdf(
     """
 
     source = str(ds.encoding.get("source", ""))
+    # The file name is searched first. The member id comes from the name only:
+    # a project directory such as ``..._pdd_uq_50/`` would otherwise stamp
+    # ``uq_id = 50`` on every file. The other ids fall back to the full path,
+    # which the ISMIP7 submission tree relies on (``.../CORE/C008/<file>``),
+    # and the RGI id also to the ``command`` attribute.
+    name = Path(source).name if source else ""
     command = str(ds.attrs.get("command", ""))
 
     expand_dims: list[str] = []
@@ -394,9 +404,9 @@ def preprocess_netcdf(
     # Optional identifiers: a file name that does not carry one simply does not get
     # the dimension, so glacier, ice sheet and GCM-forced runs share one code path.
     for dim, regexp, sources in (
-        (rgi_dim, rgi_regexp, (source, command)),
-        (gcm_dim, gcm_regexp, (source,)),
-        (uq_dim, uq_regexp, (source,)),
+        (rgi_dim, rgi_regexp, (name, source, command)),
+        (gcm_dim, gcm_regexp, (name, source)),
+        (uq_dim, uq_regexp, (name,)),
     ):
         if dim is None or regexp is None:
             continue
@@ -405,7 +415,7 @@ def preprocess_netcdf(
             expand_dims.append(dim)
             expand_coords[dim] = [value]
 
-    m_exp_id = _search_id(exp_regexp, source)
+    m_exp_id = _search_id(exp_regexp, name, source)
     if m_exp_id is None:
         raise ValueError(f"{exp_regexp!r} does not match {source!r}")
     expand_dims.append(exp_dim)
@@ -511,52 +521,69 @@ def preprocess_config_rgi(
 
 
 def normalize_timeseries(
-    ds: xr.Dataset, variables: str | list[str], reference_date: str | cftime.datetime
-) -> xr.Dataset:
+    ds: xr.Dataset | xr.DataArray,
+    variables: str | Sequence[str] | None = None,
+    reference_date: str | cftime.datetime | None = None,
+) -> xr.Dataset | xr.DataArray:
     """
-    Normalize variables in an xarray Dataset by subtracting their values at a reference year.
+    Normalize time series by subtracting their values at a reference date.
 
     Parameters
     ----------
-    ds : xr.Dataset
-        The xarray Dataset containing the cumulative variables to be normalized.
-    variables : str or list of str
-        The name(s) of the cumulative variables to be normalized.
+    ds : xr.Dataset or xr.DataArray
+        The cumulative time series to normalize. A ``DataArray`` is normalized
+        as a whole; a ``Dataset`` variable by variable.
+    variables : str or sequence of str or None, optional
+        For a ``Dataset``, the name(s) of the variables to normalize; ``None``
+        (the default) takes every data variable with a ``time`` dimension.
+        Ignored for a ``DataArray``.
     reference_date : str or date-like
-        The reference date to use for normalization.
+        The date whose value is subtracted; the nearest time is used.
 
     Returns
     -------
-    xr.Dataset
-        The xarray Dataset with normalized variables.
+    xr.Dataset or xr.DataArray
+        The normalized time series, of the same type as ``ds``. Attributes,
+        names and pint units are kept.
+
+    Raises
+    ------
+    ValueError
+        If ``reference_date`` is not given.
 
     Examples
     --------
     >>> import xarray as xr
     >>> import pandas as pd
-    >>> time = pd.date_range("1990-01-01", "1995-01-01", freq="A")
+    >>> time = pd.date_range("1990-01-01", "1995-01-01", freq="YE")
     >>> data = xr.Dataset({
     ...     "cumulative_var": ("time", [10, 20, 30, 40, 50, 60]),
     ... }, coords={"time": time})
-    >>> normalize_cumulative_variables(data, "cumulative_var", reference_date="1992-01-01")
-    <xarray.Dataset>
-    Dimensions:         (time: 6)
-    Coordinates:
-      * time            (time) datetime64[ns] 1990-12-31 1991-12-31 ... 1995-12-31
-    Data variables:
-        cumulative_var  (time) int64 0 10 20 30 40 50
+    >>> normalize_timeseries(data, "cumulative_var", reference_date="1992-01-01")["cumulative_var"].values
+    array([-10,   0,  10,  20,  30,  40])
+    >>> normalize_timeseries(data["cumulative_var"], reference_date="1992-01-01").values
+    array([-10,   0,  10,  20,  30,  40])
     """
+    if reference_date is None:
+        raise ValueError("normalize_timeseries() needs a reference_date")
 
-    # Assign one variable at a time. ``ds[["a"]] -= ...`` takes a different
-    # ``__setitem__`` branch for a single-element list than for a longer one
-    # and fails with "cannot directly convert an xarray.Dataset into a numpy
-    # array", so a one-variable list used to be an error while both a bare
-    # string and a two-variable list worked.
-    names = [variables] if isinstance(variables, str) else list(variables)
-    reference = ds[names].sel(time=reference_date, method="nearest")
-    for name in names:
-        ds[name] = ds[name] - reference[name]
-    return ds
+    with xr.set_options(keep_attrs=True):
+        if isinstance(ds, xr.DataArray):
+            return ds - ds.sel(time=reference_date, method="nearest")
+
+        if variables is None:
+            names = [str(name) for name in ds.data_vars if "time" in ds[name].dims]
+        else:
+            names = [variables] if isinstance(variables, str) else list(variables)
+        # Assign one variable at a time. ``ds[["a"]] -= ...`` takes a different
+        # ``__setitem__`` branch for a single-element list than for a longer one
+        # and fails with "cannot directly convert an xarray.Dataset into a numpy
+        # array", so a one-variable list used to be an error while both a bare
+        # string and a two-variable list worked.
+        reference = ds[names].sel(time=reference_date, method="nearest")
+        for name in names:
+            ds[name] = ds[name] - reference[name]
+        return ds
 
 
 def standardize_variable_names(ds: xr.Dataset, name_dict: Mapping[Any, Hashable] | None) -> xr.Dataset:

@@ -50,6 +50,8 @@ dependencies:
   - rioxarray
   - s3fs
   - scikit-learn
+  - salib
+  - threadpoolctl
   - scipy
   - seaborn
   - shapely

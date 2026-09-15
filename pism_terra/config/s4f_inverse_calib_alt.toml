@@ -56,7 +56,7 @@ velocity = "its_live"
 
 'output.checkpoint.interval' = 24
 'output.compression_level'= 2
-'output.format' = "netcdf4_parallel"
+'output.format' = "netcdf4_serial"
 'output.scalar.times' = "daily"
 'output.size' = "medium"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
@@ -269,11 +269,12 @@ model = "null"
 [inverse]
 
 'inverse.adjoint.method' = "approximate"
-'inverse.alternating_cycles' = 2
+'inverse.alternating_cycles' = 1
 'inverse.alternating_misfit_tol' = 0.01
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
 'inverse.design.param' = "exp"
+'inverse.design.variable' = "tauc_hardav"
 'inverse.file' = "none"
 'inverse.huber.delta' = 1e2
 'inverse.max_iterations' = 500
@@ -290,7 +291,7 @@ model = "null"
 # changes by less than ~1e-4 per iteration (a few 0.1% above the final value).
 'inverse.tikhonov.atol' = 1e-5
 'inverse.tikhonov.penalty_weight' = 100
-'inverse.tikhonov.rtol' = 0.1
+'inverse.tikhonov.rtol' = 0.15
 'inverse.use_zeta_fixed_mask' = "yes"
 
 [solver.forward]
@@ -325,3 +326,6 @@ bp_snes_ksp_ew_version = 3
 bp_snes_rtol = 1e-4
 inv_adj_ksp_type = "gmres"
 inv_adj_pc_type = "jacobi"
+# TAO gradient-reduction stop: ||g_proj|| / ||g_0|| < gttol. Fires on glaciers whose
+# Tikhonov rtol floor never drops below 0.15 (misfit within 0.1% of its plateau).
+tao_gttol = 1e-3
