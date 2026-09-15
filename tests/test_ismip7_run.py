@@ -73,7 +73,7 @@ def _render_inverse(tmp_path: Path, config_file: Path, **kwargs) -> str:
     """
     _render_inverse_run(
         config_file,
-        TEMPLATE_DIR / "debug-ismip7-inverse.j2",
+        TEMPLATE_DIR / "debug-ismip7.j2",
         None,
         path=tmp_path,
         **kwargs,
