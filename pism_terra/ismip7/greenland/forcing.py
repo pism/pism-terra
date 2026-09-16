@@ -35,7 +35,9 @@ from pathlib import Path
 from typing import Any, Literal, Sequence
 
 import cf_xarray
+import cftime
 import geopandas as gpd
+import netCDF4
 import numpy as np
 import pandas as pd
 import rioxarray  # pylint: disable=unused-import
@@ -1254,6 +1256,58 @@ def prepare_observations(
     return {"boot_file": boot_file, "heatflux_file": geo_file, "obs_file": obs_file}
 
 
+#: Upper bound of the last prescribed front-retreat record. The retreat
+#: observations stop in 2019, but PISM applies a record over its time bounds,
+#: so without this the forcing runs out partway through a projection. Holding
+#: the last observed front position until 2500 covers any run we submit.
+FRONT_RETREAT_END = "2500-01-01"
+
+
+def extend_final_time_bound(path: Path | str, end: str = FRONT_RETREAT_END) -> Path:
+    """
+    Stretch the last record's upper time bound out to ``end``.
+
+    Edits the bounds variable in place rather than rewriting the file, which
+    for a 450 m Greenland grid is several GB. Idempotent: running it twice
+    writes the same number.
+
+    Parameters
+    ----------
+    path : Path or str
+        NetCDF file whose time coordinate carries a ``bounds`` attribute.
+    end : str, optional
+        New upper bound of the final record, ``YYYY-MM-DD``.
+
+    Returns
+    -------
+    pathlib.Path
+        ``path``.
+
+    Raises
+    ------
+    KeyError
+        If the time coordinate declares no ``bounds`` variable.
+    ValueError
+        If ``end`` is not after the last record's own timestamp, which would
+        leave the file with a backwards interval.
+    """
+    path = Path(path)
+    with netCDF4.Dataset(path, "a") as ds:
+        time = ds.variables["time"]
+        if not hasattr(time, "bounds"):
+            raise KeyError(f"{path} has no time bounds to extend")
+        bounds = ds.variables[time.bounds]
+        calendar = getattr(time, "calendar", "standard")
+        value = cftime.date2num(pd.Timestamp(end).to_pydatetime(), time.units, calendar)
+        if value <= time[-1]:
+            raise ValueError(f"{end} is not after the last record of {path}")
+        previous = float(bounds[-1, 1])
+        bounds[-1, 1] = value
+    if previous != value:
+        logger.info("Extended the final time bound of %s to %s", path.name, end)
+    return path
+
+
 def prepare_calfin(
     output_path: Path | str,
     resolution: int,
@@ -1267,7 +1321,9 @@ def prepare_calfin(
     Prepare CALFIN glacier front retreat data as a gridded NetCDF.
 
     Downloads CALFIN terminus positions, groups by month, computes cumulative
-    retreat extent, and rasterizes to the target resolution.
+    retreat extent, and rasterizes to the target resolution. The last record's
+    upper time bound is stretched to :data:`FRONT_RETREAT_END` so the observed
+    front position holds for the rest of a run rather than expiring in 2019.
 
     Parameters
     ----------
@@ -1391,6 +1447,9 @@ def prepare_calfin(
             output=str(p_fn.resolve()),
             options="-f nc4 -z zip_2",
         )
+    # Outside the rebuild: a file staged before this existed still ends its
+    # last bound in 2019, and the call is a no-op once it does not.
+    extend_final_time_bound(p_fn)
     return p_fn
 
 

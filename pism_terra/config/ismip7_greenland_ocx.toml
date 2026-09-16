@@ -2,19 +2,20 @@
 
 'run_info.contact_email' = "aaschwanden@alaska.edu"
 'run_info.contact_name' = "Andy Aschwanden"
-'run_info.counter' = "C011"
 'run_info.domain' = "GrIS"
+'run_info.experiment' = "ocx_prescribed"
 'run_info.group' = "UAF"
 'run_info.institution' = "University of Alaska Fairbanks"
 'run_info.ism' = "PISM"
 'run_info.model' = "PISM"
-'run_info.set' = "CORE"
+'run_info.set' = "Init"
 'run_info.title' = "PISM-TERRA ISMIP7 Greenland OCX Run"
 
 [campaign]
 
 boot_file = "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 bucket = "pism-cloud-data"
+gcms = "OCX"
 grid_file = "pism_bedmachine_greenland_grid.nc"
 heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
 historical_end_year = "2024"
@@ -24,6 +25,7 @@ init_start = "1980-01-01"
 init_surface_model = "ismip7_forcing"
 obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "mouginot_basins_w_shelves.gpkg"
+pathway = "historical"
 prefix = "ismip7/greenland/input"
 regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
@@ -60,7 +62,7 @@ version = "v3"
 
 [reporting]
 
-'output.ISMIP' = "yes"
+'output.ISMIP' = "no"
 'output.checkpoint.interval' = 24
 'output.compression_level' = 2
 'output.fill_value' = 9.969209968386869e+36
@@ -72,7 +74,7 @@ version = "v3"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "yearly"
-'output.spatial.vars' = "ismip"
+'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt,limnsw,frontal_melt_rate,frontal_melt_retreat_rate,velsurf"
 
 [grid]
 

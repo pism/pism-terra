@@ -38,7 +38,12 @@ from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.observations import prepare_observations
 from pism_terra.ismip7.greenland.stage import stage
-from pism_terra.ismip7.naming import ISMIP7Names, member_ids
+from pism_terra.ismip7.naming import (
+    UQ_SEPARATOR,
+    ISMIP7Names,
+    member_ids,
+    split_sample_id,
+)
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     add_provenance,
@@ -257,6 +262,110 @@ def _build_init_leg(
     return dict2str(sort_dict_by_key(run_init)), state_init, init_tag
 
 
+#: Per-run record of what each ``set_counter`` was, written beside the run
+#: scripts. The protocol's counter "links to entries in a spreadsheet
+#: specifying parameter and modelling choices for this particular
+#: experiment"; this is that spreadsheet.
+MEMBERS_CSV = "ismip7_members.csv"
+
+#: Columns that identify the run, before the sampled parameters.
+MEMBER_ID_COLUMNS = (
+    "set_counter",
+    "ism_member_id",
+    "forcing_member_id",
+    "esm_id",
+    "experiment_id",
+    "set_id",
+    "uq_draw",
+)
+
+
+def ismip7_identity(cfg, sample: int | str | None, run_index: int | None = None) -> dict[str, object]:
+    """
+    Resolve the ISMIP7 member ids for one run.
+
+    The forcing and the parameter draw arrive composed in one ``sample`` id
+    and mean different things: the forcing is the ``ESM_id`` field, the draw
+    picks ``ISM_member_id``. ``set_counter`` is a third number again -- it
+    counts runs, and one draw is run under every ESM and scenario.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded configuration.
+    sample : int or str or None
+        Ensemble sample id, composite (``"CESM2-WACCM_uq_3"``) or plain.
+    run_index : int or None, optional
+        0-based position of this run within the invocation.
+
+    Returns
+    -------
+    dict
+        ``set_counter``, ``ism_member_id``, ``forcing_member_id``,
+        ``esm_id``, ``experiment_id``, ``set_id`` and ``uq_draw``.
+    """
+    gcms = cfg.campaign.as_params().get("gcms") or []
+    if sample is None:
+        esm_id, draw = (gcms[0] if gcms else "none"), None
+    else:
+        esm_id, draw = split_sample_id(sample)
+    member_index = draw if draw is not None else (gcms.index(esm_id) if esm_id in gcms else 0)
+    counter_index = None
+    if run_index is not None:
+        counter_index = int(cfg.campaign.set_counter_start) - 1 + int(run_index)
+    set_id = str(cfg.run_info.set_id)
+    set_counter, ism_member, forcing_member = member_ids(set_id, member_index, counter_index)
+    # A Core counter names itself.
+    if cfg.run_info.counter:
+        set_counter = str(cfg.run_info.counter)
+    return {
+        "set_counter": set_counter,
+        "ism_member_id": ism_member,
+        "forcing_member_id": forcing_member,
+        "esm_id": esm_id,
+        "experiment_id": str(cfg.run_info.experiment) if cfg.run_info.experiment else "",
+        "set_id": set_id,
+        "uq_draw": draw,
+    }
+
+
+def record_member(output_path: Path | str, identity: dict, parameters: Mapping[str, object]) -> Path:
+    """
+    Append one run to the set's member table, keyed by ``set_counter``.
+
+    Accumulates rather than overwrites: an ISMIP7 set is submitted as several
+    invocations -- one per scenario -- and the table describes the whole set.
+    A ``set_counter`` seen again replaces its earlier row, so re-rendering a
+    scenario does not duplicate it.
+
+    Parameters
+    ----------
+    output_path : Path or str
+        Directory to write :data:`MEMBERS_CSV` into.
+    identity : dict
+        Output of :func:`ismip7_identity`.
+    parameters : Mapping
+        The sampled parameter values for this run, without the staged file
+        paths.
+
+    Returns
+    -------
+    pathlib.Path
+        The written table.
+    """
+    path = Path(output_path) / MEMBERS_CSV
+    row = {**identity, **{k: v for k, v in dict(parameters).items() if k != "sample"}}
+    frame = pd.DataFrame([row])
+    if path.exists():
+        frame = pd.concat([pd.read_csv(path), frame], ignore_index=True)
+        frame = frame.drop_duplicates(subset=["set_counter"], keep="last")
+    ordered = [c for c in MEMBER_ID_COLUMNS if c in frame.columns]
+    frame = frame[ordered + sorted(c for c in frame.columns if c not in ordered)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.sort_values("set_counter").to_csv(path, index=False)
+    return path
+
+
 def _build_forward_legs(
     cfg,
     run_hist: dict,
@@ -274,6 +383,7 @@ def _build_forward_legs(
     config_cli: dict,
     proj_overrides: Mapping[str, object] | None,
     pism_config_cdl: str | Path | None,
+    run_index: int | None = None,
 ) -> dict[str, str]:
     """
     Build the forward leg command line(s) and post-processing strings.
@@ -319,6 +429,10 @@ def _build_forward_legs(
         Projection-epoch file overrides applied to the projection leg only.
     pism_config_cdl : str or pathlib.Path or None
         Optional PISM CDL master config for option validation.
+    run_index : int or None, optional
+        0-based position of this run within the invocation. Offset by
+        ``campaign.set_counter_start`` it becomes ``set_counter``, which the
+        protocol increments per *run* rather than per member.
 
     Returns
     -------
@@ -335,10 +449,13 @@ def _build_forward_legs(
     counter = cfg.run_info.counter
     spec = resolve_counter(counter) if counter else None
     pathway = (cfg.campaign.pathway or "").strip().lower()
-    # OCX (C011) is counter-driven but has no 2015 split: its reanalysis
-    # forcing is one unbroken record, so it takes the single-leg path below
-    # while keeping the counter's ISMIP7 identity (set_counter, experiment_id).
-    single_leg = spec is None or spec.single_forward_leg
+    # A CORE counter says for itself whether it splits: OCX (C011) is
+    # counter-driven but has no 2015 split, because its reanalysis forcing is
+    # one unbroken record. Without a counter the campaign says -- the PPE and
+    # ESM sets run the protocol's two legs but have no counter to resolve, and
+    # a single leg would hand a 2015-2300 forcing file to a run starting in
+    # 1985.
+    single_leg = not cfg.campaign.two_leg if spec is None else spec.single_forward_leg
     single_is_historical = pathway in ("", "historical")
 
     run_hist.pop("time.end", None)
@@ -385,14 +502,11 @@ def _build_forward_legs(
         missing = [a for a in ("domain", "group", "ism", "set_id", "experiment") if not getattr(ri, a)]
         if missing:
             raise SystemExit(f"output.ISMIP requires run_info fields: {', '.join(f'run_info.{m}' for m in missing)}")
-        gcms = cfg.campaign.as_params().get("gcms") or []
-        esm_id = str(sample) if sample is not None else (gcms[0] if gcms else "none")
-        member_index = gcms.index(esm_id) if esm_id in gcms else 0
-        set_counter, ism_member, forcing_member = member_ids(str(ri.set_id), member_index)
-        # A counter-driven run uses its protocol counter as the ISMIP7 set_counter
-        # (member_ids still supplies the CORE m001/f001 member ids).
-        if counter:
-            set_counter = counter
+        identity = ismip7_identity(cfg, sample, run_index)
+        esm_id = str(identity["esm_id"])
+        set_counter = str(identity["set_counter"])
+        ism_member = str(identity["ism_member_id"])
+        forcing_member = str(identity["forcing_member_id"])
         ismip7_ctx = {
             "domain_id": str(ri.domain),
             "source_id": str(ri.group),
@@ -656,6 +770,7 @@ def _render_forward_run(
     sample: int | None = None,
     pism_config_cdl: str | Path | None = None,
     proj_overrides: Mapping[str, object] | None = None,
+    run_index: int | None = None,
 ):
     """
     Configure and generate a PISM forward job script for ISMIP7 Greenland (ensemble-ready).
@@ -721,6 +836,9 @@ def _render_forward_run(
         flags). Used to point ``atmosphere.given.file`` etc. at the
         projection-epoch forcing file while ``run_hist`` keeps the
         historical file. Default is ``None`` (no proj-only overrides).
+    run_index : int or None, optional
+        0-based position of this run within the invocation; see
+        :func:`_build_forward_legs`.
 
     Raises
     ------
@@ -878,6 +996,7 @@ def _render_forward_run(
         config_cli=config_cli,
         proj_overrides=proj_overrides,
         pism_config_cdl=pism_config_cdl,
+        run_index=run_index,
     )
 
     job_opts = JobConfig(**cfg.job.model_dump())
@@ -931,6 +1050,7 @@ def _render_inverse_run(
     sample: int | None = None,
     pism_config_cdl: str | Path | None = None,
     proj_overrides: Mapping[str, object] | None = None,
+    run_index: int | None = None,
 ):
     """
     Configure and generate a chained PISM inverse job script for ISMIP7 Greenland.
@@ -1005,6 +1125,9 @@ def _render_inverse_run(
         Projection-only overrides applied to the projection continuation
         leg (dotted PISM flags, same schema as in
         :func:`_render_forward_run`). Default is ``None``.
+    run_index : int or None, optional
+        0-based position of this run within the invocation; see
+        :func:`_build_forward_legs`.
 
     Raises
     ------
@@ -1182,6 +1305,7 @@ def _render_inverse_run(
         config_cli=config_cli,
         proj_overrides=proj_overrides,
         pism_config_cdl=pism_config_cdl,
+        run_index=run_index,
     )
 
     job_opts = JobConfig(**cfg.job.model_dump())
@@ -1420,7 +1544,9 @@ def _build_ensemble_df(
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
 
     merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
-    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df["sample"] = (
+        merged_df["sample_df"].astype(str) + UQ_SEPARATOR + merged_df["sample_uq"].astype(int).astype(str)
+    )
     merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
     return merged_df
 
@@ -1535,13 +1661,16 @@ def _run(*, kind: str) -> None:
         "end": options.end,
     }
 
-    for idx, row in rows_df.iterrows():
+    for run_index, (idx, row) in enumerate(rows_df.iterrows()):
         if is_ensemble:
             # Drop the staged columns and the composite sample id; whatever
             # remains is a row of UQ overrides to forward to PISM.
             uq_overrides = row.drop(labels=list(df.columns) + ["sample"]).to_dict()
         else:
             uq_overrides = {}
+        # Captured before the staged file paths are merged in below, so the
+        # member table records the sampled parameters and not a row of paths.
+        sampled_parameters = dict(uq_overrides)
 
         # File paths from the staging table override UQ-supplied paths for the
         # same flag (matches the glacier behavior). ``uq_overrides`` carries
@@ -1607,7 +1736,13 @@ def _run(*, kind: str) -> None:
             sample=sample,
             pism_config_cdl=pism_config_cdl,
             proj_overrides=proj_overrides,
+            run_index=run_index,
         )
+        # What each set_counter was: the protocol's counter "links to entries
+        # in a spreadsheet specifying parameter and modelling choices for this
+        # particular experiment", and nothing else records the mapping -- it
+        # would otherwise live only in the order this loop happened to run.
+        record_member(path, ismip7_identity(cfg, sample, run_index), sampled_parameters)
 
 
 def run_forward() -> None:

@@ -24,6 +24,7 @@ Workflow management.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import re
 import shlex
@@ -1077,6 +1078,47 @@ def tqdm_joblib(tqdm_object):
         tqdm_object.close()
 
 
+def region_id(label: object) -> int:
+    """
+    Map a region label to a stable integer id.
+
+    CDO cannot read a string coordinate, so the region dimension has to be
+    numeric -- but numbering regions by *position* makes the id mean
+    different things in different files. Two files whose region sets differ
+    then align on position rather than identity: concatenating a
+    glacier-complex file (one region, index 0) with a per-glacier file (125
+    regions, indices 0..124) silently merges the complex into the first
+    glacier. Deriving the id from the label instead means an id always
+    denotes the same region, so a mismatched concatenation produces visibly
+    sparse output rather than a quiet wrong answer.
+
+    The value is the first four bytes of the label's SHA-256, masked to 31
+    bits so it fits a positive ``int32``. Collisions are possible in
+    principle -- about one chance in 40 000 for a thousand regions -- and the
+    labels are kept alongside in the companion ``*_name`` variable either way.
+
+    Parameters
+    ----------
+    label : object
+        Region label, e.g. ``"RGI2000-v7.0-C-01-04374"`` or ``"GIS_CE"``.
+        Coerced with ``str``.
+
+    Returns
+    -------
+    int
+        A positive 31-bit integer, the same one for the same label.
+
+    Examples
+    --------
+    >>> region_id("GIS") == region_id("GIS")
+    True
+    >>> region_id("GIS") == region_id("GIS_CE")
+    False
+    """
+    digest = hashlib.sha256(str(label).encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
 def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = None) -> xr.Dataset:
     """
     Rewrite a per-region scalar dataset into a form CDO can open.
@@ -1098,9 +1140,13 @@ def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = Non
            Unsupported x-coordinate type (char/string), skipped variable ice_mass!
            No data arrays found!
 
-    So move time to the front and replace the string coordinate with a plain
-    integer index, keeping the labels alongside in ``name_var``. Label-based
-    selection is one call away for xarray users::
+    So move time to the front and replace the string coordinate with an
+    integer id derived from the label (see :func:`region_id`), keeping the
+    labels alongside in ``name_var``. The id is derived rather than
+    positional so that it means the same region in every file -- position
+    does not, and files with different region sets then merge unrelated
+    regions onto the same index. Label-based selection is one call away for
+    xarray users::
 
         ds.set_index(basin="basin_name").sel(basin="GIS")
 
@@ -1127,11 +1173,11 @@ def make_cdo_readable(ds: xr.Dataset, label_dim: str, name_var: str | None = Non
         if labels.dtype.kind in {"U", "S", "O"}:
             name_var = name_var or f"{label_dim}_name"
             attrs = dict(ds[label_dim].attrs)
-            ds = ds.assign_coords({label_dim: np.arange(ds.sizes[label_dim], dtype="int32")})
+            ds = ds.assign_coords({label_dim: np.array([region_id(label) for label in labels], dtype="int32")})
             ds[label_dim].attrs = {
                 **attrs,
-                "long_name": f"{label_dim} index",
-                "description": f"positional index; labels are in '{name_var}'",
+                "long_name": f"{label_dim} id",
+                "description": f"stable id derived from the label; labels are in '{name_var}'",
             }
             ds = ds.assign_coords({name_var: (label_dim, labels.astype(str))})
             ds[name_var].attrs = {"long_name": f"{label_dim} name"}
