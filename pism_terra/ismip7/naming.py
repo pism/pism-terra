@@ -37,6 +37,51 @@ from pathlib import Path
 _SET_LETTER = {"CORE": "C", "ESM": "E", "PPE": "P"}
 
 
+#: Separator the ensemble builders put between the forcing id and the UQ draw
+#: index when they compose a ``sample`` id (``"CESM2-WACCM_uq_3"``).
+UQ_SEPARATOR = "_uq_"
+
+
+def split_sample_id(sample: object) -> tuple[str, int | None]:
+    """
+    Split a composite ensemble ``sample`` id into forcing id and UQ draw.
+
+    An ensemble run identifies a member by both the forcing it used and the
+    parameter draw it came from, composed as ``"<esm>_uq_<n>"``. The two mean
+    different things in a filename -- the forcing is the ``ESM_id`` field, the
+    draw picks the ``ISM_member_id`` -- so they have to be told apart before
+    either is used.
+
+    Parameters
+    ----------
+    sample : object
+        Sample id, composite (``"CESM2-WACCM_uq_3"``) or plain
+        (``"CESM2-WACCM"``). Coerced with ``str``.
+
+    Returns
+    -------
+    tuple of (str, int or None)
+        The forcing id, and the 0-based draw index or ``None`` when the id
+        carries no draw.
+
+    Examples
+    --------
+    >>> split_sample_id("CESM2-WACCM_uq_3")
+    ('CESM2-WACCM', 3)
+    >>> split_sample_id("CESM2-WACCM")
+    ('CESM2-WACCM', None)
+    """
+    text = str(sample)
+    head, separator, tail = text.rpartition(UQ_SEPARATOR)
+    if not separator:
+        return text, None
+    try:
+        return head, int(tail)
+    except ValueError:
+        # Not a draw index after all; the id is just a name containing "_uq_".
+        return text, None
+
+
 def member_ids(set_id: str, sample: int) -> tuple[str, str, str]:
     """
     Derive ``(set_counter, ISM_member_id, forcing_member_id)`` from a sample index.

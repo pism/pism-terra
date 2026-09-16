@@ -38,7 +38,12 @@ from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.observations import prepare_observations
 from pism_terra.ismip7.greenland.stage import stage
-from pism_terra.ismip7.naming import ISMIP7Names, member_ids
+from pism_terra.ismip7.naming import (
+    UQ_SEPARATOR,
+    ISMIP7Names,
+    member_ids,
+    split_sample_id,
+)
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     add_provenance,
@@ -335,10 +340,13 @@ def _build_forward_legs(
     counter = cfg.run_info.counter
     spec = resolve_counter(counter) if counter else None
     pathway = (cfg.campaign.pathway or "").strip().lower()
-    # OCX (C011) is counter-driven but has no 2015 split: its reanalysis
-    # forcing is one unbroken record, so it takes the single-leg path below
-    # while keeping the counter's ISMIP7 identity (set_counter, experiment_id).
-    single_leg = spec is None or spec.single_forward_leg
+    # A CORE counter says for itself whether it splits: OCX (C011) is
+    # counter-driven but has no 2015 split, because its reanalysis forcing is
+    # one unbroken record. Without a counter the campaign says -- the PPE and
+    # ESM sets run the protocol's two legs but have no counter to resolve, and
+    # a single leg would hand a 2015-2300 forcing file to a run starting in
+    # 1985.
+    single_leg = not cfg.campaign.two_leg if spec is None else spec.single_forward_leg
     single_is_historical = pathway in ("", "historical")
 
     run_hist.pop("time.end", None)
@@ -386,8 +394,20 @@ def _build_forward_legs(
         if missing:
             raise SystemExit(f"output.ISMIP requires run_info fields: {', '.join(f'run_info.{m}' for m in missing)}")
         gcms = cfg.campaign.as_params().get("gcms") or []
-        esm_id = str(sample) if sample is not None else (gcms[0] if gcms else "none")
-        member_index = gcms.index(esm_id) if esm_id in gcms else 0
+        # An ensemble member's sample id is composite ("CESM2-WACCM_uq_3"):
+        # the forcing names the ESM_id field, the draw picks the member id.
+        # Passing the whole string through put "CESM2-WACCM_uq_3" in the ESM
+        # slot, which is not an ESM and breaks the underscore-delimited stem.
+        esm_id, draw = split_sample_id(sample) if sample is not None else ((gcms[0] if gcms else "none"), None)
+        # ISM_member_id identifies the *ice sheet* configuration, so for a PPE
+        # it has to follow the parameter draw. The GCM has its own field and
+        # must not stand in for it, or every draw of one GCM collides on one
+        # name. With no draw (a plain CORE/ESM run) the forcing is the only
+        # thing that varies, so its position is the index.
+        if draw is not None:
+            member_index = draw
+        else:
+            member_index = gcms.index(esm_id) if esm_id in gcms else 0
         set_counter, ism_member, forcing_member = member_ids(str(ri.set_id), member_index)
         # A counter-driven run uses its protocol counter as the ISMIP7 set_counter
         # (member_ids still supplies the CORE m001/f001 member ids).
@@ -1420,7 +1440,9 @@ def _build_ensemble_df(
         uq_df = apply_choice_mapping(uq_df, df, uq.mapping)
 
     merged_df = df.merge(uq_df, how="cross", suffixes=("_df", "_uq"))
-    merged_df["sample"] = merged_df["sample_df"].astype(str) + "_uq_" + merged_df["sample_uq"].astype(int).astype(str)
+    merged_df["sample"] = (
+        merged_df["sample_df"].astype(str) + UQ_SEPARATOR + merged_df["sample_uq"].astype(int).astype(str)
+    )
     merged_df = merged_df.drop(columns=["sample_df", "sample_uq"])
     return merged_df
 

@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 
 import pytest
+import toml
 
 from pism_terra.inversion import (
     forward_leg_from_inversion,
@@ -39,6 +40,7 @@ from pism_terra.inversion import (
     inverted_variables,
 )
 from pism_terra.ismip7.greenland.run import _render_forward_run, _render_inverse_run
+from pism_terra.ismip7.naming import ISMIP7Names, member_ids, split_sample_id
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO / "pism_terra" / "config"
@@ -899,3 +901,174 @@ def test_run_without_outlines_postprocesses_nothing(tmp_path):
     """
     script = _render_forward(tmp_path, C005, sample="CESM2-WACCM")
     assert _postprocess_commands(script) == []
+
+
+def test_split_sample_id_separates_forcing_from_draw():
+    """
+    An ensemble member id carries two different things.
+
+    ``"CESM2-WACCM_uq_3"`` names both the forcing (the ``ESM_id`` field) and
+    the parameter draw (which picks ``ISM_member_id``). Passing the whole
+    string through put a non-ESM in the ESM slot and produced an
+    11-field stem where the convention has 9.
+    """
+    assert split_sample_id("CESM2-WACCM_uq_3") == ("CESM2-WACCM", 3)
+    assert split_sample_id("MRI-ESM2-0_uq_0") == ("MRI-ESM2-0", 0)
+    # A plain id has no draw.
+    assert split_sample_id("CESM2-WACCM") == ("CESM2-WACCM", None)
+    # Not a draw index: leave the id alone rather than truncating it.
+    assert split_sample_id("model_uq_beta") == ("model_uq_beta", None)
+
+
+def test_ppe_member_ids_follow_the_draw_not_the_gcm():
+    """
+    Every member of a PPE matrix gets its own filename.
+
+    ``ISM_member_id`` identifies the ice sheet configuration, so a given
+    parameter draw keeps one ``mNNN`` across every forcing it is run under,
+    and two draws never share a name. Deriving the index from the GCM's
+    position instead collapsed a 24-run matrix onto 6 names, silently
+    overwriting every draw but the last.
+    """
+    gcms = ["CESM2-WACCM", "MRI-ESM2-0"]
+
+    def stem(sample: str, experiment: str) -> str:
+        """
+        Name one member the way the renderer does.
+
+        Parameters
+        ----------
+        sample : str
+            Composite ensemble sample id.
+        experiment : str
+            ISMIP7 experiment id.
+
+        Returns
+        -------
+        str
+            The filename stem.
+        """
+        esm_id, draw = split_sample_id(sample)
+        index = draw if draw is not None else (gcms.index(esm_id) if esm_id in gcms else 0)
+        set_counter, ism_member, forcing_member = member_ids("PPE", index)
+        return ISMIP7Names(
+            "GrIS",
+            "UAF",
+            "PISM",
+            ism_member,
+            esm_id,
+            forcing_member,
+            experiment,
+            "PPE",
+            set_counter,
+            "2015-2100",
+        ).stem()
+
+    experiments = ("ssp126", "ssp370", "ssp585")
+    stems = [stem(f"{gcm}_uq_{draw}", ssp) for draw in range(4) for gcm in gcms for ssp in experiments]
+
+    assert len(stems) == 24
+    assert len(set(stems)) == 24, "ensemble members are overwriting one another"
+    assert all(len(s.split("_")) == 9 for s in stems), "the stem must keep the convention's 9 fields"
+
+    # One draw, two forcings: same ice sheet configuration, so same mNNN.
+    assert "_m003_CESM2-WACCM_" in stem("CESM2-WACCM_uq_2", "ssp585")
+    assert "_m003_MRI-ESM2-0_" in stem("MRI-ESM2-0_uq_2", "ssp585")
+    # Two draws under one forcing: different configurations, different mNNN.
+    assert "_m001_" in stem("CESM2-WACCM_uq_0", "ssp585")
+
+
+def _ppe_config(tmp_path: Path, two_leg: bool) -> Path:
+    """
+    Write a PPE config: a CORE experiment with the counter taken away.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write the config into.
+    two_leg : bool
+        Value of ``campaign.two_leg``.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the config.
+    """
+    raw = toml.loads(C005.read_text())
+    del raw["run_info"]["run_info.counter"]
+    raw["run_info"]["run_info.set"] = "PPE"
+    raw["run_info"]["run_info.experiment"] = "ssp585"
+    raw["campaign"]["pathway"] = "ssp585"
+    raw["campaign"]["two_leg"] = two_leg
+    raw["time"]["time.end"] = "2300-01-01"
+    path = tmp_path / f"ppe_{two_leg}.toml"
+    path.write_text(toml.dumps(raw))
+    return path
+
+
+def test_two_leg_splits_a_counterless_run_at_2015(tmp_path: Path):
+    """
+    A PPE runs the protocol's two legs even with no CORE counter.
+
+    The two-leg split used to be gated on ``run_info.counter``, which only the
+    CORE set has. Without it a PPE rendered one invocation spanning
+    1985..2300 under the projection pathway -- handing a 2015-2300 forcing
+    file to a run that starts in 1985.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, _ppe_config(tmp_path, two_leg=True), sample="CESM2-WACCM_uq_3")
+    legs = [leg for leg in _legs(script) if leg.split()[0] == "pism"]
+    assert len(legs) == 3, "expected init, historical and projection"
+    _init, hist, proj = legs
+
+    assert "-time.start 1985-01-01" in hist and "-time.end 2015-01-01" in hist
+    assert '-run_info.experiment "historical"' in hist
+    assert "-time.start 2015-01-01" in proj and "-time.end 2300-01-01" in proj
+    assert '-run_info.experiment "ssp585"' in proj
+
+    # Both legs are submission products for a PPE, named off the UQ draw.
+    assert "_m004_CESM2-WACCM_f001_historical_P004_1985-2014.nc" in hist
+    assert "_m004_CESM2-WACCM_f001_ssp585_P004_2015-2299.nc" in proj
+
+
+def test_without_two_leg_a_counterless_run_stays_single(tmp_path: Path):
+    """
+    The flag is opt-in, so existing counterless configs are untouched.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, _ppe_config(tmp_path, two_leg=False), sample="CESM2-WACCM_uq_3")
+    legs = [leg for leg in _legs(script) if leg.split()[0] == "pism"]
+    assert len(legs) == 2, "expected init and one forward leg"
+    assert "-time.end 2300-01-01" in legs[-1]
+    assert "-time.end 2015-01-01" not in legs[-1]
+
+
+def test_a_core_counter_still_decides_for_itself(tmp_path: Path):
+    """
+    ``two_leg`` does not override a counter that says it has no split.
+
+    OCX (C011) is counter-driven and single-leg by design; setting the flag
+    must not reintroduce a 2015 split it does not want.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    raw = toml.loads(C011.read_text())
+    raw["campaign"]["two_leg"] = True
+    path = tmp_path / "c011_two_leg.toml"
+    path.write_text(toml.dumps(raw))
+
+    script = _render_forward(tmp_path, path, sample="OCX")
+    legs = [leg for leg in _legs(script) if leg.split()[0] == "pism"]
+    assert len(legs) == 2, "C011 stays init + one continuous leg"
+    assert "-time.end 2025-01-01" in legs[-1]
