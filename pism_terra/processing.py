@@ -298,8 +298,8 @@ def decode_pism_config(config: xr.DataArray) -> dict[str, Any]:
 
 def preprocess_netcdf(
     ds,
-    exp_dim: str = "exp_id",
-    exp_regexp: str | Sequence[str] = (r"_id_(.+?)_uq_\d+_", r"id_(.+?)_"),
+    exp_dim: str | None = "exp_id",
+    exp_regexp: str | Sequence[str] | None = (r"_id_(.+?)_uq_\d+_", r"id_(.+?)_"),
     rgi_dim: str | None = "rgi_id",
     rgi_regexp: str | Sequence[str] | None = r"(RGI2000-v7\.0-[A-Z]-\d{2}-\d+)",
     uq_dim: str | None = "uq_id",
@@ -333,10 +333,13 @@ def preprocess_netcdf(
     ----------
     ds : xarray.Dataset
         The input dataset to be processed.
-    exp_dim : str, optional
-        The name of the experiment dimension, by default "exp_id".
-    exp_regexp : str or sequence of str, optional
-        Pattern(s) for the experiment identifier, tried in order. By default the
+    exp_dim : str or None, optional
+        The name of the experiment dimension, by default "exp_id". ``None``
+        adds no experiment dimension, for when another identifier is what the
+        files are concatenated along.
+    exp_regexp : str or sequence of str or None, optional
+        Pattern(s) for the experiment identifier, tried in order. ``None``
+        has the same effect as ``exp_dim=None``. By default the
         anchored ``_id_(.+?)_uq_\d+_`` first, so that a multi-token identifier such as
         ``HIRHAM5-ERA5_YMM_1990_2019`` is captured whole, then the looser
         ``id_(.+?)_`` for file names without a ``_uq_`` tag.
@@ -415,11 +418,18 @@ def preprocess_netcdf(
             expand_dims.append(dim)
             expand_coords[dim] = [value]
 
-    m_exp_id = _search_id(exp_regexp, name, source)
-    if m_exp_id is None:
-        raise ValueError(f"{exp_regexp!r} does not match {source!r}")
-    expand_dims.append(exp_dim)
-    expand_coords[exp_dim] = [m_exp_id]
+    # Unlike the optional identifiers above, a requested experiment dimension
+    # that does not match is an error rather than a silent omission: it is the
+    # dimension runs are concatenated along, and a file that quietly lacks it
+    # would be merged into its neighbour instead of sitting beside it. Set
+    # ``exp_dim=None`` when another dimension serves that role -- an ensemble
+    # of one run, say, concatenated along ``uq_id``.
+    if exp_dim is not None and exp_regexp is not None:
+        m_exp_id = _search_id(exp_regexp, name, source)
+        if m_exp_id is None:
+            raise ValueError(f"{exp_regexp!r} does not match {source!r}")
+        expand_dims.append(exp_dim)
+        expand_coords[exp_dim] = [m_exp_id]
 
     ds = ds.expand_dims(expand_coords)
 

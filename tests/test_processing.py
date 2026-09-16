@@ -811,3 +811,67 @@ def test_normalize_timeseries_requires_a_reference_date():
     """Omitting the reference date is an error, not a silent no-op."""
     with pytest.raises(ValueError, match="reference_date"):
         normalize_timeseries(_cumulative()["a"])
+
+
+def test_preprocess_exp_dim_can_be_switched_off(tmp_path):
+    """
+    ``exp_dim=None`` adds no experiment dimension.
+
+    The other identifiers were already optional; this one was not, so a set of
+    files concatenated along a different identifier carried a redundant
+    ``exp_id`` alongside it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    path = _write_run(tmp_path, "scalar_C_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_4_1986-01-01_2025-01-01.nc")
+
+    ds = preprocess_netcdf(xr.open_dataset(path), process_config=False, exp_dim=None)
+    assert "exp_id" not in ds.dims
+    assert {d: str(ds[d].values[0]) for d in ("rgi_id", "uq_id") if d in ds.dims} == {
+        "rgi_id": "RGI2000-v7.0-C-01-04374",
+        "uq_id": "4",
+    }
+
+    # exp_regexp=None does the same, so either switch works.
+    ds = preprocess_netcdf(xr.open_dataset(path), process_config=False, exp_regexp=None)
+    assert "exp_id" not in ds.dims
+
+
+def test_preprocess_all_identifier_dims_can_be_off(tmp_path):
+    """
+    With every identifier off the dataset is returned as it came.
+
+    The ``pism_config`` blob is stored over the identifier dimensions, so
+    this is the case where there are none to store it over.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    path = _write_run(tmp_path, "dh_RGI2000-v7.0-C-01-03383_id_0_uq_1_2000-01-01_2020-01-01.nc")
+
+    ds = preprocess_netcdf(xr.open_dataset(path), exp_dim=None, rgi_dim=None, uq_dim=None, gcm_dim=None)
+
+    assert not {"exp_id", "rgi_id", "uq_id", "gcm_id"} & set(ds.dims)
+    assert ds["pism_config"].dims == ()
+    config = json.loads(ds["pism_config"].values.reshape(-1)[0])
+    assert config == {"geometry.front_retreat.prescribed.file": "false", "grid.dx": "1200"}
+
+
+def test_preprocess_still_raises_when_a_requested_exp_dim_is_missing(tmp_path):
+    """
+    Switching it off is opt-in; asking for one that is absent is still an error.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    path = _write_run(tmp_path, "scalar_C_g200m_RGI2000-v7.0-C-01-04374_id_0_uq_4_1986-01-01_2025-01-01.nc")
+
+    with pytest.raises(ValueError, match="does not match"):
+        preprocess_netcdf(xr.open_dataset(path), process_config=False, exp_regexp=r"_nope_(\d+)_")
