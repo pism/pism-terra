@@ -28,7 +28,7 @@ from __future__ import annotations
 import numpy as np
 import xarray as xr
 
-from pism_terra.workflow import make_cdo_readable
+from pism_terra.workflow import make_cdo_readable, region_id
 
 
 def labelled(dim: str = "basin", labels=("CE", "CW", "GIS"), n_time: int = 4) -> xr.Dataset:
@@ -64,7 +64,9 @@ def test_moves_time_first_and_indexes_labels():
 
     assert out["ice_mass"].dims == ("time", "basin")
     assert out["basin"].dtype == np.int32
-    assert out["basin"].values.tolist() == [0, 1, 2]
+    # Ids come from the labels, not their position: a position means a
+    # different region in a file with a different region set.
+    assert out["basin"].values.tolist() == [region_id(label) for label in ("CE", "CW", "GIS")]
     assert out["basin_name"].values.tolist() == ["CE", "CW", "GIS"]
     # Values follow their label, they are not reshuffled.
     np.testing.assert_array_equal(
@@ -149,5 +151,5 @@ def test_labels_are_written_as_a_char_array(tmp_path):
     with xr.open_dataset(path) as back:
         assert [str(v) for v in back["basin_name"].values] == ["CE", "CW", "GIS"]
         assert float(back.set_index(basin="basin_name")["ice_mass"].sel(basin="GIS").isel(time=0)) == float(
-            out["ice_mass"].sel(basin=2).isel(time=0)
+            out["ice_mass"].sel(basin=region_id("GIS")).isel(time=0)
         )
