@@ -16,7 +16,7 @@
 boot_file = "boot_1985_g900m_GreenlandObsISMIP7-v1.3.nc"
 bucket = "pism-cloud-data"
 grid_file = "pism_bedmachine_greenland_grid.nc"
-heatflux_file  = "heatflux_g900m_GreenlandObsISMIP7-v1.3.nc"
+heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
 historical_end_year = "2024"
 historical_start_year = "1958"
 init_end = "1990-01-01"
