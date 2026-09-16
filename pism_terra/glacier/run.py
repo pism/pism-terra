@@ -45,6 +45,7 @@ from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     add_provenance,
     apply_choice_mapping,
+    check_template_legs,
     dict2str,
     filter_overrides_by_config,
     normalize_row,
@@ -758,6 +759,9 @@ def _render_inverse_run(
         }
     )
     params.update({"dh_str": _dh_command(spatial_file, output_path, rgi_id, name_options)})
+    # Jinja drops a variable the template never mentions, so a template
+    # written for the other runner yields a script missing its main leg.
+    check_template_legs(template_file, params)
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")
@@ -1081,6 +1085,9 @@ def _render_forward_run(
         }
     )
     params.update({"dh_str": _dh_command(spatial_file, output_path, rgi_id, name_options)})
+    # Jinja drops a variable the template never mentions, so a template
+    # written for the other runner yields a script missing its main leg.
+    check_template_legs(template_file, params)
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = glacier_path / Path("run_scripts")

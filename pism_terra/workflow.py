@@ -31,8 +31,10 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Iterable, TypeVar
+from typing import Any, Iterable, Mapping, TypeVar
 
+import jinja2
+import jinja2.meta
 import joblib
 import numpy as np
 import pandas as pd
@@ -1076,6 +1078,50 @@ def tqdm_joblib(tqdm_object):
     finally:
         joblib.parallel.BatchCompletionCallBack = old_batch_callback
         tqdm_object.close()
+
+
+#: Template variables carrying a PISM invocation. A template that does not
+#: reference one it is handed drops that run silently, and the first sign is
+#: a finished job that produced no output.
+LEG_SLOTS = ("run_init_str", "run_str", "run_hist_str", "run_proj_str")
+
+
+def check_template_legs(template_file: Path | str, params: Mapping[str, object]) -> None:
+    """
+    Refuse a template that would silently drop one of the run's legs.
+
+    The runners fill different slots -- the glacier ones a single ``run_str``,
+    the ISMIP7 ones ``run_hist_str`` and ``run_proj_str`` -- and Jinja drops
+    a variable the template never mentions without complaint. Handing the
+    ISMIP7 runner a glacier template therefore yields a job script with its
+    init leg and nothing else, which is only discovered after the job has
+    been queued and come back empty.
+
+    Only slots with content are checked, so a template that omits a leg this
+    run does not have is fine.
+
+    Parameters
+    ----------
+    template_file : Path or str
+        The Jinja2 template about to be rendered.
+    params : Mapping
+        The render context.
+
+    Raises
+    ------
+    SystemExit
+        If the template references none of a non-empty leg slot.
+    """
+    template_file = Path(template_file)
+    declared = jinja2.meta.find_undeclared_variables(jinja2.Environment().parse(template_file.read_text("utf-8")))
+    dropped = [slot for slot in LEG_SLOTS if str(params.get(slot) or "").strip() and slot not in declared]
+    if dropped:
+        offered = sorted(slot for slot in LEG_SLOTS if slot in declared)
+        raise SystemExit(
+            f"{template_file.name} would drop {', '.join(dropped)}: it declares "
+            f"{', '.join(offered) or 'no run slots'}. The generated script would be missing "
+            "that leg. Use a template written for this runner."
+        )
 
 
 def region_id(label: object) -> int:
