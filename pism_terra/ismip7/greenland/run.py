@@ -279,6 +279,7 @@ def _build_forward_legs(
     config_cli: dict,
     proj_overrides: Mapping[str, object] | None,
     pism_config_cdl: str | Path | None,
+    run_index: int | None = None,
 ) -> dict[str, str]:
     """
     Build the forward leg command line(s) and post-processing strings.
@@ -324,6 +325,10 @@ def _build_forward_legs(
         Projection-epoch file overrides applied to the projection leg only.
     pism_config_cdl : str or pathlib.Path or None
         Optional PISM CDL master config for option validation.
+    run_index : int or None, optional
+        0-based position of this run within the invocation. Offset by
+        ``campaign.set_counter_start`` it becomes ``set_counter``, which the
+        protocol increments per *run* rather than per member.
 
     Returns
     -------
@@ -408,7 +413,14 @@ def _build_forward_legs(
             member_index = draw
         else:
             member_index = gcms.index(esm_id) if esm_id in gcms else 0
-        set_counter, ism_member, forcing_member = member_ids(str(ri.set_id), member_index)
+        # The counter is per run, the member id per parameter set: one draw is
+        # run under every ESM and every scenario, and tying the two together
+        # sends all of those to one submission directory, where their
+        # identical historical legs overwrite one another.
+        counter_index = None
+        if run_index is not None:
+            counter_index = int(cfg.campaign.set_counter_start) - 1 + int(run_index)
+        set_counter, ism_member, forcing_member = member_ids(str(ri.set_id), member_index, counter_index)
         # A counter-driven run uses its protocol counter as the ISMIP7 set_counter
         # (member_ids still supplies the CORE m001/f001 member ids).
         if counter:
@@ -676,6 +688,7 @@ def _render_forward_run(
     sample: int | None = None,
     pism_config_cdl: str | Path | None = None,
     proj_overrides: Mapping[str, object] | None = None,
+    run_index: int | None = None,
 ):
     """
     Configure and generate a PISM forward job script for ISMIP7 Greenland (ensemble-ready).
@@ -741,6 +754,9 @@ def _render_forward_run(
         flags). Used to point ``atmosphere.given.file`` etc. at the
         projection-epoch forcing file while ``run_hist`` keeps the
         historical file. Default is ``None`` (no proj-only overrides).
+    run_index : int or None, optional
+        0-based position of this run within the invocation; see
+        :func:`_build_forward_legs`.
 
     Raises
     ------
@@ -898,6 +914,7 @@ def _render_forward_run(
         config_cli=config_cli,
         proj_overrides=proj_overrides,
         pism_config_cdl=pism_config_cdl,
+        run_index=run_index,
     )
 
     job_opts = JobConfig(**cfg.job.model_dump())
@@ -951,6 +968,7 @@ def _render_inverse_run(
     sample: int | None = None,
     pism_config_cdl: str | Path | None = None,
     proj_overrides: Mapping[str, object] | None = None,
+    run_index: int | None = None,
 ):
     """
     Configure and generate a chained PISM inverse job script for ISMIP7 Greenland.
@@ -1025,6 +1043,9 @@ def _render_inverse_run(
         Projection-only overrides applied to the projection continuation
         leg (dotted PISM flags, same schema as in
         :func:`_render_forward_run`). Default is ``None``.
+    run_index : int or None, optional
+        0-based position of this run within the invocation; see
+        :func:`_build_forward_legs`.
 
     Raises
     ------
@@ -1202,6 +1223,7 @@ def _render_inverse_run(
         config_cli=config_cli,
         proj_overrides=proj_overrides,
         pism_config_cdl=pism_config_cdl,
+        run_index=run_index,
     )
 
     job_opts = JobConfig(**cfg.job.model_dump())
@@ -1557,7 +1579,7 @@ def _run(*, kind: str) -> None:
         "end": options.end,
     }
 
-    for idx, row in rows_df.iterrows():
+    for run_index, (idx, row) in enumerate(rows_df.iterrows()):
         if is_ensemble:
             # Drop the staged columns and the composite sample id; whatever
             # remains is a row of UQ overrides to forward to PISM.
@@ -1629,6 +1651,7 @@ def _run(*, kind: str) -> None:
             sample=sample,
             pism_config_cdl=pism_config_cdl,
             proj_overrides=proj_overrides,
+            run_index=run_index,
         )
 
 

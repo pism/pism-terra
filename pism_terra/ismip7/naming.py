@@ -82,7 +82,7 @@ def split_sample_id(sample: object) -> tuple[str, int | None]:
         return text, None
 
 
-def member_ids(set_id: str, sample: int) -> tuple[str, str, str]:
+def member_ids(set_id: str, sample: int, counter_index: int | None = None) -> tuple[str, str, str]:
     """
     Derive ``(set_counter, ISM_member_id, forcing_member_id)`` from a sample index.
 
@@ -104,7 +104,14 @@ def member_ids(set_id: str, sample: int) -> tuple[str, str, str]:
     set_id : str
         ISMIP7 set type, one of ``"CORE"``, ``"ESM"``, ``"PPE"``.
     sample : int
-        0-based ensemble member index.
+        0-based ensemble member index -- the parameter draw for a PPE, the
+        forcing for an ESM set. Picks ``ISM_member_id`` / ``forcing_member_id``.
+    counter_index : int or None, optional
+        0-based index for ``set_counter`` when it does not track the member.
+        The counter "increments with each model run in a set", and one
+        parameter draw is run many times -- under each ESM and each scenario --
+        so for a PPE the two are different numbers. ``None`` keeps them equal,
+        which is right when there is one run per member.
 
     Returns
     -------
@@ -123,7 +130,8 @@ def member_ids(set_id: str, sample: int) -> tuple[str, str, str]:
     except KeyError as exc:
         raise ValueError(f"set_id must be one of {sorted(_SET_LETTER)}, got {set_id!r}") from exc
     n = int(sample) + 1
-    set_counter = f"{letter}{n:03d}"
+    counter_n = n if counter_index is None else int(counter_index) + 1
+    set_counter = f"{letter}{counter_n:03d}"
     ism_member = f"m{n:03d}" if key == "PPE" else "m001"
     forcing_member = f"f{n:03d}" if key == "ESM" else "f001"
     return set_counter, ism_member, forcing_member

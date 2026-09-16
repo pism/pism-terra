@@ -1722,6 +1722,13 @@ class CampaignConfig(BaseModel):
         range. A CORE ``run_info.counter`` implies this and ignores the flag;
         it exists for the sets that have no counter (PPE, ESM), which still
         run the protocol's two legs.
+    set_counter_start : int
+        First ``set_counter`` this campaign allocates. The counter is unique
+        across a whole ISMIP7 set, but a set is usually submitted as several
+        invocations -- one per scenario -- each of which numbers its own runs
+        from the start. Giving each config a different base keeps the numbers
+        apart, e.g. 1 / 101 / 201 for three scenarios of up to 100 runs each.
+        Ignored when a CORE ``run_info.counter`` supplies the counter.
     projection_start_year : str, float, or None
         First year of the projection forcing file (e.g. 2015 for ISMIP7).
     projection_end_year : str, float, or None
@@ -1788,6 +1795,7 @@ class CampaignConfig(BaseModel):
     projection_start_year: str | float | None = Field(default=None)
     projection_end_year: str | float | None = Field(default=None)
     two_leg: bool = Field(default=False)
+    set_counter_start: int = Field(default=1)
     version: str | None = Field(default=None)
     climate_version: str | None = Field(default=None)
     ocean_version: str | None = Field(default=None)

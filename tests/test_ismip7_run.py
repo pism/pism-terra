@@ -1072,3 +1072,75 @@ def test_a_core_counter_still_decides_for_itself(tmp_path: Path):
     legs = [leg for leg in _legs(script) if leg.split()[0] == "pism"]
     assert len(legs) == 2, "C011 stays init + one continuous leg"
     assert "-time.end 2025-01-01" in legs[-1]
+
+
+def test_set_counter_is_per_run_and_member_id_is_per_draw(tmp_path: Path):
+    """
+    A whole PPE matrix lands in distinct submission directories.
+
+    ``set_counter`` "increments with each model run in a set" while
+    ``ISM_member_id`` identifies the parameter set, so one draw run under two
+    ESMs gets one ``mNNN`` and two ``Pnnn``. Tying them together sent every
+    scenario of a draw to one directory, where their identical historical
+    legs overwrote one another.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    configs = {
+        "ssp126": CONFIG_DIR / "ismip7_greenland_ppe_ssp126.toml",
+        "ssp370": CONFIG_DIR / "ismip7_greenland_ppe_ssp370.toml",
+        "ssp585": CONFIG_DIR / "ismip7_greenland_ppe_ssp585.toml",
+    }
+    seen: dict[str, str] = {}
+    members: dict[tuple[str, int], set[str]] = {}
+    for scenario, config in configs.items():
+        run_index = 0
+        for gcm in ("CESM2-WACCM", "MRI-ESM2-0"):
+            for draw in range(3):
+                script = _render_forward(
+                    tmp_path / f"{scenario}_{gcm}_{draw}",
+                    config,
+                    sample=f"{gcm}_uq_{draw}",
+                    run_index=run_index,
+                )
+                found = _search(r"-output\.spatial\.file (\S*/PPE/\S+historical\S+\.nc)", script)
+                key = found.split("/output/")[-1]
+                assert key not in seen, f"{scenario}/{gcm}/draw{draw} collides with {seen.get(key)}"
+                seen[key] = f"{scenario}/{gcm}/draw{draw}"
+                members.setdefault((scenario, draw), set()).add(
+                    _search(r"/PPE/\S+/\{var\}_GrIS_UAF_PISM_(m\d{3})_", script)
+                )
+                run_index += 1
+
+    assert len(seen) == 18, "expected one directory per run"
+    # One draw keeps one member id whichever ESM it ran under.
+    for (_scenario, draw), ids in members.items():
+        assert ids == {f"m{draw + 1:03d}"}, f"draw {draw} got {sorted(ids)}"
+
+
+def test_set_counter_start_keeps_the_scenarios_apart(tmp_path: Path):
+    """
+    Each scenario config numbers from its own base.
+
+    A set spans several invocations -- one per scenario -- and each numbers
+    its runs from the start, so without a per-config base they would all
+    begin at P001.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    for scenario, expected in (("ssp126", "P001"), ("ssp370", "P101"), ("ssp585", "P201")):
+        script = _render_forward(
+            tmp_path / scenario,
+            CONFIG_DIR / f"ismip7_greenland_ppe_{scenario}.toml",
+            sample="CESM2-WACCM_uq_0",
+            run_index=0,
+        )
+        assert f"/PPE/{expected}/" in script
+        # The member id is the draw's, not the counter's.
+        assert "_m001_CESM2-WACCM_" in script
