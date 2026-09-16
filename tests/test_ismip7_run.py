@@ -31,15 +31,24 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import toml
 
+from pism_terra.config import load_config
 from pism_terra.inversion import (
     forward_leg_from_inversion,
     inversion_uses_hardav,
     inverted_variables,
 )
-from pism_terra.ismip7.greenland.run import _render_forward_run, _render_inverse_run
+from pism_terra.ismip7.greenland.run import (
+    MEMBER_ID_COLUMNS,
+    MEMBERS_CSV,
+    _render_forward_run,
+    _render_inverse_run,
+    ismip7_identity,
+    record_member,
+)
 from pism_terra.ismip7.naming import ISMIP7Names, member_ids, split_sample_id
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1144,3 +1153,81 @@ def test_set_counter_start_keeps_the_scenarios_apart(tmp_path: Path):
         assert f"/PPE/{expected}/" in script
         # The member id is the draw's, not the counter's.
         assert "_m001_CESM2-WACCM_" in script
+
+
+def test_member_table_accumulates_across_scenario_invocations(tmp_path: Path):
+    """
+    One table describes the whole set, not the last invocation.
+
+    The protocol's ``set_counter`` "links to entries in a spreadsheet
+    specifying parameter and modelling choices for this particular
+    experiment". A set is submitted as one invocation per scenario, so the
+    table has to survive the next one.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    draws = {d: {"basal_resistance.pseudo_plastic.q": 0.70 + d / 100} for d in range(3)}
+    for scenario in ("ssp126", "ssp370", "ssp585"):
+        cfg = load_config(CONFIG_DIR / f"ismip7_greenland_ppe_{scenario}.toml")
+        run_index = 0
+        for gcm in ("CESM2-WACCM", "MRI-ESM2-0"):
+            for draw in range(3):
+                record_member(tmp_path, ismip7_identity(cfg, f"{gcm}_uq_{draw}", run_index), draws[draw])
+                run_index += 1
+
+    table = pd.read_csv(tmp_path / MEMBERS_CSV)
+    assert len(table) == 18
+    assert table["set_counter"].nunique() == 18
+    assert set(table["experiment_id"]) == {"ssp126", "ssp370", "ssp585"}
+    # The identifying columns come first, then the parameters.
+    assert list(table.columns)[: len(MEMBER_ID_COLUMNS)] == list(MEMBER_ID_COLUMNS)
+
+    # One draw keeps one member id and one parameter set across the matrix.
+    for draw in range(3):
+        rows = table[table["uq_draw"] == draw]
+        assert len(rows) == 6
+        assert set(rows["ism_member_id"]) == {f"m{draw + 1:03d}"}
+        assert set(rows["basal_resistance.pseudo_plastic.q"]) == {0.70 + draw / 100}
+
+
+def test_member_table_replaces_a_rerendered_run(tmp_path: Path):
+    """
+    Re-rendering a scenario updates its rows instead of duplicating them.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = load_config(CONFIG_DIR / "ismip7_greenland_ppe_ssp126.toml")
+    identity = ismip7_identity(cfg, "CESM2-WACCM_uq_0", 0)
+    record_member(tmp_path, identity, {"basal_resistance.pseudo_plastic.q": 0.70})
+    record_member(tmp_path, identity, {"basal_resistance.pseudo_plastic.q": 0.88})
+
+    table = pd.read_csv(tmp_path / MEMBERS_CSV)
+    assert len(table) == 1
+    assert table["basal_resistance.pseudo_plastic.q"].iloc[0] == 0.88
+
+
+def test_a_core_run_records_its_protocol_counter(tmp_path: Path):
+    """
+    A Core experiment is keyed by its own counter, not a derived one.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = load_config(C005)
+    identity = ismip7_identity(cfg, "CESM2-WACCM", None)
+    assert identity["set_counter"] == "C005"
+    assert identity["ism_member_id"] == "m001"
+    assert identity["forcing_member_id"] == "f001"
+    assert identity["uq_draw"] is None
+
+    record_member(tmp_path, identity, {})
+    table = pd.read_csv(tmp_path / MEMBERS_CSV)
+    assert table["set_counter"].tolist() == ["C005"]
