@@ -2,13 +2,13 @@
 
 'run_info.contact_email' = "aaschwanden@alaska.edu"
 'run_info.contact_name' = "Andy Aschwanden"
-'run_info.counter' = "C011"
 'run_info.domain' = "GrIS"
+'run_info.experiment' = "ocx_prescribed"
 'run_info.group' = "UAF"
 'run_info.institution' = "University of Alaska Fairbanks"
 'run_info.ism' = "PISM"
 'run_info.model' = "PISM"
-'run_info.set' = "CORE"
+'run_info.set' = "Init"
 'run_info.title' = "PISM-TERRA ISMIP7 Greenland OCX Run"
 
 [campaign]
