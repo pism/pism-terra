@@ -10,11 +10,18 @@ on:
     branches:
       - main
       - release
+  workflow_dispatch:
+    inputs:
+      pism_tag:
+        required: true
+        description: PISM Docker image tag to use when building the pism-terra container
+        type: string
+
 
 jobs:
   call-version-info-workflow:
     # Docs: https://github.com/ASFHyP3/actions
-    uses: ASFHyP3/actions/.github/workflows/reusable-version-info.yml@v0.21.1
+    uses: ASFHyP3/actions/.github/workflows/reusable-version-info.yml@support-docker-lambdas
     permissions:
       contents: read
     with:
@@ -23,12 +30,36 @@ jobs:
   call-docker-ghcr-workflow:
     needs: call-version-info-workflow
     # Docs: https://github.com/ASFHyP3/actions
-    uses: ASFHyP3/actions/.github/workflows/reusable-docker-ghcr.yml@v0.21.1
+    uses: ASFHyP3/actions/.github/workflows/reusable-docker-ghcr.yml@support-docker-lambdas
     permissions:
       contents: read
       packages: write
     with:
+      build_args: ${{ inputs.pism_tag }}
       version_tag: ${{ needs.call-version-info-workflow.outputs.version_tag }}
       user: ${{ github.actor }}
     secrets:
       USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  add-sandbox-tag:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs:
+      - call-version-info-workflow
+      - call-docker-ghcr-workflow
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ inputs.user }}
+          password: ${{ secrets.USER_TOKEN }}
+
+      - name: Add sandbox tag
+        uses: akhilerm/tag-push-action@v2.2.0
+        with:
+          src: ${{ needs.call-docker-ghcr-workflow.outputs.image_uri }}
+          dst: ${{ needs.call-docker-ghcr-workflow.outputs.image_repository }}:sandbox
