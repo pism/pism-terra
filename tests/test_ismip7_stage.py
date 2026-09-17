@@ -306,3 +306,130 @@ def test_a_config_without_dh_files_stages_as_before(tmp_path, monkeypatch):
         pass
 
     assert not [uri for uri in requested if "/dh_" in uri]
+
+
+def test_version_cli_overrides_the_campaign_directory(monkeypatch, tmp_path):
+    """
+    Let ``--version`` pick the staged-input directory the config pins.
+
+    ``campaign.version`` names the S3 subdirectory the inputs are fetched
+    from (``<prefix>/<version>/``), so overriding it is how one config is
+    pointed at a re-published set of inputs without editing the TOML.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Used to drive the CLI and capture what staging is handed.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    import pism_terra.ismip7.greenland.stage as stage_mod  # pylint: disable=import-outside-toplevel
+
+    seen: dict = {}
+
+    def fake_stage(config, **kwargs):  # pylint: disable=unused-argument
+        """
+        Record the campaign dict staging was handed, without touching S3.
+
+        Parameters
+        ----------
+        config : dict
+            Campaign parameters.
+        **kwargs : dict
+            Ignored.
+
+        Returns
+        -------
+        pandas.DataFrame
+            An empty manifest.
+        """
+        seen.update(config)
+        import pandas as pd  # pylint: disable=import-outside-toplevel
+
+        # main() writes its manifest beside the staged inputs; real staging
+        # creates that directory on the way.
+        (tmp_path / "input").mkdir(parents=True, exist_ok=True)
+        return pd.DataFrame({"file": []})
+
+    monkeypatch.setattr(stage_mod, "stage", fake_stage)
+    monkeypatch.setattr(stage_mod, "prepare_observations", lambda *a, **k: {})
+    config_file = str(Path("pism_terra/config/ismip7_greenland_c011.toml").resolve())
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["pism-ismip7-greenland-stage", "--output-path", str(tmp_path), "--no-observations", config_file],
+    )
+    stage_mod.main()
+    pinned = seen["version"]
+
+    seen.clear()
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "pism-ismip7-greenland-stage",
+            "--output-path",
+            str(tmp_path),
+            "--no-observations",
+            "--version",
+            "v9",
+            config_file,
+        ],
+    )
+    stage_mod.main()
+
+    assert pinned != "v9", "the config must not already pin v9, or this proves nothing"
+    assert seen["version"] == "v9"
+    # The override touches the directory and nothing else.
+    assert seen["prefix"] == "ismip7/greenland/input"
+    assert seen["boot_file"] == "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
+
+
+def test_version_cli_defaults_to_the_config(monkeypatch, tmp_path):
+    """
+    Leave the config's version alone when the flag is not given.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Used to drive the CLI and capture what staging is handed.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    import pism_terra.ismip7.greenland.stage as stage_mod  # pylint: disable=import-outside-toplevel
+
+    seen: dict = {}
+
+    def fake_stage(config, **kwargs):  # pylint: disable=unused-argument
+        """
+        Record the campaign dict staging was handed, without touching S3.
+
+        Parameters
+        ----------
+        config : dict
+            Campaign parameters.
+        **kwargs : dict
+            Ignored.
+
+        Returns
+        -------
+        pandas.DataFrame
+            An empty manifest.
+        """
+        seen.update(config)
+        import pandas as pd  # pylint: disable=import-outside-toplevel
+
+        # main() writes its manifest beside the staged inputs; real staging
+        # creates that directory on the way.
+        (tmp_path / "input").mkdir(parents=True, exist_ok=True)
+        return pd.DataFrame({"file": []})
+
+    monkeypatch.setattr(stage_mod, "stage", fake_stage)
+    config_file = str(Path("pism_terra/config/ismip7_greenland_c011.toml").resolve())
+    monkeypatch.setattr(
+        "sys.argv",
+        ["pism-ismip7-greenland-stage", "--output-path", str(tmp_path), "--no-observations", config_file],
+    )
+    stage_mod.main()
+
+    expected = load_config(config_file).campaign.version
+    assert seen["version"] == expected

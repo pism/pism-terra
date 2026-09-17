@@ -1447,6 +1447,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--version",
+        type=str,
+        default=None,
+        help="Overrides campaign.version, the S3 subdirectory (<prefix>/<version>/) the staged inputs are fetched from.",
+    )
     parser.add_argument("--queue", type=str, default=None, help="Overrides queue in config file.")
     parser.add_argument("--ntasks", type=int, default=None, help="Numbers of cores.")
     parser.add_argument("--tasks", type=int, default=None, help="Cores per node.")
@@ -1619,6 +1625,12 @@ def _run(*, kind: str) -> None:
     pism_config_cdl = options.pism_config_cdl
 
     cfg = load_config(config_file)
+    # Applied before as_params(): the campaign dict is a plain snapshot, so a
+    # later assignment would not reach the value stage() actually reads. Only
+    # staging consults it -- the rendered run scripts reference staged files by
+    # name, not by the directory they came from.
+    if options.version is not None:
+        cfg.campaign.version = options.version
     campaign_config = cfg.campaign.as_params()
 
     # Skip staging the (large) projection forcing when it isn't used.
