@@ -21,12 +21,11 @@ Thickness change of an ISMIP7 Greenland run, to compare against observations.
 The ISMIP7 counterpart of ``pism-glacier-postprocess-dh``, differing in two
 ways that follow from what is being compared.
 
-**Thickness, not surface elevation.** The observations in the ISMIP7
-observation file are ``dhdt_khan`` and ``dhdt_smith``, both "thickness rate
-of change (dH/dt)" in metres of ice equivalent. Their model counterpart is
-``lithk``, not ``orog`` — the glacier tool differences ``usurf`` because
-Hugonnet et al. (2021) measures surface elevation from DEMs, which is a
-different quantity.
+**Thickness, not surface elevation.** The observed field is Smith et al.
+(2020) ``dhdt``, a thickness-change rate in metres of ice equivalent. Its
+model counterpart is ``lithk``, not ``orog`` — the glacier tool differences
+``usurf`` because Hugonnet et al. (2021) measures surface elevation from
+DEMs, which is a different quantity.
 
 **One file per variable.** A counter-driven run writes its spatial output
 into the submission tree with a file per variable, so the input is the

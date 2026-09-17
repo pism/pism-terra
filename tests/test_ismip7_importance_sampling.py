@@ -42,6 +42,7 @@ import pytest
 import xarray as xr
 
 from pism_terra.ismip7.greenland.importance_sampling import (
+    ERROR_VAR,
     MEMBER_DIM,
     align_to_observations,
     error_stats,
@@ -204,8 +205,7 @@ def test_member_label(name, expected):
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("dh_khan_g1000m_GreenlandObsISMIP7-v1.3.nc", "khan"),
-        ("dh_smith_g1000m_GreenlandObsISMIP7-v1.3.nc", "smith"),
+        ("dh_smith_g5000m_ICESat1-ICESat2-2021.nc", "smith"),
         ("elsewhere.nc", "elsewhere"),
     ],
 )
@@ -414,3 +414,117 @@ def test_run_pipeline_rejects_the_biased_member(tmp_path: Path, case):
 
     written = pd.read_csv(out / "khan" / "importance_sampling.csv")
     assert list(written.columns[:2]) == ["fudge_factor", MEMBER_DIM]
+
+
+def write_observations_with_error(path: Path, error: np.ndarray) -> Path:
+    """
+    Write an observed product that ships its own per-cell uncertainty.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        File to write.
+    error : numpy.ndarray
+        Uncertainty field of shape ``(N, N)``.
+
+    Returns
+    -------
+    pathlib.Path
+        The file written.
+    """
+    x, y = grid(N, 1000.0)
+    times = [cftime.DatetimeGregorian(2019, 1, 1)]
+    ds = xr.Dataset(
+        {
+            "dh": (("time", "y", "x"), truth_field(N, 1).astype("float32"), {"units": "m"}),
+            "dh_error": (("time", "y", "x"), error[None].astype("float32"), {"units": "m"}),
+        },
+        coords={"time": times, "y": y, "x": x},
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_netcdf(path)
+    return path
+
+
+def test_load_observations_prefers_the_reported_uncertainty(tmp_path: Path):
+    """
+    Use the product's own error rather than inventing one.
+
+    The Smith archive ships a per-cell RMSE; substituting a flat relative
+    error for it would throw away the one thing that distinguishes a
+    well-surveyed cell from an unconstrained one.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    error = np.full((N, N), 2.0)
+    path = write_observations_with_error(tmp_path / "dh_smith_g5000m_test.nc", error)
+    obs = load_observations(path, 0.1, 0.5, max_error=None)
+    np.testing.assert_allclose(obs[ERROR_VAR].isel(time=0).values, 2.0)
+
+
+def test_load_observations_floors_the_reported_uncertainty(tmp_path: Path):
+    """
+    Never let a cell claim an accuracy the survey does not have.
+
+    The archive reports RMSEs down to a fraction of a millimetre. Taken at
+    face value such a cell is worth thousands of ordinary ones and would
+    decide the posterior on its own.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    error = np.full((N, N), 2.0)
+    error[0, 0] = 1e-6
+    path = write_observations_with_error(tmp_path / "dh_smith_g5000m_test.nc", error)
+    obs = load_observations(path, 0.1, 0.5, max_error=None)
+    assert float(obs[ERROR_VAR].isel(time=0)[0, 0]) == pytest.approx(0.5)
+    # Everything already above the floor is left alone.
+    assert float(obs[ERROR_VAR].isel(time=0)[1, 1]) == pytest.approx(2.0)
+
+
+def test_load_observations_drops_hopeless_cells(tmp_path: Path):
+    """
+    Remove cells whose uncertainty is past being informative.
+
+    The likelihood mutes them on its own, but the plain RMSE and MAE have no
+    such defence, and in the real archive those same cells carry the most
+    extreme values in the field -- so left in they would dominate exactly the
+    statistics that have no way to discount them.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    error = np.full((N, N), 2.0)
+    error[0, :] = 5000.0
+    path = write_observations_with_error(tmp_path / "dh_smith_g5000m_test.nc", error)
+
+    obs = load_observations(path, 0.1, 0.5, max_error=1000.0)
+    assert np.isnan(obs["dh"].isel(time=0).values[0, :]).all()
+    assert np.isfinite(obs["dh"].isel(time=0).values[1:, :]).all()
+
+    # Opting out keeps them.
+    kept = load_observations(path, 0.1, 0.5, max_error=None)
+    assert np.isfinite(kept["dh"].isel(time=0).values).all()
+
+
+def test_load_observations_falls_back_when_there_is_no_error(case):
+    """
+    Synthesise an uncertainty only for a product that ships none.
+
+    Parameters
+    ----------
+    case : tuple
+        Run directory, observation directory and observed files.
+    """
+    _, _, observed = case
+    obs = load_observations(observed[0], 0.1, 0.5, max_error=None)
+    assert ERROR_VAR in obs
+    expected = np.maximum(0.1 * abs(obs["dh"]), 0.5)
+    np.testing.assert_allclose(obs[ERROR_VAR].values, expected.values, equal_nan=True)

@@ -42,6 +42,7 @@ from pyfiglet import Figlet
 from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
+from pism_terra.download import download_file
 from pism_terra.ismip7.greenland.forcing import (
     add_basins_to_ocean_files,
     prepare_calfin,
@@ -64,6 +65,14 @@ ISMIP7_DATASETS = ["grid", "observations", "dh", "forcings", "calfin"]
 
 # Default observation NetCDF (Globus) with the boot / velocity / heat-flux inputs.
 DEFAULT_OBS_URL = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
+
+# Observed thickness change: the Smith et al. (2020) ICESat-1/ICESat-2 archive
+# (University of Washington ResearchWorks), a zip of GeoTIFFs covering both ice
+# sheets, of which only the Greenland rasters are used. Unlike the rates the
+# observation NetCDF carries, these come with a per-cell RMSE.
+_DH_BITSTREAM = "cc12195c-b71e-4e26-bf85-0978dd9ce933"
+DEFAULT_DH_URL = f"https://digital.lib.washington.edu/researchworks/bitstreams/{_DH_BITSTREAM}/download"
+DH_ARCHIVE_NAME = "ICESat1_ICESat2_mass_change_updated_2_2021.zip"
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -240,16 +249,21 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
             check_xr_lazy(v)
 
     # --- Observed thickness change ---
-    # The observation file states dH/dt; a run reports elevation change, so
-    # the rates are integrated here once rather than in every analysis. Left
-    # on the observations' own 1 km grid.
+    # The archive states dH/dt; a run reports thickness change, so the rate is
+    # integrated here once rather than in every analysis. Left on the
+    # archive's own 5 km grid, which is already the ISMIP7 projection.
     dh_files: dict = {}
     if "dh" in selected:
         logger.info("-" * 120)
         logger.info("Observed Thickness Change")
         logger.info("-" * 120)
+        dh_archive = (
+            data_path / Path(config["ice_sheet"]) / Path("obs") / Path("smith") / Path(DH_ARCHIVE_NAME)
+            if data_path is not None
+            else Path(download_file(DEFAULT_DH_URL, output_path / Path("obs") / Path(DH_ARCHIVE_NAME)))
+        )
         dh_files = prepare_dh_observations(
-            obs_url if data_path is not None else output_path / Path("obs") / Path(Path(obs_url).name),
+            dh_archive,
             input_path,
             force_overwrite=force_overwrite,
         )

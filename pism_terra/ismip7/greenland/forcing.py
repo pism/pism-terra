@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import time
+import zipfile
 from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed as cf_as_completed
@@ -56,6 +57,7 @@ from pism_terra.download import (
     download_earthaccess,
     download_gebco,
     download_netcdf,
+    extract_archive,
     file_localizer,
 )
 from pism_terra.raster import create_ds
@@ -923,13 +925,29 @@ def add_basins_to_ocean_files(ocean_files: list[Path]) -> None:
             logger.warning("Could not add basin mask to %s: %s", ocean_file, exc)
 
 
-#: Period the Smith et al. (2020) rate covers. The observation file gives it a
-#: single ``time`` attribute (2019-01-01) and no bounds, so the interval has to
-#: come from the paper: 2003 to 2019. Its mean rate agrees with the mean of
-#: Khan's annual rates over that window to within 0.1% across ~10^5 cells,
-#: which is what confirms it is a 16-year mean and not an instantaneous rate.
+#: Period the Smith et al. (2020) rate covers: the 16 years from 2003 to 2019
+#: the two ICESat missions span. The rasters carry no time of their own, so
+#: the interval comes from the paper and the archive's README.
 DH_SMITH_START = "2003-01-01"
 DH_SMITH_END = "2019-01-01"
+
+#: Greenland rasters of the ICESat-1/ICESat-2 archive. The *unfiltered* rate,
+#: which the README marks as the one suitable for mass-balance integration --
+#: ``gris_dhdt_filt.tif`` next to it is smoothed for display only -- and its
+#: per-cell RMSE. For Greenland the archive's ``dmdt`` (firn-air corrected)
+#: rasters are byte-identical to these, so there is nothing to choose between
+#: them; only the Antarctic pair actually differs.
+DH_SMITH_RATE = "gris_dhdt.tif"
+DH_SMITH_RMSE = "gris_dhdt_rmse.tif"
+
+#: Name of the prepared product. The grid is the archive's own 5 km, which
+#: the name states so it is not mistaken for the 1 km submission grid the
+#: retired Khan and Smith products sat on.
+DH_SMITH_NAME = "dh_smith_g5000m_ICESat1-ICESat2-2021.nc"
+
+#: Projection the archive's Greenland rasters are on, which is already the
+#: ISMIP7 Greenland projection, so nothing is reprojected here.
+DH_SMITH_CRS = "EPSG:3413"
 
 #: Reference epoch of the observation file's time coordinates.
 OBS_TIME_UNITS = "days since 1900-01-01"
@@ -941,51 +959,15 @@ OBS_CALENDAR = "standard"
 DAYS_PER_YEAR = 365.25
 
 
-def annual_bounds(times: np.ndarray) -> np.ndarray:
-    """
-    Bracket mid-year rate stamps with the calendar years they average over.
-
-    Khan's rates are stamped at 1 July of each year, which is how an annual
-    mean is conventionally dated: the value for 2003 sits at 2003-07-01. The
-    interval it describes is the calendar year around it, so the bounds are
-    1 January either side rather than the midpoints between stamps.
-
-    Parameters
-    ----------
-    times : numpy.ndarray
-        Epochs in :data:`OBS_TIME_UNITS`.
-
-    Returns
-    -------
-    numpy.ndarray
-        ``(n, 2)`` array of lower and upper bounds, same units.
-
-    Raises
-    ------
-    ValueError
-        If the stamps are not one per year, which would mean the mid-year
-        reading is wrong and the bounds with it.
-    """
-    dates = cftime.num2date(times, OBS_TIME_UNITS, OBS_CALENDAR)
-    years = [d.year for d in dates]
-    if sorted(set(years)) != years:
-        raise ValueError(f"expected one rate per year, got years {years}")
-    edges = [
-        cftime.date2num(cftime.datetime(year, 1, 1, calendar=OBS_CALENDAR), OBS_TIME_UNITS, OBS_CALENDAR)
-        for year in years + [years[-1] + 1]
-    ]
-    return np.stack([edges[:-1], edges[1:]], axis=1)
-
-
 def cumulative_dh(rate: xr.DataArray, bounds: np.ndarray, time_dim: str) -> xr.Dataset:
     """
     Integrate a sequence of rates into cumulative thickness change.
 
     Each record is the change since the start of the first interval, so it
-    lines up with what ``pism-glacier-postprocess-dh`` reports for a run --
-    ``usurf(t) - usurf(t0)`` -- rather than being a per-interval increment.
-    ``time`` is the end of the interval and ``time_bnds`` spans it, matching
-    that tool's convention.
+    lines up with what ``pism-ismip7-greenland-postprocess-dh`` reports for a
+    run -- ``lithk(t) - lithk(t0)`` -- rather than being a per-interval
+    increment. ``time`` is the end of the interval and ``time_bnds`` spans it,
+    matching that tool's convention.
 
     Parameters
     ----------
@@ -1019,102 +1001,155 @@ def cumulative_dh(rate: xr.DataArray, bounds: np.ndarray, time_dim: str) -> xr.D
     return out
 
 
+def smith_rasters(source: Path | str, force_overwrite: bool = False) -> tuple[Path, Path]:
+    """
+    Locate the Greenland rate and RMSE rasters of the Smith archive.
+
+    Parameters
+    ----------
+    source : Path or str
+        The downloaded archive, or a directory it was already extracted to.
+    force_overwrite : bool, optional
+        Extract again even when the archive was unpacked before.
+
+    Returns
+    -------
+    tuple of pathlib.Path
+        The rate raster and its RMSE.
+
+    Raises
+    ------
+    FileNotFoundError
+        If either raster is missing, rather than silently preparing one of the
+        two fields.
+    """
+    source = Path(source)
+    if source.is_dir():
+        root = source
+    elif zipfile.is_zipfile(source):
+        root = source.parent / f"{source.stem}_extracted"
+        if force_overwrite or not root.exists():
+            logger.info("Extracting %s", source.name)
+            extract_archive(source, root, force_overwrite=force_overwrite, verbose=False)
+    else:
+        raise FileNotFoundError(f"{source} is neither a directory nor a zip archive")
+
+    found = []
+    for name in (DH_SMITH_RATE, DH_SMITH_RMSE):
+        matches = sorted(root.rglob(name))
+        if not matches:
+            raise FileNotFoundError(f"no {name} under {root}")
+        found.append(matches[0])
+    return found[0], found[1]
+
+
 def prepare_dh_observations(
-    obs_file: Path | str,
+    source: Path | str,
     output_path: Path | str,
     force_overwrite: bool = False,
 ) -> dict[str, Path]:
     """
-    Turn the observed thickness-change *rates* into cumulative ``dh`` fields.
+    Turn the observed thickness-change *rate* into a cumulative ``dh`` field.
 
-    The observation file carries two independent estimates, both as rates in
-    m/yr: ``dhdt_khan`` as 21 annual means (2003-2023) and ``dhdt_smith`` as a
-    single 16-year mean. A run reports elevation *change*, so each is
-    integrated into a cumulative ``dh`` carrying CF ``time_bnds``, the same
-    shape ``pism-glacier-postprocess-dh`` writes for a simulation.
+    The Smith et al. (2020) ICESat-1/ICESat-2 archive states a mean rate in
+    m/yr over 2003-2019 together with a per-cell RMSE. A run reports thickness
+    *change*, so the rate is integrated here once rather than in every
+    analysis, and the RMSE is carried through the same integration to become
+    the uncertainty of the cumulative field.
 
-    Left on the observations' own 1 km grid rather than regridded: which run
-    grid they are compared against is the comparison's business, not this
-    step's. The dimensions are renamed ``y``/``x`` because that grid *is* the
-    ISMIP7 submission grid -- identical coordinates, opposite ``y`` order --
-    so a submission file and these align without either being touched.
+    Left on the archive's own 5 km grid rather than regridded to the 1 km
+    submission grid: which grid a comparison happens on is the comparison's
+    business, and upsampling would invent a resolution the survey does not
+    have while making neighbouring uncertainties perfectly correlated. The
+    rasters are already on the ISMIP7 Greenland projection, so nothing is
+    reprojected either.
 
-    One file per source, since the two have different time axes.
+    Cells the RMSE does not cover are dropped, so every cell that has a value
+    has an uncertainty; a missing uncertainty would otherwise turn a whole
+    likelihood into NaN. Cells *are* kept where that uncertainty is enormous
+    -- the archive reports RMSEs up to 5e4 m/yr at unconstrained margins, and
+    it is the analysis, not this step, that decides where to draw the line.
 
     Parameters
     ----------
-    obs_file : Path or str
-        The downloaded ISMIP7 observation NetCDF.
+    source : Path or str
+        The downloaded archive, or a directory it was already extracted to.
     output_path : Path or str
-        Directory the ``dh_*`` files are written to.
+        Directory the ``dh_*`` file is written to.
     force_overwrite : bool, optional
-        Rebuild even when the products are already there.
+        Rebuild even when the product is already there.
 
     Returns
     -------
     dict of str to pathlib.Path
-        ``{"khan": ..., "smith": ...}``.
+        ``{"smith": ...}``.
     """
-    obs_file = Path(obs_file)
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    stem = obs_file.stem
-    products = {
-        "khan": output_path / f"dh_khan_g1000m_{stem}.nc",
-        "smith": output_path / f"dh_smith_g1000m_{stem}.nc",
-    }
-    if all(p.exists() for p in products.values()) and not force_overwrite:
+    products = {"smith": output_path / DH_SMITH_NAME}
+    if products["smith"].exists() and not force_overwrite:
         logger.info("Using existing dh observations in %s", output_path)
         return products
 
-    with xr.open_dataset(obs_file, decode_times=False, chunks={"khan_dhdt_time": 1}) as ds:
-        grid = {name: ds[name] for name in ("mapping",) if name in ds}
+    rate_file, rmse_file = smith_rasters(source, force_overwrite=force_overwrite)
+    logger.info("Reading %s and %s", rate_file.name, rmse_file.name)
+    rate_da = rioxarray.open_rasterio(rate_file).squeeze(drop=True)
+    rmse_da = rioxarray.open_rasterio(rmse_file).squeeze(drop=True)
+    # GDAL hands back the TIFF's own tags plus an identity scale_factor /
+    # add_offset, none of which describe the field being written here.
+    rate_da.attrs, rmse_da.attrs = {}, {}
 
-        # Khan: annual means, integrated year by year.
-        khan = cumulative_dh(ds["dhdt_khan"], annual_bounds(ds["khan_dhdt_time"].values), "khan_dhdt_time")
-        khan["dh"].attrs.update(
-            {
-                "long_name": "cumulative thickness change from Khan et al. 2025",
-                "source": ds["dhdt_khan"].attrs.get("source", "Khan et al. 2025"),
-                "comment": "cumulative from the start of the first annual interval",
-            }
-        )
+    edges = np.array(
+        [
+            cftime.date2num(
+                cftime.datetime(*(int(part) for part in date.split("-")), calendar=OBS_CALENDAR),
+                OBS_TIME_UNITS,
+                OBS_CALENDAR,
+            )
+            for date in (DH_SMITH_START, DH_SMITH_END)
+        ]
+    )
+    span = float(edges[1] - edges[0]) / DAYS_PER_YEAR
 
-        # Smith: one mean rate over a period the file does not state; see
-        # DH_SMITH_START / DH_SMITH_END for where the dates come from.
-        edges = np.array(
-            [
-                cftime.date2num(
-                    cftime.datetime(*(int(part) for part in date.split("-")), calendar=OBS_CALENDAR),
-                    OBS_TIME_UNITS,
-                    OBS_CALENDAR,
-                )
-                for date in (DH_SMITH_START, DH_SMITH_END)
-            ]
-        )
-        rate = ds["dhdt_smith"].expand_dims(smith_time=[edges[1]])
-        smith = cumulative_dh(rate, edges.reshape(1, 2), "smith_time")
-        smith["dh"].attrs.update(
-            {
-                "long_name": "cumulative thickness change from Smith et al. 2020",
-                "source": ds["dhdt_smith"].attrs.get("source", "Smith et al. 2020"),
-                "comment": f"rate integrated over {DH_SMITH_START}..{DH_SMITH_END} (from the paper; "
-                "the file states only a single time attribute)",
-            }
-        )
+    # An uncertainty the RMSE does not cover is worse than no cell at all: it
+    # would take the log-likelihood of every member to NaN.
+    covered = rate_da.notnull() & rmse_da.notnull()
+    dropped = int((rate_da.notnull() & ~rmse_da.notnull()).sum())
+    if dropped:
+        logger.info("Dropping %d cell(s) that have a rate but no RMSE", dropped)
 
-        for key, out in (("khan", khan), ("smith", smith)):
-            # The observations' 1 km grid is the ISMIP7 submission grid, down
-            # to the coordinate values -- only the y order differs. Naming the
-            # dimensions x/y lets xarray align a run against these directly,
-            # reversal included, instead of every analysis renaming first.
-            out = out.rename({"y1km": "y", "x1km": "x"})
-            for name, var in grid.items():
-                out[name] = var
-            out["dh"].attrs["grid_mapping"] = "mapping"
-            encoding = {"dh": {"zlib": True, "complevel": 2, "dtype": "float32"}}
-            logger.info("Writing %s", products[key])
-            out.to_netcdf(products[key], encoding=encoding, engine="h5netcdf")
+    out = cumulative_dh(rate_da.where(covered).expand_dims(smith_time=[edges[1]]), edges.reshape(1, 2), "smith_time")
+    out["dh"].attrs.update(
+        {
+            "long_name": "cumulative thickness change from Smith et al. 2020",
+            "source": "Smith et al. (2020), doi:10.1126/science.aaz5845; " "ICESat1_ICESat2_mass_change_updated_2_2021",
+            "comment": f"rate integrated over {DH_SMITH_START}..{DH_SMITH_END}; "
+            "the rasters state no time of their own",
+        }
+    )
+    # The RMSE is the uncertainty of the one 16-year rate, not of 16
+    # independent annual estimates, so it scales with the interval rather
+    # than with its square root.
+    out["dh_error"] = (rmse_da.where(covered) * span).expand_dims(time=out["time"])
+    out["dh_error"].attrs.update(
+        {
+            "units": "m",
+            "long_name": "uncertainty of the cumulative thickness change",
+            "comment": "per-cell RMSE of the rate, integrated over the same interval",
+        }
+    )
+
+    out = out.drop_vars([name for name in ("spatial_ref", "band") if name in out.coords or name in out.data_vars])
+    out = out.rio.write_crs(DH_SMITH_CRS, grid_mapping_name="mapping")
+    # Stamped last: assigning a variable that carries its own bare ``time``
+    # replaces the coordinate, attributes and all, so anything set earlier
+    # would be silently dropped and the file would not decode as a time axis.
+    out["time"].attrs.update({"units": OBS_TIME_UNITS, "calendar": OBS_CALENDAR, "axis": "T", "bounds": "time_bnds"})
+    for name in ("dh", "dh_error"):
+        out[name].attrs["grid_mapping"] = "mapping"
+    encoding = {name: {"zlib": True, "complevel": 2, "dtype": "float32"} for name in ("dh", "dh_error")}
+    logger.info("Writing %s", products["smith"])
+    out.to_netcdf(products["smith"], encoding=encoding, engine="h5netcdf")
     return products
 
 

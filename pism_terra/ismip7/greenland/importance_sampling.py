@@ -21,8 +21,8 @@ Importance-sample an ISMIP7 Greenland ensemble against observed thickness change
 The ice-sheet counterpart of ``pism-glacier-importance-sampling``. The
 members of an OCX or historical ensemble -- their cumulative ``dh`` written
 by ``pism-ismip7-greenland-postprocess-dh`` -- are weighed against the
-observed products staged by ``pism-ismip7-greenland-prepare --include dh``
-(Khan's annual series and Smith's 2003-2019 total), giving:
+observed thickness change staged by ``pism-ismip7-greenland-prepare --include
+dh`` (Smith et al. 2020, 2003-2019), giving:
 
 * per-member RMSE, MAE and bias over the cells both sides cover;
 * a block-bootstrap RMSE ranking that honours the spatial autocorrelation
@@ -31,24 +31,30 @@ observed products staged by ``pism-ismip7-greenland-prepare --include dh``
 * Gaussian importance weights for several fudge factors on the observed
   error, resolved into resampling counts and an effective sample size
   (:func:`pism_terra.calibration.importance_weights`);
-* one joint posterior over the observed products, since the members are
-  shared parameter draws.
+* one joint posterior when more than one product is given, since the
+  members are shared parameter draws.
 
 Two things differ from the glacier version.
 
-**Conservative regridding, not interpolation.** Members written into the
-submission tree already sit on the observations' 1 km grid and are left
-alone. A member on another grid -- a 900 m historical run, say -- is
-regridded conservatively, which preserves the field's integral across the
-change of support; the bilinear ``interp_like`` the glacier version uses
-does not, and for a thickness change that sums into a mass budget that
-matters.
+**Conservative regridding, not interpolation.** The observations are on
+their own 5 km grid, so a member is regridded onto it conservatively, which
+preserves the field's integral across the change of support; the bilinear
+``interp_like`` the glacier version uses does not, and for a thickness
+change that sums into a mass budget that matters. A member that already
+shares the observed grid is left alone.
 
-**The observations carry no uncertainty.** Neither product ships an error
-estimate, so the likelihood uses a relative error with an absolute floor
-(:func:`pism_terra.calibration.observation_uncertainty`). The floor keeps
-cells where nothing changed from dominating the likelihood, which a purely
-relative error would let them do.
+**The observed uncertainty is used where there is one.** The Smith archive
+ships a per-cell RMSE, which :func:`prepare_dh_observations` integrates into
+``dh_error`` alongside the field; it is floored, because a cell claiming
+millimetre accuracy over sixteen years would otherwise dominate everything
+else. A product without an error falls back to a relative one
+(:func:`pism_terra.calibration.observation_uncertainty`).
+
+Cells whose uncertainty is beyond saving are dropped outright. The archive
+reports RMSEs up to 5e4 m/yr where the survey was unconstrained, and those
+same cells carry the field's most extreme values; the likelihood mutes them
+on its own, but the plain RMSE and MAE have no such defence -- see
+:data:`DEFAULT_MAX_ERROR`.
 
 Results go to ``<output-path>/<product>/`` per product, with the joint
 posterior and the summary tables at the top level.
@@ -91,6 +97,9 @@ SIM_VAR = "lithk"
 #: Variable the observed dh files carry, and the name both are compared under.
 OBS_VAR = "dh"
 
+#: Uncertainty the observed dh files carry, when they carry one.
+ERROR_VAR = "dh_error"
+
 #: The set counter of an ISMIP7 file name, which is what identifies a member:
 #: it is the key into the run's ``ismip7_members.csv`` parameter table.
 SET_COUNTER_PATTERN = re.compile(r"_([CEP]\d{3})_")
@@ -101,11 +110,27 @@ UQ_PATTERN = re.compile(r"_uq_(\d+)")
 #: Observed product in a staged ``dh_<product>_g1000m_*.nc`` file name.
 PRODUCT_PATTERN = re.compile(r"^dh_([a-z0-9]+)_")
 
-#: Relative error and floor of the observed uncertainty, in metres. Below
-#: half a metre over the whole record the altimetry is not resolving change,
-#: and a purely relative error would make those cells infinitely informative.
+#: Relative error used only when a product ships none, and the floor applied
+#: either way, in metres over the whole record.
+#:
+#: Against the Smith error the floor is doing something specific: that RMSE is
+#: a formal one, and over the interior it falls to ~0.1 m across sixteen years
+#: -- 7 mm/yr -- which says nothing about firn-model error or the bias between
+#: the two missions. The floor stands in for those, and at 0.5 m it binds on
+#: roughly 70% of cells, so it, not the reported error, sets the weight of the
+#: interior. Lower it to let the survey's own error speak there; raise it to
+#: lean further on the margins, where the reported error is large and real.
 DEFAULT_RELATIVE_ERROR = 0.10
 DEFAULT_ERROR_FLOOR = 0.5
+
+#: Largest observed uncertainty a cell may carry and still be scored, metres
+#: over the whole record. Chosen from where the Smith error distribution
+#: breaks rather than from a round number: the 0.34% of cells above it hold
+#: every one of the field's absurd values -- cumulative thinning to -937 m --
+#: and dropping them takes the field's RMS from 15.2 m to 6.5 m while moving
+#: its mean by 0.5 m. Thresholds much below this start removing genuine
+#: fast-thinning margins, which is signal, not noise.
+DEFAULT_MAX_ERROR = 1000.0
 
 #: Inflations of the observed error, one filter each. Cells are far from
 #: independent, so an uninflated likelihood is overconfident.
@@ -250,18 +275,34 @@ def to_observed_grid(ds: xr.Dataset, obs: xr.Dataset) -> xr.Dataset:
     return ds.regrid.conservative(target)
 
 
-def load_observations(path: Path | str, relative: float, floor: float) -> xr.Dataset:
+def load_observations(
+    path: Path | str,
+    relative: float,
+    floor: float,
+    max_error: float | None = DEFAULT_MAX_ERROR,
+) -> xr.Dataset:
     """
-    Load an observed ``dh`` product and give it an uncertainty.
+    Load an observed ``dh`` product and settle its uncertainty.
+
+    The product's own per-cell error is used when it has one, floored so no
+    cell can claim an accuracy the survey does not have; otherwise a relative
+    error stands in. Cells whose uncertainty is past the point of being
+    informative are then dropped, which matters less for the likelihood --
+    which mutes them anyway -- than for the plain RMSE and MAE, where the
+    same cells would otherwise dominate.
 
     Parameters
     ----------
     path : Path or str
-        Staged ``dh_khan_*`` or ``dh_smith_*`` file.
+        Staged ``dh_*`` file.
     relative : float
-        Relative error as a fraction of the absolute value.
+        Relative error as a fraction of the absolute value, used only when
+        the product ships none of its own.
     floor : float
         Smallest error, metres.
+    max_error : float or None, optional
+        Largest error a cell may carry and still be scored, metres; ``None``
+        keeps every cell.
 
     Returns
     -------
@@ -270,8 +311,24 @@ def load_observations(path: Path | str, relative: float, floor: float) -> xr.Dat
     """
     coder = xr.coders.CFDatetimeCoder(use_cftime=True)
     with xr.open_dataset(path, decode_times=coder) as ds:
-        obs = ds[[OBS_VAR]].load()
-    return observation_uncertainty(obs, relative=relative, floor=floor)
+        obs = ds[[OBS_VAR] + ([ERROR_VAR] if ERROR_VAR in ds else [])].load()
+
+    if ERROR_VAR in obs:
+        floored = int(((obs[ERROR_VAR] < floor) & obs[ERROR_VAR].notnull()).sum())
+        if floored:
+            logger.info("Raising %d reported uncertainty(ies) to the %.3g m floor", floored, floor)
+        obs[ERROR_VAR] = np.maximum(obs[ERROR_VAR], floor)
+    else:
+        logger.info("%s carries no %s; using a %.0f%% relative error", Path(path).name, ERROR_VAR, 100 * relative)
+        obs = observation_uncertainty(obs, relative=relative, floor=floor)
+
+    if max_error is not None:
+        keep = obs[ERROR_VAR] <= max_error
+        dropped = int((obs[OBS_VAR].notnull() & ~keep).sum())
+        if dropped:
+            logger.info("Dropping %d cell(s) whose uncertainty exceeds %.3g m", dropped, max_error)
+        obs = obs.where(keep)
+    return obs
 
 
 def load_ensemble(files: Sequence[Path]) -> xr.Dataset:
@@ -530,6 +587,7 @@ def run_pipeline(
     pattern: str = "dh_*.nc",
     relative: float = DEFAULT_RELATIVE_ERROR,
     floor: float = DEFAULT_ERROR_FLOOR,
+    max_error: float | None = DEFAULT_MAX_ERROR,
     fudge_factors: Sequence[float] = DEFAULT_FUDGE_FACTORS,
     reduction: str = "blocks",
     n_samples: int = DEFAULT_N_SAMPLES,
@@ -551,6 +609,8 @@ def run_pipeline(
         Glob the member files match.
     relative, floor : float, optional
         Relative error and floor of the observed uncertainty.
+    max_error : float or None, optional
+        Largest uncertainty a cell may carry and still be scored, metres.
     fudge_factors : sequence of float, optional
         Inflations of the observed error, one filter each.
     reduction : str, optional
@@ -576,7 +636,7 @@ def run_pipeline(
     for observed in observations:
         observed = Path(observed)
         product = product_name(observed)
-        obs = load_observations(observed, relative, floor)
+        obs = load_observations(observed, relative, floor, max_error=max_error)
         sim, obs = align_to_observations(load_ensemble(files), obs)
         weighted, table = score_product(
             sim,
@@ -621,7 +681,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--observations",
         nargs="+",
         required=True,
-        help="Observed dh products, e.g. the staged dh_khan_* and dh_smith_* files.",
+        help="Observed dh products, e.g. the staged dh_smith_* file.",
     )
     parser.add_argument("--pattern", default="dh_*.nc", help="Glob the per-member dh files match.")
     parser.add_argument(
@@ -635,6 +695,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=DEFAULT_ERROR_FLOOR,
         help="Smallest observed uncertainty, metres.",
+    )
+    parser.add_argument(
+        "--max-error",
+        type=float,
+        default=DEFAULT_MAX_ERROR,
+        help="Drop cells whose uncertainty exceeds this, metres; negative keeps every cell.",
     )
     parser.add_argument(
         "--fudge-factors",
@@ -667,6 +733,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pattern=args.pattern,
         relative=args.relative_error,
         floor=args.error_floor,
+        max_error=args.max_error if args.max_error >= 0 else None,
         fudge_factors=args.fudge_factors,
         reduction=args.reduction,
         n_samples=args.n_samples,

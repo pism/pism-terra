@@ -16,37 +16,49 @@
 # along with PISM; if not, write to the Free Software
 
 """
-Tests for the observed thickness-change products.
+Tests for the observed thickness-change product.
 
-The observation file states dH/dt; a run reports elevation change. Turning
-one into the other hinges on the interval each rate covers, and the file
-gives bounds for neither source -- so the intervals are what these test.
+The Smith et al. (2020) archive states a mean dH/dt over 2003-2019 with a
+per-cell RMSE; a run reports cumulative thickness change. Turning one into
+the other hinges on the interval, which the rasters do not state, and on the
+two fields staying consistent with each other -- which is what these test,
+from a miniature stand-in for the archive.
 """
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import cftime
 import numpy as np
 import pytest
+import rioxarray  # pylint: disable=unused-import
 import xarray as xr
 
 from pism_terra.ismip7.greenland.forcing import (
     DAYS_PER_YEAR,
+    DH_SMITH_CRS,
     DH_SMITH_END,
+    DH_SMITH_NAME,
+    DH_SMITH_RATE,
+    DH_SMITH_RMSE,
     DH_SMITH_START,
     OBS_CALENDAR,
     OBS_TIME_UNITS,
-    annual_bounds,
     cumulative_dh,
     prepare_dh_observations,
+    smith_rasters,
 )
+
+#: Cell size of the synthetic archive, metres -- the archive's own 5 km.
+SPACING = 5000.0
+N = 6
 
 
 def _days(year: int, month: int = 1, day: int = 1) -> float:
     """
-    Encode a date in the observation file's time units.
+    Encode a date in the product's time units.
 
     Parameters
     ----------
@@ -63,194 +75,349 @@ def _days(year: int, month: int = 1, day: int = 1) -> float:
     )
 
 
-def test_annual_bounds_brackets_mid_year_stamps_with_calendar_years():
+def write_raster(path: Path, values: np.ndarray) -> None:
     """
-    A rate stamped 1 July 2003 is the mean for calendar year 2003.
+    Write one GeoTIFF the way the archive ships them.
 
-    Taking midpoints between stamps instead would shift every interval by
-    half a year, and with it every cumulative total.
-    """
-    times = np.array([_days(y, 7, 1) for y in (2003, 2004, 2005)])
-    bounds = annual_bounds(times)
-
-    assert bounds[0].tolist() == [_days(2003), _days(2004)]
-    assert bounds[-1].tolist() == [_days(2005), _days(2006)]
-    # Consecutive intervals meet, leaving no gap for change to vanish into.
-    assert bounds[0][1] == bounds[1][0]
-
-
-def test_annual_bounds_rejects_stamps_that_are_not_annual():
-    """
-    Two stamps in one year would mean the mid-year reading is wrong.
-    """
-    times = np.array([_days(2003, 1, 1), _days(2003, 7, 1)])
-    with pytest.raises(ValueError, match="one rate per year"):
-        annual_bounds(times)
-
-
-def test_cumulative_dh_accumulates_and_keeps_the_start_in_bounds():
-    """
-    Each record is the change since the first interval began.
-
-    That is what a run's ``usurf(t) - usurf(t0)`` gives, so the two can be
-    compared without re-deriving one of them.
-    """
-    times = np.array([_days(y, 7, 1) for y in (2003, 2004, 2005)])
-    bounds = annual_bounds(times)
-    rate = xr.DataArray(
-        np.array([[-1.0], [-2.0], [-3.0]]), dims=("t", "x"), coords={"t": times}, attrs={"units": "m/yr"}
-    )
-
-    out = cumulative_dh(rate, bounds, "t")
-
-    spans = (bounds[:, 1] - bounds[:, 0]) / DAYS_PER_YEAR
-    expected = np.cumsum([-1.0, -2.0, -3.0] * spans)
-    np.testing.assert_allclose(out["dh"].values.ravel(), expected)
-    # Every record's lower bound is the start of the record, not of its own interval.
-    assert (out["time_bnds"].values[:, 0] == bounds[0, 0]).all()
-    assert out["time_bnds"].values[-1, 1] == bounds[-1, 1]
-    # ``time`` sits at the end of the interval, as postprocess_dh writes it.
-    assert out["time"].values.tolist() == bounds[:, 1].tolist()
-    assert out["dh"].attrs["units"] == "m"
-
-
-def test_cumulative_dh_does_not_turn_gaps_into_zeros():
-    """
-    A cell the survey never saw stays NaN.
-
-    ``cumsum`` treats NaN as zero, which would report confident no-change
-    over exactly the places with no observation.
-    """
-    times = np.array([_days(y, 7, 1) for y in (2003, 2004)])
-    rate = xr.DataArray(np.array([[-1.0, np.nan], [-1.0, np.nan]]), dims=("t", "x"), coords={"t": times})
-
-    out = cumulative_dh(rate, annual_bounds(times), "t")
-
-    assert np.isnan(out["dh"].values[:, 1]).all()
-    assert np.isfinite(out["dh"].values[:, 0]).all()
-
-
-def _write_obs(path: Path, n_years: int = 3) -> Path:
-    """
-    Write a miniature observation file shaped like the ISMIP7 one.
+    On the ISMIP7 Greenland projection with ``y`` descending and NaN for the
+    cells the survey never saw.
 
     Parameters
     ----------
     path : pathlib.Path
-        Destination file.
-    n_years : int, optional
-        Number of Khan epochs.
+        File to write.
+    values : numpy.ndarray
+        Field of shape ``(N, N)``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    da = xr.DataArray(
+        values.astype("float32"),
+        dims=("y", "x"),
+        coords={
+            "y": -676440.0 - SPACING * np.arange(N),
+            "x": -626302.0 + SPACING * np.arange(N),
+        },
+    )
+    da.rio.write_crs(DH_SMITH_CRS).rio.write_nodata(np.nan).rio.to_raster(path)
+
+
+def write_archive(directory: Path, *, zipped: bool = False, rmse_holes: bool = False) -> Path:
+    """
+    Build a miniature stand-in for the Smith archive.
+
+    A rate that thins toward one side, a hole the survey never saw, and an
+    RMSE beside it -- laid out in the ``dhdt`` subdirectory the real archive
+    uses, with the decoys that must not be picked up.
+
+    Parameters
+    ----------
+    directory : pathlib.Path
+        Directory to build under.
+    zipped : bool, optional
+        Return a zip archive rather than the directory.
+    rmse_holes : bool, optional
+        Leave a cell that has a rate but no RMSE.
 
     Returns
     -------
     pathlib.Path
-        The written file.
+        The archive directory, or the zip file.
     """
-    times = np.array([_days(2003 + i, 7, 1) for i in range(n_years)])
-    ds = xr.Dataset(
-        {
-            "dhdt_khan": (
-                ("khan_dhdt_time", "y1km", "x1km"),
-                np.full((n_years, 2, 2), -1.0),
-                {"units": "m/yr ice equivalent", "source": "Khan et al. 2025"},
-            ),
-            "dhdt_smith": (
-                ("y1km", "x1km"),
-                np.full((2, 2), -0.5),
-                {"units": "m/yr ice equivalent", "source": "Smith et al. 2020", "time": _days(2019)},
-            ),
-            "mapping": ((), np.int8(0), {"grid_mapping_name": "polar_stereographic"}),
-        },
-        coords={
-            "khan_dhdt_time": ("khan_dhdt_time", times, {"units": OBS_TIME_UNITS}),
-            "y1km": [0.0, 1000.0],
-            "x1km": [0.0, 1000.0],
-        },
-    )
-    ds.to_netcdf(path)
-    return path
+    root = directory / "ICESat1_ICESat2_mass_change_updated_2_2021"
+    rate = np.tile(np.linspace(-2.0, 0.0, N), (N, 1))
+    rate[0, 0] = np.nan  # a cell the survey never saw
+    rmse = np.full((N, N), 0.25, dtype="float32")
+    rmse[0, 0] = np.nan
+    if rmse_holes:
+        rmse[1, 1] = np.nan  # a rate with no uncertainty beside it
+
+    write_raster(root / "dhdt" / DH_SMITH_RATE, rate)
+    write_raster(root / "dhdt" / DH_SMITH_RMSE, rmse)
+    # Decoys: the smoothed display grid, and the Antarctic pair.
+    write_raster(root / "dhdt" / "gris_dhdt_filt.tif", np.zeros((N, N)))
+    write_raster(root / "dhdt" / "ais_dhdt_grounded.tif", np.zeros((N, N)))
+    (root / "README.txt").write_text("stand-in\n")
+
+    if not zipped:
+        return root
+    archive = directory / "smith.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for item in sorted(root.rglob("*")):
+            if item.is_file():
+                zf.write(item, item.relative_to(directory))
+    return archive
 
 
-def test_prepare_writes_one_product_per_source(tmp_path: Path):
+@pytest.fixture(name="archive")
+def fixture_archive(tmp_path: Path) -> Path:
     """
-    Two files, because the two sources have different time axes.
+    A miniature archive directory.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    pathlib.Path
+        The archive directory.
+    """
+    return write_archive(tmp_path / "src")
+
+
+def test_cumulative_dh_accumulates_and_keeps_the_start_in_bounds():
+    """
+    Accumulate from the first interval's start, and say so in the bounds.
+
+    A run reports change since its own start, so every record's lower bound
+    is that same first epoch rather than the previous record's.
+    """
+    times = np.array([_days(y, 7, 1) for y in (2003, 2004, 2005)])
+    bounds = np.stack([[_days(y) for y in (2003, 2004, 2005)], [_days(y) for y in (2004, 2005, 2006)]], axis=1)
+    rate = xr.DataArray(np.full((3, 2, 2), -0.5, dtype="float32"), dims=("t", "y", "x"), coords={"t": times})
+    out = cumulative_dh(rate, bounds, "t")
+
+    spans = (bounds[:, 1] - bounds[:, 0]) / DAYS_PER_YEAR
+    np.testing.assert_allclose(out["dh"].values[:, 0, 0], -0.5 * np.cumsum(spans), rtol=1e-6)
+    # Every lower bound is the first interval's start.
+    assert (out["time_bnds"].values[:, 0] == bounds[0, 0]).all()
+    np.testing.assert_array_equal(out["time_bnds"].values[:, 1], bounds[:, 1])
+
+
+def test_cumulative_dh_does_not_turn_gaps_into_zeros():
+    """
+    Keep a cell the survey never saw missing.
+
+    ``cumsum`` reads NaN as zero, which would quietly report "no change"
+    for a cell that was never measured -- the one value a calibration must
+    not be handed.
+    """
+    times = np.array([_days(y, 7, 1) for y in (2003, 2004)])
+    bounds = np.stack([[_days(2003), _days(2004)], [_days(2004), _days(2005)]], axis=1)
+    values = np.full((2, 2, 2), -0.5, dtype="float32")
+    values[:, 0, 0] = np.nan
+    rate = xr.DataArray(values, dims=("t", "y", "x"), coords={"t": times})
+
+    out = cumulative_dh(rate, bounds, "t")
+    assert np.isnan(out["dh"].values[:, 0, 0]).all()
+    assert np.isfinite(out["dh"].values[:, 1, 1]).all()
+
+
+def test_smith_rasters_picks_the_unfiltered_greenland_pair(archive: Path):
+    """
+    Take the raw Greenland rate, not the smoothed one and not Antarctica.
+
+    The archive ships ``gris_dhdt_filt.tif`` beside the real thing; the
+    README marks it as smoothed for display only, so integrating it would
+    quietly report a different ice sheet.
+
+    Parameters
+    ----------
+    archive : pathlib.Path
+        Miniature archive directory.
+    """
+    rate, rmse = smith_rasters(archive)
+    assert rate.name == DH_SMITH_RATE
+    assert rmse.name == DH_SMITH_RMSE
+    assert "filt" not in rate.name and "ais" not in rate.name
+
+
+def test_smith_rasters_reads_a_zip(tmp_path: Path):
+    """
+    Accept the archive as downloaded, not only unpacked.
 
     Parameters
     ----------
     tmp_path : pathlib.Path
         Pytest temporary directory.
     """
-    obs = _write_obs(tmp_path / "GreenlandObsISMIP7-v1.3.nc")
-    products = prepare_dh_observations(obs, tmp_path / "out")
+    zipped = write_archive(tmp_path / "src", zipped=True)
+    rate, rmse = smith_rasters(zipped)
+    assert rate.name == DH_SMITH_RATE and rmse.name == DH_SMITH_RMSE
 
-    assert set(products) == {"khan", "smith"}
-    assert all(p.exists() for p in products.values())
+
+def test_smith_rasters_rejects_what_is_neither(tmp_path: Path):
+    """
+    Say so rather than searching a file that is not an archive.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    stray = tmp_path / "notes.txt"
+    stray.write_text("not an archive")
+    with pytest.raises(FileNotFoundError, match="neither a directory nor a zip"):
+        smith_rasters(stray)
+
+
+def test_smith_rasters_needs_both_fields(tmp_path: Path):
+    """
+    Refuse an archive missing the RMSE.
+
+    The uncertainty is the reason for using this archive; preparing the rate
+    alone would silently produce a product the likelihood cannot weight.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    root = write_archive(tmp_path / "src")
+    (root / "dhdt" / DH_SMITH_RMSE).unlink()
+    with pytest.raises(FileNotFoundError, match=DH_SMITH_RMSE):
+        smith_rasters(root)
+
+
+def test_prepare_integrates_the_rate_over_the_stated_period(tmp_path: Path, archive: Path):
+    """
+    Integrate over 2003-2019 and carry the RMSE through the same interval.
+
+    The rasters state no time at all, so the interval comes from the paper;
+    getting it wrong scales every value. The RMSE describes the one 16-year
+    rate rather than sixteen annual ones, so it scales with the interval, not
+    with its square root.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    archive : pathlib.Path
+        Miniature archive directory.
+    """
+    products = prepare_dh_observations(archive, tmp_path / "out")
+    assert set(products) == {"smith"}
+    assert products["smith"].name == DH_SMITH_NAME
 
     coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-    with xr.open_dataset(products["smith"], decode_times=coder) as smith:
-        assert smith.sizes["time"] == 1
-        assert f"{smith['time_bnds'].values[0][0]:%Y-%m-%d}" == DH_SMITH_START
-        assert f"{smith['time_bnds'].values[0][1]:%Y-%m-%d}" == DH_SMITH_END
-        # -0.5 m/yr over 16 years.
+    with xr.open_dataset(products["smith"], decode_times=coder) as ds:
+        assert ds.sizes["time"] == 1
+        assert f"{ds['time_bnds'].values[0][0]:%Y-%m-%d}" == DH_SMITH_START
+        assert f"{ds['time_bnds'].values[0][1]:%Y-%m-%d}" == DH_SMITH_END
+
         span = (_days(2019) - _days(2003)) / DAYS_PER_YEAR
-        np.testing.assert_allclose(smith["dh"].values.ravel(), -0.5 * span, rtol=1e-6)
+        rate = np.tile(np.linspace(-2.0, 0.0, N), (N, 1))
+        expected = rate * span
+        actual = ds["dh"].isel(time=0).values
+        finite = np.isfinite(expected) & np.isfinite(actual)
+        np.testing.assert_allclose(actual[finite], expected[finite], rtol=1e-5)
 
-    with xr.open_dataset(products["khan"], decode_times=coder) as khan:
-        assert khan.sizes["time"] == 3
-        # Named x/y, not y1km/x1km: this grid is the ISMIP7 submission grid,
-        # so a run aligns against it without either being renamed or flipped.
-        assert list(khan["dh"].dims) == ["time", "y", "x"]
-        assert "mapping" in khan
-        assert khan["dh"].attrs["grid_mapping"] == "mapping"
-        # -1 m/yr accumulating over three calendar years.
-        assert khan["dh"].values[-1].mean() < khan["dh"].values[0].mean() < 0
+        np.testing.assert_allclose(ds["dh_error"].isel(time=0).values[1:, 1:], 0.25 * span, rtol=1e-5)
+        assert ds["dh"].attrs["units"] == ds["dh_error"].attrs["units"] == "m"
 
 
-def test_the_products_align_with_a_run_without_reindexing(tmp_path: Path):
+def test_prepare_keeps_the_archives_own_grid(tmp_path: Path, archive: Path):
     """
-    A submission file minus these is a plain subtraction.
+    Leave the product on the 5 km grid it arrived on.
 
-    The observations run y north-to-south and a run south-to-north; xarray
-    reconciles that on the coordinate values, but only if the dimensions are
-    named the same. They were ``y1km``/``x1km``, which alignment cannot see
-    through.
+    Upsampling to the 1 km submission grid would invent a resolution the
+    survey does not have and make neighbouring uncertainties perfectly
+    correlated; which grid a comparison happens on is the comparison's
+    business. The projection is already the ISMIP7 one, so nothing is
+    reprojected either.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    archive : pathlib.Path
+        Miniature archive directory.
+    """
+    products = prepare_dh_observations(archive, tmp_path / "out")
+    with xr.open_dataset(products["smith"], decode_times=False) as ds:
+        assert list(ds["dh"].dims) == ["time", "y", "x"]
+        assert abs(float(ds["x"][1] - ds["x"][0])) == SPACING
+        assert abs(float(ds["y"][1] - ds["y"][0])) == SPACING
+        assert "mapping" in ds
+        assert ds["dh"].attrs["grid_mapping"] == "mapping"
+        assert "3413" in ds["mapping"].attrs["crs_wkt"]
+
+
+def test_prepare_drops_cells_without_an_uncertainty(tmp_path: Path):
+    """
+    Never leave a value whose uncertainty is missing.
+
+    A NaN uncertainty takes the log-likelihood of every member to NaN, which
+    destroys the whole posterior rather than one cell: the cell has to go.
 
     Parameters
     ----------
     tmp_path : pathlib.Path
         Pytest temporary directory.
     """
-    obs = _write_obs(tmp_path / "GreenlandObsISMIP7-v1.3.nc")
-    products = prepare_dh_observations(obs, tmp_path / "out")
-
-    with xr.open_dataset(products["smith"]) as smith:
-        # A run's grid: same coordinates, opposite y order.
-        run = xr.DataArray(
-            np.zeros((2, 2)),
-            dims=("y", "x"),
-            coords={"y": smith["y"].values[::-1], "x": smith["x"].values},
-        )
-        diff = run - smith["dh"].isel(time=0)
-        assert diff.sizes == {"y": 2, "x": 2}
-        # -0.5 m/yr over the Smith period, subtracted from zero.
-        assert float(diff.mean()) > 0
+    root = write_archive(tmp_path / "src", rmse_holes=True)
+    products = prepare_dh_observations(root, tmp_path / "out")
+    with xr.open_dataset(products["smith"], decode_times=False) as ds:
+        dh = ds["dh"].isel(time=0).values
+        err = ds["dh_error"].isel(time=0).values
+        assert np.isnan(dh[1, 1]), "a rate with no RMSE must not survive"
+        # Nowhere is there a value without an uncertainty beside it.
+        assert not (np.isfinite(dh) & ~np.isfinite(err)).any()
 
 
-def test_prepare_reuses_existing_products(tmp_path: Path):
+def test_prepare_does_not_stamp_the_tiff_metadata_onto_the_field(tmp_path: Path, archive: Path):
     """
-    A second call does not rebuild; ``force_overwrite`` does.
+    Describe the field, not the file it came out of.
+
+    GDAL hands back the TIFF's own tags and an identity ``scale_factor`` /
+    ``add_offset``; left in place the last of those would be applied a second
+    time by anything that decodes the file.
 
     Parameters
     ----------
     tmp_path : pathlib.Path
         Pytest temporary directory.
+    archive : pathlib.Path
+        Miniature archive directory.
     """
-    obs = _write_obs(tmp_path / "GreenlandObsISMIP7-v1.3.nc")
-    first = prepare_dh_observations(obs, tmp_path / "out")
-    stamps = {k: p.stat().st_mtime_ns for k, p in first.items()}
+    products = prepare_dh_observations(archive, tmp_path / "out")
+    with xr.open_dataset(products["smith"], decode_times=False) as ds:
+        for name in ("dh", "dh_error"):
+            assert not [k for k in ds[name].attrs if "TIFF" in k or k in ("scale_factor", "add_offset")]
 
-    prepare_dh_observations(obs, tmp_path / "out")
-    assert {k: p.stat().st_mtime_ns for k, p in first.items()} == stamps
 
-    prepare_dh_observations(obs, tmp_path / "out", force_overwrite=True)
-    assert {k: p.stat().st_mtime_ns for k, p in first.items()} != stamps
+def test_prepare_writes_a_decodable_time_axis(tmp_path: Path, archive: Path):
+    """
+    Keep the CF time attributes through to the file.
+
+    Assigning a variable carrying a bare ``time`` replaces the coordinate,
+    attributes and all; without them the axis reads back as plain integers
+    and nothing aligns against a run.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    archive : pathlib.Path
+        Miniature archive directory.
+    """
+    products = prepare_dh_observations(archive, tmp_path / "out")
+    with xr.open_dataset(products["smith"], decode_times=False) as raw:
+        assert raw["time"].attrs["units"] == OBS_TIME_UNITS
+        assert raw["time"].attrs["calendar"] == OBS_CALENDAR
+        assert raw["time"].attrs["bounds"] == "time_bnds"
+
+    coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    with xr.open_dataset(products["smith"], decode_times=coder) as ds:
+        assert f"{ds['time'].values[0]:%Y-%m-%d}" == DH_SMITH_END
+
+
+def test_prepare_reuses_existing_products(tmp_path: Path, archive: Path):
+    """
+    Do not rebuild what is already there unless asked.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    archive : pathlib.Path
+        Miniature archive directory.
+    """
+    first = prepare_dh_observations(archive, tmp_path / "out")
+    stamp = first["smith"].stat().st_mtime_ns
+    prepare_dh_observations(archive, tmp_path / "out")
+    assert first["smith"].stat().st_mtime_ns == stamp
+
+    prepare_dh_observations(archive, tmp_path / "out", force_overwrite=True)
+    assert first["smith"].stat().st_mtime_ns != stamp
