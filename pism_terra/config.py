@@ -1684,6 +1684,11 @@ class CampaignConfig(BaseModel):
         the bucket (relative to the input directory), downloaded by staging.
         Glacier runs: a local path or S3/HTTP URI, overridden by
         ``--regrid-file``.
+    dh_files : list of str or None
+        Observed thickness-change files to stage alongside the run inputs, as
+        written by ``pism-ismip7-greenland-prepare --include dh``. PISM does
+        not read them -- they are what a run is compared against afterwards --
+        so they are optional and a config that omits them stages as before.
     retreat_file : str or None
         Path to the retreat NetCDF file (relative to the input directory).
     rgi_complex_file : str or None
@@ -1784,6 +1789,7 @@ class CampaignConfig(BaseModel):
     present_day_forcings: str | list | None = Field(default=None)
     regrid_file: str | None = Field(default=None)
     retreat_file: str | None = Field(default=None)
+    dh_files: list[str] | None = Field(default=None)
     rgi_complex_file: str | None = Field(default=None)
     rgi_glacier_file: str | None = Field(default=None)
     init_climate: str | None = Field(default=None)

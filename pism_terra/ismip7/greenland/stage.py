@@ -329,6 +329,11 @@ def stage(
         (config["outline_file"], outline_file),
         (config["obs_file"], obs_file),
     ]
+    # Observed thickness change, for comparing the run against afterwards.
+    # Optional: PISM never reads these, so a config without them stages
+    # exactly as before.
+    for name in config.get("dh_files") or []:
+        required_files.append((name, input_path / Path(name)))
     # ``prepare`` publishes one file per (epoch, gcm, forcing) — the
     # historical span and each projection pathway live side-by-side.
     # ``climate_gradient`` is the annual elevation-gradient companion of

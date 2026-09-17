@@ -46,6 +46,7 @@ from pism_terra.ismip7.greenland.run import (
     MEMBERS_CSV,
     _render_forward_run,
     _render_inverse_run,
+    is_ismip7_run,
     ismip7_identity,
     record_member,
 )
@@ -1231,3 +1232,59 @@ def test_a_core_run_records_its_protocol_counter(tmp_path: Path):
     record_member(tmp_path, identity, {})
     table = pd.read_csv(tmp_path / MEMBERS_CSV)
     assert table["set_counter"].tolist() == ["C005"]
+
+
+def test_a_run_that_is_not_an_ismip7_product_records_no_member():
+    """
+    A config can drive PISM through this module without being a submission.
+
+    The plain OCX config sets ``output.ISMIP = "no"`` and declares no
+    ``run_info.set``, so there are no member ids to resolve. Recording the
+    member unconditionally made that config fail outright, after its run
+    script had already been written.
+    """
+    plain = load_config(CONFIG_DIR / "ismip7_greenland_ocx.toml")
+    assert not is_ismip7_run(plain)
+    # Which is why the guard is needed: resolving an identity without a set
+    # is an error, not a default.
+    with pytest.raises(ValueError, match="set_id must be one of"):
+        ismip7_identity(plain, "OCX", 0)
+
+    for name in ("ismip7_greenland_c005", "ismip7_greenland_ppe_ssp126"):
+        assert is_ismip7_run(load_config(CONFIG_DIR / f"{name}.toml")), name
+
+
+def test_is_ismip7_run_needs_both_the_flag_and_a_set(tmp_path: Path):
+    """
+    Either half missing means there is nothing to name or record.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    raw = toml.loads((CONFIG_DIR / "ismip7_greenland_ppe_ssp126.toml").read_text())
+
+    def written(mutate) -> Path:
+        """
+        Write a variant config.
+
+        Parameters
+        ----------
+        mutate : callable
+            Applied to the parsed TOML before writing.
+
+        Returns
+        -------
+        pathlib.Path
+            The written config.
+        """
+        data = toml.loads(toml.dumps(raw))
+        mutate(data)
+        path = tmp_path / f"variant_{abs(hash(str(data)))}.toml"
+        path.write_text(toml.dumps(data))
+        return path
+
+    assert is_ismip7_run(load_config(written(lambda d: None)))
+    assert not is_ismip7_run(load_config(written(lambda d: d["reporting"].update({"output.ISMIP": "no"}))))
+    assert not is_ismip7_run(load_config(written(lambda d: d["run_info"].pop("run_info.set"))))

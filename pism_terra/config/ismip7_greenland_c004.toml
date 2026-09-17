@@ -15,6 +15,7 @@
 
 boot_file = "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 bucket = "pism-cloud-data"
+dh_files = ["dh_smith_g5000m_ICESat1-ICESat2-2021.nc"]
 grid_file = "pism_bedmachine_greenland_grid.nc"
 heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
 historical_end_year = "2014"
@@ -201,6 +202,7 @@ model = "picop_sgd"
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
 'ocean.picop.drag_coefficient' = 0.0015
+'ocean.picop.file' = "none"
 
 [ocean.options.picop_sgd]
 
@@ -214,6 +216,7 @@ model = "picop_sgd"
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
 'ocean.picop.add_fresh_water_melt' = "yes"
 'ocean.picop.drag_coefficient' = 0.0015
+'ocean.picop.file' = "none"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
 

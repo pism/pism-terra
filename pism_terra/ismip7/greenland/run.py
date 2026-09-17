@@ -48,6 +48,7 @@ from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     add_provenance,
     apply_choice_mapping,
+    check_template_legs,
     dict2str,
     filter_overrides_by_config,
     normalize_row,
@@ -278,6 +279,28 @@ MEMBER_ID_COLUMNS = (
     "set_id",
     "uq_draw",
 )
+
+
+def is_ismip7_run(cfg) -> bool:
+    """
+    Whether this run writes ISMIP7-named output.
+
+    A config can drive PISM through this module without being an ISMIP7
+    submission -- a plain OCX run, say -- in which case it has no ``set_id``
+    to derive member ids from and nothing to record in the member table.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded configuration.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``output.ISMIP`` is on and a set is declared.
+    """
+    flag = str(cfg.reporting.get("output.ISMIP", "no")).strip().strip("\"'").lower()
+    return flag in ("yes", "true", "1") and bool(cfg.run_info.set_id)
 
 
 def ismip7_identity(cfg, sample: int | str | None, run_index: int | None = None) -> dict[str, object]:
@@ -1025,6 +1048,9 @@ def _render_forward_run(
     params.update({"run_init_str": run_init_str})
     params.update(leg_params)
 
+    # Jinja drops a variable the template never mentions, so a template
+    # written for the other runner yields a script missing its main leg.
+    check_template_legs(template_file, params)
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = path / Path("run_scripts")
@@ -1335,6 +1361,9 @@ def _render_inverse_run(
     # carry the forward (tauc) legs, matching the forward template semantics.
     params.update(leg_params)
 
+    # Jinja drops a variable the template never mentions, so a template
+    # written for the other runner yields a script missing its main leg.
+    check_template_legs(template_file, params)
     rendered_script = "" if debug else add_provenance(template.render(params))
 
     run_script_path = path / Path("run_scripts")
@@ -1742,7 +1771,11 @@ def _run(*, kind: str) -> None:
         # in a spreadsheet specifying parameter and modelling choices for this
         # particular experiment", and nothing else records the mapping -- it
         # would otherwise live only in the order this loop happened to run.
-        record_member(path, ismip7_identity(cfg, sample, run_index), sampled_parameters)
+        # Only for runs that are ISMIP7 products: a config can drive PISM
+        # through this module without being a submission, and those have no
+        # set to derive member ids from.
+        if is_ismip7_run(cfg):
+            record_member(path, ismip7_identity(cfg, sample, run_index), sampled_parameters)
 
 
 def run_forward() -> None:
