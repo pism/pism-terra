@@ -923,6 +923,201 @@ def add_basins_to_ocean_files(ocean_files: list[Path]) -> None:
             logger.warning("Could not add basin mask to %s: %s", ocean_file, exc)
 
 
+#: Period the Smith et al. (2020) rate covers. The observation file gives it a
+#: single ``time`` attribute (2019-01-01) and no bounds, so the interval has to
+#: come from the paper: 2003 to 2019. Its mean rate agrees with the mean of
+#: Khan's annual rates over that window to within 0.1% across ~10^5 cells,
+#: which is what confirms it is a 16-year mean and not an instantaneous rate.
+DH_SMITH_START = "2003-01-01"
+DH_SMITH_END = "2019-01-01"
+
+#: Reference epoch of the observation file's time coordinates.
+OBS_TIME_UNITS = "days since 1900-01-01"
+OBS_CALENDAR = "standard"
+
+#: Days in a year, for turning a rate in m/yr into a thickness change. The
+#: Julian year the ``m/yr`` unit denotes, not the calendar year, so a 365-day
+#: interval is 0.9993 yr rather than 1.
+DAYS_PER_YEAR = 365.25
+
+
+def annual_bounds(times: np.ndarray) -> np.ndarray:
+    """
+    Bracket mid-year rate stamps with the calendar years they average over.
+
+    Khan's rates are stamped at 1 July of each year, which is how an annual
+    mean is conventionally dated: the value for 2003 sits at 2003-07-01. The
+    interval it describes is the calendar year around it, so the bounds are
+    1 January either side rather than the midpoints between stamps.
+
+    Parameters
+    ----------
+    times : numpy.ndarray
+        Epochs in :data:`OBS_TIME_UNITS`.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n, 2)`` array of lower and upper bounds, same units.
+
+    Raises
+    ------
+    ValueError
+        If the stamps are not one per year, which would mean the mid-year
+        reading is wrong and the bounds with it.
+    """
+    dates = cftime.num2date(times, OBS_TIME_UNITS, OBS_CALENDAR)
+    years = [d.year for d in dates]
+    if sorted(set(years)) != years:
+        raise ValueError(f"expected one rate per year, got years {years}")
+    edges = [
+        cftime.date2num(cftime.datetime(year, 1, 1, calendar=OBS_CALENDAR), OBS_TIME_UNITS, OBS_CALENDAR)
+        for year in years + [years[-1] + 1]
+    ]
+    return np.stack([edges[:-1], edges[1:]], axis=1)
+
+
+def cumulative_dh(rate: xr.DataArray, bounds: np.ndarray, time_dim: str) -> xr.Dataset:
+    """
+    Integrate a sequence of rates into cumulative thickness change.
+
+    Each record is the change since the start of the first interval, so it
+    lines up with what ``pism-glacier-postprocess-dh`` reports for a run --
+    ``usurf(t) - usurf(t0)`` -- rather than being a per-interval increment.
+    ``time`` is the end of the interval and ``time_bnds`` spans it, matching
+    that tool's convention.
+
+    Parameters
+    ----------
+    rate : xr.DataArray
+        Rates in m/yr, with ``time_dim`` leading.
+    bounds : numpy.ndarray
+        ``(n, 2)`` interval bounds in :data:`OBS_TIME_UNITS`.
+    time_dim : str
+        Name of the rate's time dimension.
+
+    Returns
+    -------
+    xr.Dataset
+        ``dh`` in metres with ``time`` and ``time_bnds``.
+    """
+    spans = xr.DataArray(
+        (bounds[:, 1] - bounds[:, 0]) / DAYS_PER_YEAR, dims=(time_dim,), coords={time_dim: rate[time_dim]}
+    )
+    dh = (rate * spans).cumsum(dim=time_dim, keep_attrs=True)
+    # cumsum treats NaN as zero, which would turn cells the survey never saw
+    # into a confident zero; put them back.
+    dh = dh.where(rate.notnull())
+    dh = dh.rename({time_dim: "time"}).assign_coords(time=bounds[:, 1])
+    dh.attrs.update({"units": "m", "long_name": "cumulative thickness change"})
+    out = xr.Dataset({"dh": dh})
+    # Every record starts at the first interval's start: these are cumulative.
+    out["time_bnds"] = xr.DataArray(
+        np.stack([np.full(len(bounds), bounds[0, 0]), bounds[:, 1]], axis=1), dims=("time", "bnds")
+    )
+    out["time"].attrs.update({"units": OBS_TIME_UNITS, "calendar": OBS_CALENDAR, "axis": "T", "bounds": "time_bnds"})
+    return out
+
+
+def prepare_dh_observations(
+    obs_file: Path | str,
+    output_path: Path | str,
+    force_overwrite: bool = False,
+) -> dict[str, Path]:
+    """
+    Turn the observed thickness-change *rates* into cumulative ``dh`` fields.
+
+    The observation file carries two independent estimates, both as rates in
+    m/yr: ``dhdt_khan`` as 21 annual means (2003-2023) and ``dhdt_smith`` as a
+    single 16-year mean. A run reports elevation *change*, so each is
+    integrated into a cumulative ``dh`` carrying CF ``time_bnds``, the same
+    shape ``pism-glacier-postprocess-dh`` writes for a simulation.
+
+    Left on the observations' own 1 km grid rather than regridded: which run
+    grid they are compared against is the comparison's business, not this
+    step's. The dimensions are renamed ``y``/``x`` because that grid *is* the
+    ISMIP7 submission grid -- identical coordinates, opposite ``y`` order --
+    so a submission file and these align without either being touched.
+
+    One file per source, since the two have different time axes.
+
+    Parameters
+    ----------
+    obs_file : Path or str
+        The downloaded ISMIP7 observation NetCDF.
+    output_path : Path or str
+        Directory the ``dh_*`` files are written to.
+    force_overwrite : bool, optional
+        Rebuild even when the products are already there.
+
+    Returns
+    -------
+    dict of str to pathlib.Path
+        ``{"khan": ..., "smith": ...}``.
+    """
+    obs_file = Path(obs_file)
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+    stem = obs_file.stem
+    products = {
+        "khan": output_path / f"dh_khan_g1000m_{stem}.nc",
+        "smith": output_path / f"dh_smith_g1000m_{stem}.nc",
+    }
+    if all(p.exists() for p in products.values()) and not force_overwrite:
+        logger.info("Using existing dh observations in %s", output_path)
+        return products
+
+    with xr.open_dataset(obs_file, decode_times=False, chunks={"khan_dhdt_time": 1}) as ds:
+        grid = {name: ds[name] for name in ("mapping",) if name in ds}
+
+        # Khan: annual means, integrated year by year.
+        khan = cumulative_dh(ds["dhdt_khan"], annual_bounds(ds["khan_dhdt_time"].values), "khan_dhdt_time")
+        khan["dh"].attrs.update(
+            {
+                "long_name": "cumulative thickness change from Khan et al. 2025",
+                "source": ds["dhdt_khan"].attrs.get("source", "Khan et al. 2025"),
+                "comment": "cumulative from the start of the first annual interval",
+            }
+        )
+
+        # Smith: one mean rate over a period the file does not state; see
+        # DH_SMITH_START / DH_SMITH_END for where the dates come from.
+        edges = np.array(
+            [
+                cftime.date2num(
+                    cftime.datetime(*(int(part) for part in date.split("-")), calendar=OBS_CALENDAR),
+                    OBS_TIME_UNITS,
+                    OBS_CALENDAR,
+                )
+                for date in (DH_SMITH_START, DH_SMITH_END)
+            ]
+        )
+        rate = ds["dhdt_smith"].expand_dims(smith_time=[edges[1]])
+        smith = cumulative_dh(rate, edges.reshape(1, 2), "smith_time")
+        smith["dh"].attrs.update(
+            {
+                "long_name": "cumulative thickness change from Smith et al. 2020",
+                "source": ds["dhdt_smith"].attrs.get("source", "Smith et al. 2020"),
+                "comment": f"rate integrated over {DH_SMITH_START}..{DH_SMITH_END} (from the paper; "
+                "the file states only a single time attribute)",
+            }
+        )
+
+        for key, out in (("khan", khan), ("smith", smith)):
+            # The observations' 1 km grid is the ISMIP7 submission grid, down
+            # to the coordinate values -- only the y order differs. Naming the
+            # dimensions x/y lets xarray align a run against these directly,
+            # reversal included, instead of every analysis renaming first.
+            out = out.rename({"y1km": "y", "x1km": "x"})
+            for name, var in grid.items():
+                out[name] = var
+            out["dh"].attrs["grid_mapping"] = "mapping"
+            encoding = {"dh": {"zlib": True, "complevel": 2, "dtype": "float32"}}
+            logger.info("Writing %s", products[key])
+            out.to_netcdf(products[key], encoding=encoding, engine="h5netcdf")
+    return products
+
+
 def prepare_observations(
     url: Path | str,
     input_path: Path | str,

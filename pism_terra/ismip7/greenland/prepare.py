@@ -45,6 +45,7 @@ from pism_terra.domain import create_domain
 from pism_terra.ismip7.greenland.forcing import (
     add_basins_to_ocean_files,
     prepare_calfin,
+    prepare_dh_observations,
     prepare_ismip7_forcing,
     prepare_observations,
 )
@@ -59,7 +60,7 @@ xr.set_options(keep_attrs=True)
 logger = logging.getLogger(__name__)
 
 # Datasets the ISMIP7 Greenland prepare can process, in execution order.
-ISMIP7_DATASETS = ["grid", "observations", "forcings", "calfin"]
+ISMIP7_DATASETS = ["grid", "observations", "dh", "forcings", "calfin"]
 
 # Default observation NetCDF (Globus) with the boot / velocity / heat-flux inputs.
 DEFAULT_OBS_URL = "https://g-ab4495.8c185.08cc.data.globus.org/ISMIP7/Observations/Greenland/GreenlandObsISMIP7-v1.3.nc"
@@ -90,6 +91,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         - ``"grid_file"`` : Path — generated grid NetCDF.
         - ``"boot_file"`` : Path — observation-derived boot NetCDF.
         - ``"heatflux_file"`` : Path — geothermal heat-flux NetCDF.
+        - ``"dh_files"`` : dict — observed cumulative thickness change per source.
         - ``"forcing_files"`` : sequence of Path — climate/ocean forcing files.
         - ``"retreat_file"`` : Path — CALFIN front-retreat NetCDF.
     """
@@ -237,6 +239,23 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         for v in obs_files_2007.values():
             check_xr_lazy(v)
 
+    # --- Observed thickness change ---
+    # The observation file states dH/dt; a run reports elevation change, so
+    # the rates are integrated here once rather than in every analysis. Left
+    # on the observations' own 1 km grid.
+    dh_files: dict = {}
+    if "dh" in selected:
+        logger.info("-" * 120)
+        logger.info("Observed Thickness Change")
+        logger.info("-" * 120)
+        dh_files = prepare_dh_observations(
+            obs_url if data_path is not None else output_path / Path("obs") / Path(Path(obs_url).name),
+            input_path,
+            force_overwrite=force_overwrite,
+        )
+        for v in dh_files.values():
+            check_xr_lazy(v)
+
     # --- Forcings ---
     forcing_files: list = []
     if "forcings" in selected:
@@ -286,6 +305,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         "boot_file_1985": obs_files_1985.get("boot_file"),
         "boot_file_2007": obs_files_2007.get("boot_file"),
         "heatflux_file": obs_files_1985.get("heatflux_file") or obs_files_2007.get("heatflux_file"),
+        "dh_files": dh_files,
         "forcing_files": forcing_files,
         "retreat_file": retreat_file,
         "obs_file_1985": obs_files_1985.get("obs_file"),
