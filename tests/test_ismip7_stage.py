@@ -194,3 +194,115 @@ def test_counter_config_pins_versions_from_the_spec():
     assert cfg.campaign.forcing_versions is None
     assert explicit_forcing_version(params, "CESM2-WACCM", "climate") == "v3"
     assert explicit_forcing_version(params, "CESM2-WACCM", "ocean") == "v2"
+
+
+def test_dh_observations_are_staged_when_the_config_names_them(tmp_path, monkeypatch):
+    """
+    The observed thickness-change files come down with the run inputs.
+
+    PISM never reads them -- they are what the run is compared against
+    afterwards -- but they have to be on the machine that does the comparing.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to record the S3 keys instead of fetching them.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland import stage as stage_module
+
+    requested: list[str] = []
+
+    def _record(uri, dest, **_kwargs):
+        """
+        Note the key instead of fetching it.
+
+        Parameters
+        ----------
+        uri : str
+            S3 URI requested.
+        dest : str or pathlib.Path
+            Where it would have been written.
+        **_kwargs : dict
+            Ignored.
+
+        Returns
+        -------
+        pathlib.Path
+            ``dest``.
+        """
+        requested.append(uri)
+        return Path(dest)
+
+    monkeypatch.setattr(stage_module, "download_from_s3", _record)
+
+    cfg = load_config(CONFIG_DIR / "ismip7_greenland_c011.toml")
+    assert cfg.campaign.dh_files, "the config should name the dh files"
+    try:
+        stage_module.stage(
+            cfg.campaign.as_params(),
+            path=tmp_path,
+            force_overwrite=False,
+            data_path=None,
+            include_projection=False,
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        # The staged files are stubs, so validation downstream fails; the
+        # key list is already complete by then.
+        pass
+
+    staged = [uri.rsplit("/", 1)[-1] for uri in requested]
+    for name in cfg.campaign.dh_files:
+        assert name in staged, f"{name} was not staged"
+
+
+def test_a_config_without_dh_files_stages_as_before(tmp_path, monkeypatch):
+    """
+    The field is optional, so omitting it changes nothing.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to record the S3 keys instead of fetching them.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland import stage as stage_module
+
+    requested: list[str] = []
+
+    def _record(uri, dest, **_kwargs):
+        """
+        Note the key instead of fetching it.
+
+        Parameters
+        ----------
+        uri : str
+            S3 URI requested.
+        dest : str or pathlib.Path
+            Where it would have been written.
+        **_kwargs : dict
+            Ignored.
+
+        Returns
+        -------
+        pathlib.Path
+            ``dest``.
+        """
+        requested.append(uri)
+        return Path(dest)
+
+    monkeypatch.setattr(stage_module, "download_from_s3", _record)
+
+    cfg = load_config(CONFIG_DIR / "ismip7_greenland_c011.toml")
+    config = cfg.campaign.as_params()
+    config.pop("dh_files", None)
+    try:
+        stage_module.stage(config, path=tmp_path, force_overwrite=False, data_path=None, include_projection=False)
+    except Exception:  # pylint: disable=broad-exception-caught
+        pass
+
+    assert not [uri for uri in requested if "/dh_" in uri]
