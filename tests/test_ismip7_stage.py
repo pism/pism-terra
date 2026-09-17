@@ -308,9 +308,9 @@ def test_a_config_without_dh_files_stages_as_before(tmp_path, monkeypatch):
     assert not [uri for uri in requested if "/dh_" in uri]
 
 
-def test_version_cli_overrides_the_campaign_directory(monkeypatch, tmp_path):
+def test_dataset_version_cli_overrides_the_campaign_directory(monkeypatch, tmp_path):
     """
-    Let ``--version`` pick the staged-input directory the config pins.
+    Let ``--dataset-version`` pick the staged-input directory the config pins.
 
     ``campaign.version`` names the S3 subdirectory the inputs are fetched
     from (``<prefix>/<version>/``), so overriding it is how one config is
@@ -370,7 +370,7 @@ def test_version_cli_overrides_the_campaign_directory(monkeypatch, tmp_path):
             "--output-path",
             str(tmp_path),
             "--no-observations",
-            "--version",
+            "--dataset-version",
             "v9",
             config_file,
         ],
@@ -384,7 +384,7 @@ def test_version_cli_overrides_the_campaign_directory(monkeypatch, tmp_path):
     assert seen["boot_file"] == "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 
 
-def test_version_cli_defaults_to_the_config(monkeypatch, tmp_path):
+def test_dataset_version_cli_defaults_to_the_config(monkeypatch, tmp_path):
     """
     Leave the config's version alone when the flag is not given.
 

@@ -1448,7 +1448,7 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
         default=False,
     )
     parser.add_argument(
-        "--version",
+        "--dataset-version",
         type=str,
         default=None,
         help="Overrides campaign.version, the S3 subdirectory (<prefix>/<version>/) the staged inputs are fetched from.",
@@ -1629,8 +1629,8 @@ def _run(*, kind: str) -> None:
     # later assignment would not reach the value stage() actually reads. Only
     # staging consults it -- the rendered run scripts reference staged files by
     # name, not by the directory they came from.
-    if options.version is not None:
-        cfg.campaign.version = options.version
+    if options.dataset_version is not None:
+        cfg.campaign.version = options.dataset_version
     campaign_config = cfg.campaign.as_params()
 
     # Skip staging the (large) projection forcing when it isn't used.

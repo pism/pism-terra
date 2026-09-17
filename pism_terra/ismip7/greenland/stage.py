@@ -514,7 +514,7 @@ def main():
         default=None,
     )
     parser.add_argument(
-        "--version",
+        "--dataset-version",
         help="Overrides campaign.version, the S3 subdirectory (<prefix>/<version>/) the staged inputs are fetched from.",
         type=str,
         default=None,
@@ -546,8 +546,8 @@ def main():
     cfg = load_config(config_file)
     # Applied before as_params(): the campaign dict is a plain snapshot, so a
     # later assignment would not reach the value stage() actually reads.
-    if options.version is not None:
-        cfg.campaign.version = options.version
+    if options.dataset_version is not None:
+        cfg.campaign.version = options.dataset_version
     config = cfg.campaign.as_params()
 
     path.mkdir(parents=True, exist_ok=True)
