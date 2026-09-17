@@ -44,15 +44,18 @@ import xarray as xr
 from pism_terra.ismip7.greenland.importance_sampling import (
     ERROR_VAR,
     MEMBER_DIM,
+    SIM_VARS,
     align_to_observations,
     error_stats,
     find_member_files,
     load_ensemble,
     load_observations,
+    main,
     member_label,
     product_name,
     run_pipeline,
     same_grid,
+    simulated_variable,
     to_observed_grid,
 )
 
@@ -528,3 +531,144 @@ def test_load_observations_falls_back_when_there_is_no_error(case):
     assert ERROR_VAR in obs
     expected = np.maximum(0.1 * abs(obs["dh"]), 0.5)
     np.testing.assert_allclose(obs[ERROR_VAR].values, expected.values, equal_nan=True)
+
+
+def _member(**variables) -> xr.Dataset:
+    """
+    A one-record member file carrying the named fields.
+
+    Parameters
+    ----------
+    **variables : numpy.ndarray or float
+        Field name to constant value.
+
+    Returns
+    -------
+    xarray.Dataset
+        The member.
+    """
+    x, y = grid(4, 1000.0)
+    coords = {"time": [cftime.DatetimeGregorian(2019, 1, 1)], "y": y, "x": x}
+    data = {name: (("time", "y", "x"), np.full((1, 4, 4), value, dtype="float32")) for name, value in variables.items()}
+    ds = xr.Dataset(data, coords=coords)
+    ds["time_bnds"] = (("time", "bnds"), np.array([[cftime.DatetimeGregorian(2003, 1, 1), coords["time"][0]]]))
+    ds["mapping"] = ((), np.int8(0))
+    return ds
+
+
+def test_simulated_variable_prefers_thickness():
+    """
+    Take ``lithk`` when the run reports it.
+
+    It is the thickness change the observations measure; ``usurf`` beside it
+    is a different quantity and must not win by being first alphabetically or
+    first in the file.
+    """
+    assert simulated_variable(_member(usurf=1.0, lithk=2.0)) == "lithk"
+    assert SIM_VARS[0] == "lithk"
+
+
+def test_simulated_variable_accepts_what_a_plain_run_offers():
+    """
+    Fall back to ``usurf`` for a run that reports nothing else.
+
+    A non-submission run writes surface elevation, and comparing it is better
+    than refusing -- provided the caller is told they are different things.
+    """
+    assert simulated_variable(_member(usurf=1.0)) == "usurf"
+
+
+def test_simulated_variable_ignores_the_bookkeeping_variables():
+    """
+    Do not mistake ``time_bnds`` or ``mapping`` for the field.
+
+    They sit in every file and would otherwise make a single-field file look
+    ambiguous.
+    """
+    assert simulated_variable(_member(dhdt=1.0)) == "dhdt"
+
+
+def test_simulated_variable_honours_an_explicit_choice():
+    """
+    Let the caller override the preference order.
+    """
+    assert simulated_variable(_member(usurf=1.0, lithk=2.0), "usurf") == "usurf"
+
+
+def test_simulated_variable_rejects_a_field_that_is_not_there():
+    """
+    Name what is available rather than failing further down.
+    """
+    with pytest.raises(ValueError, match="'orog' not among"):
+        simulated_variable(_member(lithk=1.0), "orog")
+
+
+def test_simulated_variable_refuses_to_guess_between_several():
+    """
+    Ask rather than pick when the file carries several plausible fields.
+
+    Choosing silently would put an arbitrary quantity into the likelihood.
+    """
+    with pytest.raises(ValueError, match="cannot tell which"):
+        simulated_variable(_member(sftgif=1.0, velsurf_mag=2.0))
+
+
+def test_load_ensemble_reads_a_usurf_only_run(tmp_path: Path):
+    """
+    Open a plain run's dh file, which carries no ``lithk`` at all.
+
+    This is what a non-submission OCX run produces, and it used to fail
+    outright.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _member(usurf=-2.0).to_netcdf(run_dir / "dh_usurf_spatial_g900m_id_OCX_ocx_prescribed_1990-01-01_2025-01-01.nc")
+    sim = load_ensemble(find_member_files(run_dir))
+    assert "dh" in sim
+    assert float(sim["dh"].isel({MEMBER_DIM: 0}).max()) == pytest.approx(-2.0)
+
+
+def test_cli_does_not_need_a_separator_before_the_positionals(tmp_path: Path, case, monkeypatch):
+    """
+    Reach ``RUN_DIR`` and ``OUTPUT_PATH`` without a ``--`` in the way.
+
+    A greedy ``nargs="+"`` on ``--observations`` swallowed both positionals,
+    so the command could only be run with a separator -- and ``-h`` landed
+    inside the observation list instead of printing help.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    case : tuple
+        Run directory, observation directory and observed files.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to silence the log file handler.
+    """
+    run_dir, _, observed = case
+    out = tmp_path / "cli"
+    monkeypatch.setattr("pism_terra.ismip7.greenland.importance_sampling.setup_logging", lambda *_: None)
+    assert (
+        main(
+            [
+                "--observations",
+                str(observed[0]),
+                "--n-samples",
+                "100",
+                "--n-boot",
+                "10",
+                "--fudge-factors",
+                "1,5",
+                str(run_dir),
+                str(out),
+            ]
+        )
+        == 0
+    )
+    written = pd.read_csv(out / "importance_sampling_summary.csv")
+    assert sorted(set(written["fudge_factor"])) == [1.0, 5.0]

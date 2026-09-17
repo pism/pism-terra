@@ -91,8 +91,15 @@ logger = logging.getLogger(__name__)
 #: version so the posterior helpers and a run's ``uq.csv`` line up.
 MEMBER_DIM = "uq_id"
 
-#: Variable the model dh files carry.
-SIM_VAR = "lithk"
+#: Variables a model dh file may carry, in the order they are preferred when
+#: the file is not told which to use. ``lithk`` first because it is the
+#: thickness change the observations actually measure; ``usurf`` is what a
+#: plain, non-submission run reports instead -- see :func:`simulated_variable`
+#: for why the two are not the same quantity.
+SIM_VARS = ("lithk", "usurf")
+
+#: Variables that are never the field being compared.
+NON_FIELD_VARS = frozenset({"time_bnds", "time_bounds", "mapping", "spatial_ref", "crs", "pism_config", "run_stats"})
 
 #: Variable the observed dh files carry, and the name both are compared under.
 OBS_VAR = "dh"
@@ -331,7 +338,52 @@ def load_observations(
     return obs
 
 
-def load_ensemble(files: Sequence[Path]) -> xr.Dataset:
+def simulated_variable(ds: xr.Dataset, variable: str | None = None) -> str:
+    """
+    Decide which field of a run's dh file is the one being compared.
+
+    A submission run reports ``lithk``, and that is the thickness change the
+    observations measure. A plain run reports ``usurf`` instead, which is
+    *not* the same quantity: surface elevation also moves with the bed, so
+    with bed deformation on the two diverge over the record, and neither
+    tracks the firn the observations have already been corrected for. It is
+    still the only field such a run offers, so it is accepted -- but as a
+    different measurement, not a substitute.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        An opened member file.
+    variable : str or None, optional
+        Field to use; chosen from what the file carries when None.
+
+    Returns
+    -------
+    str
+        Name of the field to compare.
+
+    Raises
+    ------
+    ValueError
+        If the named field is absent, or if nothing can be chosen because the
+        file carries no recognised field or several equally plausible ones.
+    """
+    available = [str(name) for name in ds.data_vars if str(name) not in NON_FIELD_VARS]
+    if variable is not None:
+        if variable not in ds.data_vars:
+            raise ValueError(f"{variable!r} not among {sorted(available)}")
+        return variable
+    for candidate in SIM_VARS:
+        if candidate in available:
+            return candidate
+    if len(available) == 1:
+        return available[0]
+    raise ValueError(
+        f"cannot tell which of {sorted(available)} to compare; pass --variable " f"(expected one of {list(SIM_VARS)})"
+    )
+
+
+def load_ensemble(files: Sequence[Path], variable: str | None = None) -> xr.Dataset:
     """
     Open the member files as one ensemble.
 
@@ -339,6 +391,8 @@ def load_ensemble(files: Sequence[Path]) -> xr.Dataset:
     ----------
     files : sequence of pathlib.Path
         Per-member ``dh`` files.
+    variable : str or None, optional
+        Field to compare; chosen from what the files carry when None.
 
     Returns
     -------
@@ -348,7 +402,7 @@ def load_ensemble(files: Sequence[Path]) -> xr.Dataset:
     Raises
     ------
     ValueError
-        If the files do not carry the simulated variable.
+        If the files do not carry the field being compared.
     """
     coder = xr.coders.CFDatetimeCoder(use_cftime=True)
     # ISMIP7 file names carry none of the identifiers the glacier
@@ -370,10 +424,21 @@ def load_ensemble(files: Sequence[Path]) -> xr.Dataset:
         join="outer",
         compat="no_conflicts",
     )
-    if SIM_VAR not in ds:
-        raise ValueError(f"{SIM_VAR!r} not among {sorted(ds.data_vars)} in {files[0]}")
-    ds = ds[[SIM_VAR]].assign_coords({MEMBER_DIM: [member_label(Path(f)) for f in files]})
-    return ds.rename({SIM_VAR: OBS_VAR})
+    try:
+        name = simulated_variable(ds, variable)
+    except ValueError as err:
+        raise ValueError(f"{err} in {files[0]}") from err
+    if name != SIM_VARS[0]:
+        logger.warning(
+            "Comparing %r against observed thickness change: these are different quantities "
+            "(%s also moves with the bed, and carries firn the observations are corrected for)",
+            name,
+            name,
+        )
+    else:
+        logger.info("Comparing %r", name)
+    ds = ds[[name]].assign_coords({MEMBER_DIM: [member_label(Path(f)) for f in files]})
+    return ds.rename({name: OBS_VAR})
 
 
 def align_to_observations(sim: xr.Dataset, obs: xr.Dataset) -> tuple[xr.Dataset, xr.Dataset]:
@@ -585,6 +650,7 @@ def run_pipeline(
     output_path: Path | str,
     *,
     pattern: str = "dh_*.nc",
+    variable: str | None = None,
     relative: float = DEFAULT_RELATIVE_ERROR,
     floor: float = DEFAULT_ERROR_FLOOR,
     max_error: float | None = DEFAULT_MAX_ERROR,
@@ -607,6 +673,8 @@ def run_pipeline(
         Directory the results are written to.
     pattern : str, optional
         Glob the member files match.
+    variable : str or None, optional
+        Field to compare; chosen from what the member files carry when None.
     relative, floor : float, optional
         Relative error and floor of the observed uncertainty.
     max_error : float or None, optional
@@ -637,7 +705,7 @@ def run_pipeline(
         observed = Path(observed)
         product = product_name(observed)
         obs = load_observations(observed, relative, floor, max_error=max_error)
-        sim, obs = align_to_observations(load_ensemble(files), obs)
+        sim, obs = align_to_observations(load_ensemble(files, variable), obs)
         weighted, table = score_product(
             sim,
             obs,
@@ -677,13 +745,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Importance-sample an ISMIP7 Greenland ensemble against observed thickness change."
+    # Repeatable rather than nargs="+": a greedy list in front of two
+    # positionals swallows them, so RUN_DIR and OUTPUT_PATH could only be
+    # reached through a "--" separator, and even -h landed inside the list.
     parser.add_argument(
         "--observations",
-        nargs="+",
+        action="append",
         required=True,
-        help="Observed dh products, e.g. the staged dh_smith_* file.",
+        metavar="FILE",
+        help="Observed dh product, e.g. the staged dh_smith_* file. Repeat for more than one.",
     )
     parser.add_argument("--pattern", default="dh_*.nc", help="Glob the per-member dh files match.")
+    parser.add_argument(
+        "--variable",
+        default=None,
+        help=f"Field to compare. Default: whichever of {list(SIM_VARS)} the member files carry.",
+    )
     parser.add_argument(
         "--relative-error",
         type=float,
@@ -702,11 +779,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_MAX_ERROR,
         help="Drop cells whose uncertainty exceeds this, metres; negative keeps every cell.",
     )
+    # Comma-separated, not nargs="+", for the same reason --observations is
+    # repeatable: a greedy list would reach past itself into RUN_DIR.
     parser.add_argument(
         "--fudge-factors",
-        type=float,
-        nargs="+",
+        type=lambda s: [float(part) for part in s.split(",")],
         default=list(DEFAULT_FUDGE_FACTORS),
+        metavar="F[,F...]",
         help="Inflations of the observed error, one filter each.",
     )
     parser.add_argument(
@@ -731,6 +810,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.observations,
         output_path,
         pattern=args.pattern,
+        variable=args.variable,
         relative=args.relative_error,
         floor=args.error_floor,
         max_error=args.max_error if args.max_error >= 0 else None,
