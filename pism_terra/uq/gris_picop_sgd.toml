@@ -12,5 +12,5 @@ distribution = "choices"
 
 ['ocean.picop.drag_coefficient']
 
-choices = [1.25, 1.5, 2.0]
+choices = [1.25e-3, 1.5e-3, 2.5e-3]
 distribution = "choices"
