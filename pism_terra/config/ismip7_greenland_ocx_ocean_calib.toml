@@ -208,6 +208,7 @@ model = "picop_sgd"
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
 'ocean.picop.drag_coefficient' = 0.0015
+'ocean.picop.file' = "none"
 
 [ocean.options.picop_sgd]
 
@@ -221,6 +222,7 @@ model = "picop_sgd"
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
 'ocean.picop.add_fresh_water_melt' = "yes"
 'ocean.picop.drag_coefficient' = 0.0015
+'ocean.picop.file' = "none"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
 
