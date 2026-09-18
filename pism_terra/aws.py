@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
@@ -32,8 +33,51 @@ from urllib.parse import urlparse
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+# -----------------------------------------
+# Key-prefix helpers
+# -----------------------------------------
+
+
+def project_prefix(prefix: str | None, project_directory: str | None = None) -> str:
+    """
+    Join the shared data prefix with an optional project subdirectory.
+
+    Prepared input data is split in two: products that depend on a project's
+    ``[regions]`` CRS overrides (RGI outlines, ice thickness, per-group climate)
+    live under ``<prefix>/<project_directory>``, while the global products
+    (GEBCO, heat flux, SNAP, the merged CARRA2 store) live directly under
+    ``<prefix>`` and are shared by every project. Readers of the former call
+    this; readers of the latter use ``prefix`` unchanged.
+
+    Parameters
+    ----------
+    prefix : str or None
+        Shared S3 key prefix, e.g. ``"glacier/input"``. ``None`` is treated as
+        the empty prefix.
+    project_directory : str or None, optional
+        Project subdirectory, e.g. ``"s4f"``. When ``None`` or empty the shared
+        prefix is returned unchanged, which is what campaigns that do not use a
+        project split (ISMIP7, KITP, ML) want.
+
+    Returns
+    -------
+    str
+        The joined prefix, without leading or trailing slashes.
+
+    Examples
+    --------
+    >>> project_prefix("glacier/input", "s4f")
+    'glacier/input/s4f'
+    >>> project_prefix("kitp/input")
+    'kitp/input'
+    """
+    parts = [str(part).strip("/") for part in (prefix, project_directory) if part]
+    return "/".join(part for part in parts if part)
+
 
 # -----------------------------------------
 # Pure boto3 implementation (one-way syncs)
@@ -62,10 +106,43 @@ def download_from_s3(s3_uri: str, dest: str | Path) -> Path:
     bucket = parsed_url.netloc
     prefix = parsed_url.path.lstrip("/")
 
-    s3 = boto3.client("s3")
-    s3.download_file(bucket, prefix, str(dest))
+    # Look up the bucket's region once; boto3's default region resolution is
+    # often wrong on shared dev machines and S3 returns 404 (not 307) when the
+    # request hits the wrong endpoint.
+    bucket_region = boto3.client("s3").get_bucket_location(Bucket=bucket).get("LocationConstraint") or "us-west-2"
+    s3 = boto3.client("s3", region_name=bucket_region)
+    head = s3.head_object(Bucket=bucket, Key=prefix)
+    total_size = head["ContentLength"]
+
+    with tqdm(total=total_size, unit="B", unit_scale=True, desc=dest.name) as pbar:
+        s3.download_file(bucket, prefix, str(dest), Callback=pbar.update)
 
     return dest
+
+
+def list_s3_keys(bucket: str, prefix: str) -> list[str]:
+    """
+    List every object key under a bucket prefix.
+
+    Parameters
+    ----------
+    bucket : str
+        Bucket name.
+    prefix : str
+        Key prefix to list under (no leading slash).
+
+    Returns
+    -------
+    list of str
+        Full object keys, paginated through completely.
+    """
+    bucket_region = boto3.client("s3").get_bucket_location(Bucket=bucket).get("LocationConstraint") or "us-west-2"
+    s3 = boto3.client("s3", region_name=bucket_region)
+    keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix.strip("/") + "/"):
+        keys.extend(obj["Key"] for obj in page.get("Contents", []))
+    return keys
 
 
 def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
@@ -150,6 +227,7 @@ def s3_to_local(
     exclude_keys: Iterable[str] = (),
     dry_run: bool = False,
     delete_extra: bool = False,
+    workers: int = 4,
     max_concurrency: int = 8,
 ) -> None:
     """
@@ -170,8 +248,14 @@ def s3_to_local(
     delete_extra : bool, default False
         If True, delete local files under ``dest`` that are not present
         under ``bucket/prefix``.
+    workers : int, default 4
+        Number of *files* downloaded in parallel (outer fan-out). Each file
+        transfer additionally uses up to ``max_concurrency`` threads
+        internally for multipart parts, so the maximum in-flight connection
+        count is roughly ``workers * max_concurrency``.
     max_concurrency : int, default 8
-        Maximum worker threads for concurrent transfers.
+        Maximum worker threads boto3 may use **inside one** multipart
+        download.
 
     Raises
     ------
@@ -206,7 +290,11 @@ def s3_to_local(
 
     s3_local_abs = set()
     n_objects = 0
-
+    # First pass: walk the listing, decide which objects need a transfer.
+    # Per-file tqdm bytes bars don't compose well with parallel workers
+    # (they interleave on the terminal), so the second pass just shows a
+    # single overall files-completed bar.
+    to_download: list[tuple[str, Path]] = []
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
@@ -216,13 +304,49 @@ def s3_to_local(
             rel = key[len(prefix) :] if prefix and key.startswith(prefix) else key
             local_path = dest / rel.lstrip("/")
             local_path.parent.mkdir(parents=True, exist_ok=True)
-
             if _needs_download(local_path, obj["Size"], obj["ETag"]):
-                print("DOWNLOAD", f"s3://{bucket}/{key}", "→", local_path)
-                if not dry_run:
-                    s3.download_file(bucket, key, str(local_path), Config=txconf)
-
+                to_download.append((key, local_path))
             s3_local_abs.add(str(local_path.resolve()))
+
+    # Second pass: download in parallel. boto3 clients are safe for concurrent
+    # ``download_file`` calls; ``workers`` outer × ``max_concurrency`` inner
+    # threads keeps the connection pool busy without saturating CPU.
+    def _fetch(key: str, local_path: Path) -> Path:
+        """
+        Download one S3 object to *local_path*.
+
+        Parameters
+        ----------
+        key : str
+            S3 object key under ``bucket`` to download.
+        local_path : pathlib.Path
+            Local destination path.
+
+        Returns
+        -------
+        pathlib.Path
+            ``local_path`` after the transfer completes.
+        """
+        logger.info("Downloading s3://%s/%s -> %s", bucket, key, local_path)
+        s3.download_file(bucket, key, str(local_path), Config=txconf)
+        return local_path
+
+    if dry_run:
+        for key, local_path in to_download:
+            logger.info("[dry-run] would download s3://%s/%s -> %s", bucket, key, local_path)
+    elif to_download:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_key = {executor.submit(_fetch, k, lp): k for k, lp in to_download}
+            for future in tqdm(
+                as_completed(future_to_key),
+                total=len(future_to_key),
+                desc=f"s3://{bucket}/{prefix}",
+                unit="file",
+            ):
+                try:
+                    future.result()
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Failed s3://%s/%s: %s", bucket, future_to_key[future], exc)
 
     if n_objects == 0:
         logger.warning(
