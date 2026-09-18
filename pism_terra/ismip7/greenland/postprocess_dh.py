@@ -166,11 +166,22 @@ def process_file_cumulative(
         engine="h5netcdf",
         drop_variables=DROP_VARS,
     ) as ds:
+        # Captured before _encoding() clears every variable's encoding: without
+        # it xarray picks units for ``time`` and ``time_bnds`` independently,
+        # which CF forbids and which it warns about on write.
+        time_enc = {k: v for k, v in ds["time"].encoding.items() if k in ("units", "calendar", "dtype")}
+
         dh = compute_cumulative_dh(ds, start, variables)
         if crs is not None:
             dh = dh.rio.write_crs(crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
+
+        encoding = _encoding(dh)
+        if time_enc:
+            encoding.setdefault("time", {}).update(time_enc)
+            encoding["time_bnds"] = dict(time_enc)
+
         logger.info("Writing %s", outfile)
-        dh.to_netcdf(outfile, encoding=_encoding(dh), engine="h5netcdf")
+        dh.to_netcdf(outfile, encoding=encoding, engine="h5netcdf")
     logger.info("%s in %.0fs", outfile.name, time.time() - started)
     return outfile
 
