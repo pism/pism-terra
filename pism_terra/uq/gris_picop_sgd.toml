@@ -1,4 +1,4 @@
-samples = 8
+samples = 24
 
 ['ocean.picop.power_alpha']
 
@@ -17,5 +17,5 @@ distribution = "choices"
 
 ['ocean.picop.length_scale_factor']
 
-choices = [0.15]
+choices = [0.125, 0.15, 0.175]
 distribution = "choices"
