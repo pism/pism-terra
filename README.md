@@ -1,9 +1,16 @@
+
 [![Documentation Status](https://readthedocs.org/projects/pism-terra/badge/?version=latest)](https://pism-terra.readthedocs.io/en/latest/?badge=latest)
 [![License: GPL-3.0](https://img.shields.io:/github/license/pism/pypac)](https://opensource.org/licenses/GPL-3.0)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Checked with mypy](http://www.mypy-lang.org/static/mypy_badge.svg)](http://mypy-lang.org/)
 [![linting: pylint](https://img.shields.io/badge/linting-pylint-yellowgreen)](https://github.com/pylint-dev/pylint)
 [![fair-software.eu](https://img.shields.io/badge/fair--software.eu-%E2%97%8F%20%20%E2%97%8F%20%20%E2%97%8B%20%20%E2%97%8F%20%20%E2%97%8B-orange)](https://fair-software.eu)
+
+<p align="left">
+  <a href="https://github.com/pism/pism-terra"><img src="https://raw.githubusercontent.com/pism/pism-terra/main/docs/source/_static/pism_terra_logo.svg" alt="pism-terra" height="80"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.pism.io"><img src="https://raw.githubusercontent.com/pism/pism-terra/main/docs/source/_static/pism_logo_transp.png" alt="PISM, the Parallel Ice Sheet Model" height="60"></a>
+</p>
 
 # pism-terra
 

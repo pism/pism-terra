@@ -42,7 +42,7 @@ OCX = {climate = 1, ocean = 1}
 'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
 'time.start' = "1990-01-01"
-'time.end' = "1991-01-01"
+'time.end' = "1992-01-01"
 
 [time_stepping]
 
@@ -80,7 +80,7 @@ OCX = {climate = 1, ocean = 1}
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt,limnsw,frontal_melt_rate,frontal_melt_retreat_rate,velsurf"
+'output.spatial.vars' = "picop_fresh_water_melt_rate,picop_discharge_flux,picop_disch_q0,picop_disch_L5,picop_temperature,picop_local_slope,picop_grounding_line_elevation,subglacial_water_flux_mag,bwat,dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt"
 
 [grid]
 
@@ -209,6 +209,7 @@ model = "picop_sgd"
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
 'ocean.picop.drag_coefficient' = 0.0015
 'ocean.picop.file' = "none"
+'ocean.picop.length_scale_factor' = 0.15
 
 [ocean.options.picop_sgd]
 
@@ -225,6 +226,7 @@ model = "picop_sgd"
 'ocean.picop.file' = "none"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
+'ocean.picop.length_scale_factor' = 0.15
 
 [ocean.options.th]
 

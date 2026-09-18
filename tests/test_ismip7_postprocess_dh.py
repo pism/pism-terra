@@ -26,6 +26,7 @@ cumulative series so it lines up with the observed products.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -33,9 +34,12 @@ import pytest
 import xarray as xr
 
 from pism_terra.ismip7.greenland.postprocess_dh import (
+    DEFAULT_START,
     DEFAULT_VARIABLES,
     compute_cumulative_dh,
+    main,
     postprocess_dh,
+    process_file_cumulative,
     source_files,
 )
 
@@ -191,3 +195,65 @@ def test_end_to_end_single_interval_and_cumulative(tmp_path: Path):
         assert ds.sizes["time"] == 4
         np.testing.assert_allclose(ds["lithk"].isel(y=0, x=0).values, [0.0, -2.0, -4.0, -6.0])
         assert ds.rio.crs is not None
+
+
+def test_start_defaults_to_the_observed_record(tmp_path: Path):
+    """
+    Default the cumulative reference to the start of the observed record.
+
+    Only one product is compared against now -- Smith et al. (2020), whose
+    rate covers 2003-2019 -- so the reference epoch has a single correct
+    value and should not have to be supplied on every invocation. It stays
+    overridable, because a run may be differenced over another interval for
+    reasons that have nothing to do with the observations.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    assert DEFAULT_START == "2003-01-01"
+
+    experiment = tmp_path / "C011"
+    experiment.mkdir()
+    # A run spanning the observed record, yearly, as an OCX run writes.
+    _spatial(n_time=25, thinning=-2.0).to_netcdf(experiment / f"lithk_{STEM}.nc")
+
+    assert main([str(experiment), str(tmp_path / "out")]) == 0
+    written = sorted((tmp_path / "out").glob("*.nc"))
+    assert len(written) == 1
+    with xr.open_dataset(written[0]) as ds:
+        lower = ds["time_bnds"].values[0][0].astype("datetime64[ns]")
+        assert lower == np.datetime64(DEFAULT_START), "the default start must reach the output"
+
+
+def test_cumulative_keeps_the_time_units_for_the_bounds(tmp_path: Path):
+    """
+    Write ``time`` and ``time_bnds`` on one scale, taking the input's units.
+
+    The shared write encoding clears every variable's encoding to drop stale
+    chunk sizes, which also drops the time units. xarray then picks units for
+    the coordinate and for its bounds independently -- allowed to differ,
+    which CF forbids, and which it warns about on every write.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    infile = tmp_path / "in.nc"
+    # A real submission file carries CF time encoding; that is the case that warns.
+    _spatial(n_time=6, thinning=-2.0).to_netcdf(
+        infile, encoding={"time": {"units": "days since 1850-01-01", "calendar": "standard", "dtype": "float64"}}
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = process_file_cumulative(infile, tmp_path / "out.nc", "2001-01-01", ["lithk"])
+    assert not [w for w in caught if "bounds variable" in str(w.message)]
+
+    with xr.open_dataset(out, decode_times=False) as raw:
+        assert raw["time"].attrs["units"] == "days since 1850-01-01"
+        # The one thing that actually matters: both on the same scale, so the
+        # first record's lower bound is its own stamp, not a different epoch.
+        assert raw["time"].values[0] == raw["time_bnds"].values[0][0]
