@@ -7,7 +7,7 @@
 [![fair-software.eu](https://img.shields.io/badge/fair--software.eu-%E2%97%8F%20%20%E2%97%8F%20%20%E2%97%8B%20%20%E2%97%8F%20%20%E2%97%8B-orange)](https://fair-software.eu)
 
 <p align="left">
-  <a href="https://github.com/pism/pism-terra"><img src="https://raw.githubusercontent.com/pism/pism-terra/main/docs/source/_static/pism_terra_logo.svg" alt="pism-terra" height="60"></a>
+  <a href="https://github.com/pism/pism-terra"><img src="https://raw.githubusercontent.com/pism/pism-terra/main/docs/source/_static/pism_terra_logo.svg" alt="pism-terra" height="80"></a>
   &nbsp;&nbsp;&nbsp;&nbsp;
   <a href="https://www.pism.io"><img src="https://raw.githubusercontent.com/pism/pism-terra/main/docs/source/_static/pism_logo_transp.png" alt="PISM, the Parallel Ice Sheet Model" height="60"></a>
 </p>
