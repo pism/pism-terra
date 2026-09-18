@@ -33,8 +33,10 @@ import pytest
 import xarray as xr
 
 from pism_terra.ismip7.greenland.postprocess_dh import (
+    DEFAULT_START,
     DEFAULT_VARIABLES,
     compute_cumulative_dh,
+    main,
     postprocess_dh,
     source_files,
 )
@@ -191,3 +193,33 @@ def test_end_to_end_single_interval_and_cumulative(tmp_path: Path):
         assert ds.sizes["time"] == 4
         np.testing.assert_allclose(ds["lithk"].isel(y=0, x=0).values, [0.0, -2.0, -4.0, -6.0])
         assert ds.rio.crs is not None
+
+
+def test_start_defaults_to_the_observed_record(tmp_path: Path):
+    """
+    Default the cumulative reference to the start of the observed record.
+
+    Only one product is compared against now -- Smith et al. (2020), whose
+    rate covers 2003-2019 -- so the reference epoch has a single correct
+    value and should not have to be supplied on every invocation. It stays
+    overridable, because a run may be differenced over another interval for
+    reasons that have nothing to do with the observations.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    assert DEFAULT_START == "2003-01-01"
+
+    experiment = tmp_path / "C011"
+    experiment.mkdir()
+    # A run spanning the observed record, yearly, as an OCX run writes.
+    _spatial(n_time=25, thinning=-2.0).to_netcdf(experiment / f"lithk_{STEM}.nc")
+
+    assert main([str(experiment), str(tmp_path / "out")]) == 0
+    written = sorted((tmp_path / "out").glob("*.nc"))
+    assert len(written) == 1
+    with xr.open_dataset(written[0]) as ds:
+        lower = ds["time_bnds"].values[0][0].astype("datetime64[ns]")
+        assert lower == np.datetime64(DEFAULT_START), "the default start must reach the output"

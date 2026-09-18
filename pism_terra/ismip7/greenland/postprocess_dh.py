@@ -33,10 +33,13 @@ experiment directory rather than a single combined file. A run with
 ``output.ISMIP = "no"`` writes one flat spatial file instead, and that is
 accepted directly.
 
-Two modes. A single interval (``--start``/``--end``) matches the glacier
-tool and lines up with the Smith product, which is one 2003-2019 record.
-``--cumulative`` emits change since ``--start`` at every model step, which
-is what lines up with the Khan product's 21 cumulative records.
+Two modes, and either lines up with the observations. Giving ``--end``
+produces the single 2003-2019 interval the Smith product is: one record.
+Omitting it produces change since ``--start`` at every model step; the
+comparison aligns on time, so it takes the 2019 record out of that series
+and the rest is there for diagnostics. Both need the run to have a step at
+the observed date -- a historical run stopping in 2014 overlaps Smith
+nowhere, and the comparison says so rather than inventing an interval.
 """
 
 from __future__ import annotations
@@ -63,6 +66,14 @@ logger = logging.getLogger(__name__)
 #: What the observed dH/dt measures: ice thickness, in metres ice equivalent.
 #: ``orog`` is the surface elevation and is not what those products report.
 DEFAULT_VARIABLES = ("lithk",)
+
+#: Start of the observed record: the Smith et al. (2020) rate covers
+#: 2003-2019, so the cumulative reference has one correct value and is a
+#: default rather than something to be supplied every time. Kept in step with
+#: ``DH_SMITH_START`` in :mod:`pism_terra.ismip7.greenland.forcing`, which is
+#: deliberately not imported -- that module pulls in cdo, s3fs and geopandas,
+#: which is a lot to load for one string.
+DEFAULT_START = "2003-01-01"
 
 
 def compute_cumulative_dh(ds: xr.Dataset, start: str, variables: Sequence[str] | None = None) -> xr.Dataset:
@@ -268,12 +279,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Thickness change of an ISMIP7 Greenland run, for comparison with observed dH/dt."
     parser.add_argument(
-        "--start", help="ISO date the interval starts at; the nearest model step is used.", required=True
+        "--start",
+        help="ISO date the interval starts at; the nearest model step is used.",
+        default=DEFAULT_START,
     )
     parser.add_argument(
         "--end",
-        help="ISO date the interval ends at. Omit for the cumulative series from --start at every model "
-        "step, which is what matches the Khan product's cumulative records.",
+        help="ISO date the interval ends at, for a single record. Omit for the cumulative series from "
+        "--start at every model step; the observed record aligns with either.",
         default=None,
     )
     parser.add_argument(
