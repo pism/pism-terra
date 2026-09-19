@@ -659,7 +659,9 @@ def carra_download_request(
     file_path = Path(file_path)
     suffix = file_path.suffix or ".nc"
 
-    client = _DatastoresClient()
+    client = _DatastoresClient(
+        progress=False
+    )  # no inner tqdm bar: it runs in a pool thread beside the outer bar's, and a shared tqdm lock across threads is the one place a finished download has been seen to hang
 
     path = file_path.parent
     carra2_path = path / Path("_".join(v for v in request["variable"]))
@@ -798,7 +800,9 @@ def download_request(
     )
 
     if not reuse_cache:
-        client = _DatastoresClient()
+        client = _DatastoresClient(
+            progress=False
+        )  # no inner tqdm bar: it runs in a pool thread beside the outer bar's, and a shared tqdm lock across threads is the one place a finished download has been seen to hang
 
         path = file_path.parent
         file_path.unlink(missing_ok=True)
