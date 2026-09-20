@@ -220,6 +220,23 @@ model = "picop_sgd"
 'ocean.picop.power_alpha' = 0.54
 'ocean.picop.power_beta' = 1.18
 
+[ocean.options.plume]
+
+'ocean.models' = "plume"
+'ocean.picop.drag_coefficient' = 0.0015
+'ocean.plume.file' = "none"
+'ocean.plume.temperature_as_thermal_forcing' = "yes"
+
+[ocean.options.plume_sgd]
+
+'ocean.models' = "plume"
+'ocean.picop.add_fresh_water_melt' = "yes"
+'ocean.picop.drag_coefficient' = 0.0015
+'ocean.picop.power_alpha' = 0.54
+'ocean.picop.power_beta' = 1.18
+'ocean.plume.file' = "none"
+'ocean.plume.temperature_as_thermal_forcing' = "yes"
+
 [ocean.options.th]
 
 'ocean.models' = "th"

@@ -1733,6 +1733,7 @@ def _run(*, kind: str) -> None:
                 "surface.ismip7.gradient.file": row["climate_gradient_hist_file"],
                 "ocean.pico.file": row["ocean_hist_file"],
                 "ocean.picop.file": row["ocean_hist_file"],
+                "ocean.plume.file": row["ocean_hist_file"],
                 "ocean.th.file": row["ocean_hist_file"],
                 "frontal_melt.routing.file": row["ocean_hist_file"],
             }
@@ -1752,6 +1753,7 @@ def _run(*, kind: str) -> None:
                 "surface.ismip7.gradient.file": row["climate_gradient_proj_file"],
                 "ocean.pico.file": row["ocean_proj_file"],
                 "ocean.picop.file": row["ocean_proj_file"],
+                "ocean.plume.file": row["ocean_proj_file"],
                 "ocean.th.file": row["ocean_proj_file"],
                 "frontal_melt.routing.file": row["ocean_proj_file"],
             }
