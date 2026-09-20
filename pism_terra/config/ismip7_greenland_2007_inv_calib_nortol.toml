@@ -178,7 +178,7 @@ model = "given"
 
 [ocean]
 
-model = "picop_sgd"
+model = "plume_sgd"
 
 [ocean.options.pico]
 
