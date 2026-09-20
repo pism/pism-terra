@@ -212,12 +212,11 @@ model = "picop_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.add_fresh_water_melt' = "yes"
-'ocean.picop.discharge_method' = "along_flow"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.file' = "none"
-'ocean.picop.power_alpha' = 0.54
-'ocean.picop.power_beta' = 1.18
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.discharge_method' = "along_flow"
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.power_alpha' = 0.54
+'ocean.plume.power_beta' = 1.18
 
 [ocean.options.picop_sgd]
 
@@ -229,32 +228,31 @@ model = "picop_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.add_fresh_water_melt' = "yes"
-'ocean.picop.discharge_method' = "along_flow"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.file' = "none"
-'ocean.picop.power_alpha' = 0.54
-'ocean.picop.power_beta' = 1.18
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.discharge_method' = "along_flow"
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.power_alpha' = 0.54
+'ocean.plume.power_beta' = 1.18
 
 [ocean.options.plume]
 
 'ocean.models' = "plume"
-'ocean.picop.add_fresh_water_melt' = "yes"
-'ocean.picop.discharge_method' = "along_flow"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.power_alpha' = 0.54
-'ocean.picop.power_beta' = 1.18
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.discharge_method' = "along_flow"
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.power_alpha' = 0.54
+'ocean.plume.power_beta' = 1.18
 'ocean.plume.file' = "none"
 'ocean.plume.temperature_as_thermal_forcing' = "yes"
 
 [ocean.options.plume_sgd]
 
 'ocean.models' = "plume"
-'ocean.picop.add_fresh_water_melt' = "yes"
-'ocean.picop.discharge_method' = "along_flow"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.power_alpha' = 0.54
-'ocean.picop.power_beta' = 1.18
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.discharge_method' = "along_flow"
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.power_alpha' = 0.54
+'ocean.plume.power_beta' = 1.18
 'ocean.plume.file' = "none"
 'ocean.plume.temperature_as_thermal_forcing' = "yes"
 

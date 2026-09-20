@@ -1,21 +1,21 @@
 samples = 3
 
-['ocean.picop.power_alpha']
+['ocean.plume.power_alpha']
 
 choices = [0.33333333]
 distribution = "choices"
 
-['ocean.picop.power_beta']
+['ocean.plume.power_beta']
 
 choices = [2.0]
 distribution = "choices"
 
-['ocean.picop.drag_coefficient']
+['ocean.plume.drag_coefficient']
 
 choices = [1.2e-3]
 distribution = "choices"
 
-['ocean.picop.length_scale_factor']
+['ocean.plume.length_scale_factor']
 
 choices = [0.15, 0.20, 0.25]
 distribution = "choices"

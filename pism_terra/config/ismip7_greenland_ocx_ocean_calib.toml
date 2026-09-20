@@ -83,7 +83,7 @@ OCX = {climate = 1, ocean = 1}
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "bmelt,mask,picop_fresh_water_melt_rate,picop_discharge_flux,picop_disch_q0,picop_temperature,picop_shelf_base_elevation,grounding_line_flux,velsurf_mag"
+'output.spatial.vars' = "bmelt,mask,plume_fresh_water_melt_rate,plume_discharge_flux,plume_disch_q0,plume_temperature,plume_shelf_base_elevation,grounding_line_flux,velsurf_mag"
 
 [grid]
 
@@ -210,9 +210,8 @@ model = "plume_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.file' = "none"
-'ocean.picop.length_scale_factor' = 0.15
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.length_scale_factor' = 0.15
 
 [ocean.options.picop_sgd]
 
@@ -224,29 +223,28 @@ model = "plume_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.add_fresh_water_melt' = "yes"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.file' = "none"
-'ocean.picop.power_alpha' = 0.54
-'ocean.picop.power_beta' = 1.18
-'ocean.picop.length_scale_factor' = 0.15
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.power_alpha' = 0.54
+'ocean.plume.power_beta' = 1.18
+'ocean.plume.length_scale_factor' = 0.15
 
 [ocean.options.plume]
 
 'ocean.models' = "plume"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.length_scale_factor' = 0.15
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.length_scale_factor' = 0.15
 'ocean.plume.file' = "none"
 'ocean.plume.temperature_as_thermal_forcing' = "yes"
 
 [ocean.options.plume_sgd]
 
 'ocean.models' = "plume"
-'ocean.picop.add_fresh_water_melt' = "yes"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.length_scale_factor' = 0.15
-'ocean.picop.power_alpha' = 0.54
-'ocean.picop.power_beta' = 1.18
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.length_scale_factor' = 0.15
+'ocean.plume.power_alpha' = 0.54
+'ocean.plume.power_beta' = 1.18
 'ocean.plume.file' = "none"
 'ocean.plume.temperature_as_thermal_forcing' = "yes"
 
