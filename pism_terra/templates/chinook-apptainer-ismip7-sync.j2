@@ -76,7 +76,7 @@ mpiexec -n  ${SLURM_NTASKS} apptainer run  ${container} pismi {{ inv_str }}
 # HISTORICAL RUN
 # ###############################################################################
 
-mpiexec -n  ${SLURM_NTASKS}  apptainer run run ${container} pism {{ run_hist_str }}
+mpiexec -n  ${SLURM_NTASKS}  apptainer run ${container} pism {{ run_hist_str }}
 {% endif %}
 
 {% if run_proj_str %}
@@ -84,7 +84,7 @@ mpiexec -n  ${SLURM_NTASKS}  apptainer run run ${container} pism {{ run_hist_str
 # PROJECTION RUN
 # ###############################################################################
 
-mpiexec -n  ${SLURM_NTASKS}  apptainer run run ${container} pism {{ run_proj_str }}
+mpiexec -n  ${SLURM_NTASKS}  apptainer run ${container} pism {{ run_proj_str }}
 {% endif %}
 
 {% if post_process_str %}
