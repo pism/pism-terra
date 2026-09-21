@@ -27,6 +27,7 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -172,3 +173,94 @@ def test_download_request_refuses_an_empty_result(tmp_path, monkeypatch):
         dl.download_request(area=(62.0, -145.0, 61.0, -141.0), year=[2000, 2001], file_path=out)
     # Nothing cached, so the next run retries instead of reusing a husk.
     assert not out.exists()
+
+
+def _part(tmp_path: Path, name: str, var: str, lat_noise: float) -> Path:
+    """
+    Write one CDS-style per-variable part with a 2-D latitude field.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write into.
+    name : str
+        File name.
+    var : str
+        Data variable name.
+    lat_noise : float
+        Offset added to the latitude field (float32 rounding stand-in).
+
+    Returns
+    -------
+    pathlib.Path
+        The written file.
+    """
+    y, x = np.arange(3.0), np.arange(4.0)
+    lat = np.float32(60.0 + y[:, None] * 0.01 + x[None, :] * 0.001 + lat_noise)
+    ds = xr.Dataset(
+        {var: (("time", "y", "x"), np.random.default_rng(1).random((2, 3, 4)))},
+        coords={"time": pd.date_range("1986-01-01", periods=2), "y": y, "x": x, "latitude": (("y", "x"), lat)},
+    )
+    path = tmp_path / name
+    ds.to_netcdf(path)
+    return path
+
+
+def test_float_noise_in_shared_coordinates_does_not_block_the_merge(tmp_path):
+    """
+    Merge parts whose latitude differs only by float noise, but still fail on a real conflict.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    a = _part(tmp_path, "data_0.nc", "ssrd", 0.0)
+    b = _part(tmp_path, "data_1.nc", "ssr", 1e-6)
+    out = dl._merge_year_parts([a, b], tmp_path / "year.nc")  # pylint: disable=protected-access
+    with xr.open_dataset(out) as merged:
+        assert {"ssrd", "ssr"} <= set(merged.data_vars)
+        assert merged.latitude.dtype.kind == "f"
+    c = _part(tmp_path, "data_2.nc", "t2m", 0.5)  # half a degree is not noise
+    with pytest.raises(xr.MergeError):
+        dl._merge_year_parts([a, c], tmp_path / "bad.nc")  # pylint: disable=protected-access
+
+
+def test_a_delivered_zip_is_finished_without_a_new_request(tmp_path):
+    """
+    Extract and merge a cached ``_cds_<year>.zip`` instead of resubmitting the year.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    dataset, request, year = "reanalysis-test", {"variable": ["ssrd", "ssr"]}, "1986"
+    nc_path = dl._cds_year_cache_path(dataset, request, year, tmp_path)  # pylint: disable=protected-access
+    parts = [_part(tmp_path, "data_0.nc", "ssrd", 0.0), _part(tmp_path, "data_1.nc", "ssr", 1e-6)]
+    with zipfile.ZipFile(tmp_path / f"_cds_{year}.zip", "w") as zf:
+        for p in parts:
+            zf.write(p, p.name)
+
+    class NoSubmit:
+        """A client that must not be asked for anything."""
+
+        def submit(self, *args, **kwargs):
+            """
+            Fail the test if called.
+
+            Parameters
+            ----------
+            *args : tuple
+                Ignored.
+            **kwargs : dict
+                Ignored.
+            """
+            raise AssertionError("the year should have been finished from the cached zip")
+
+    files = dl._cds_download_years(
+        NoSubmit(), dataset, request, [year], tmp_path, verbose=False
+    )  # pylint: disable=protected-access
+    assert files == [nc_path]
+    with xr.open_dataset(nc_path) as merged:
+        assert {"ssrd", "ssr"} <= set(merged.data_vars)
