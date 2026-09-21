@@ -222,6 +222,10 @@ model = "plume_sgd"
 'ocean.models' = "plume"
 'ocean.plume.drag_coefficient' = 0.0015
 'ocean.plume.file' = "none"
+'ocean.plume.length_scale_factor' = 1.0
+'ocean.plume.melt_rate_parameter' = 10
+'ocean.plume.power_alpha' = 0.33333333
+'ocean.plume.power_beta' = 2.0
 'ocean.plume.temperature_as_thermal_forcing' = "yes"
 
 [ocean.options.plume_sgd]
@@ -229,9 +233,11 @@ model = "plume_sgd"
 'ocean.models' = "plume"
 'ocean.plume.add_fresh_water_melt' = "yes"
 'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.file' = "none"
+'ocean.plume.length_scale_factor' = 1.0
+'ocean.plume.melt_rate_parameter' = 10
 'ocean.plume.power_alpha' = 0.54
 'ocean.plume.power_beta' = 1.18
-'ocean.plume.file' = "none"
 'ocean.plume.temperature_as_thermal_forcing' = "yes"
 
 [ocean.options.th]

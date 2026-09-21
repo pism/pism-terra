@@ -969,7 +969,7 @@ def _render_forward_run(
     overrides, skipped = filter_overrides_by_config(all_overrides, run_hist.keys())
     skipped = [k for k in skipped if k not in init_surface_keys]
     if skipped:
-        print(f"Skipping uq overrides not in config: {skipped}")
+        print(f"WARNING: UQ overrides not in the selected config sections, NOT passed to PISM: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
     run_hist.update(overrides)
 
@@ -1282,7 +1282,7 @@ def _render_inverse_run(
     fwd_overrides, _ = filter_overrides_by_config(all_overrides, run_fwd.keys())
     skipped = [k for k in all_overrides if k not in inv and k not in run_fwd and k not in init_surface_keys]
     if skipped:
-        print(f"Skipping uq overrides not in config: {skipped}")
+        print(f"WARNING: UQ overrides not in the selected config sections, NOT passed to PISM: {skipped}")
     inv.update(inv_overrides)
     run_fwd.update(fwd_overrides)
 

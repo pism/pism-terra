@@ -302,16 +302,19 @@ def create_grid_samples(d: dict[str, dict[str, Any]], n_levels: int = 10, kind: 
 
     Unlike :func:`create_samples` (a randomized Latin Hypercube), this lays each
     variable on an equidistant grid of quantiles and takes the **Cartesian
-    product** across variables, so the result has ``n_levels ** len(d)`` rows.
-    For a single variable this is just ``n_levels`` equidistant draws.
+    product** across variables. A continuous variable contributes ``n_levels``
+    levels; a categorical one (``distribution = "choices"``) contributes exactly
+    one level per choice, whatever ``n_levels`` is, so a single-choice entry
+    pins a constant without multiplying the design and a mixed design has
+    ``n_levels ** n_continuous * prod(n_choices)`` rows.
 
     Parameters
     ----------
     d : dict
         Mapping ``name -> spec`` (same structure as :func:`create_samples`).
     n_levels : int, default 10
-        Number of equidistant levels **per variable**. Total rows are
-        ``n_levels ** len(d)``.
+        Number of equidistant levels per **continuous** variable; categorical
+        variables always use all their choices.
     kind : {"edge", "midpoint", "endpoint"}, default "edge"
         Quantile convention for the per-variable grid of ``n`` levels:
 
@@ -349,8 +352,27 @@ def create_grid_samples(d: dict[str, dict[str, Any]], n_levels: int = 10, kind: 
     else:
         raise ValueError(f"unknown kind '{kind}'; use 'edge', 'midpoint', or 'endpoint'")
 
-    # Cartesian product of the per-variable grids -> (n_levels ** d, d)
-    grids = np.meshgrid(*([q] * len(names)), indexing="ij")
+    # Per-variable grids: categorical variables get the midpoint of each choice's
+    # interval on the unit line (see _categorical), so every choice appears
+    # exactly once regardless of n_levels or weights.
+    per_variable = []
+    for name in names:
+        spec = d[name]
+        if str(spec.get("distribution", "")).lower() in CHOICE_DISTS:
+            n = len(spec["choices"])
+            weights = spec.get("weights")
+            cum = (
+                np.cumsum(np.asarray(weights, dtype=float) / np.sum(weights))
+                if weights is not None
+                else np.arange(1, n + 1) / n
+            )
+            lower = np.concatenate([[0.0], cum[:-1]])
+            per_variable.append((lower + cum) / 2.0)
+        else:
+            per_variable.append(q)
+
+    # Cartesian product of the per-variable grids
+    grids = np.meshgrid(*per_variable, indexing="ij")
     U = np.stack([g.ravel() for g in grids], axis=1)
 
     return _transform_quantiles(U, d)

@@ -1,0 +1,32 @@
+# Plume calibration, round 2: M0 x f x alpha at beta = 2, Cd = 2.5e-3.
+# Round 1 (plume_calib.toml) ran entirely at the default M0 = 10 because the
+# config sections did not expose melt_rate_parameter; the year-2 melt there
+# was ~4x too high on the shelves and ~2x at Jakobshavn, with f = 0.15 giving
+# the right near-grounding-line melt at Petermann.
+samples = 3
+method = "factorial"
+
+['ocean.plume.melt_rate_parameter']
+
+choices = [2.5, 3.5, 5.0]
+distribution = "choices"
+
+['ocean.plume.length_scale_factor']
+
+choices = [0.15, 0.2, 0.25]
+distribution = "choices"
+
+['ocean.plume.power_alpha']
+
+choices = [0.25, 0.3, 0.33333333]
+distribution = "choices"
+
+['ocean.plume.power_beta']
+
+choices = [2.0]
+distribution = "choices"
+
+['ocean.plume.drag_coefficient']
+
+choices = [2.5e-3]
+distribution = "choices"
