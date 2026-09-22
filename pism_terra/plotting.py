@@ -20,6 +20,18 @@ Plotting methods.
 
 import numpy as np
 
+fontsize = 6
+rc_params = {
+    "axes.linewidth": 0.15,
+    "xtick.major.size": 2.0,
+    "xtick.major.width": 0.15,
+    "ytick.major.size": 2.0,
+    "ytick.major.width": 0.15,
+    "hatch.linewidth": 0.15,
+    "font.size": fontsize,
+    "font.family": "DejaVu Sans",
+}
+
 
 def blend_multiply(rgb: np.ndarray, intensity: np.ndarray) -> np.ndarray:
     """
