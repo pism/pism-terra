@@ -154,6 +154,14 @@ the stage, the numbers PISM's `pism_plot_profiling` draws. Both tables are
 plain pandas frames, ready to group by `run` when comparing task counts or
 resolutions.
 
+`pism-profile-analysis RUN_DIR --output-path OUT` does the standard analysis
+for a Blatter run: the time-stepping loop split into PISM's components with
+the Blatter solve set apart, the solve's Newton-step phases (residual,
+Jacobian, preconditioner setup, linear solve, line search) and its
+linear-algebra kernels, each with the slowest and fastest rank, and seconds
+per rank for the assembly and scatter events, which is where load imbalance
+shows. Runs found under one directory are labelled from `output/uq.csv`.
+
 ## Jinja2 templates
 
 Templates expose the rendered `run_str` (PISM command-line flags) plus any

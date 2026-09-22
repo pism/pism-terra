@@ -72,6 +72,20 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     event_summary
 ```
 
+```{eval-rst}
+.. currentmodule:: pism_terra.profile_analysis
+
+.. autosummary::
+    :toctree: generated/
+
+    analyze
+    component_breakdown
+    blatter_phases
+    blatter_kernels
+    solver_counts
+    rank_times
+```
+
 ## Glacier subpackage
 
 ### Staging entrypoints

@@ -55,6 +55,11 @@ runnable as `python -m <module>`. The full list lives in
   - The same analysis for one set of processed scalar files given on the
     command line, with the run's `uq.csv` found above the files or given
     with `--uq-csv`.
+* - `pism-profile-analysis`
+  - Cost of the Blatter solve next to PISM's other components, and its breakdown
+    into Newton-step phases and linear-algebra kernels, with the load balance
+    across ranks, from the `profile_*.py` files written with `campaign.profile`.
+    Takes profile files or run directories; writes CSVs, figures and `summary.md`.
 * - `pism-s4f-report`
   - Run `pism-glacier-importance-sampling`, `pism-glacier-sensitivity-indices`,
     `pism-glacier-usgs-benchmark-glaciers` and `pism-glacier-usgs-benchmark-stakes`
