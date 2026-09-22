@@ -35,7 +35,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.aws import local_to_s3
-from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.config import JobConfig, PismConfig, load_config, load_uq
 from pism_terra.download import file_localizer
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.observations import DH_END, DH_START
@@ -143,6 +143,51 @@ def _apply_regrid(run: dict, regrid_file: str | Path | None) -> None:
 #: Interval of the per-run elevation/mass-change extraction, matching the
 #: Hugonnet et al. (2021) observational record the output is compared against
 #: (re-exported from the observations module, which stages that record).
+
+
+#: ``[<section>]`` tables with a ``model`` and per-model option tables. A UQ
+#: row may pick the model itself (``hydrology.model = "routing"``); the swap
+#: has to happen before the run dict is assembled so the whole option table
+#: follows, not just the one flag.
+_MODEL_SECTIONS = ("stress_balance", "atmosphere", "ocean", "surface", "energy", "hydrology")
+
+
+def _select_models_from_uq(cfg: PismConfig, uq: Mapping[str, object] | pd.Series | None) -> None:
+    """
+    Point each model section at the model a UQ row selects.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded configuration; its ``<section>.model`` fields are updated in
+        place.
+    uq : mapping or pandas.Series or None
+        Ensemble overrides. Only ``<section>.model`` keys naming one of the
+        section's ``[<section>.options.*]`` tables have an effect here; the
+        remaining keys are applied as flag overrides later, once the run dict
+        exists.
+
+    Raises
+    ------
+    ValueError
+        If a ``<section>.model`` override names no option table of that
+        section: silently keeping the config's model would make the ensemble
+        member a duplicate of another one.
+    """
+    if uq is None:
+        return
+    row = normalize_row(uq)
+    for section in _MODEL_SECTIONS:
+        model = row.get(f"{section}.model")
+        if model is None:
+            continue
+        block = getattr(cfg, section)
+        if model not in block.options:
+            raise ValueError(
+                f"uq override {section}.model = {model!r} names no [{section}.options.*] table "
+                f"in the config; available: {sorted(block.options)}"
+            )
+        block.model = model
 
 
 def snapshot_project_file(src: str | Path, dest_dir: str | Path) -> Path:
@@ -564,6 +609,7 @@ def _render_inverse_run(
     stress_balance_cli = config_cli.get("stress_balance")
     if stress_balance_cli is not None:
         cfg.stress_balance.model = stress_balance_cli
+    _select_models_from_uq(cfg, uq)
 
     run = {}
     for section in (
@@ -580,6 +626,7 @@ def _render_inverse_run(
     run.update(cfg.ocean.selected())
     run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
+    run.update(cfg.hydrology.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
@@ -926,6 +973,7 @@ def _render_forward_run(
     stress_balance_cli = config_cli.get("stress_balance")
     if stress_balance_cli is not None:
         cfg.stress_balance.model = stress_balance_cli
+    _select_models_from_uq(cfg, uq)
 
     run = {}
     for section in (
@@ -943,6 +991,7 @@ def _render_forward_run(
     run.update(cfg.ocean.selected())
     run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
+    run.update(cfg.hydrology.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
