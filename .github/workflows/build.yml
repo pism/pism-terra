@@ -55,8 +55,8 @@ jobs:
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ inputs.user }}
-          password: ${{ secrets.USER_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add sandbox tag
         uses: akhilerm/tag-push-action@v2.2.0
