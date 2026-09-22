@@ -1288,3 +1288,73 @@ def test_is_ismip7_run_needs_both_the_flag_and_a_set(tmp_path: Path):
     assert is_ismip7_run(load_config(written(lambda d: None)))
     assert not is_ismip7_run(load_config(written(lambda d: d["reporting"].update({"output.ISMIP": "no"}))))
     assert not is_ismip7_run(load_config(written(lambda d: d["run_info"].pop("run_info.set"))))
+
+
+def _other_hydrology_model(config_file: Path) -> tuple[str, str]:
+    """
+    Return the config's hydrology model and one other model it has a table for.
+
+    Parameters
+    ----------
+    config_file : pathlib.Path
+        PISM configuration TOML.
+
+    Returns
+    -------
+    tuple of str
+        ``(selected, other)`` model names.
+    """
+    hydrology = load_config(config_file).hydrology
+    other = next(m for m in hydrology.options if m != hydrology.model)
+    return hydrology.model, other
+
+
+def test_forward_uq_row_swaps_the_hydrology_option_table(tmp_path):
+    """
+    ``hydrology.model`` in a UQ row selects that model's whole option table.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    selected, other = _other_hydrology_model(FREE_HY)
+    script = _render_forward(tmp_path, FREE_HY, uq={"hydrology.model": other}, sample=0)
+    for leg in _legs(script):
+        assert f"-hydrology.model {other}" in leg
+        assert f"-hydrology.model {selected}" not in leg
+    # The previous model's own option must not linger.
+    if selected == "null":
+        assert "null_diffuse_till_water" not in script
+    else:
+        assert "surface_input_from_runoff" not in script
+
+
+def test_inverse_uq_row_swaps_the_hydrology_option_table(tmp_path):
+    """
+    The inverse chain's init and forward legs follow a UQ-selected hydrology model.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    selected, other = _other_hydrology_model(FREE_HY)
+    script = _render_inverse(tmp_path, FREE_HY, uq={"hydrology.model": other}, sample=0)
+    init, _inv, fwd = _legs(script)
+    for leg in (init, fwd):
+        assert f"-hydrology.model {other}" in leg
+        assert f"-hydrology.model {selected}" not in leg
+
+
+def test_uq_row_naming_an_unknown_model_is_rejected(tmp_path):
+    """
+    A model with no ``[hydrology.options.*]`` table fails loudly.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    with pytest.raises(ValueError, match="hydrology.model = 'distributed'"):
+        _render_forward(tmp_path, FREE_HY, uq={"hydrology.model": "distributed"}, sample=0)

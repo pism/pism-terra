@@ -26,19 +26,13 @@ from __future__ import annotations
 import math
 import re
 from pathlib import Path
-from typing import Any, ClassVar, Iterator
+from typing import Any, ClassVar, Iterator, Mapping
 
 import pandas as pd
 import scipy.stats as st
 import toml
 from jinja2 import Environment
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Dependency-free (imports only the stdlib), so a top-level import here cannot
 # create a cycle back into this module.
@@ -1136,6 +1130,44 @@ class PismConfig(BaseModelWithDot):
         if self.campaign.ocean_version is None:
             self.campaign.ocean_version = spec.ocean_version
         return self
+
+    def select_models(self, overrides: Mapping[str, object]) -> None:
+        """
+        Point each model section at the model an ensemble row selects.
+
+        Sections with a ``model`` and per-model option tables (``surface``,
+        ``hydrology``, ``stress_balance``, ...) contribute only the selected
+        table to a run. A UQ row may pick the model itself through the dotted
+        ``<section>.model`` flag; applying that before the run dict is built
+        makes the whole option table follow the choice, instead of one flag
+        being overwritten while the previous model's options linger.
+
+        Parameters
+        ----------
+        overrides : Mapping[str, object]
+            Dotted PISM flags of one ensemble member. Only ``<section>.model``
+            keys are read here; the rest are applied as plain flag overrides
+            by the runners.
+
+        Raises
+        ------
+        ValueError
+            If a ``<section>.model`` override names no ``[<section>.options.*]``
+            table: keeping the config's model silently would make the member
+            a duplicate of another one.
+        """
+        for section, block in self:
+            if not isinstance(block, ModelWithOptions):
+                continue
+            model = overrides.get(f"{section}.model")
+            if model is None:
+                continue
+            if model not in block.options:
+                raise ValueError(
+                    f"uq override {section}.model = {model!r} names no [{section}.options.*] table "
+                    f"in the config; available: {sorted(block.options)}"
+                )
+            block.model = str(model)
 
 
 class RestartConfig(BaseModelWithDot):

@@ -891,6 +891,16 @@ def _render_forward_run(
     spatial_path = paths["spatial"]
     state_path = paths["state"]
 
+    # CLI override for the stress-balance model, then the models a UQ row
+    # selects (``<section>.model``), both applied to ``cfg`` before any run
+    # dict is built so the init leg and the forward leg agree and no stale
+    # option keys of the previous model leak into the run.
+    stress_balance = config_cli.get("stress_balance")
+    if stress_balance is not None:
+        cfg.stress_balance.model = stress_balance
+    if uq is not None:
+        cfg.select_models(normalize_row(uq))
+
     run_hist = _base_run_dict(cfg)
 
     template_file = Path(template_file)
@@ -918,15 +928,6 @@ def _render_forward_run(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
-    # CLI override for the stress-balance model. Drop the previous model's
-    # options from ``run_hist`` first so leftover keys (e.g. blatter.*) don't
-    # leak into e.g. a sia run.
-    stress_balance = config_cli.get("stress_balance")
-    if stress_balance is not None:
-        for old_key in cfg.stress_balance.selected():
-            run_hist.pop(old_key, None)
-        cfg.stress_balance.model = stress_balance
-        run_hist.update(cfg.stress_balance.selected())
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
 
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
@@ -1198,6 +1199,10 @@ def _render_inverse_run(
     stress_balance = config_cli.get("stress_balance")
     if stress_balance is not None:
         cfg.stress_balance.model = stress_balance
+    # Models a UQ row selects (``<section>.model``) swap the whole option
+    # table, for the same reason and at the same point as the CLI override.
+    if uq is not None:
+        cfg.select_models(normalize_row(uq))
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
 
     # CLI overrides for time bounds apply to the *forward* legs only; the
