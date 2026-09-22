@@ -38,12 +38,121 @@ from pyfiglet import Figlet
 from shapely.geometry import Polygon
 from tqdm.auto import tqdm
 
-from pism_terra.aws import download_from_s3, list_s3_keys, local_to_s3
+from pism_terra.aws import download_from_s3, list_s3_keys, local_to_s3, s3_key_exists
 from pism_terra.config import load_config, version_tag
 from pism_terra.ismip7.greenland.observations import prepare_observations
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
+
+
+_RESOLUTION_TOKEN = re.compile(r"g(\d+)m")
+
+
+def resolution_in_meters(resolution: int | float | str) -> int:
+    """
+    Turn a grid resolution into whole meters.
+
+    Parameters
+    ----------
+    resolution : int, float or str
+        ``1800``, ``"1800m"``, ``"1800 m"`` or ``"1.8km"``.
+
+    Returns
+    -------
+    int
+        The resolution in meters.
+
+    Raises
+    ------
+    ValueError
+        If a string is not ``<number><m|km>``.
+    """
+    if isinstance(resolution, (int, float)):
+        return int(round(resolution))
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(m|km)\s*", str(resolution))
+    if m is None:
+        raise ValueError(f"resolution must look like '900m' or '0.9km', got {resolution!r}")
+    return int(round(float(m.group(1)) * (1000 if m.group(2) == "km" else 1)))
+
+
+def retreat_file_for_resolution(name: str, resolution: int | float | str | None) -> str:
+    """
+    Name of the front-retreat mask built for one grid resolution.
+
+    ``prepare`` publishes the CalFin mask once per resolution, named by a
+    ``g<res>m`` token (``pism_g450m_frontretreat_...``). PISM zeroes the ice of
+    any margin cell whose mask value is below 1, and interpolating a 0/1 mask
+    onto a grid it was not built for puts a fraction on every margin cell, so a
+    run must read the mask of its own grid.
+
+    Parameters
+    ----------
+    name : str
+        The configured filename (``campaign.retreat_file``).
+    resolution : int, float, str or None
+        The run's grid resolution; ``None`` leaves the name alone.
+
+    Returns
+    -------
+    str
+        ``name`` with its ``g<res>m`` token swapped for the resolution, or
+        ``name`` itself when it carries no such token.
+    """
+    if resolution is None or not _RESOLUTION_TOKEN.search(name):
+        return name
+    return _RESOLUTION_TOKEN.sub(f"g{resolution_in_meters(resolution)}m", name, count=1)
+
+
+def select_retreat_file(
+    configured: str, resolution: int | float | str | None, input_path: Path, bucket: str, prefix: str
+) -> str:
+    """
+    Pick the retreat mask of the run's grid, or warn and keep the configured one.
+
+    Parameters
+    ----------
+    configured : str
+        ``campaign.retreat_file`` as written in the config.
+    resolution : int, float, str or None
+        The run's grid resolution; ``None`` keeps the configured file.
+    input_path : pathlib.Path
+        Local staging directory (a file already there needs no bucket lookup).
+    bucket : str
+        Bucket the inputs are staged from.
+    prefix : str
+        Key prefix (with version) the inputs live under.
+
+    Returns
+    -------
+    str
+        The filename to stage, relative to ``prefix``.
+    """
+    if resolution is None:
+        return configured
+    wanted = retreat_file_for_resolution(configured, resolution)
+    if wanted == configured:
+        return configured
+    meters = resolution_in_meters(resolution)
+    if (input_path / Path(wanted)).exists() or s3_key_exists(bucket, f"{prefix}/{wanted}"):
+        print(f"Front retreat mask: {wanted} (built for the {meters} m grid)")
+        return wanted
+    print("!" * 120)
+    print(
+        f"WARNING: no front-retreat mask for the {meters} m grid: {wanted} is neither in {input_path} "
+        f"nor in s3://{bucket}/{prefix}/. Falling back to {configured}."
+    )
+    print(
+        f"         PISM will interpolate that mask onto the {meters} m grid, which leaves a value below 1 on "
+        "every margin cell, and its prescribed retreat then removes the ice of those cells at every step: "
+        "expect holes along the margin and 'ice thickness would exceed Lz' aborts."
+    )
+    print(
+        "         Build the masks with 'pism-ismip7-greenland-prepare --include calfin' (all resolutions of "
+        "CALFIN_RESOLUTIONS by default) and upload them to the bucket."
+    )
+    print("!" * 120)
+    return configured
 
 
 def forcing_filename(forcing: str, pathway: str, gcm: str, version: str, start_year: int, end_year: int) -> str:
@@ -174,6 +283,7 @@ def stage(
     force_overwrite: bool = False,
     include_projection: bool = True,
     data_path: str | Path | None = None,
+    resolution: int | float | str | None = None,
 ) -> pd.DataFrame:
     """
     Stage ISMIP7 Greenland inputs and return a file index.
@@ -240,6 +350,10 @@ def stage(
         reuse to save disk); when ``None``, they go to ``<path>/input`` as before.
         Files already present are not re-downloaded, so pointing several runs at the
         same ``data_path`` stages the data once.
+    resolution : int, float, str or None, default ``None``
+        The run's grid resolution (``"1800m"``). Selects the front-retreat mask
+        built for that grid (see :func:`select_retreat_file`); with ``None`` the
+        configured ``retreat_file`` is staged as is.
 
     Returns
     -------
@@ -312,7 +426,8 @@ def stage(
     boot_file = input_path / Path(config["boot_file"])
     heatflux_file = input_path / Path(config["heatflux_file"])
     regrid_file = input_path / Path(config["regrid_file"])
-    retreat_file = input_path / Path(config["retreat_file"])
+    retreat_name = select_retreat_file(config["retreat_file"], resolution, input_path, bucket, prefix)
+    retreat_file = input_path / Path(retreat_name)
     outline_file = input_path / Path(config["outline_file"])
     obs_file = input_path / Path(config["obs_file"])
 
@@ -325,7 +440,7 @@ def stage(
         (config["boot_file"], boot_file),
         (config["heatflux_file"], heatflux_file),
         (config["regrid_file"], regrid_file),
-        (config["retreat_file"], retreat_file),
+        (retreat_name, retreat_file),
         (config["outline_file"], outline_file),
         (config["obs_file"], obs_file),
     ]
@@ -413,7 +528,7 @@ def stage(
     check_xr_fully(grid_file)
 
     # Validate the lazy-check inputs concurrently; only invalid files print.
-    input_lazy_files = [boot_file, heatflux_file, regrid_file]
+    input_lazy_files = [boot_file, heatflux_file, regrid_file, retreat_file]
     # Processes (not threads): HDF5 isn't reliably thread-safe across all
     # builds (Chinook segfaults), so each worker gets its own interpreter
     # and HDF5 state.
@@ -532,6 +647,13 @@ def main():
         default=False,
     )
     parser.add_argument(
+        "--resolution",
+        help="Grid resolution the run will use (e.g. 1800m); picks the front-retreat mask built for it. "
+        "Defaults to the config's grid.resolution.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "CONFIG_FILE",
         help="CONFIG TOML.",
         nargs=1,
@@ -552,7 +674,13 @@ def main():
 
     path.mkdir(parents=True, exist_ok=True)
 
-    is_df = stage(config, path=path, force_overwrite=force_overwrite, data_path=data_path)
+    is_df = stage(
+        config,
+        path=path,
+        force_overwrite=force_overwrite,
+        data_path=data_path,
+        resolution=options.resolution or cfg.grid.resolution,
+    )
     input_dir = Path(data_path) if data_path is not None else path / Path("input")
     is_df.to_csv(input_dir / Path("ismip7_greenland_files.csv"))
 

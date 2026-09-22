@@ -1722,7 +1722,10 @@ class CampaignConfig(BaseModel):
         not read them -- they are what a run is compared against afterwards --
         so they are optional and a config that omits them stages as before.
     retreat_file : str or None
-        Path to the retreat NetCDF file (relative to the input directory).
+        Front-retreat mask NetCDF (relative to the input directory). The mask
+        is published once per grid resolution, named by a ``g<res>m`` token
+        (``pism_g450m_frontretreat_calfin_1972_2019_MS.nc``); staging swaps
+        that token for the run's resolution and warns when no such file exists.
     rgi_complex_file : str or None
         Filename of the RGI glacier-complex ("-C") outlines in the bucket.
     rgi_glacier_file : str or None

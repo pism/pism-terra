@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,34 @@ def download_from_s3(s3_uri: str, dest: str | Path) -> Path:
         s3.download_file(bucket, prefix, str(dest), Callback=pbar.update)
 
     return dest
+
+
+def s3_key_exists(bucket: str, key: str) -> bool:
+    """
+    Whether one object exists in a bucket.
+
+    Parameters
+    ----------
+    bucket : str
+        Bucket name.
+    key : str
+        Full object key (no leading slash).
+
+    Returns
+    -------
+    bool
+        ``True`` if a HEAD on the object succeeds, ``False`` on a 404; any
+        other error (no credentials, no such bucket) propagates.
+    """
+    bucket_region = boto3.client("s3").get_bucket_location(Bucket=bucket).get("LocationConstraint") or "us-west-2"
+    s3 = boto3.client("s3", region_name=bucket_region)
+    try:
+        s3.head_object(Bucket=bucket, Key=key.lstrip("/"))
+    except ClientError as exc:
+        if str(exc.response.get("Error", {}).get("Code")) in ("404", "NoSuchKey", "NotFound"):
+            return False
+        raise
+    return True
 
 
 def list_s3_keys(bucket: str, prefix: str) -> list[str]:

@@ -23,6 +23,7 @@ Prepare ISMIP7 Greenland data sets.
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -60,7 +61,7 @@ from pism_terra.download import (
     extract_archive,
     file_localizer,
 )
-from pism_terra.raster import create_ds
+from pism_terra.raster import rasterize_retreat_masks
 from pism_terra.vector import dissolve
 from pism_terra.workflow import (
     check_xr_fully,
@@ -1538,20 +1539,47 @@ def extend_final_time_bound(path: Path | str, end: str = FRONT_RETREAT_END) -> P
     return path
 
 
+#: Resolutions (m) the CalFin retreat mask is published at. A run picks the
+#: file of its own grid (see :func:`pism_terra.ismip7.greenland.stage.retreat_file_for_resolution`).
+CALFIN_RESOLUTIONS: tuple[int, ...] = (450, 600, 900, 1200, 1500, 1800, 2400, 3600, 4500)
+
+
+def calfin_filename(resolution: int, freq: str = "MS") -> str:
+    """
+    Name of the CalFin retreat mask built for one grid resolution.
+
+    Parameters
+    ----------
+    resolution : int
+        Grid resolution in meters.
+    freq : str, default "MS"
+        Pandas frequency string the fronts were grouped by.
+
+    Returns
+    -------
+    str
+        ``pism_g<resolution>m_frontretreat_calfin_1972_2019_<freq>.nc``.
+    """
+    return f"pism_g{int(resolution)}m_frontretreat_calfin_1972_2019_{freq}.nc"
+
+
 def prepare_calfin(
     output_path: Path | str,
-    resolution: int,
+    resolutions: int | Sequence[int],
     x_bnds: list | np.ndarray,
     y_bnds: list | np.ndarray,
     freq: str = "MS",
     force_overwrite: bool = False,
     n_workers: int = 4,
-) -> str | Path:
+) -> dict[int, Path]:
     """
-    Prepare CALFIN glacier front retreat data as a gridded NetCDF.
+    Prepare CALFIN glacier front retreat data as gridded NetCDF masks, one per resolution.
 
     Downloads CALFIN terminus positions, groups by month, computes cumulative
-    retreat extent, and rasterizes to the target resolution. The last record's
+    retreat extent, and rasterizes it as a 0/1 mask onto the PISM grid of every
+    requested resolution (see :func:`pism_terra.raster.rasterize_retreat_mask`
+    for why the mask has to sit on the run's own grid). The vector work is done
+    once; only the rasterization repeats per resolution. The last record's
     upper time bound is stretched to :data:`FRONT_RETREAT_END` so the observed
     front position holds for the rest of a run rather than expiring in 2019.
 
@@ -1559,37 +1587,52 @@ def prepare_calfin(
     ----------
     output_path : Path or str
         Directory for output files.
-    resolution : int
-        Grid resolution in meters.
+    resolutions : int or sequence of int
+        Grid resolutions in meters. Each must divide both domain extents.
     x_bnds : list or numpy.ndarray
         A list or array containing the minimum and maximum x-coordinate boundaries.
     y_bnds : list or numpy.ndarray
         A list or array containing the minimum and maximum y-coordinate boundaries.
-    freq : str, default "ME"
+    freq : str, default "MS"
         Pandas frequency string for temporal grouping.
     force_overwrite : bool, default False
-        If True, reprocess even if the output file already exists.
+        If True, reprocess even if the output files already exist.
     n_workers : int, default 4
         Number of parallel workers.
 
     Returns
     -------
-    Path
-        Path to the output NetCDF file.
+    dict of int to Path
+        Output NetCDF per resolution.
+
+    Raises
+    ------
+    ValueError
+        If a resolution does not tile the domain: PISM would then have to
+        interpolate the mask, which is exactly what the per-resolution files avoid.
     """
-    x_min, x_max = x_bnds[0], x_bnds[1]
-    y_min, y_max = y_bnds[1], y_bnds[0]
-    geom = {
-        "type": "Polygon",
-        "crs": {"properties": {"name": "EPSG:3413"}},
-        "bbox": [x_min, y_min, x_max, y_max],
-        "coordinates": [[(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max), (x_min, y_min)]],
-    }
+    if isinstance(resolutions, (int, float)):
+        resolutions = [int(resolutions)]
+    resolutions = [int(r) for r in resolutions]
+    x_extent = abs(float(x_bnds[1]) - float(x_bnds[0]))
+    y_extent = abs(float(y_bnds[1]) - float(y_bnds[0]))
+    off_grid = [
+        r
+        for r in resolutions
+        if not (math.isclose(x_extent / r, round(x_extent / r)) and math.isclose(y_extent / r, round(y_extent / r)))
+    ]
+    if off_grid:
+        raise ValueError(
+            f"the domain ({x_extent:.0f} m x {y_extent:.0f} m) is not a whole number of cells at {off_grid} m; "
+            "a retreat mask PISM has to interpolate is worse than none"
+        )
 
     output_path = Path(output_path)
-    p_fn = output_path / Path(f"pism_g{resolution}m_frontretreat_calfin_1972_2019_{freq}.nc")
+    targets = {r: output_path / Path(calfin_filename(r, freq)) for r in resolutions}
+    todo = [r for r in resolutions if force_overwrite or not check_xr_lazy(targets[r])]
 
-    if (not check_xr_lazy(p_fn)) or force_overwrite:
+    if todo:
+        logger.info("Building CalFin retreat masks at %s m", ", ".join(str(r) for r in todo))
 
         tmp_path = output_path.parent / Path("calfin")
 
@@ -1643,44 +1686,36 @@ def prepare_calfin(
 
         calfin_aggregated = gpd.GeoDataFrame(cumulative_geoms[1:], crs=crs).set_index("Date")
 
-        # Step 3: Rasterize to grid
+        # Step 3: Rasterize to every grid. One task per date does the vector
+        # difference once and burns it at each resolution.
         agg_groups = [(date, df) for date, df in calfin_aggregated.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
 
         with Client(n_workers=n_workers, threads_per_worker=1) as client:
             logger.info("Dask dashboard: %s", client.dashboard_link)
 
             futures = [
-                client.submit(
-                    create_ds,
-                    tmp_path / f"frontretreat_g{resolution}m_{date.year}-{date.month}-{date.day}.nc",
-                    date,
-                    df,
-                    imbie_union,
-                    geom=geom,
-                    resolution=resolution,
-                )
+                client.submit(rasterize_retreat_masks, tmp_path, date, df, imbie_union, x_bnds, y_bnds, todo)
                 for date, df in agg_groups
             ]
             raster_results = []
             for future in tqdm(as_completed(futures), desc="Rasterizing geometries", total=len(futures)):
                 raster_results.append(future.result())
 
-        result_filtered = [r for r in raster_results if r is not None]
-
-        # Merge and save
-        logger.info("Merging datasets and saving to %s", p_fn.resolve())
-
         cdo = Cdo()
-        cdo.settbounds(
-            "1mon",
-            input="-mergetime " + " ".join(str(f) for f in result_filtered),
-            output=str(p_fn.resolve()),
-            options="-f nc4 -z zip_2",
-        )
+        for r in todo:
+            per_date = [str(files[r]) for files in raster_results if files]
+            logger.info("Merging %d monthly masks at %d m into %s", len(per_date), r, targets[r].resolve())
+            cdo.settbounds(
+                "1mon",
+                input="-mergetime " + " ".join(per_date),
+                output=str(targets[r].resolve()),
+                options="-f nc4 -z zip_2",
+            )
     # Outside the rebuild: a file staged before this existed still ends its
     # last bound in 2019, and the call is a no-op once it does not.
-    extend_final_time_bound(p_fn)
-    return p_fn
+    for target in targets.values():
+        extend_final_time_bound(target)
+    return targets
 
 
 def _forcing_tasks(config: dict) -> list[tuple]:

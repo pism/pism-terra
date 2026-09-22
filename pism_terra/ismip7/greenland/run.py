@@ -1669,6 +1669,9 @@ def _run(*, kind: str) -> None:
         force_overwrite=force_overwrite,
         include_projection=include_projection,
         data_path=data_path,
+        # The front-retreat mask is per grid; stage the one this run's
+        # resolution was built for (see stage.select_retreat_file).
+        resolution=options.resolution or cfg.grid.resolution,
     )
 
     # The observed mass balance the run is validated against, staged into
