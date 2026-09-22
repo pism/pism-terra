@@ -76,7 +76,7 @@ OCX = {climate = 1, ocean = 1}
 'output.checkpoint.interval' = 24
 'output.compression_level' = 2
 'output.fill_value' = 9.969209968386869e+36
-'output.format' = "netcdf4_parallel"
+'output.format' = "netcdf4_serial"
 'output.scalar.file' = "none"
 'output.scalar.times' = "monthly"
 'output.size' = "medium"
