@@ -58,7 +58,7 @@ version = "v4"
 
 [reporting]
 
-'output.ISMIP6' = "no"
+'output.ISMIP' = "no"
 'output.checkpoint.interval' = 24
 'output.compression_level' = 2
 'output.experiment_id_max_length' = 100
