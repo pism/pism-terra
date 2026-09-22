@@ -67,7 +67,7 @@ version = "v2"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "topg,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,grounding_line_flux,dHdt,bmelt,frontal_melt_rate,bmelt"
+'output.spatial.vars' = "topg,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,ice_mass_transport_across_grounding_line,dHdt,bmelt,frontal_melt_rate,bmelt"
 
 [grid]
 

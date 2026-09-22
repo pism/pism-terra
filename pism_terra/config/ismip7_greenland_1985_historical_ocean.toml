@@ -85,7 +85,7 @@ CESM2-WACCM = {climate = 2, ocean = 2}
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt,plume_basal_melt_rate,plume_fresh_water_melt_rate,plume_discharge_flux,limnsw,subglacial_water_flux_mag"
+'output.spatial.vars' = "dHdt,ice_mass_transport_across_grounding_line,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt,plume_basal_melt_rate,plume_fresh_water_melt_rate,plume_discharge_flux,limnsw,subglacial_water_flux_mag"
 
 [grid]
 

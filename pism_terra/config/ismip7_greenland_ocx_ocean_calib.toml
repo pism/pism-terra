@@ -81,7 +81,7 @@ OCX = {climate = 1, ocean = 1}
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "bmelt,mask,plume_fresh_water_melt_rate,plume_discharge_flux,plume_disch_q0,plume_temperature,plume_shelf_base_elevation,grounding_line_flux,velsurf_mag"
+'output.spatial.vars' = "bmelt,mask,plume_fresh_water_melt_rate,plume_discharge_flux,plume_disch_q0,plume_temperature,plume_shelf_base_elevation,ice_mass_transport_across_grounding_line,velsurf_mag"
 
 [grid]
 

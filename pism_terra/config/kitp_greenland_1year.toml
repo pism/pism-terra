@@ -70,7 +70,7 @@ version = "v4"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,mass_fluxes,grounding_line_flux,pdd_fluxes"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,thk,velsurf_mag,velbase_mag,mask,usurf,ice_mass,mass_fluxes,ice_mass_transport_across_grounding_line,pdd_fluxes"
 
 [grid]
 
