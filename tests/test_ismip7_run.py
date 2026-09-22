@@ -1358,3 +1358,78 @@ def test_uq_row_naming_an_unknown_model_is_rejected(tmp_path):
     """
     with pytest.raises(ValueError, match="hydrology.model = 'distributed'"):
         _render_forward(tmp_path, FREE_HY, uq={"hydrology.model": "distributed"}, sample=0)
+
+
+def _with_profile(tmp_path: Path, config_file: Path, enabled: bool = True) -> Path:
+    """
+    Copy a config with ``campaign.profile`` set one way, whatever it ships with.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest scratch directory.
+    config_file : pathlib.Path
+        Config to copy.
+    enabled : bool, optional
+        ``True`` adds ``profile = true``; ``False`` leaves the key out.
+
+    Returns
+    -------
+    pathlib.Path
+        The modified copy.
+    """
+    text = "\n".join(line for line in config_file.read_text().splitlines() if not line.startswith("profile")) + "\n"
+    if enabled:
+        assert text.count("[campaign]\n") == 1
+        text = text.replace("[campaign]\n", "[campaign]\n\nprofile = true\n", 1)
+    copy = tmp_path / ("profile_on.toml" if enabled else "profile_off.toml")
+    copy.write_text(text)
+    return copy
+
+
+def _assert_profiled(script: str) -> None:
+    """
+    Every ``pism`` leg carries ``-profile`` named after its state file; ``pismi`` none.
+
+    Parameters
+    ----------
+    script : str
+        Rendered submission script.
+    """
+    profiles = []
+    for leg in _legs(script):
+        profile = re.search(r"-profile (\S+)", leg)
+        if leg.split()[0] != "pism":
+            assert profile is None
+            continue
+        assert profile is not None, leg
+        state = Path(_search(r"-output\.file (\S+)", leg))
+        tag = state.stem.removeprefix("state_")
+        assert profile.group(1) == str(state.parent.parent / "profile" / f"profile_{tag}.py")
+        profiles.append(profile.group(1))
+    assert len(profiles) == len(set(profiles)) >= 2
+
+
+def test_forward_legs_profile_into_their_own_files(tmp_path):
+    """
+    ``campaign.profile`` gives the init and forward legs separate ``-profile`` files.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    _assert_profiled(_render_forward(tmp_path, _with_profile(tmp_path, FREE_HY)))
+    assert "-profile" not in _render_forward(tmp_path / "off", _with_profile(tmp_path, FREE_HY, enabled=False))
+
+
+def test_inverse_legs_profile_into_their_own_files(tmp_path):
+    """
+    In the inverse chain the ``pism`` legs profile and the ``pismi`` leg does not.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    _assert_profiled(_render_inverse(tmp_path, _with_profile(tmp_path, FREE_HY)))

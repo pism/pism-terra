@@ -26,6 +26,7 @@ init_surface_model = "ismip7_forcing"
 obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "mouginot_basins_w_shelves.gpkg"
 prefix = "ismip7/greenland/input"
+profile = true
 regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
 version = "v3"

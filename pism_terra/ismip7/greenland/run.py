@@ -46,6 +46,7 @@ from pism_terra.ismip7.naming import (
 )
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
+    add_profile_option,
     add_provenance,
     apply_choice_mapping,
     check_template_legs,
@@ -256,6 +257,7 @@ def _build_init_leg(
             "output.spatial.file": (spatial_path / Path(f"spatial_{init_tag}.nc")).resolve(),
         }
     )
+    add_profile_option(run_init, cfg.campaign.profile)
 
     if pism_config_cdl is not None:
         validate_pism_options(run_init, pism_config_cdl)
@@ -631,6 +633,7 @@ def _build_forward_legs(
                 "output.scalar.file": scalar_one.resolve(),
             }
         )
+        add_profile_option(run_one, cfg.campaign.profile)
         # A projection pathway swaps the historical forcing (applied via ``uq``)
         # for the projection-epoch files ``_run`` passes on ``proj_overrides``.
         if not single_is_historical and proj_overrides:
@@ -676,6 +679,7 @@ def _build_forward_legs(
                 "output.scalar.file": scalar_hist.resolve(),
             }
         )
+        add_profile_option(run_hist, cfg.campaign.profile)
 
         if pism_config_cdl is not None:
             validate_pism_options(run_hist, pism_config_cdl)
@@ -720,6 +724,7 @@ def _build_forward_legs(
                     "output.scalar.file": scalar_proj.resolve(),
                 }
             )
+            add_profile_option(run_proj, cfg.campaign.profile)
             # Projection-epoch file paths supplied by ``_run()`` (climate / ocean
             # / gradient) — filtered against ``run_proj`` so a mis-typed key from
             # the caller doesn't silently vanish.

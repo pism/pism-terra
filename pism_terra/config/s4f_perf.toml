@@ -15,6 +15,7 @@ heatflux = "lucazeau"
 ice_thickness = "maffezzoli"
 name = "Hindcast"
 prefix = "glacier/input"
+profile = true
 project_directory = "s4f"
 rgi_complex_file = "s4f_c.gpkg"
 rgi_glacier_file = "s4f_g.gpkg"

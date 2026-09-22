@@ -42,6 +42,7 @@ gcms = ["CESM2-WACCM", "MRI-ESM2-0"]
 outline_file = "mouginot_basins_w_shelves.gpkg"
 pathway = "ssp585"
 prefix = "ismip7/greenland/input"
+profile = true
 projection_end_year = "2300"
 two_leg = true
 projection_start_year = "2015"

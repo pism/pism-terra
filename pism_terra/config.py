@@ -1752,6 +1752,12 @@ class CampaignConfig(BaseModel):
     historical_end_year : str, float, or None
         Last (inclusive) year of the historical forcing file (e.g. 2014
         under the ISMIP7 convention where projections start in 2015).
+    profile : bool
+        Save PETSc profiling data for every ``pism`` leg: the runners add
+        ``-profile <output>/profile/profile_<tag>.py``, ``<tag>`` being the
+        leg's state-file tag, so an ensemble member never overwrites
+        another's file. Read it with :func:`pism_terra.profiling.load_profile`.
+        Default ``False``.
     two_leg : bool
         Whether the forward run is the protocol's two legs -- historical to
         2015-01-01, then a projection to ``time.end`` on the projection-epoch
@@ -1833,6 +1839,7 @@ class CampaignConfig(BaseModel):
     projection_start_year: str | float | None = Field(default=None)
     projection_end_year: str | float | None = Field(default=None)
     two_leg: bool = Field(default=False)
+    profile: bool = Field(default=False)
     set_counter_start: int = Field(default=1)
     version: str | None = Field(default=None)
     climate_version: str | None = Field(default=None)
