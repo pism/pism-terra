@@ -581,7 +581,8 @@ def _build_forward_legs(
         tuple of pathlib.Path
             ``(state, spatial, scalar, basin)`` — absolute paths for PISM's
             ``output.file``, ``output.spatial.file``, ``output.scalar.file``,
-            and the per-basin scalar file written by the post-processing step.
+            and the per-region scalar file (``region_<tag>.nc``) written by the
+            post-processing step.
             The ISMIP7-tree ``spatial`` carries a ``{var}`` placeholder that
             PISM fills in per variable (one conforming file per variable); the
             flat ``spatial`` is a single combined file so it can be fed to
@@ -592,7 +593,7 @@ def _build_forward_legs(
         if ismip7_ctx is None or not ismip7:
             spatial = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
             scalar = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
-            basin = scalar_path / Path(f"basin_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
+            basin = scalar_path / Path(f"region_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
             return state, spatial, scalar, basin
         end_ts = pd.Timestamp(end_str)
         last_year = end_ts.year - 1 if (end_ts.month == 1 and end_ts.day == 1) else end_ts.year
@@ -602,7 +603,7 @@ def _build_forward_legs(
         ismip7_dir.mkdir(parents=True, exist_ok=True)
         spatial = ismip7_dir / names.filename("{var}")
         scalar = ismip7_dir / f"scalar_{names.stem()}.nc"
-        basin = ismip7_dir / f"basin_{names.stem()}.nc"
+        basin = ismip7_dir / f"region_{names.stem()}.nc"
         return state, spatial, scalar, basin
 
     # Which leg is the ISMIP7 submission product: for a counter-driven run only the
@@ -662,7 +663,7 @@ def _build_forward_legs(
             post_process_str = (
                 f"pism-postprocess-scalar "
                 f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file} "
-                f"--total-name GIS{_nt}"
+                f"--dim-name region --total-name GIS_GIS{_nt}"
             )
     else:
         # --- Counter-driven ISMIP7 two-leg run (historical -> projection) ---
@@ -767,7 +768,7 @@ def _build_forward_legs(
             flux_command = (
                 f"pism-ismip7-postprocess-flux "
                 f"{submission_dir} {(output_path / 'basins').resolve()} {outline_file} "
-                f"--total-name GIS{_nt}"
+                f"--dim-name region --total-name GIS_GIS{_nt}"
             )
             # Appended, not assigned: a single-leg run with ISMIP7 naming on
             # reaches here having already put its own pism-postprocess-scalar

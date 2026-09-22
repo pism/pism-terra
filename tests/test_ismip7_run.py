@@ -859,6 +859,7 @@ def test_counter_run_postprocesses_the_submission_fluxes(tmp_path):
     source, destination = flux.split()[1], flux.split()[2]
     assert source.endswith("/CORE/C005")
     assert destination.endswith("/output/basins")
+    assert "--dim-name region --total-name GIS_GIS" in script
 
 
 def test_single_leg_ismip7_run_postprocesses_only_the_fluxes(tmp_path):
@@ -898,6 +899,11 @@ def test_single_leg_flat_run_postprocesses_the_spatial_file(tmp_path):
     cfg_path.write_text(cfg_path.read_text().replace("'output.ISMIP' = \"yes\"", "'output.ISMIP' = \"no\""))
     script = _render_forward(tmp_path / "run", cfg_path, OUTLINE, sample="CESM2-WACCM")
     assert _postprocess_commands(script) == ["pism-postprocess-scalar"]
+    (command,) = [line for line in script.splitlines() if line.startswith("pism-postprocess-scalar")]
+    # ISMIP7 conventions: the region dimension and the GIS_GIS total match the
+    # observed mass-balance products, and the file is region_<tag>.nc.
+    assert "--dim-name region --total-name GIS_GIS" in command
+    assert "/region_" in command.split()[2]
 
 
 def test_run_without_outlines_postprocesses_nothing(tmp_path):
