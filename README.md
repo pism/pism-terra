@@ -14,7 +14,7 @@
 
 # pism-terra
 
-Simulate any glacier complex in the world based on their RGI7 ID.
+Simulate any glacier complex in the world based on their RGI7 ID or perform the ISMIP7 Greenland experiments made easy.
 
 ## Installation
 
