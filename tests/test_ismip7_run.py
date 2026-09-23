@@ -1498,3 +1498,26 @@ def test_cli_uploads_the_output_tree_when_a_bucket_is_given(tmp_path, monkeypatc
     )
     ismip7._run(kind="forward")  # pylint: disable=protected-access
     assert calls["upload"] == (tmp_path, "pism-cloud-data", "ismip7/test_ensemble/abc")
+
+
+def test_script_creates_its_output_directories(tmp_path):
+    """
+    The rendered script makes every output directory the generator made, so a copy staged through S3 works.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, C003, sample="CESM2-WACCM")
+    (mkdir,) = [line for line in script.splitlines() if line.startswith("mkdir -p ")]
+    made = set(mkdir.split()[2:])
+    root = tmp_path.resolve()
+    for sub in ("output", "output/C003/state", "output/C003/scalar", "output/C003/spatial", "logs"):
+        assert str(root / sub) in made, sub
+    submission = [d for d in made if d.startswith(str(root / "output" / "GrIS"))]
+    assert any(d.endswith("CORE/C003") for d in submission)
+    # Every directory the script writes a file into is made before the first leg.
+    for output in re.findall(r"-output\.(?:file|scalar\.file) (\S+)", script):
+        assert str(Path(output).parent) in made, output
+    assert script.index("mkdir -p ") < script.index("mpirun")

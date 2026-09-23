@@ -41,6 +41,13 @@ ulimit -l unlimited || true
 ulimit -s unlimited || true
 ulimit
 
+{% if output_dirs %}
+# Output directories. A run staged through S3 arrives without them (a bucket
+# keeps no empty directories) and PISM does not create them itself.
+mkdir -p {{ output_dirs | join(" ") }}
+{% endif %}
+
+
 # Spread PISM's output over several OSTs before anything is written. On
 # chinook's Lustre this does not make writes faster, but it stops a single
 # writer's throughput from depending on which OST it happened to land on:

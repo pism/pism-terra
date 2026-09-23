@@ -412,7 +412,7 @@ def _build_forward_legs(
     proj_overrides: Mapping[str, object] | None,
     pism_config_cdl: str | Path | None,
     run_index: int | None = None,
-) -> dict[str, str]:
+) -> dict[str, str | list[str]]:
     """
     Build the forward leg command line(s) and post-processing strings.
 
@@ -787,7 +787,38 @@ def _build_forward_legs(
         "post_process_str": post_process_str,
         "ism_checker_str": ism_checker_str,
         "post_scalar_str": post_scalar_str,
+        "output_dirs": run_directories(output_path),
     }
+
+
+def run_directories(output_path: Path | str) -> list[str]:
+    """
+    List the directories a run writes into, for the script to create itself.
+
+    The generator creates every output directory as it names the files --
+    the per-leg ``state``, ``scalar`` and ``spatial`` directories, the ISMIP7
+    submission tree, the profile directory -- but a run staged through S3
+    arrives without them: a bucket keeps no empty directories, and PISM does
+    not create the directory of a file it opens for writing. The rendered
+    script therefore carries a ``mkdir -p`` of everything that exists under
+    the output tree at render time, plus the log directory beside it.
+
+    Parameters
+    ----------
+    output_path : Path or str
+        The run's ``output/`` directory.
+
+    Returns
+    -------
+    list of str
+        Absolute directories, sorted; ``mkdir -p`` on an existing one is a no-op.
+    """
+    root = Path(output_path).resolve()
+    dirs = {root} | {p.resolve() for p in root.rglob("*") if p.is_dir()}
+    logs = root.parent / "logs"
+    if logs.is_dir():
+        dirs.add(logs.resolve())
+    return [str(d) for d in sorted(dirs)]
 
 
 def _render_forward_run(
