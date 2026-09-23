@@ -976,8 +976,8 @@ class JobConfig(BaseModelWithDot):
         """
         if v is None:
             return v
-        if not re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", v):
-            raise ValueError("walltime must look like HH:MM:SS")
+        if not re.fullmatch(r"\d{1,3}:\d{2}:\d{2}", v):
+            raise ValueError("walltime must look like HH:MM:SS (hours may have 1-3 digits)")
         return v
 
     def as_params(self) -> dict[str, Any]:
