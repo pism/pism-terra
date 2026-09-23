@@ -151,7 +151,7 @@ keeps their outputs apart.
 * - `pism-ismip7-greenland-observations`
   - Stage the observed Greenland mass balance (GRACE Tellus and Mankoff et
     al. 2021, per basin) into `output/observations/` beside a run's output.
-* - `pism-ismip7-greenland-importance-sampling`
+* - `pism-ismip7-greenland-importance-sampling-dh`
   - Weigh an ensemble's members against observed thickness change (the
     `dh_*.nc` files against a staged Smith or Khan product): Gaussian
     likelihood weights, counts and effective sample size per fudge factor,

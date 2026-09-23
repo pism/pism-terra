@@ -23,7 +23,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
-import dask
 import matplotlib as mpl
 import matplotlib.pylab as plt
 import numpy as np
@@ -32,6 +31,7 @@ import xarray as xr
 
 from pism_terra.filtering import importance_sampling
 from pism_terra.likelihood import REDUCTIONS
+from pism_terra.progress import compute as compute_with_progress
 
 rc_params = {
     "axes.linewidth": 0.15,
@@ -135,7 +135,7 @@ def squared_error_blocks(sim, obs, block_size, dim="exp_id"):
     counts = valid.astype("int64").coarsen(**windows).sum().stack(block=("y", "x"))
     # One compute: `sums` and `counts` share the `sq_err` sub-graph, so the
     # inputs are read from disk a single time.
-    sums, counts = dask.compute(sums, counts)
+    sums, counts = compute_with_progress(sums, counts, desc="Block bootstrap: squared error per block")
     return np.asarray(sums.transpose(dim, "block").values, dtype=float), np.asarray(counts.values, dtype=int)
 
 
@@ -478,6 +478,8 @@ def importance_weights(
     likelihood_kwargs = {"reduction": reduction, "block_size": 1 if block_size is None else int(block_size)}
     log_likes = []
     for fudge_factor in fudge_factors:
+        # Left lazy so the fudge factors share one pass over the ensemble
+        # below, rather than reading it once per factor.
         filtered = importance_sampling(
             sim[[var]],
             obs[[obs_var, obs_std_var]],
@@ -490,11 +492,15 @@ def importance_weights(
             n_samples=1,
             seed=seed,
             dim=dim,
+            compute=False,
         )
         ll = filtered["log_likelihood"]
         ll = ll.squeeze([d for d in ll.dims if d != dim and ll.sizes[d] == 1], drop=True)
         log_likes.append(ll.transpose(dim))
     log_likelihood = xr.concat(log_likes, dim="fudge_factor").assign_coords(fudge_factor=list(fudge_factors))
+    (log_likelihood,) = compute_with_progress(
+        log_likelihood, desc=f"Importance weights: log-likelihood of {var} for {len(fudge_factors)} fudge factor(s)"
+    )
     weighted = weights_from_log_likelihood(log_likelihood, dim=dim, n_samples=n_samples, seed=seed)
     weighted.attrs.update({"reduction": reduction, "block_size": likelihood_kwargs["block_size"]})
     return weighted

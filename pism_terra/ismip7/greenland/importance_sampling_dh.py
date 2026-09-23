@@ -84,6 +84,7 @@ from pism_terra.calibration import (
 from pism_terra.likelihood import REDUCTIONS
 from pism_terra.log import setup_logging
 from pism_terra.processing import preprocess_netcdf
+from pism_terra.progress import compute, progress_bar
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +317,7 @@ def load_observations(
     xarray.Dataset
         ``dh`` and ``dh_error``.
     """
-    coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    coder = xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
     with xr.open_dataset(path, decode_times=coder) as ds:
         obs = ds[[OBS_VAR] + ([ERROR_VAR] if ERROR_VAR in ds else [])].load()
 
@@ -404,7 +405,7 @@ def load_ensemble(files: Sequence[Path], variable: str | None = None) -> xr.Data
     ValueError
         If the files do not carry the field being compared.
     """
-    coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    coder = xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
     # ISMIP7 file names carry none of the identifiers the glacier
     # preprocessor extracts, so every one of its dimensions is switched off
     # and the member dimension is attached here instead.
@@ -561,7 +562,7 @@ def score_product(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stats = error_stats(sim[OBS_VAR], obs[OBS_VAR]).compute()
+    (stats,) = compute(error_stats(sim[OBS_VAR], obs[OBS_VAR]), desc=f"{output_dir.name}: error statistics")
     # The ranking compares fields, not series, so it is taken on the record's
     # mean rather than once per time step.
     ranking = rank_by_bootstrap_rmse(
@@ -701,8 +702,7 @@ def run_pipeline(
 
     tables = []
     log_likes: dict[str, xr.DataArray] = {}
-    for observed in observations:
-        observed = Path(observed)
+    for observed in progress_bar([Path(o) for o in observations], desc="Products", unit="product"):
         product = product_name(observed)
         obs = load_observations(observed, relative, floor, max_error=max_error)
         sim, obs = align_to_observations(load_ensemble(files, variable), obs)

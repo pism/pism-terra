@@ -16,7 +16,7 @@
 # along with PISM; if not, write to the Free Software
 
 """
-Tests for :mod:`pism_terra.ismip7.greenland.importance_sampling`.
+Tests for :mod:`pism_terra.ismip7.greenland.importance_sampling_dh`.
 
 Builds a miniature ensemble -- one member following a synthetic truth, one
 thinning several metres too much -- against synthetic Khan and Smith
@@ -41,7 +41,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from pism_terra.ismip7.greenland.importance_sampling import (
+from pism_terra.ismip7.greenland.importance_sampling_dh import (
     ERROR_VAR,
     MEMBER_DIM,
     SIM_VARS,
@@ -652,7 +652,7 @@ def test_cli_does_not_need_a_separator_before_the_positionals(tmp_path: Path, ca
     """
     run_dir, _, observed = case
     out = tmp_path / "cli"
-    monkeypatch.setattr("pism_terra.ismip7.greenland.importance_sampling.setup_logging", lambda *_: None)
+    monkeypatch.setattr("pism_terra.ismip7.greenland.importance_sampling_dh.setup_logging", lambda *_: None)
     assert (
         main(
             [

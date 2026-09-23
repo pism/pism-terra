@@ -18,7 +18,7 @@
 """
 Importance-sample an ISMIP7 Greenland ensemble against the observed mass fluxes.
 
-The time-series counterpart of ``pism-ismip7-greenland-importance-sampling``,
+The time-series counterpart of ``pism-ismip7-greenland-importance-sampling-dh``,
 which scores the members on a field. Here the members' per-basin flux series
 -- the ``region_*.nc`` files ``pism-ismip7-postprocess-flux`` writes, one per
 UQ draw -- are weighed against the Mankoff et al. (2021) input-output mass
@@ -92,6 +92,7 @@ from pism_terra.calibration import (
 from pism_terra.log import setup_logging
 from pism_terra.plotting import rc_params
 from pism_terra.processing import preprocess_netcdf
+from pism_terra.progress import progress_bar
 
 # Named after the module even under ``python -m``, where ``__name__`` is
 # ``__main__`` and a logger of that name would sit outside the ``pism_terra``
@@ -1058,7 +1059,7 @@ def run_pipeline(
 
     tables, summaries = [], []
     log_likes: dict[str, xr.DataArray] = {}
-    for region in map(str, sim.region.values):
+    for region in progress_bar([str(r) for r in sim.region.values], desc="Regions", unit="region"):
         weighted, stats = score_region(
             sim_window.sel(region=region, drop=True),
             obs_window.sel(region=region, drop=True),
