@@ -65,7 +65,6 @@ def ensure_pism_terra_structure(script_uri: str) -> Tuple[str | None, str, Path]
         The local path to the PISM-TERRA run script.
     """
     script = Path(script_uri)
-    script = "data" / script.relative_to(script.parents[1])
 
     staging_bucket = None
     staging_prefix = "."  # No-prefix value that would be computed below
@@ -73,7 +72,7 @@ def ensure_pism_terra_structure(script_uri: str) -> Tuple[str | None, str, Path]
         # pylint: disable=E1101
         staging_bucket = str(script.parents[-3].relative_to(script.parents[-2]))
         staging_prefix = str(script.parents[1].relative_to(script.parents[-3]))
-        script = script.relative_to(script.parents[1])
+        script = "data" / script.relative_to(script.parents[1])
 
     if script.parents[0].name != "run_scripts":
         raise ValueError(f"{script} should be inside a PISM-TERRA generate directory of the form ``runs_scripts/``")
