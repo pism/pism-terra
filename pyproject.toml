@@ -98,7 +98,7 @@ docs = [
 
 [project.scripts]
 combine-crameri-colormaps = "pism_terra.tools.combine_crameri_colormaps:main"
-pism-glacier-execute = "pism_terra.glacier.execute:main"
+pism-glacier-execute = "pism_terra.ismip7.greenland.execute:main"
 pism-glacier-postprocess = "pism_terra.glacier.postprocess:main"
 pism-glacier-postprocess-dh = "pism_terra.postprocess_dh:main"
 pism-postprocess-scalar = "pism_terra.postprocess_scalar:main"
