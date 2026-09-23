@@ -1,0 +1,6 @@
+samples = 4
+
+['inverse.design.variable']
+
+choices = ['tauc', 'hardav', 'tauc_hardav', 'hardav_tauc']
+distribution = "choices"
