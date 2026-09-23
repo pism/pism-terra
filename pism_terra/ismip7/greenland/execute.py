@@ -71,8 +71,8 @@ def ensure_pism_terra_structure(script_uri: str) -> Tuple[str | None, str, Path]
     if script_uri.startswith("s3://"):
         # pylint: disable=E1101
         staging_bucket = str(script.parents[-3].relative_to(script.parents[-2]))
-        staging_prefix = str(script.parents[2].relative_to(script.parents[-3]))
-        script = script.relative_to(script.parents[2])
+        staging_prefix = str(script.parents[1].relative_to(script.parents[-3]))
+        script = script.relative_to(script.parents[1])
 
     if script.parents[0].name != "run_scripts":
         raise ValueError(f"{script} should be inside a PISM-TERRA generate directory of the form ``runs_scripts/``")
@@ -116,7 +116,7 @@ def main():
 
     args = parser.parse_args()
 
-    work_dir = Path.cwd()
+    work_dir = Path.cwd() / "data"
 
     staging_bucket, staging_prefix, local_run_script = ensure_pism_terra_structure(args.RUN_SCRIPT)
     if staging_bucket and staging_prefix:
