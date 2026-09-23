@@ -65,6 +65,7 @@ def ensure_pism_terra_structure(script_uri: str) -> Tuple[str | None, str, Path]
         The local path to the PISM-TERRA run script.
     """
     script = Path(script_uri)
+    script = "data" / script.relative_to(script.parents[1])
 
     staging_bucket = None
     staging_prefix = "."  # No-prefix value that would be computed below
