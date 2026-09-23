@@ -1439,3 +1439,59 @@ def test_inverse_legs_profile_into_their_own_files(tmp_path):
         Pytest-provided temporary output directory.
     """
     _assert_profiled(_render_inverse(tmp_path, _with_profile(tmp_path, FREE_HY)))
+
+
+def test_cli_uploads_the_output_tree_when_a_bucket_is_given(tmp_path, monkeypatch):
+    """
+    ``--bucket``/``--bucket-prefix`` sync the whole output path to S3, like the glacier runner.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture to stub staging, rendering and the upload.
+    """
+    from pism_terra.ismip7.greenland import run as ismip7  # pylint: disable=import-outside-toplevel
+
+    files = {
+        c: f"/in/{c}.nc"
+        for c in (
+            "boot_file",
+            "regrid_file",
+            "retreat_file",
+            "grid_file",
+            "heatflux_file",
+            "climate_hist_file",
+            "climate_gradient_hist_file",
+            "ocean_hist_file",
+            "climate_proj_file",
+            "climate_gradient_proj_file",
+            "ocean_proj_file",
+        )
+    }
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(ismip7, "stage", lambda *a, **k: pd.DataFrame([files]))
+    monkeypatch.setattr(ismip7, "prepare_observations", lambda *a, **k: None)
+    monkeypatch.setattr(ismip7, "_render_forward_run", lambda *a, **k: None)
+    monkeypatch.setattr(ismip7, "record_member", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ismip7, "local_to_s3", lambda src, bucket, prefix: calls.update(upload=(Path(src), bucket, prefix))
+    )
+
+    argv = [
+        "pism-ismip7-greenland-run-forward",
+        "--output-path",
+        str(tmp_path),
+        str(FREE_HY),
+        str(TEMPLATE_DIR / "debug-ismip7.j2"),
+    ]
+    monkeypatch.setattr("sys.argv", argv)
+    ismip7._run(kind="forward")  # pylint: disable=protected-access
+    assert "upload" not in calls
+
+    monkeypatch.setattr(
+        "sys.argv", argv + ["--bucket", "pism-cloud-data", "--bucket-prefix", "ismip7/test_ensemble/abc"]
+    )
+    ismip7._run(kind="forward")  # pylint: disable=protected-access
+    assert calls["upload"] == (tmp_path, "pism-cloud-data", "ismip7/test_ensemble/abc")

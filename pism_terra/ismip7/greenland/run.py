@@ -33,6 +33,7 @@ import pandas as pd
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
+from pism_terra.aws import local_to_s3
 from pism_terra.config import JobConfig, load_config, load_uq
 from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
@@ -1434,6 +1435,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = description
+    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
+    parser.add_argument(
+        "--bucket-prefix",
+        help="AWS prefix (location in bucket) to add to product files",
+        default="",
+    )
     parser.add_argument(
         "--output-path",
         help="Base path to save all files to.",
@@ -1802,6 +1809,12 @@ def _run(*, kind: str) -> None:
         # set to derive member ids from.
         if is_ismip7_run(cfg):
             record_member(path, ismip7_identity(cfg, sample, run_index), sampled_parameters)
+
+    # Ship the whole output tree (run scripts, config/template/uq snapshots,
+    # members table) to S3; PISM-Cloud reads the run scripts back from
+    # ``{bucket_prefix}/run_scripts/`` to launch the execute jobs.
+    if options.bucket:
+        local_to_s3(path, bucket=options.bucket, prefix=options.bucket_prefix)
 
 
 def run_forward() -> None:
