@@ -42,6 +42,7 @@ from pydantic import ValidationError
 from pism_terra.config import (  # noqa: F401  (ensure DistSpec is imported)
     CampaignConfig,
     DistSpec,
+    JobConfig,
     UQConfig,
     load_config,
 )
@@ -449,3 +450,30 @@ def test_declared_model_sections_are_untouched():
 
     assert cfg.bed_deformation.selected() == {"bed_deformation.model": "lc"}
     assert cfg.frontal_melt.selected()["frontal_melt.models"] == "routing"
+
+
+@pytest.mark.parametrize("walltime", ["1:00:00", "12:00:00", "120:00:00"])
+def test_job_config_walltime_accepts_one_to_three_hour_digits(walltime):
+    """
+    Accept walltimes with one to three hour digits.
+
+    Parameters
+    ----------
+    walltime : str
+        Well-formed walltime string to validate.
+    """
+    assert JobConfig(walltime=walltime).walltime == walltime
+
+
+@pytest.mark.parametrize("walltime", ["1200:00:00", "12:00", "12-00:00:00", "12:0:00", "abc"])
+def test_job_config_walltime_rejects_malformed(walltime):
+    """
+    Reject walltimes that do not match H{1,3}:MM:SS.
+
+    Parameters
+    ----------
+    walltime : str
+        Malformed walltime string expected to fail validation.
+    """
+    with pytest.raises(ValidationError, match="walltime must look like"):
+        JobConfig(walltime=walltime)
