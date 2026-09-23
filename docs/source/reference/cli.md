@@ -148,6 +148,27 @@ keeps their outputs apart.
 * - `pism-ismip7-greenland-run-inverse`
   - Render an inverse run script (init → inversion → forward legs). See
     {doc}`../greenland/inversion` for choosing the Tikhonov penalty weight.
+* - `pism-ismip7-greenland-observations`
+  - Stage the observed Greenland mass balance (GRACE Tellus and Mankoff et
+    al. 2021, per basin) into `output/observations/` beside a run's output.
+* - `pism-ismip7-greenland-importance-sampling`
+  - Weigh an ensemble's members against observed thickness change (the
+    `dh_*.nc` files against a staged Smith or Khan product): Gaussian
+    likelihood weights, counts and effective sample size per fudge factor,
+    error statistics and a block-bootstrap RMSE ranking, with a joint
+    posterior over the products.
+* - `pism-ismip7-greenland-importance-sampling-flux`
+  - Weigh the members on a per-basin flux series instead: the `region_*.nc`
+    files of `pism-ismip7-postprocess-flux` against the staged Mankoff mass
+    balance. Both records are averaged onto calendar bins (`--freq MS|ME|YS|YE`),
+    the bins either only partly covers are dropped, and the Gaussian
+    likelihood runs over the bins inside `--start`/`--end` on the flux chosen
+    with `--variable` (`mass_balance` by default; `surface_mass_balance`,
+    `grounding_line_flux`, `basal_mass_balance`), for every `--fudge-factors`
+    value. Per region: a flux figure (observed, prior and posterior bands),
+    a posterior histogram of the run's `uq.csv` parameters, tables and a
+    NetCDF file in `<region>/`; the basins' log-likelihoods are summed into
+    `joint/`, and the summary goes to the top level.
 ```
 
 ## KITP

@@ -500,6 +500,82 @@ def importance_weights(
     return weighted
 
 
+def _weighted_quantile_1d(values: np.ndarray, weights: np.ndarray, quantiles: np.ndarray) -> np.ndarray:
+    """
+    Compute the weighted quantiles of one vector, interpolating between the sorted values.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Sample values; non-finite entries are dropped.
+    weights : numpy.ndarray
+        Non-negative weight per value; non-finite entries count as zero.
+    quantiles : numpy.ndarray
+        Levels in ``[0, 1]``.
+
+    Returns
+    -------
+    numpy.ndarray
+        One quantile per level; NaN when nothing carries weight.
+    """
+    w = np.where(np.isfinite(weights), weights, 0.0)
+    keep = np.isfinite(values) & (w > 0)
+    v, w = values[keep], w[keep]
+    if v.size == 0:
+        return np.full(len(quantiles), np.nan)
+    order = np.argsort(v)
+    v, w = v[order], w[order]
+    # Each sorted value sits at the midpoint of its weight interval, so an
+    # unweighted vector reproduces numpy's default (linear) quantile up to
+    # the end-point convention, and a member with all the weight is the
+    # answer at every level.
+    positions = (np.cumsum(w) - 0.5 * w) / w.sum()
+    return np.interp(quantiles, positions, v)
+
+
+def weighted_quantiles(da: xr.DataArray, weights: xr.DataArray, quantiles, *, dim="exp_id") -> xr.DataArray:
+    """
+    Take quantiles over the member dimension with one weight per member.
+
+    The posterior of an importance-sampled ensemble is the prior with every
+    member counted by its weight, so the posterior band of a time series is
+    the weighted quantile at every instant; with equal weights this is the
+    prior band.
+
+    Parameters
+    ----------
+    da : xarray.DataArray
+        Values with a ``dim`` dimension and any others (``time``, say).
+    weights : xarray.DataArray
+        Weight per member on ``dim``; other dimensions broadcast against ``da``.
+    quantiles : float or sequence of float
+        Levels in ``[0, 1]``.
+    dim : str, default ``"exp_id"``
+        Member dimension.
+
+    Returns
+    -------
+    xarray.DataArray
+        ``da`` reduced over ``dim`` with a leading ``quantile`` dimension.
+    """
+    levels = np.atleast_1d(np.asarray(quantiles, dtype=float))
+    out = xr.apply_ufunc(
+        _weighted_quantile_1d,
+        da,
+        weights,
+        input_core_dims=[[dim], [dim]],
+        output_core_dims=[["quantile"]],
+        vectorize=True,
+        dask="parallelized",
+        output_dtypes=[float],
+        dask_gufunc_kwargs={"output_sizes": {"quantile": levels.size}},
+        kwargs={"quantiles": levels},
+    )
+    out = out.assign_coords(quantile=levels).transpose("quantile", ...)
+    out.attrs = dict(da.attrs)
+    return out
+
+
 def joint_log_likelihood(per_glacier: Mapping[str, xr.DataArray], dim="uq_id") -> tuple[xr.DataArray, list]:
     """
     Sum log-likelihoods over glaciers for the members every glacier has.
@@ -655,5 +731,6 @@ __all__: Sequence[str] = (
     "rank_by_bootstrap_rmse",
     "short_labels",
     "squared_error_blocks",
+    "weighted_quantiles",
     "weights_from_log_likelihood",
 )
