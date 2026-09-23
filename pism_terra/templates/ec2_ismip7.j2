@@ -24,12 +24,29 @@ mpirun -np  {{ ntasks | default(32) }} pism {{ run_init_str }}
 mpirun -np  {{ ntasks | default(32) }} pismi {{ inv_str }}
 {% endif %}
 
-{% if run_str %}
+{% if run_hist_str %}
 # ###############################################################################
-# FORWARD RUN
+# HISTORICAL RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(32) }} pism {{ run_str }}
+mpirun -np  {{ ntasks | default(32) }} pism {{ run_hist_str }}
+{% endif %}
+
+{% if run_proj_str %}
+# ###############################################################################
+# PROJECTION RUN
+# ###############################################################################
+
+mpirun -np  {{ ntasks | default(32) }} pism {{ run_proj_str }}
+{% endif %}
+
+
+{% if ism_checker_str %}
+# ###############################################################################
+# COMPLIANCE CHECKER
+# ###############################################################################
+
+{{ ism_checker_str }}
 {% endif %}
 
 {% if post_process_str %}
