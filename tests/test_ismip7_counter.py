@@ -63,6 +63,9 @@ def test_config_expands_counter(counter):
     assert cfg.campaign.climate_version == spec.climate_version
     assert cfg.campaign.ocean_version == spec.ocean_version
     assert cfg.time.time_end == f"{spec.proj_end_year}-01-01"
+    # The staged projection forcing filename ends in the same year: an ssp370
+    # counter must ask for the ..._2015_2100.nc files, whatever the config says.
+    assert cfg.campaign.projection_end_year == str(spec.proj_end_year)
 
 
 @pytest.mark.parametrize("counter", ALL_COUNTERS)

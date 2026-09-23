@@ -1101,7 +1101,9 @@ class PismConfig(BaseModelWithDot):
         single source of truth for the experiment identity: it fills
         ``run_info.experiment``, ``campaign.pathway``, ``campaign.gcms``,
         ``campaign.climate_version`` / ``campaign.ocean_version`` (kept if
-        explicitly set), and the projection end (``time.end``) from
+        explicitly set), and the projection end -- both ``time.end`` and the
+        last year in the projection forcing filenames,
+        ``campaign.projection_end_year`` -- from
         :data:`pism_terra.ismip7.experiments.CORE_EXPERIMENTS`. This runs for both
         the staging and running entry points (both call :func:`load_config`), so a
         single field drives the whole ISMIP7 pipeline. Non-counter (legacy) configs
@@ -1121,6 +1123,11 @@ class PismConfig(BaseModelWithDot):
         self.campaign.pathway = spec.pathway
         self.campaign.gcms = [spec.esm_id]
         self.time.time_end = f"{spec.proj_end_year}-01-01"
+        # The published projection forcing spans 2015 to the pathway's end
+        # year (2100 for ssp370, 2300 otherwise), so the counter also fixes
+        # the year in the staged filenames; a config saying 2300 for an
+        # ssp370 counter would ask S3 for a file that does not exist.
+        self.campaign.projection_end_year = str(spec.proj_end_year)
         # Filename version tags of the published forcing (per-ESM and
         # per-forcing, decoupled from campaign.version which names the S3
         # directory). Explicit config values win, e.g. to point at a
