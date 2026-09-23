@@ -35,6 +35,8 @@ from pyfiglet import Figlet
 
 from pism_terra.aws import local_to_s3
 from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.download import file_localizer
+from pism_terra.glacier.run import snapshot_project_file
 from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.observations import prepare_observations
@@ -1637,10 +1639,20 @@ def _run(*, kind: str) -> None:
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
-    config_file = options.CONFIG_FILE
-    template_file = options.TEMPLATE_FILE
-    uq_file = options.UQ_FILE
-    pism_config_cdl = options.pism_config_cdl
+    # Remote (s3:// or https://) project files are downloaded first: handed to
+    # ``Path`` as they are, an S3 URI collapses to ``s3:/bucket/...`` and is
+    # then looked up on the local disk. As in the glacier runner, a copy of
+    # every file that shaped this experiment is kept next to its outputs and
+    # the run uses the copies, so the scripts point at the snapshot.
+    config_path, template_path, uq_path = path / "config", path / "templates", path / "uq"
+    config_file = snapshot_project_file(file_localizer(options.CONFIG_FILE, config_path), config_path)
+    pism_config_cdl = (
+        snapshot_project_file(file_localizer(options.pism_config_cdl, config_path), config_path)
+        if options.pism_config_cdl
+        else None
+    )
+    template_file = snapshot_project_file(file_localizer(options.TEMPLATE_FILE, template_path), template_path)
+    uq_file = snapshot_project_file(file_localizer(options.UQ_FILE, uq_path), uq_path) if options.UQ_FILE else None
 
     cfg = load_config(config_file)
     # Applied before as_params(): the campaign dict is a plain snapshot, so a

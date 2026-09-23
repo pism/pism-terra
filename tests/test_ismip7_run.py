@@ -1489,6 +1489,9 @@ def test_cli_uploads_the_output_tree_when_a_bucket_is_given(tmp_path, monkeypatc
     monkeypatch.setattr("sys.argv", argv)
     ismip7._run(kind="forward")  # pylint: disable=protected-access
     assert "upload" not in calls
+    # Project files are snapshotted under the output path, as the glacier runner does.
+    assert (tmp_path / "config" / FREE_HY.name).read_text() == FREE_HY.read_text()
+    assert (tmp_path / "templates" / "debug-ismip7.j2").exists()
 
     monkeypatch.setattr(
         "sys.argv", argv + ["--bucket", "pism-cloud-data", "--bucket-prefix", "ismip7/test_ensemble/abc"]
