@@ -349,8 +349,33 @@ def test_align_to_observations_needs_a_shared_record(case):
     run_dir, _, observed = case
     obs = load_observations(observed[0], 0.1, 0.5)
     shifted = obs.assign_coords(time=[t.replace(year=t.year + 100) for t in obs["time"].values])
-    with pytest.raises(ValueError, match="share no time step"):
+    with pytest.raises(ValueError, match="no model step within"):
         align_to_observations(load_ensemble(find_member_files(run_dir)), shifted)
+
+
+def test_align_to_observations_takes_the_nearest_model_step(case):
+    """
+    A model stamped mid-interval is matched to the observed date within the tolerance, and relabelled with it.
+
+    PISM dates a spatial record at the middle of its reporting interval, so a
+    monthly series sits a couple of weeks from a record dated on the first of
+    a month and a yearly one half a year away.
+
+    Parameters
+    ----------
+    case : tuple
+        Run directory, observation directory and observed files.
+    """
+    run_dir, _, observed = case
+    obs = load_observations(observed[0], 0.1, 0.5)
+    sim = load_ensemble(find_member_files(run_dir))
+    # Model steps on July 2 of every year, observed records on January 1.
+    mid_year = sim.assign_coords(time=[t.replace(month=7, day=2) for t in sim["time"].values])
+    matched, _ = align_to_observations(mid_year, obs, tolerance_days=183)
+    assert list(matched["time"].values) == list(obs["time"].values)
+    np.testing.assert_array_equal(matched["dh"].values, sim["dh"].values)
+    with pytest.raises(ValueError, match="no model step within"):
+        align_to_observations(mid_year, obs, tolerance_days=30)
 
 
 def test_observation_uncertainty_has_a_floor(case):
@@ -566,6 +591,14 @@ def test_simulated_variable_prefers_thickness():
     """
     assert simulated_variable(_member(usurf=1.0, lithk=2.0)) == "lithk"
     assert SIM_VARS[0] == "lithk"
+
+
+def test_simulated_variable_takes_thk_as_thickness():
+    """
+    ``thk`` is PISM's name for the thickness ``lithk`` reports, so it is preferred over ``usurf``.
+    """
+    assert simulated_variable(_member(usurf=1.0, thk=2.0)) == "thk"
+    assert simulated_variable(_member(usurf=1.0, thk=2.0, lithk=3.0)) == "lithk"
 
 
 def test_simulated_variable_accepts_what_a_plain_run_offers():
