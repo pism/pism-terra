@@ -65,6 +65,7 @@ from __future__ import annotations
 import datetime
 import logging
 import re
+import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping, Sequence
 from functools import partial
@@ -293,6 +294,19 @@ def to_observed_grid(ds: xr.Dataset, obs: xr.Dataset) -> xr.Dataset:
     # Only the target's grid matters, so hand the regridder bare coordinates
     # rather than the observations and their data.
     target = xr.Dataset(coords={"y": obs["y"], "x": obs["x"]}).reset_coords(drop=True)
+    # One chunk per member and step: the regridder applies its weights with
+    # an einsum, and the many small on-disk chunks a member file opens with
+    # make it fan every chunk out further (dask's "increasing number of
+    # chunks" warning) and run tens of times slower. A 900 m Greenland
+    # field is 25 MB per step, so whole steps are cheap.
+    ds = ds.chunk({dim: -1 for dim in ("y", "x") if dim in ds.dims})
+    # Where the observed grid reaches beyond the model domain the regridder
+    # divides by a total weight of zero, and those cells come out NaN, which
+    # is right: nothing is compared there. numpy reports the division every
+    # time the lazy result is evaluated, so the report is switched off for
+    # that message; the graph runs later, hence a lasting filter rather
+    # than a scoped one.
+    warnings.filterwarnings("ignore", message=".*encountered in divide", category=RuntimeWarning)
     return ds.regrid.conservative(target)
 
 
@@ -452,6 +466,9 @@ def load_ensemble(files: Sequence[Path], variable: str | None = None) -> xr.Data
     else:
         logger.info("Comparing %r", name)
     ds = ds[[name]].assign_coords({MEMBER_DIM: [member_label(Path(f)) for f in files]})
+    # A grid-mapping variable rides along as a scalar coordinate and would
+    # otherwise turn up as ``mapping_x``/``mapping_y`` columns in the tables.
+    ds = ds.drop_vars([v for v in NON_FIELD_VARS if v in ds.coords])
     return ds.rename({name: OBS_VAR})
 
 
@@ -653,7 +670,9 @@ def score_product(
     table = table.merge(ranking.to_dataframe().reset_index(), on=MEMBER_DIM)
     table = table.sort_values(["fudge_factor", "rmse"])
 
-    xr.merge([weighted, stats, ranking]).to_netcdf(output_dir / "importance_sampling.nc")
+    # The three share only their member coordinate; ``override`` says so and
+    # keeps xarray from warning that its default will change.
+    xr.merge([weighted, stats, ranking], compat="override").to_netcdf(output_dir / "importance_sampling.nc")
     table.to_csv(output_dir / "importance_sampling.csv", index=False)
     logger.info(
         "%s: best RMSE %s (%.3f m), %d member(s) tied",
