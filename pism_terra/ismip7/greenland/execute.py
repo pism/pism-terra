@@ -1,13 +1,12 @@
 """Execute the pism-run scripts."""
 
-import subprocess
-import sys
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 from typing import Tuple
 
 from pism_terra.aws import local_to_s3, s3_to_local
+from pism_terra.glacier.execute import PROGRESS_NAME, ProgressPublisher, execute
 
 
 def find_first_and_execute(work_dir: Path = Path.cwd()):
@@ -25,25 +24,6 @@ def find_first_and_execute(work_dir: Path = Path.cwd()):
         warnings.warn(f"More than one run script found! Only executing the first:\n{run_scripts}")
 
     execute(run_scripts[0])
-
-
-def execute(script: Path):
-    """
-    Execute a script.
-
-    Parameters
-    ----------
-    script : Path
-        Path to a script to execute.
-    """
-    print("Executing script: ", script)
-    subprocess.run(
-        f"bash -ex {script.resolve()}",
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-        shell=True,
-        check=True,
-    )
 
 
 def ensure_pism_terra_structure(script_uri: str) -> Tuple[str | None, str, Path]:
@@ -90,8 +70,15 @@ def ensure_pism_terra_structure(script_uri: str) -> Tuple[str | None, str, Path]
     return staging_bucket, staging_prefix, script
 
 
-def main():
-    """CLI Enterypoint to execute a PISM-TERRA run script."""
+def main(argv: list[str] | None = None):
+    """
+    CLI entry point to execute a PISM-TERRA run script.
+
+    Parameters
+    ----------
+    argv : list of str or None, optional
+        Arguments; ``None`` reads ``sys.argv``.
+    """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Execute a PISM-TERRA run script."
 
@@ -114,7 +101,7 @@ def main():
         type=str,
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     work_dir = Path.cwd() / "data"
 
@@ -123,7 +110,17 @@ def main():
 
         s3_to_local(staging_bucket, staging_prefix if staging_prefix != "." else "", work_dir)
 
-    execute(local_run_script)
+    # The run log lives where the final sync would put it anyway, so publishing
+    # it live and uploading it at the end write the same key. Unlike a glacier
+    # run there is no per-glacier directory: the key is <prefix>/logs/progress.log,
+    # which is where the PISM-Cloud notebook's live log looks for an ISMIP7 job.
+    log_file = work_dir / "logs" / PROGRESS_NAME
+    if args.bucket:
+        key = "/".join(part for part in (args.bucket_prefix.strip("/"), "logs", PROGRESS_NAME) if part)
+        with ProgressPublisher(log_file, args.bucket, key):
+            execute(local_run_script, log_file=log_file)
+    else:
+        execute(local_run_script, log_file=log_file)
 
     if args.bucket:
         local_to_s3(work_dir, args.bucket, args.bucket_prefix)
