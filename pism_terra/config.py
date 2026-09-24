@@ -1728,6 +1728,8 @@ class CampaignConfig(BaseModel):
         written by ``pism-ismip7-greenland-prepare --include dh``. PISM does
         not read them -- they are what a run is compared against afterwards --
         so they are optional and a config that omits them stages as before.
+        Staging also copies them into ``<output-path>/output/observations``,
+        beside the mass-balance products, where the comparison tools look.
     retreat_file : str or None
         Front-retreat mask NetCDF (relative to the input directory). The mask
         is published once per grid resolution, named by a ``g<res>m`` token

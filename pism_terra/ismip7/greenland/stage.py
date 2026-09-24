@@ -40,7 +40,7 @@ from tqdm.auto import tqdm
 
 from pism_terra.aws import download_from_s3, list_s3_keys, local_to_s3, s3_key_exists
 from pism_terra.config import load_config, version_tag
-from pism_terra.ismip7.greenland.observations import prepare_observations
+from pism_terra.ismip7.greenland.observations import place_files, prepare_observations
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
@@ -275,6 +275,35 @@ def resolve_forcing_name(
     if best is None:
         return forcing_filename(forcing, pathway, gcm, fallback_version, start_year, end_year)
     return best
+
+
+def place_dh_observations(config: dict, input_dir: Path | str, path: Path | str) -> list[Path]:
+    """
+    Copy the staged observed thickness change beside the run's output.
+
+    ``campaign.dh_files`` are staged with the inputs, which may be a shared
+    directory; the analysis reads observations from
+    ``<path>/output/observations``, next to the mass-balance products, so
+    the files are copied there too.
+
+    Parameters
+    ----------
+    config : dict
+        Campaign config; ``dh_files`` names the files, relative to ``input_dir``.
+    input_dir : Path or str
+        Where the inputs were staged.
+    path : Path or str
+        Run directory.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The copies; empty when the config names no dh files.
+    """
+    names = config.get("dh_files") or []
+    if not names:
+        return []
+    return place_files(path, [Path(input_dir) / name for name in names])
 
 
 def stage(
@@ -683,6 +712,10 @@ def main():
     )
     input_dir = Path(data_path) if data_path is not None else path / Path("input")
     is_df.to_csv(input_dir / Path("ismip7_greenland_files.csv"))
+    # The observed thickness change goes beside the output like the
+    # mass-balance products below, whatever --no-observations says: it is
+    # already on disk, and the comparison tools look in one place.
+    place_dh_observations(config, input_dir, path)
 
     # Observed mass balance, for validating the run against afterwards. The
     # cache sits beside the staged inputs, which is already the directory

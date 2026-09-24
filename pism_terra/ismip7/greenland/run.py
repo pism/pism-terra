@@ -40,7 +40,7 @@ from pism_terra.glacier.run import snapshot_project_file
 from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.observations import prepare_observations
-from pism_terra.ismip7.greenland.stage import stage
+from pism_terra.ismip7.greenland.stage import place_dh_observations, stage
 from pism_terra.ismip7.naming import (
     UQ_SEPARATOR,
     ISMIP7Names,
@@ -1729,8 +1729,9 @@ def _run(*, kind: str) -> None:
     # does it. The cache sits beside the shared inputs so the ~500 MB GSFC file
     # is fetched once per campaign. Failures are logged, not raised: these are
     # validation data, not run inputs, and GRACE Tellus needs an Earthdata login.
+    input_dir = Path(data_path) if data_path is not None else path / Path("input")
+    place_dh_observations(campaign_config, input_dir, path)
     if not options.no_observations:
-        input_dir = Path(data_path) if data_path is not None else path / Path("input")
         prepare_observations(
             path,
             cache_path=input_dir / Path("observations"),
