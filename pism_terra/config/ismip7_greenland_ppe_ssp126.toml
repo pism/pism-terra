@@ -147,7 +147,7 @@ model = 'hybrid'
 
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.model' = "ssa+sia"
-'stress_balance.sia.max_diffusivity' = 100000.0
+'stress_balance.sia.max_diffusivity' = 1e6
 'stress_balance.ssa.method' = "fd"
 
 [iceflow]
