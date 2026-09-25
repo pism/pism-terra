@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from pism_terra.ismip7.greenland import execute as ex
 
 #: The script URI of a PISM_EXECUTE job, as the API hands it to the container.
@@ -160,3 +162,46 @@ def test_main_without_a_bucket_still_keeps_a_log(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(ex, "ProgressPublisher", None)
     ex.main([str(script)])
     assert "hello" in (tmp_path / "data" / "logs" / "progress.log").read_text()
+
+
+def test_main_uploads_even_when_the_script_fails(tmp_path: Path, monkeypatch):
+    """
+    A script that exits non-zero still gets its output uploaded, and the failure is raised afterwards.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory, used as the working directory.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest fixture replacing the S3 transfers and the publisher.
+    """
+    import subprocess  # pylint: disable=import-outside-toplevel
+
+    calls: list[tuple] = []
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "data" / "run_scripts" / "submit_g900m_id_C001.sh"
+
+    def fake_download(bucket, prefix, dest):
+        """
+        Write a script whose last step fails, as a compliance check might.
+
+        Parameters
+        ----------
+        bucket : str
+            Source bucket.
+        prefix : str
+            Source prefix.
+        dest : pathlib.Path
+            Local destination.
+        """
+        calls.append(("down", bucket, prefix, Path(dest)))
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("echo the run\nfalse\n")
+
+    monkeypatch.setattr(ex, "s3_to_local", fake_download)
+    monkeypatch.setattr(ex, "ProgressPublisher", lambda *a, **k: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(ex, "local_to_s3", lambda src, bucket, prefix: calls.append(("up", Path(src), bucket, prefix)))
+    with pytest.raises(subprocess.CalledProcessError):
+        ex.main([URI, "--bucket", "b", "--bucket-prefix", "p"])
+    assert calls[-1] == ("up", tmp_path / "data", "b", "p")
+    assert "the run" in (tmp_path / "data" / "logs" / "progress.log").read_text()

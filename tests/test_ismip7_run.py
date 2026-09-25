@@ -1521,3 +1521,17 @@ def test_script_creates_its_output_directories(tmp_path):
     for output in re.findall(r"-output\.(?:file|scalar\.file) (\S+)", script):
         assert str(Path(output).parent) in made, output
     assert script.index("mkdir -p ") < script.index("mpirun")
+
+
+def test_compliance_checker_does_not_abort_the_script(tmp_path):
+    """
+    The checker's exit status is reported, not fatal: its findings are in its log, and the run has finished by then.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, C003, sample="CESM2-WACCM")
+    (line,) = [line for line in script.splitlines() if line.startswith("ismip7-compliance-checker")]
+    assert "|| echo" in line and "compliance_checker_log.txt" in line

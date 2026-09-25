@@ -53,7 +53,9 @@ mpirun -np  {{ ntasks | default(32) }} pism {{ run_proj_str }}
 # COMPLIANCE CHECKER
 # ###############################################################################
 
-{{ ism_checker_str }}
+# The checker reports; its findings are in the submission directory's
+# compliance_checker_log.txt and must not fail a run that has finished.
+{{ ism_checker_str }} || echo "compliance checker reported errors; see compliance_checker_log.txt"
 {% endif %}
 
 {% if post_process_str %}

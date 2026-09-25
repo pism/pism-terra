@@ -115,5 +115,7 @@ mpiexec -n 1  apptainer run ${container} pism_ismip7_writer -r 1 : -n ${pismtask
 # COMPLIANCE CHECKER
 # ###############################################################################
 
-{{ ism_checker_str }}
+# The checker reports; its findings are in the submission directory's
+# compliance_checker_log.txt and must not fail a run that has finished.
+{{ ism_checker_str }} || echo "compliance checker reported errors; see compliance_checker_log.txt"
 {% endif %}

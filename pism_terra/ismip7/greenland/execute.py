@@ -115,12 +115,17 @@ def main(argv: list[str] | None = None):
     # run there is no per-glacier directory: the key is <prefix>/logs/progress.log,
     # which is where the PISM-Cloud notebook's live log looks for an ISMIP7 job.
     log_file = work_dir / "logs" / PROGRESS_NAME
-    if args.bucket:
-        key = "/".join(part for part in (args.bucket_prefix.strip("/"), "logs", PROGRESS_NAME) if part)
-        with ProgressPublisher(log_file, args.bucket, key):
+    # The upload runs whether or not the script succeeded: a run that failed
+    # at its last step -- the compliance checker, a post-processing command --
+    # has hours of PISM output worth keeping, and the log that says what went
+    # wrong. The failure is re-raised afterwards, so the job still fails.
+    try:
+        if args.bucket:
+            key = "/".join(part for part in (args.bucket_prefix.strip("/"), "logs", PROGRESS_NAME) if part)
+            with ProgressPublisher(log_file, args.bucket, key):
+                execute(local_run_script, log_file=log_file)
+        else:
             execute(local_run_script, log_file=log_file)
-    else:
-        execute(local_run_script, log_file=log_file)
-
-    if args.bucket:
-        local_to_s3(work_dir, args.bucket, args.bucket_prefix)
+    finally:
+        if args.bucket:
+            local_to_s3(work_dir, args.bucket, args.bucket_prefix)
