@@ -589,8 +589,27 @@ def compute_regions(
 # --- Observations ----------------------------------------------------------------
 
 
+#: The Mankoff series kept by default: the cumulative mass balance and its
+#: uncertainty, which the overview figure draws.
+MANKOFF_CUMULATIVE = ("cumulative_mass_balance", "cumulative_mass_balance_uncertainty")
+
+#: The Mankoff flux series, with their uncertainties, for per-basin flux panels.
+MANKOFF_FLUXES = (
+    "mass_balance",
+    "mass_balance_uncertainty",
+    "surface_mass_balance",
+    "surface_mass_balance_uncertainty",
+    "grounding_line_flux",
+    "grounding_line_flux_uncertainty",
+)
+
+
 def load_mankoff(
-    url: str, reference_year: str = DEFAULT_REFERENCE_YEAR, start: str = "1985", end: str = "2025"
+    url: str,
+    reference_year: str = DEFAULT_REFERENCE_YEAR,
+    start: str = "1985",
+    end: str = "2025",
+    variables: Sequence[str] = MANKOFF_CUMULATIVE,
 ) -> xr.Dataset:
     """
     Load the staged Mankoff mass balance on annual bins, zeroed at the reference year.
@@ -600,22 +619,31 @@ def load_mankoff(
     url : str
         ``mankoff_greenland_mass_balance.nc`` from ``pism-ismip7-greenland-observations``.
     reference_year : str, optional
-        Year the cumulative series is zeroed at.
+        Year the cumulative series are zeroed at.
     start, end : str, optional
         Years kept.
+    variables : sequence of str, optional
+        Series to keep: :data:`MANKOFF_CUMULATIVE` by default, plus
+        :data:`MANKOFF_FLUXES` for the flux panels. Cumulative ones come
+        out in Gt and are zeroed at ``reference_year``; fluxes in Gt/yr.
 
     Returns
     -------
     xarray.Dataset
-        Cumulative mass balance and its uncertainty in Gt, regions named
-        like the model's (``GIS_NW``).
+        The series, regions named like the model's (``GIS_NW``).
     """
     obs = xr.open_dataset(url, decode_timedelta=True, chunks={"time": -1}, **OPEN_KWARGS, **storage_options(url))
-    keep = ["cumulative_mass_balance", "cumulative_mass_balance_uncertainty"]
-    obs = obs[keep].pint.quantify().pint.to({v: "Gt" for v in keep}).pint.dequantify().load()
+    keep = [v for v in variables if v in obs]
+    cumulative = [v for v in keep if v.startswith("cumulative")]
+    targets = {v: ("Gt" if v in cumulative else FLUX_UNITS) for v in keep}
+    obs = obs[keep].pint.quantify().pint.to(targets).pint.dequantify().load()
+    for v, units in targets.items():
+        obs[v].attrs["units"] = units
     obs = obs.assign_coords(region=np.char.add("GIS_", obs["region"].values.astype(str)))
     obs = obs.sel(time=slice(start, end)).resample(time="YS").mean("time")
-    return cast(xr.Dataset, normalize_timeseries(obs, variables=keep, reference_date=reference_year))
+    if cumulative:
+        obs = cast(xr.Dataset, normalize_timeseries(obs, variables=cumulative, reference_date=reference_year))
+    return obs
 
 
 # --- Figure ----------------------------------------------------------------------
