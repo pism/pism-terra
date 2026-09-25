@@ -169,6 +169,19 @@ keeps their outputs apart.
     a posterior histogram of the run's `uq.csv` parameters, tables and a
     NetCDF file in `<region>/`; the basins' log-likelihoods are summed into
     `joint/`, and the summary goes to the top level.
+* - `pism-ismip7-greenland-mass-balance`
+  - Regional mass balance of a submission tree against Mankoff et al.
+    (2021): opens the per-counter `acabf`, `libmassbfgr` and `ligroundf`
+    files as one lazy ensemble on `(gcm_id, ssp_id)`, integrates them over
+    the Mouginot basins in a single Dask pass, sums them into a mass balance
+    and accumulates it from `--reference-year`. `--root` is the run's
+    `output` directory in the bucket (`s3://…`, read anonymously; the
+    default is built from `--bucket/--name/--project`) or a local copy of
+    it; a cloud project's per-job directories are collected with a wildcard
+    for the job id, `--root 's3://…/<project>/*/output'`. Writes
+    `regional_mass_balance.{nc,csv,png}`; `--regions-file`
+    replots from an earlier run. The functions are importable for notebook
+    use (`pism_terra.ismip7.greenland.mass_balance`).
 ```
 
 ## KITP

@@ -115,6 +115,7 @@ pism-ismip7-greenland-add-basins = "pism_terra.ismip7.greenland.prepare:add_basi
 pism-ismip7-greenland-observations = "pism_terra.ismip7.greenland.observations:main"
 pism-ismip7-greenland-importance-sampling-dh = "pism_terra.ismip7.greenland.importance_sampling_dh:main"
 pism-ismip7-greenland-importance-sampling-flux = "pism_terra.ismip7.greenland.importance_sampling_flux:main"
+pism-ismip7-greenland-mass-balance = "pism_terra.ismip7.greenland.mass_balance:main"
 pism-ismip7-greenland-postprocess-dh = "pism_terra.ismip7.greenland.postprocess_dh:main"
 pism-ismip7-greenland-prepare = "pism_terra.ismip7.greenland.prepare:cli"
 pism-ismip7-greenland-run-forward = "pism_terra.ismip7.greenland.run:run_forward"
