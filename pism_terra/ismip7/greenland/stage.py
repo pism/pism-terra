@@ -306,6 +306,36 @@ def place_dh_observations(config: dict, input_dir: Path | str, path: Path | str)
     return place_files(path, [Path(input_dir) / name for name in names])
 
 
+def place_outline(config: dict, input_dir: Path | str, path: Path | str) -> list[Path]:
+    """
+    Copy the staged basin outline beside the run's output.
+
+    ``campaign.outline_file`` is staged with the inputs, which may be a
+    shared directory, and the per-region post-processing reads it from
+    there. Analysis afterwards reduces the *output* over the same outlines,
+    so a copy goes next to the observations it is compared against — the
+    submission tree is then self-describing wherever it is synced to.
+
+    Parameters
+    ----------
+    config : dict
+        Campaign config; ``outline_file`` names the file, relative to ``input_dir``.
+    input_dir : Path or str
+        Where the inputs were staged.
+    path : Path or str
+        Run directory.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The copy, or empty when the config names no outline.
+    """
+    name = config.get("outline_file")
+    if not name:
+        return []
+    return place_files(path, [Path(input_dir) / name])
+
+
 def stage(
     config: dict,
     path: str | Path = "input_files",
@@ -716,6 +746,9 @@ def main():
     # mass-balance products below, whatever --no-observations says: it is
     # already on disk, and the comparison tools look in one place.
     place_dh_observations(config, input_dir, path)
+    # The basin outline the per-region post-processing reduces over, so the
+    # regions can be recomputed from the submission tree alone.
+    place_outline(config, input_dir, path)
 
     # Observed mass balance, for validating the run against afterwards. The
     # cache sits beside the staged inputs, which is already the directory

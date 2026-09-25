@@ -40,7 +40,11 @@ from pism_terra.glacier.run import snapshot_project_file
 from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.observations import prepare_observations
-from pism_terra.ismip7.greenland.stage import place_dh_observations, stage
+from pism_terra.ismip7.greenland.stage import (
+    place_dh_observations,
+    place_outline,
+    stage,
+)
 from pism_terra.ismip7.naming import (
     UQ_SEPARATOR,
     ISMIP7Names,
@@ -1731,6 +1735,9 @@ def _run(*, kind: str) -> None:
     # validation data, not run inputs, and GRACE Tellus needs an Earthdata login.
     input_dir = Path(data_path) if data_path is not None else path / Path("input")
     place_dh_observations(campaign_config, input_dir, path)
+    # The basin outline the per-region post-processing reduces over, so the
+    # regions can be recomputed from the submission tree alone.
+    place_outline(campaign_config, input_dir, path)
     if not options.no_observations:
         prepare_observations(
             path,

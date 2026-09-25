@@ -455,3 +455,25 @@ def test_dh_observations_are_placed_beside_the_output(tmp_path):
     assert placed == [run_dir / "output" / "observations" / "dh_smith_g5000m_ICESat1-ICESat2-2021.nc"]
     assert placed[0].read_bytes() == b"dh"
     assert not place_dh_observations({}, input_dir, run_dir)
+
+
+def test_outline_is_placed_beside_the_output(tmp_path):
+    """
+    The staged basin outline is copied to output/observations, beside the data it is compared against.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland.stage import place_outline
+
+    input_dir = tmp_path / "shared_input"
+    input_dir.mkdir()
+    (input_dir / "mouginot_basins_w_shelves.gpkg").write_bytes(b"outline")
+    run_dir = tmp_path / "run"
+    placed = place_outline({"outline_file": "mouginot_basins_w_shelves.gpkg"}, input_dir, run_dir)
+    assert placed == [run_dir / "output" / "observations" / "mouginot_basins_w_shelves.gpkg"]
+    assert placed[0].read_bytes() == b"outline"
+    assert not place_outline({}, input_dir, run_dir)
