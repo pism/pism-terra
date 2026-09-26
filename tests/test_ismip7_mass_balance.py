@@ -245,6 +245,9 @@ def test_compute_regions_builds_the_mass_balance(tree: Path):
     """
     The fluxes come out in Gt/yr, the mass balance is their sum, the cumulative series is zero at the reference year.
 
+    Each GCM's historical run is prepended to its pathways, so the
+    historical pathway itself is gone and ssp585 runs from 2013 on.
+
     Parameters
     ----------
     tree : pathlib.Path
@@ -253,16 +256,25 @@ def test_compute_regions_builds_the_mass_balance(tree: Path):
     ds = mb.open_submission(mb.find_files(str(tree), ["acabf", "ligroundf"]))
     regions = mb.compute_regions(ds, outline(), variables=["acabf", "ligroundf"], reference_year="2013")
     assert regions["acabf"].attrs["units"] == mb.FLUX_UNITS
-    cesm = regions.sel(gcm_id="CESM2-WACCM", ssp_id="historical", region="GIS_W").isel(time=0)
-    # 1 kg m-2 s-1 over 4 x 8 km^2 = 32e6 kg/s = 32e6 * 3.15576e7 s/yr / 1e12 kg/Gt
-    np.testing.assert_allclose(cesm["acabf"], 32e6 * 3.15576e7 / 1e12, rtol=1e-3)
+    assert list(regions["ssp_id"].values) == ["OCX", "ssp585"]
+    cesm = regions.sel(gcm_id="CESM2-WACCM", ssp_id="ssp585", region="GIS_W")
+    # 2013 is the historical run: 1 kg m-2 s-1 over 4 x 8 km^2 = 32e6 kg/s
+    # = 32e6 * 3.15576e7 s/yr / 1e12 kg/Gt; 2015 is the projection at 3 kg m-2 s-1.
+    gt_per_year = 32e6 * 3.15576e7 / 1e12
+    np.testing.assert_allclose(cesm["acabf"].sel(time="2013"), gt_per_year, rtol=1e-3)
+    np.testing.assert_allclose(cesm["acabf"].sel(time="2015"), 3 * gt_per_year, rtol=1e-3)
+    assert cesm["cumulative_mass_balance"].notnull().all()
     np.testing.assert_allclose(regions["mass_balance"], regions["acabf"] + regions["ligroundf"])
-    cumulative = regions["cumulative_mass_balance"].sel(gcm_id="CESM2-WACCM", ssp_id="historical")
-    np.testing.assert_allclose(cumulative.sel(time="2013"), 0.0, atol=1e-9)
-    # The historical run ends in 2014; the years the outer join adds beyond
-    # it stay missing rather than repeating the last value.
-    assert cumulative.sel(time=slice("2015", None)).isnull().all()
-    assert cumulative.sel(time=slice(None, "2014")).notnull().all()
+    np.testing.assert_allclose(cesm["cumulative_mass_balance"].sel(time="2013"), 0.0, atol=1e-9)
+    # MRI-ESM2-0 has only its historical run, which ends in 2014; the years
+    # beyond it stay missing rather than repeating the last value.
+    mri = regions["cumulative_mass_balance"].sel(gcm_id="MRI-ESM2-0", ssp_id="ssp585")
+    assert mri.sel(time=slice("2015", None)).isnull().all()
+    assert mri.sel(time=slice(None, "2014")).notnull().all()
+    # Without splicing the pathways stay as run.
+    as_run = mb.compute_regions(ds, outline(), variables=["acabf", "ligroundf"], reference_year="2013", splice=False)
+    assert "historical" in as_run["ssp_id"].values
+    assert as_run["acabf"].sel(gcm_id="CESM2-WACCM", ssp_id="ssp585", time="2013").isnull().all()
 
 
 def test_run_writes_the_series_and_the_figure(tree: Path, tmp_path: Path):
@@ -317,3 +329,8 @@ def test_splice_historical_fills_the_pathways(tree: Path):
     assert list(spliced["ssp_id"].values) == ["OCX", "ssp585"]
     cesm = spliced["acabf"].sel(gcm_id="CESM2-WACCM", ssp_id="ssp585").isel(y=0, x=0).compute()
     np.testing.assert_allclose(cesm.values, [1.0, 1.0, 3.0, 3.0])
+    # Nothing to splice: no historical pathway, or nothing but the historical one.
+    only_hist = ds.sel(ssp_id=["historical"])
+    assert mb.splice_historical(only_hist) is only_hist
+    no_hist = ds.drop_sel(ssp_id="historical")
+    assert mb.splice_historical(no_hist) is no_hist

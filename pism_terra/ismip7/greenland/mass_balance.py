@@ -422,8 +422,12 @@ def splice_historical(ds: xr.Dataset, historical: str = "historical") -> xr.Data
     -------
     xarray.Dataset
         The other pathways, each filled with the historical values where it
-        has none (before 2015). Still lazy.
+        has none (before 2015). Lazy input stays lazy. An ensemble without
+        the historical pathway, or with nothing else, is returned unchanged.
     """
+    pathways = list(ds["ssp_id"].values)
+    if historical not in pathways or len(pathways) == 1:
+        return ds
     hist = ds.sel(ssp_id=historical, drop=True)
     return ds.drop_sel(ssp_id=historical).combine_first(hist)
 
@@ -607,13 +611,17 @@ def compute_regions(
     *,
     variables: Sequence[str] = DEFAULT_VARIABLES,
     reference_year: str = DEFAULT_REFERENCE_YEAR,
+    splice: bool = True,
     **kwargs: Any,
 ) -> xr.Dataset:
     """
     Integrate the fluxes over the basins and build the mass balance series.
 
     This is the one expensive step: the whole ensemble is read once. The
-    Dask progress display follows it on a terminal.
+    Dask progress display follows it on a terminal. Each GCM's historical
+    run is then prepended to its pathways (:func:`splice_historical`, on
+    the small regional series), so a pathway's cumulative mass balance
+    runs from the reference year through the projection.
 
     Parameters
     ----------
@@ -625,6 +633,9 @@ def compute_regions(
         The fluxes summed into ``mass_balance``, when all are present.
     reference_year : str, optional
         Year the cumulative mass balance is zeroed at.
+    splice : bool, optional
+        Prepend the historical run to each pathway and drop it as a pathway
+        of its own. False keeps the pathways as they were run.
     **kwargs : Any
         Passed to :func:`regional_sums`.
 
@@ -636,6 +647,8 @@ def compute_regions(
     """
     (sums,) = compute(regional_sums(ds, outline, **kwargs), desc="Integrating the fluxes over the basins")
     regions = to_units(sums)
+    if splice:
+        regions = splice_historical(regions)
     present = [v for v in variables if v in regions]
     if len(present) < len(variables):
         logger.warning("mass_balance is the sum of %s only; %s missing", present, sorted(set(variables) - set(present)))
