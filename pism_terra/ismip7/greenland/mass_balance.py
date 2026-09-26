@@ -647,7 +647,11 @@ def compute_regions(
     }
     # ``integrate_rate`` hands back a pint quantity when given target units;
     # the series is stored as plain numbers with the units in its attributes.
+    # It treats gaps as zero increments, which would carry a run that has
+    # not finished yet (or a pathway outer-joined onto a longer axis)
+    # forward as a flat line; the series is missing wherever the rate is.
     cumulative = integrate_rate(regions["mass_balance"], to="Gt").pint.dequantify()
+    cumulative = cumulative.where(regions["mass_balance"].notnull())
     cumulative = normalize_timeseries(cumulative, reference_date=reference_year)
     regions["cumulative_mass_balance"] = cast(xr.DataArray, cumulative)
     regions["cumulative_mass_balance"].attrs = {

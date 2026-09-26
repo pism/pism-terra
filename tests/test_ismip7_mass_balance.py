@@ -257,8 +257,12 @@ def test_compute_regions_builds_the_mass_balance(tree: Path):
     # 1 kg m-2 s-1 over 4 x 8 km^2 = 32e6 kg/s = 32e6 * 3.15576e7 s/yr / 1e12 kg/Gt
     np.testing.assert_allclose(cesm["acabf"], 32e6 * 3.15576e7 / 1e12, rtol=1e-3)
     np.testing.assert_allclose(regions["mass_balance"], regions["acabf"] + regions["ligroundf"])
-    zero = regions["cumulative_mass_balance"].sel(time="2013", gcm_id="CESM2-WACCM", ssp_id="historical")
-    np.testing.assert_allclose(zero, 0.0, atol=1e-9)
+    cumulative = regions["cumulative_mass_balance"].sel(gcm_id="CESM2-WACCM", ssp_id="historical")
+    np.testing.assert_allclose(cumulative.sel(time="2013"), 0.0, atol=1e-9)
+    # The historical run ends in 2014; the years the outer join adds beyond
+    # it stay missing rather than repeating the last value.
+    assert cumulative.sel(time=slice("2015", None)).isnull().all()
+    assert cumulative.sel(time=slice(None, "2014")).notnull().all()
 
 
 def test_run_writes_the_series_and_the_figure(tree: Path, tmp_path: Path):
