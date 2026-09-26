@@ -24,9 +24,9 @@ reduces an ensemble. The first gets a :mod:`tqdm` bar
 (:func:`progress_bar`); the second gets whichever Dask progress display
 fits the scheduler in use (:func:`compute`): the distributed dashboard-style
 bar when a :class:`dask.distributed.Client` is active in the process, and
-the local :class:`dask.diagnostics.ProgressBar` otherwise. Both are quiet
-when the output is not a terminal, so a job's log file is not filled with
-carriage returns.
+the local :class:`dask.diagnostics.ProgressBar` otherwise. Both are drawn
+on a terminal and in a Jupyter notebook, and quiet elsewhere, so a job's
+log file is not filled with carriage returns.
 """
 
 from __future__ import annotations
@@ -46,6 +46,23 @@ T = TypeVar("T")
 BAR_MINIMUM_SECONDS = 1.0
 
 
+def in_notebook() -> bool:
+    """
+    Whether the process is a Jupyter kernel.
+
+    A kernel replaces standard error with :class:`ipykernel.iostream.OutStream`,
+    which is not a terminal but does render carriage returns and widgets, so
+    the bars are worth drawing there.
+
+    Returns
+    -------
+    bool
+        ``True`` under ipykernel (a notebook, JupyterLab, or a tool driving a
+        kernel such as papermill).
+    """
+    return type(sys.stderr).__module__.split(".", maxsplit=1)[0] == "ipykernel"
+
+
 def show_progress() -> bool:
     """
     Whether progress displays should be drawn at all.
@@ -53,9 +70,12 @@ def show_progress() -> bool:
     Returns
     -------
     bool
-        ``True`` when standard error is a terminal; a log file or a batch
-        job gets the plain log lines instead.
+        ``True`` when standard error is a terminal or the process is a
+        Jupyter kernel; a log file or a batch job gets the plain log lines
+        instead.
     """
+    if in_notebook():
+        return True
     try:
         return sys.stderr.isatty()
     except (AttributeError, ValueError):
@@ -148,4 +168,4 @@ def compute(*objects: Any, desc: str | None = None) -> tuple:
         return dask.compute(*objects)
 
 
-__all__ = ("compute", "distributed_client", "progress_bar", "show_progress")
+__all__ = ("compute", "distributed_client", "in_notebook", "progress_bar", "show_progress")

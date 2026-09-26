@@ -32,6 +32,39 @@ import xarray as xr
 from pism_terra import progress
 
 
+def test_show_progress_in_a_kernel_and_off_a_terminal(monkeypatch):
+    """
+    Draw the bars under ipykernel although its stream is not a tty, and not on a plain redirected stream.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Pytest fixture replacing standard error.
+    """
+
+    class Plain:
+        """A redirected stream: not a terminal, not a kernel."""
+
+        def isatty(self):
+            """
+            Report that this is not a terminal.
+
+            Returns
+            -------
+            bool
+                Always ``False``.
+            """
+            return False
+
+    monkeypatch.setattr(progress.sys, "stderr", Plain())
+    assert not progress.in_notebook()
+    assert not progress.show_progress()
+    # ipykernel's OutStream is recognised by the module it comes from.
+    Plain.__module__ = "ipykernel.iostream"
+    assert progress.in_notebook()
+    assert progress.show_progress()
+
+
 def test_progress_bar_yields_the_items(monkeypatch):
     """
     The bar is a pass-through, on a terminal and off it.
