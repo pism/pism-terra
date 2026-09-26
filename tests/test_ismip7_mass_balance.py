@@ -329,8 +329,14 @@ def test_splice_historical_fills_the_pathways(tree: Path):
     assert list(spliced["ssp_id"].values) == ["OCX", "ssp585"]
     cesm = spliced["acabf"].sel(gcm_id="CESM2-WACCM", ssp_id="ssp585").isel(y=0, x=0).compute()
     np.testing.assert_allclose(cesm.values, [1.0, 1.0, 3.0, 3.0])
+    # OCX does not continue the historical run: only the OCX run fills it.
+    ocx = spliced["acabf"].isel(y=0, x=0).sel(ssp_id="OCX").compute()
+    assert ocx.sel(gcm_id=["CESM2-WACCM", "MRI-ESM2-0"]).isnull().all()
+    assert ocx.sel(gcm_id="OCX").notnull().any()
     # Nothing to splice: no historical pathway, or nothing but the historical one.
     only_hist = ds.sel(ssp_id=["historical"])
     assert mb.splice_historical(only_hist) is only_hist
     no_hist = ds.drop_sel(ssp_id="historical")
     assert mb.splice_historical(no_hist) is no_hist
+    no_projection = ds.sel(ssp_id=["OCX", "historical"])
+    assert mb.splice_historical(no_projection) is no_projection

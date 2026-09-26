@@ -48,6 +48,7 @@ checked, and the Dask progress display while the basins are integrated
 from __future__ import annotations
 
 import logging
+import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Sequence
 from functools import partial
@@ -407,9 +408,9 @@ def open_submission(paths: Sequence[str], chunks: dict[str, int] | None = None, 
     return ds
 
 
-def splice_historical(ds: xr.Dataset, historical: str = "historical") -> xr.Dataset:
+def splice_historical(ds: xr.Dataset, historical: str = "historical", projections: str = r"ssp\d+") -> xr.Dataset:
     """
-    Prepend a GCM's historical run to each of its pathways.
+    Prepend a GCM's historical run to each of its projections.
 
     Parameters
     ----------
@@ -417,19 +418,33 @@ def splice_historical(ds: xr.Dataset, historical: str = "historical") -> xr.Data
         Ensemble on ``(gcm_id, ssp_id, time, ...)`` with a historical pathway.
     historical : str, optional
         Name of the historical pathway.
+    projections : str, optional
+        Regular expression matching the pathways that continue the historical
+        run. Others, such as OCX, stand on their own and are left untouched,
+        so a GCM without an OCX run does not grow one.
 
     Returns
     -------
     xarray.Dataset
-        The other pathways, each filled with the historical values where it
-        has none (before 2015). Lazy input stays lazy. An ensemble without
-        the historical pathway, or with nothing else, is returned unchanged.
+        The pathways other than the historical one, each projection filled
+        with its GCM's historical values where it has none (before 2015).
+        Lazy input stays lazy. An ensemble without the historical pathway,
+        or without a projection, is returned unchanged.
     """
-    pathways = list(ds["ssp_id"].values)
-    if historical not in pathways or len(pathways) == 1:
+    pathways = [str(p) for p in ds["ssp_id"].values]
+    continues = [re.fullmatch(projections, p) is not None for p in pathways]
+    if historical not in pathways or not any(continues):
         return ds
     hist = ds.sel(ssp_id=historical, drop=True)
-    return ds.drop_sel(ssp_id=historical).combine_first(hist)
+    kept = ds.drop_sel(ssp_id=historical)
+    spliced = kept.combine_first(hist)
+    is_projection = xr.DataArray(
+        [c for p, c in zip(pathways, continues) if p != historical], coords={"ssp_id": kept["ssp_id"]}, dims="ssp_id"
+    )
+    for name, var in spliced.data_vars.items():
+        if "ssp_id" in var.dims:
+            spliced[name] = var.where(is_projection, kept[name])
+    return spliced
 
 
 # --- Basins ----------------------------------------------------------------------
@@ -619,7 +634,7 @@ def compute_regions(
 
     This is the one expensive step: the whole ensemble is read once. The
     Dask progress display follows it on a terminal. Each GCM's historical
-    run is then prepended to its pathways (:func:`splice_historical`, on
+    run is then prepended to its projections (:func:`splice_historical`, on
     the small regional series), so a pathway's cumulative mass balance
     runs from the reference year through the projection.
 
@@ -634,7 +649,7 @@ def compute_regions(
     reference_year : str, optional
         Year the cumulative mass balance is zeroed at.
     splice : bool, optional
-        Prepend the historical run to each pathway and drop it as a pathway
+        Prepend the historical run to each projection and drop it as a pathway
         of its own. False keeps the pathways as they were run.
     **kwargs : Any
         Passed to :func:`regional_sums`.
@@ -783,7 +798,6 @@ def plot_regions(
                     color="0.75",
                     alpha=0.5,
                 )
-                ax.plot(obs["time"].values, obs["cumulative_mass_balance"], lw=0.75, color="k")
             series = regions[variable].sel(region=region)
             for gcm in series["gcm_id"].values:
                 for ssp in series["ssp_id"].values:
@@ -795,7 +809,7 @@ def plot_regions(
                             ls=GCM_STYLES.get(str(gcm), "solid"),
                             color=SSP_COLORS.get(str(ssp), "0.3"),
                             lw=0.5,
-                            label=f"{gcm} {ssp}",
+                            label=str(ssp) if gcm == ssp else f"{gcm} {ssp}",
                         )
             ax.set_xlim(np.datetime64(xlim[0]), np.datetime64(xlim[1]))
             ax.set_title(region)
