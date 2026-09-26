@@ -1535,3 +1535,41 @@ def test_compliance_checker_does_not_abort_the_script(tmp_path):
     script = _render_forward(tmp_path, C003, sample="CESM2-WACCM")
     (line,) = [line for line in script.splitlines() if line.startswith("ismip7-compliance-checker")]
     assert "|| echo" in line and "compliance_checker_log.txt" in line
+
+
+def test_ec2_template_launches_the_writer_and_splits_the_scalars(tmp_path):
+    """
+    The cloud template runs the product legs with pism_ismip7_writer and post-processes the scalar file.
+
+    Only the writer turns the ``{var}`` placeholder of the ISMIP7 spatial file
+    name into one file per variable, and only the scalar post-processing
+    splits the scalar time series; without both, a cloud run leaves one
+    ``{var}_...nc`` and one scalar file, which the compliance checker rejects.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    # ``sample`` is annotated as an int but the runner takes a GCM name, as
+    # every other test passes through the untyped ``_render_forward``.
+    _render_forward_run(
+        C003, TEMPLATE_DIR / "ec2_ismip7.j2", None, path=tmp_path, sample="CESM2-WACCM"  # type: ignore[arg-type]
+    )
+    (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
+    text = script.read_text()
+    # The options are rendered over backslash-continued lines; join them back
+    # into one command per launch.
+    joined = text.replace("\\\n", " ")
+    legs = [" ".join(line.split()) for line in joined.splitlines() if line.startswith("mpirun")]
+    product = [line for line in legs if "pism_ismip7_writer" in line]
+    assert len(product) == 2, "historical and projection legs run with the writer"
+    for line in product:
+        assert line.startswith("mpirun -np 1 pism_ismip7_writer -r 1 : -np ")
+        assert line.endswith("-output.asynchronous")
+    # C003's product is the projection leg; the historical leg is an internal
+    # continuation with a flat file name, so one of the two carries {var}.
+    assert sum("{var}" in line for line in product) == 1, "the product leg hands the writer the per-variable name"
+    assert not any("pism_ismip7_writer" in line for line in legs if "-time.end 1985-01-01" in line), "not the init leg"
+    assert "postprocess_ismip7_scalar.sh" in text
+    assert text.index("postprocess_ismip7_scalar.sh") < text.index("ismip7-compliance-checker")

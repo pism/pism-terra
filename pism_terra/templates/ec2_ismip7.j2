@@ -36,7 +36,11 @@ mpirun -np  {{ ntasks | default(32) }} pismi {{ inv_str }}
 # HISTORICAL RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(32) }} pism {{ run_hist_str }}
+# One writer rank beside the PISM ranks: pism_ismip7_writer is what turns the
+# {var} placeholder of the ISMIP7 spatial file name into one file per
+# variable. PISM's own output code writes a single file with the placeholder
+# left in its name, so the writer and -output.asynchronous go together.
+mpirun -np 1 pism_ismip7_writer -r 1 : -np {{ ntasks | default(32) }} pism {{ run_hist_str }} -output.asynchronous
 {% endif %}
 
 {% if run_proj_str %}
@@ -44,7 +48,17 @@ mpirun -np  {{ ntasks | default(32) }} pism {{ run_hist_str }}
 # PROJECTION RUN
 # ###############################################################################
 
-mpirun -np  {{ ntasks | default(32) }} pism {{ run_proj_str }}
+mpirun -np 1 pism_ismip7_writer -r 1 : -np {{ ntasks | default(32) }} pism {{ run_proj_str }} -output.asynchronous
+{% endif %}
+
+{% if post_scalar_str %}
+# ###############################################################################
+# SCALAR POSTPROCESSING RUN
+# ###############################################################################
+
+# Split the product's scalar time series into one file per variable, as the
+# submission wants them; the compliance checker below expects these.
+{{ post_scalar_str }}
 {% endif %}
 
 
