@@ -148,6 +148,56 @@ def test_masks_sit_on_the_pism_grid_and_are_binary(tmp_path):
             assert ds.attrs["proj"] == "EPSG:3413"
 
 
+def test_masks_carry_no_geotransform(tmp_path, monkeypatch):
+    """
+    A GeoTransform on the grid mapping is dropped, so QGIS does not draw the mask upside down.
+
+    Older rioxarray writes one in ``write_crs`` with ``dy > 0`` for the
+    ascending y of :func:`create_domain`, and GDAL prefers it over the y
+    coordinate. The grid is given one here to stand in for such a version.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest fixture wrapping the domain builder.
+    """
+    from pism_terra import raster  # pylint: disable=import-outside-toplevel
+
+    def with_geotransform(*args, **kwargs):
+        """
+        Build the domain and add a south-up GeoTransform, as older rioxarray does.
+
+        Parameters
+        ----------
+        *args : Any
+            Passed to :func:`create_domain`.
+        **kwargs : Any
+            Passed to :func:`create_domain`.
+
+        Returns
+        -------
+        xarray.Dataset
+            The domain with ``GeoTransform`` on ``spatial_ref``.
+        """
+        grid = create_domain(*args, **kwargs)
+        grid["spatial_ref"].attrs["GeoTransform"] = "0.0 900.0 0.0 -9000.0 0.0 900.0"
+        return grid
+
+    monkeypatch.setattr(raster, "create_domain", with_geotransform)
+    outline = gpd.GeoSeries([box(0, -9000, 9000, 0)], crs="EPSG:3413")
+    retreated = gpd.GeoDataFrame(
+        {"Date": [pd.Timestamp("1980-01-15")]}, geometry=[box(0, -9000, 4500, 0)], crs="EPSG:3413"
+    )
+    files = rasterize_retreat_masks(
+        tmp_path, pd.Timestamp("1980-01-15"), retreated, outline, [0.0, 9000.0], [-9000.0, 0.0], [900]
+    )
+    with xr.open_dataset(files[900]) as ds:
+        assert "GeoTransform" not in ds["spatial_ref"].attrs
+        assert "crs_wkt" in ds["spatial_ref"].attrs
+
+
 def test_the_1800m_grid_matches_what_pism_builds():
     """
     The domain builder reproduces PISM's 1800 m grid from the ISMIP7 bounds.

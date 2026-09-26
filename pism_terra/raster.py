@@ -40,7 +40,7 @@ from rasterio.transform import from_origin
 from shapely.geometry import box
 
 from pism_terra.domain import create_domain
-from pism_terra.workflow import check_xr_lazy
+from pism_terra.workflow import check_xr_lazy, drop_geotransform_attr
 
 
 def retreat_geometry(ds1: gpd.GeoDataFrame, ds2: gpd.GeoDataFrame, crs: str = "EPSG:3413") -> gpd.GeoSeries:
@@ -148,6 +148,10 @@ def rasterize_retreat_mask(
         coords={"time": [start], "y": y, "x": x},
         attrs={"Conventions": "CF-1.8", "proj": crs},
     )
+    # The grid mapping comes with rioxarray's GeoTransform, whose dy > 0
+    # follows the ascending y; GDAL prefers it over the y coordinate and
+    # QGIS draws the mask upside down.
+    drop_geotransform_attr(ds)
     encoding: dict = {var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)}
     encoding["land_ice_area_fraction_retreat"].update({"zlib": True, "complevel": 2})
     encoding.update(encoding_time)
