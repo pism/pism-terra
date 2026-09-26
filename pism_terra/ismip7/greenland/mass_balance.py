@@ -254,13 +254,82 @@ def storage_options(url: str) -> dict[str, Any]:
     return {"storage_options": {"anon": True}} if str(url).startswith("s3://") else {}
 
 
+def _open_member(path: str, chunks: dict[str, int] | None, **kwargs: Any) -> xr.Dataset | None:
+    """
+    Open one submission file lazily; None when it has no records yet.
+
+    Parameters
+    ----------
+    path : str
+        File URL.
+    chunks : dict or None
+        Dask chunks; :data:`DEFAULT_CHUNKS` when None.
+    **kwargs : Any
+        Further :func:`xarray.open_dataset` options.
+
+    Returns
+    -------
+    xarray.Dataset or None
+        The file on ``(gcm_id, ssp_id, time, y, x)`` after
+        :data:`preprocess_ismip7`, or None for a file a run in flight has
+        left empty.
+    """
+    ds = xr.open_dataset(
+        path,
+        chunks=DEFAULT_CHUNKS if chunks is None else chunks,
+        decode_timedelta=True,
+        **OPEN_KWARGS,
+        **storage_options(path),
+        **kwargs,
+    )
+    if ds.sizes.get("time", 1) == 0:
+        ds.close()
+        return None
+    return preprocess_ismip7(ds)
+
+
+def open_members(paths: Sequence[str], chunks: dict[str, int] | None = None, **kwargs: Any) -> list[xr.Dataset]:
+    """
+    Open submission files lazily, one by one, skipping the ones without records.
+
+    A run still in flight, or an rsync still copying, leaves files whose
+    ``time`` is empty; they cannot be combined with the rest. Opening a
+    file over S3 means fetching its HDF5 metadata in many small reads, so
+    from far away it costs seconds per file; from the same AWS region it
+    is quick. Opening on Dask worker processes does not help: the datasets
+    they hand back reopen their files, and refetch that metadata, on every
+    later access.
+
+    Parameters
+    ----------
+    paths : sequence of str
+        File URLs.
+    chunks : dict or None, optional
+        Dask chunks; :data:`DEFAULT_CHUNKS` when None.
+    **kwargs : Any
+        Further :func:`xarray.open_dataset` options.
+
+    Returns
+    -------
+    list of xarray.Dataset
+        The files with records, each on ``(gcm_id, ssp_id, time, y, x)``
+        after :data:`preprocess_ismip7`, in the given order.
+    """
+    members = []
+    # Log lines go through tqdm while the bar is up, so they do not tear it.
+    with logging_redirect_tqdm():
+        for path in progress_bar(paths, desc="Opening files", unit="file"):
+            ds = _open_member(path, chunks, **kwargs)
+            if ds is None:
+                logger.warning("%s has no records yet; skipped", path)
+            else:
+                members.append(ds)
+    return members
+
+
 def nonempty(paths: Sequence[str]) -> list[str]:
     """
     Keep the files whose time axis has records.
-
-    A run still in flight, or an rsync still copying, leaves files whose
-    ``time`` is empty; opening them into one ensemble fails on the concat.
-    Each file's header is read once, which over S3 is one request per file.
 
     Parameters
     ----------
@@ -272,23 +341,20 @@ def nonempty(paths: Sequence[str]) -> list[str]:
     list of str
         The ones with at least one record, in the given order.
     """
-    keep = []
-    # Log lines go through tqdm while the bar is up, so they do not tear it.
-    with logging_redirect_tqdm():
-        for path in progress_bar(paths, desc="Checking files", unit="file"):
-            with xr.open_dataset(
-                path, decode_times=False, decode_timedelta=False, **OPEN_KWARGS, **storage_options(path)
-            ) as ds:
-                if ds.sizes.get("time", 1) > 0:
-                    keep.append(path)
-                else:
-                    logger.warning("%s has no records yet; skipped", path)
-    return keep
+    return [str(ds.encoding["source"]) for ds in open_members(paths)]
 
 
 def open_submission(paths: Sequence[str], chunks: dict[str, int] | None = None, **kwargs: Any) -> xr.Dataset:
     """
     Open submission files as one lazy ensemble on ``(gcm_id, ssp_id)``.
+
+    The files are combined explicitly rather than by coordinates: the
+    variables of one counter share a time axis and are merged, the
+    pathways of one GCM are concatenated on ``ssp_id`` with an outer join on
+    time, and the GCMs on ``gcm_id`` likewise. An outer join is what lets a
+    historical run (1985 to 2014), a projection (2015 on) and an OCX run
+    (1990 to 2024) sit side by side: their time axes overlap, which a
+    combine by coordinates cannot order.
 
     Parameters
     ----------
@@ -298,35 +364,40 @@ def open_submission(paths: Sequence[str], chunks: dict[str, int] | None = None, 
     chunks : dict or None, optional
         Dask chunks; :data:`DEFAULT_CHUNKS` when None.
     **kwargs : Any
-        Further :func:`xarray.open_mfdataset` options.
+        Further :func:`xarray.open_dataset` options.
 
     Returns
     -------
     xarray.Dataset
         Lazy dataset with dims ``(gcm_id, ssp_id, time, y, x)``. A pathway a
-        GCM never ran is NaN, and the different experiments' time axes are
-        joined into one.
+        GCM never ran is NaN, as is any instant a run does not cover.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no file has records.
     """
-    paths = nonempty(paths)
-    if not paths:
+    members = open_members(paths, chunks, **kwargs)
+    if not members:
         raise FileNotFoundError("no submission file with records")
-    options = storage_options(paths[0])
-    ds = xr.open_mfdataset(
-        list(paths),
-        preprocess=preprocess_ismip7,
-        combine="by_coords",
-        chunks=DEFAULT_CHUNKS if chunks is None else chunks,
-        decode_timedelta=True,
-        data_vars="minimal",
-        coords="minimal",
-        compat="override",
-        combine_attrs="drop_conflicts",
-        join="outer",
-        parallel=True,
-        **OPEN_KWARGS,
-        **options,
-        **kwargs,
-    )
+    combine: dict[str, Any] = {
+        "data_vars": "minimal",
+        "coords": "minimal",
+        "compat": "override",
+        "join": "outer",
+        "combine_attrs": "drop_conflicts",
+    }
+    by_counter: dict[tuple[str, str], list[xr.Dataset]] = {}
+    for ds in members:
+        key = (str(ds["gcm_id"].values[0]), str(ds["ssp_id"].values[0]))
+        by_counter.setdefault(key, []).append(ds)
+    by_gcm: dict[str, list[xr.Dataset]] = {}
+    for (gcm, _), parts in sorted(by_counter.items()):
+        by_gcm.setdefault(gcm, []).append(
+            xr.merge(parts, compat="override", join="outer", combine_attrs="drop_conflicts")
+        )
+    per_gcm = [xr.concat(runs, dim="ssp_id", **combine) for _, runs in sorted(by_gcm.items())]
+    ds = xr.concat(per_gcm, dim="gcm_id", **combine).sortby("time")
     logger.info(
         "Ensemble: GCMs %s, pathways %s, %d time step(s)",
         list(ds["gcm_id"].values),

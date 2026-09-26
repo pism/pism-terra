@@ -59,13 +59,18 @@ LEVELS = {
     ("MRI-ESM2-0", "historical", "ligroundf"): -1.0,
     ("CESM2-WACCM", "ssp585", "acabf"): 3.0,
     ("CESM2-WACCM", "ssp585", "ligroundf"): -2.0,
+    ("OCX", "OCX", "acabf"): 4.0,
+    ("OCX", "OCX", "ligroundf"): -3.0,
 }
 COUNTERS = {
     ("CESM2-WACCM", "historical"): "C001",
     ("MRI-ESM2-0", "historical"): "C002",
     ("CESM2-WACCM", "ssp585"): "C007",
+    ("OCX", "OCX"): "C011",
 }
-YEARS = {"historical": (2013, 2014), "ssp585": (2015, 2016)}
+#: The OCX reanalysis run overlaps both the historical and the projection
+#: years, which is what makes combining by coordinates impossible.
+YEARS = {"historical": (2013, 2014), "ssp585": (2015, 2016), "OCX": (2014, 2015)}
 
 
 def write_tree(root: Path) -> Path:
@@ -161,7 +166,7 @@ def test_wildcard_root_collects_several_job_directories(tmp_path: Path):
     assert mb.resolve_outline(root, None) == str(tmp_path / "job-b" / "output" / "observations" / mb.DEFAULT_OUTLINE)
     assert mb.first_match(root, "observations/nothing.nc") is None
     ds = mb.open_submission(found)
-    assert sorted(ds["gcm_id"].values) == ["CESM2-WACCM", "MRI-ESM2-0"]
+    assert sorted(ds["gcm_id"].values) == ["CESM2-WACCM", "MRI-ESM2-0", "OCX"]
     with pytest.raises(FileNotFoundError, match="no lithk files"):
         mb.find_files(root, ["lithk"])
 
@@ -176,7 +181,7 @@ def test_find_files_lists_the_tree(tree: Path):
         The run's ``output`` directory.
     """
     found = mb.find_files(str(tree), ["acabf", "ligroundf"])
-    assert len(found) == 7
+    assert len(found) == 9
     assert all(not f.startswith("file://") for f in found)
     with pytest.raises(FileNotFoundError):
         mb.find_files(str(tree), ["lithk"])
@@ -193,12 +198,15 @@ def test_open_submission_skips_empty_files_and_stacks_gcm_and_pathway(tree: Path
     """
     ds = mb.open_submission(mb.find_files(str(tree), ["acabf", "ligroundf"]))
     assert set(ds.data_vars) >= {"acabf", "ligroundf"}
-    assert sorted(ds["gcm_id"].values) == ["CESM2-WACCM", "MRI-ESM2-0"]
-    assert sorted(ds["ssp_id"].values) == ["historical", "ssp585"]
+    assert sorted(ds["gcm_id"].values) == ["CESM2-WACCM", "MRI-ESM2-0", "OCX"]
+    assert sorted(ds["ssp_id"].values) == ["OCX", "historical", "ssp585"]
     assert ds.sizes["time"] == 4
+    assert list(ds["time"].dt.year.values) == [2013, 2014, 2015, 2016], "one sorted time axis"
     assert ds["acabf"].chunks is not None, "still lazy"
-    # A pathway a GCM never ran is missing, not zero.
+    # A pathway a GCM never ran is missing, not zero; so is an instant a run does not cover.
     assert np.isnan(ds["acabf"].sel(gcm_id="MRI-ESM2-0", ssp_id="ssp585").values).all()
+    ocx = ds["acabf"].sel(gcm_id="OCX", ssp_id="OCX").isel(y=0, x=0).values
+    np.testing.assert_array_equal(np.isnan(ocx), [True, False, False, True])
     with pytest.raises(FileNotFoundError):
         mb.open_submission(
             [
@@ -302,6 +310,6 @@ def test_splice_historical_fills_the_pathways(tree: Path):
     """
     ds = mb.open_submission(mb.find_files(str(tree), ["acabf"]))
     spliced = mb.splice_historical(ds)
-    assert list(spliced["ssp_id"].values) == ["ssp585"]
+    assert list(spliced["ssp_id"].values) == ["OCX", "ssp585"]
     cesm = spliced["acabf"].sel(gcm_id="CESM2-WACCM", ssp_id="ssp585").isel(y=0, x=0).compute()
     np.testing.assert_allclose(cesm.values, [1.0, 1.0, 3.0, 3.0])
