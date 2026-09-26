@@ -23,7 +23,7 @@ Provide raster functions.
 """
 
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -34,11 +34,175 @@ import rasterio
 import rasterio.shutil
 import rioxarray as rxr
 import xarray as xr
-from geocube.api.core import make_geocube
 from pyproj import CRS, Transformer
+from rasterio.features import rasterize
+from rasterio.transform import from_origin
 from shapely.geometry import box
 
+from pism_terra.domain import create_domain
 from pism_terra.workflow import check_xr_lazy
+
+
+def retreat_geometry(ds1: gpd.GeoDataFrame, ds2: gpd.GeoDataFrame, crs: str = "EPSG:3413") -> gpd.GeoSeries:
+    """
+    Area where ice may exist at one date: the reference outline minus the retreated area.
+
+    Parameters
+    ----------
+    ds1 : gpd.GeoDataFrame
+        Retreated area (the cumulative CalFin front polygons up to the date).
+    ds2 : gpd.GeoDataFrame
+        Reference outline the ice may fill (basins united with the fronts).
+    crs : str, optional
+        The coordinate reference system, by default "EPSG:3413".
+
+    Returns
+    -------
+    gpd.GeoSeries
+        ``ds2`` with ``ds1`` (buffered by 5 m) cut out.
+    """
+    ds = gpd.GeoDataFrame(ds1, crs=crs)
+    ds.geometry = ds.geometry.make_valid()
+    ds_dissolved = ds.dissolve()
+    return ds2.difference(ds_dissolved.buffer(5))
+
+
+def rasterize_retreat_mask(
+    output_file: Path | str,
+    date: pd.Timestamp,
+    allowed: gpd.GeoSeries,
+    x_bnds: list | np.ndarray,
+    y_bnds: list | np.ndarray,
+    resolution: float,
+    crs: str = "EPSG:3413",
+    encoding_time: dict = {"time": {"units": "hours since 1972-01-01 00:00:00", "calendar": "standard"}},
+) -> Path:
+    """
+    Write the 0/1 ice-extent mask of one date on the PISM grid of one resolution.
+
+    The mask is rasterized straight onto the cell centres that
+    :func:`pism_terra.domain.create_domain` places for ``resolution`` -- the
+    grid PISM builds from the same bounds -- so a run at that resolution reads
+    it without regridding. That matters: PISM's prescribed front retreat zeroes
+    the ice of every margin cell whose mask value is below 1, and interpolating
+    a 0/1 mask from any other grid puts a fraction on every margin cell. Coarse
+    runs fed the 450 m mask lost whole cells of grounded ice each step and
+    aborted with "ice thickness would exceed Lz". A cell is 1 when its centre
+    lies inside ``allowed`` and 0 otherwise; nothing in between.
+
+    Parameters
+    ----------
+    output_file : Path or str
+        The path to the output NetCDF file.
+    date : pd.Timestamp
+        The date the mask holds for; recorded as the first of its month.
+    allowed : gpd.GeoSeries
+        Area where ice may exist, from :func:`retreat_geometry`.
+    x_bnds : list or numpy.ndarray
+        Domain x bounds (either order).
+    y_bnds : list or numpy.ndarray
+        Domain y bounds (either order).
+    resolution : float
+        Grid resolution in meters; must divide both domain extents.
+    crs : str, optional
+        The coordinate reference system, by default "EPSG:3413".
+    encoding_time : dict, optional
+        The encoding settings for the time variable.
+
+    Returns
+    -------
+    Path
+        The path to the saved NetCDF file.
+    """
+    start = date.replace(day=1)
+    x_lo, x_hi = sorted((float(x_bnds[0]), float(x_bnds[1])))
+    y_lo, y_hi = sorted((float(y_bnds[0]), float(y_bnds[1])))
+    grid = create_domain([x_lo, x_hi], [y_lo, y_hi], resolution, crs=crs)
+    nx, ny = grid.sizes["x"], grid.sizes["y"]
+
+    # rasterio rasters are north-up (row 0 at the top edge); create_domain's
+    # y ascends, so the rows are flipped after burning.
+    transform = from_origin(x_lo, y_hi, resolution, resolution)
+    shapes = [(g, 1) for g in allowed.geometry if g is not None and not g.is_empty]
+    mask = np.zeros((ny, nx), dtype="uint8")
+    if shapes:
+        mask = rasterize(shapes, out_shape=(ny, nx), transform=transform, fill=0, dtype="uint8")
+    mask = mask[::-1, :]
+
+    # Only the mask, its coordinates and the grid mapping go into the file:
+    # cdo's mergetime (which prepare_calfin stacks the dates with) drops the
+    # grid-mapping variable when it rides along as a scalar coordinate next to
+    # the domain builder's bounds variables, and PISM reads the projection
+    # from that variable's ``crs_wkt`` (with the global ``proj`` as fallback).
+    x = xr.DataArray(grid["x"].values, dims="x", attrs={k: v for k, v in grid["x"].attrs.items() if k != "bounds"})
+    y = xr.DataArray(grid["y"].values, dims="y", attrs={k: v for k, v in grid["y"].attrs.items() if k != "bounds"})
+    ds = xr.Dataset(
+        {
+            "land_ice_area_fraction_retreat": xr.DataArray(
+                mask.astype("float32")[np.newaxis, :, :],
+                dims=("time", "y", "x"),
+                attrs={"units": "1", "long_name": "maximum ice extent mask", "grid_mapping": "spatial_ref"},
+            ),
+            "spatial_ref": xr.DataArray(0, attrs=dict(grid["spatial_ref"].attrs)),
+        },
+        coords={"time": [start], "y": y, "x": x},
+        attrs={"Conventions": "CF-1.8", "proj": crs},
+    )
+    encoding: dict = {var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)}
+    encoding["land_ice_area_fraction_retreat"].update({"zlib": True, "complevel": 2})
+    encoding.update(encoding_time)
+    ds.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
+    return Path(output_file)
+
+
+def rasterize_retreat_masks(
+    output_dir: Path | str,
+    date: pd.Timestamp,
+    ds1: gpd.GeoDataFrame,
+    ds2: gpd.GeoDataFrame,
+    x_bnds: list | np.ndarray,
+    y_bnds: list | np.ndarray,
+    resolutions: Sequence[int],
+    crs: str = "EPSG:3413",
+) -> dict[int, Path]:
+    """
+    Rasterize one date's ice-extent mask at every resolution.
+
+    The vector difference is computed once and burnt onto each grid, so adding
+    a resolution costs a rasterization, not another polygon operation.
+
+    Parameters
+    ----------
+    output_dir : Path or str
+        Directory the per-date files ``frontretreat_g<res>m_<date>.nc`` go to.
+    date : pd.Timestamp
+        The date the mask holds for.
+    ds1 : gpd.GeoDataFrame
+        Retreated area (the cumulative CalFin front polygons up to the date).
+    ds2 : gpd.GeoDataFrame
+        Reference outline the ice may fill.
+    x_bnds : list or numpy.ndarray
+        Domain x bounds.
+    y_bnds : list or numpy.ndarray
+        Domain y bounds.
+    resolutions : sequence of int
+        Grid resolutions in meters.
+    crs : str, optional
+        The coordinate reference system, by default "EPSG:3413".
+
+    Returns
+    -------
+    dict of int to Path
+        The written file per resolution.
+    """
+    allowed = retreat_geometry(ds1, ds2, crs=crs)
+    stamp = f"{date.year}-{date.month}-{date.day}"
+    return {
+        int(res): rasterize_retreat_mask(
+            Path(output_dir) / f"frontretreat_g{int(res)}m_{stamp}.nc", date, allowed, x_bnds, y_bnds, int(res), crs=crs
+        )
+        for res in resolutions
+    }
 
 
 def create_ds(
@@ -54,6 +218,9 @@ def create_ds(
     """
     Create a dataset representing land ice area fraction retreat and save it to a NetCDF file.
 
+    Kept for callers that pass a GeoJSON-like ``geom``; the grid comes from its
+    ``bbox`` and the mask is written by :func:`rasterize_retreat_mask`.
+
     Parameters
     ----------
     output_file : Path or str
@@ -65,56 +232,24 @@ def create_ds(
     ds2 : gpd.GeoDataFrame
         The second GeoDataFrame containing the geometries to be compared.
     geom : dict
-        The geometry dictionary for the geocube.
+        Geometry dictionary whose ``bbox`` is ``[x_min, y_min, x_max, y_max]``.
     resolution : float, optional
-        The resolution of the geocube, by default 450.
+        The grid resolution, by default 450.
     crs : str, optional
         The coordinate reference system, by default "EPSG:3413".
     encoding_time : dict, optional
-        The encoding settings for the time variable, by default {"time": {"units": "hours since 1972-01-01 00:00:00", "calendar": "standard"}}.
+        The encoding settings for the time variable.
 
     Returns
     -------
     Path
         The path to the saved NetCDF file.
-
-    Examples
-    --------
-    >>> import geopandas as gp
-    >>> import pandas as pd
-    >>> from pathlib import Path
-    >>> date = pd.Timestamp("2023-01-01")
-    >>> ds1 = gpd.read_file("path_to_ds1.shp")
-    >>> ds2 = gpd.read_file("path_to_ds2.shp")
-    >>> geom = {"type": "Polygon", "coordinates": [[[...]]]}
-    >>> result_path = create_ds(date, ds1, ds2, geom)
-    >>> print(result_path)
     """
-
-    start = date.replace(day=1)
-
-    ds = gpd.GeoDataFrame(ds1, crs=crs)
-    geom_valid = ds.geometry.make_valid()
-    ds.geometry = geom_valid
-    ds_dissolved = ds.dissolve()
-    diff = ds2.difference(ds_dissolved.buffer(5))
-    n = len(diff)
-    diff_df = {"land_ice_area_fraction_retreat": np.ones(n)}
-    diff_gp = gpd.GeoDataFrame(data=diff_df, geometry=diff, crs=crs)
-    ds = make_geocube(vector_data=diff_gp, geom=geom, resolution=(resolution, resolution))
-    ds = ds.fillna(0)
-    ds["land_ice_area_fraction_retreat"].attrs["units"] = "1"
-    ds["land_ice_area_fraction_retreat"].attrs.pop("coordinates", None)
-    ds["land_ice_area_fraction_retreat"].attrs["grid_mapping"] = "spatial_ref"
-    ds = ds.expand_dims(time=[start])
-    comp = {"zlib": True, "complevel": 2}
-    encoding = {var: comp for var in ds.data_vars}
-    encoding.update(encoding_time)
-    encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
-
-    ds.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
-
-    return output_file
+    x_min, y_min, x_max, y_max = geom["bbox"]
+    allowed = retreat_geometry(ds1, ds2, crs=crs)
+    return rasterize_retreat_mask(
+        output_file, date, allowed, [x_min, x_max], [y_min, y_max], resolution, crs=crs, encoding_time=encoding_time
+    )
 
 
 def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:

@@ -20,6 +20,7 @@ init_start = "0001-01-01"
 init_surface_model = "debm_enhanced_forcing"
 name = "Hindcast"
 prefix = "glacier/input"
+profile = true
 project_directory = "s4f"
 rgi_complex_file = "s4f_c.gpkg"
 rgi_glacier_file = "s4f_g.gpkg"
@@ -115,7 +116,7 @@ model = 'blatter'
 
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.model' = "ssa+sia"
-'stress_balance.sia.max_diffusivity' = 100000.0
+'stress_balance.sia.max_diffusivity' = 1e6
 'stress_balance.sia.surface_gradient_method' = 'eta'
 'stress_balance.ssa.method' = "fd"
 'time_stepping.adaptive_ratio' = 0.12
@@ -233,7 +234,7 @@ model = "constant"
 
 'ocean.given.file' = "none"
 'ocean.given.periodic' = "yes"
-'ocean.model' = "given"
+'ocean.models' = "given"
 
 [ocean.options.constant]
 

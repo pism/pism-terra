@@ -44,6 +44,7 @@ from tqdm.auto import tqdm
 from pism_terra.domain import create_domain
 from pism_terra.download import download_file
 from pism_terra.ismip7.greenland.forcing import (
+    CALFIN_RESOLUTIONS,
     add_basins_to_ocean_files,
     prepare_calfin,
     prepare_dh_observations,
@@ -52,7 +53,6 @@ from pism_terra.ismip7.greenland.forcing import (
 )
 from pism_terra.log import setup_logging
 from pism_terra.prepare_select import add_include_argument, select_datasets
-from pism_terra.raster import create_ds
 from pism_terra.vector import dissolve
 from pism_terra.workflow import check_xr_fully, check_xr_lazy
 
@@ -102,7 +102,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         - ``"heatflux_file"`` : Path — geothermal heat-flux NetCDF.
         - ``"dh_files"`` : dict — observed cumulative thickness change per source.
         - ``"forcing_files"`` : sequence of Path — climate/ocean forcing files.
-        - ``"retreat_file"`` : Path — CALFIN front-retreat NetCDF.
+        - ``"retreat_file"`` : Path — CALFIN front-retreat NetCDF on the setup's own grid.
+        - ``"retreat_files"`` : dict — CALFIN front-retreat NetCDF per resolution (m).
     """
 
     parser = ArgumentParser()
@@ -141,6 +142,14 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         metavar="FORCING[,FORCING...]",
         default=None,
         help="Only process these forcings ('climate', 'ocean') in the 'forcings' step; default is both.",
+    )
+    parser.add_argument(
+        "--calfin-resolutions",
+        metavar="RES[,RES...]",
+        default=",".join(str(r) for r in CALFIN_RESOLUTIONS),
+        help="Grid resolutions (m) the CalFin retreat mask is built at in the 'calfin' step. A run stages the "
+        "file matching its own grid (staging warns when that file is not in the bucket), so build every "
+        "resolution anyone runs at. The setup's own resolution is always included.",
     )
     parser.add_argument("CONFIG_FILE", nargs=1)
     parser.add_argument("OUTPUT_PATH", nargs=1)
@@ -291,14 +300,18 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         logger.info("Forcing files: %s", forcing_files)
 
     # --- CalFin glacier fronts ---
-    retreat_file = None
+    retreat_files: dict[int, Path] = {}
     if "calfin" in selected:
         logger.info("-" * 120)
-        logger.info("Calfin Glacier Fronts File")
+        logger.info("Calfin Glacier Fronts Files")
         logger.info("-" * 120)
-        retreat_file = prepare_calfin(
-            input_path, resolution=resolution, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
-        )
+        calfin_resolutions = sorted({int(r) for r in args.calfin_resolutions.split(",") if r.strip()} | {resolution})
+        retreat_files = {
+            int(res): Path(fn)
+            for res, fn in prepare_calfin(
+                input_path, calfin_resolutions, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
+            ).items()
+        }
 
     # Every shipped product was written into ``input/`` directly, so the
     # upload is a plain 1:1 sync — no excludes, no duplicated copy on disk.
@@ -321,7 +334,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         "heatflux_file": obs_files_1985.get("heatflux_file") or obs_files_2007.get("heatflux_file"),
         "dh_files": dh_files,
         "forcing_files": forcing_files,
-        "retreat_file": retreat_file,
+        "retreat_file": retreat_files.get(resolution),
+        "retreat_files": retreat_files,
         "obs_file_1985": obs_files_1985.get("obs_file"),
         "obs_file_2007": obs_files_2007.get("obs_file"),
     }

@@ -50,6 +50,8 @@ from tqdm.auto import tqdm
 from pism_terra.aws import download_from_s3
 from pism_terra.workflow import check_xr_lazy
 
+logger = logging.getLogger(__name__)
+
 # Silence noisy third-party INFO chatter that interleaves with tqdm bars.
 for _name in ("cdsapi", "datapi", "multiurl", "ecmwf", "botocore", "s3transfer", "boto3"):
     logging.getLogger(_name).setLevel(logging.WARNING)
@@ -430,6 +432,128 @@ def _cds_year_cache_path(dataset: str, request: dict, year: str, dest: Path, suf
     return dest / f"_cds_{dataset}_{var_key}_{_request_key(request)}_{year}{suffix}"
 
 
+def _reconcile_float_noise(parts: Sequence[xr.Dataset], rtol: float = 1e-6, atol: float = 1e-3) -> list[xr.Dataset]:
+    """
+    Make variables that differ only by floating-point noise identical across parts.
+
+    CDS splits a multi-variable request into one file per variable, each
+    carrying its own copy of the 2-D ``latitude``/``longitude`` fields, and
+    those copies can differ in the last float32 digit between products
+    (analysis vs forecast, or levels). ``xr.merge`` then refuses the
+    "conflicting values" even though the grids are the same. Every variable
+    present in more than one part and equal to the first part's copy within
+    ``rtol``/``atol`` is replaced by that copy; anything that really differs
+    is left alone, so the merge still catches genuine conflicts.
+
+    Parameters
+    ----------
+    parts : sequence of xarray.Dataset
+        Datasets about to be merged.
+    rtol : float, optional
+        Relative tolerance passed to :func:`numpy.allclose`.
+    atol : float, optional
+        Absolute tolerance passed to :func:`numpy.allclose`.
+
+    Returns
+    -------
+    list of xarray.Dataset
+        The parts, with noisy duplicates of the first part's variables replaced.
+    """
+    if len(parts) < 2:
+        return list(parts)
+    first = parts[0]
+    out = [first]
+    for part in parts[1:]:
+        replace = {}
+        for name in set(part.variables) & set(first.variables):
+            a, b = first[name], part[name]
+            if a.dims != b.dims or a.shape != b.shape or a.dtype.kind not in "fc" or b.dtype.kind not in "fc":
+                continue
+            if not np.array_equal(a.values, b.values, equal_nan=True) and np.allclose(
+                a.values, b.values, rtol=rtol, atol=atol, equal_nan=True
+            ):
+                replace[name] = a
+        if replace:
+            logger.info("reconciling float noise in %s", sorted(replace))
+            part = part.assign(**{k: v for k, v in replace.items() if k not in part.coords})
+            part = part.assign_coords(**{k: v for k, v in replace.items() if k in part.coords})
+        out.append(part)
+    return out
+
+
+def _merge_year_parts(matching: Sequence[Path | str], nc_path: Path) -> Path:
+    """
+    Merge the per-variable files of one CDS year onto ``nc_path``.
+
+    CDS splits multi-variable requests into one ``data_<i>.nc`` per variable
+    inside the ZIP. Callers (e.g. CARRA2 radiation, which asks for both
+    ``ssrd`` and ``ssr`` in one go) expect a single file per (dataset, year)
+    so they can read every requested variable from the same handle.
+
+    Parameters
+    ----------
+    matching : sequence of Path or str
+        The extracted part files.
+    nc_path : Path
+        Canonical cache path to write.
+
+    Returns
+    -------
+    Path
+        ``nc_path``.
+    """
+    if len(matching) == 1:
+        return Path(matching[0])
+    parts = [xr.open_dataset(p) for p in matching]
+    try:
+        # join="outer" preserves every timestamp present in any part —
+        # only relevant when CDS hands back per-variable files whose
+        # time coordinates don't match exactly (CARRA2 ``forecast_based``
+        # has done this for ssrd vs ssr). xarray's default is about to
+        # flip to "exact", which would crash on the first such mismatch,
+        # so pin it here. combine_attrs="override" silences the noise
+        # from per-variable attribute differences (cell_methods etc.).
+        merged = xr.merge(_reconcile_float_noise(parts), compat="no_conflicts", join="outer", combine_attrs="override")
+        merged.to_netcdf(nc_path)
+    finally:
+        for ds in parts:
+            ds.close()
+    return nc_path
+
+
+def _cds_extract_year(zip_path: Path, year: str, dest: Path, nc_path: Path) -> Path:
+    """
+    Extract a downloaded CDS ZIP for one year and merge its parts.
+
+    Parameters
+    ----------
+    zip_path : Path
+        The archive CDS delivered.
+    year : str
+        Four-digit year string (names the extraction folder).
+    dest : Path
+        Cache directory.
+    nc_path : Path
+        Canonical cache path; its suffix selects the archive members.
+
+    Returns
+    -------
+    Path
+        The single file for the year.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the archive holds no file with the expected suffix.
+    """
+    extracted = extract_archive(zip_path, extract_to=dest / f"_cds_{year}", force_overwrite=True, verbose=False)
+    want_suffix = nc_path.suffix.lower()
+    matching = sorted(p for p in extracted if str(p).lower().endswith(want_suffix))
+    if not matching:
+        raise FileNotFoundError(f"No '{want_suffix}' files found in archive for year {year}")
+    return _merge_year_parts(matching, nc_path)
+
+
 def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: Path) -> Path:
     """
     Wait on a previously-submitted CDS job and download its result.
@@ -462,34 +586,7 @@ def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: 
     results.download(str(dl_path))
 
     if str(dl_path).endswith(".zip"):
-        extracted = extract_archive(dl_path, extract_to=dest / f"_cds_{year}", force_overwrite=True, verbose=False)
-        want_suffix = nc_path.suffix.lower()
-        matching = sorted(p for p in extracted if str(p).lower().endswith(want_suffix))
-        if not matching:
-            raise FileNotFoundError(f"No '{want_suffix}' files found in archive for year {year}")
-        if len(matching) == 1:
-            return Path(matching[0])
-        # CDS splits multi-variable requests into one ``data_<i>.nc`` per
-        # variable inside the ZIP. Callers (e.g. CARRA2 radiation, which
-        # asks for both ``ssrd`` and ``ssr`` in one go) expect a single
-        # file per (dataset, year) so they can read every requested
-        # variable from the same handle. Merge the parts onto the
-        # canonical ``nc_path`` and return that.
-        parts = [xr.open_dataset(p) for p in matching]
-        try:
-            # join="outer" preserves every timestamp present in any part —
-            # only relevant when CDS hands back per-variable files whose
-            # time coordinates don't match exactly (CARRA2 ``forecast_based``
-            # has done this for ssrd vs ssr). xarray's default is about to
-            # flip to "exact", which would crash on the first such mismatch,
-            # so pin it here. combine_attrs="override" silences the noise
-            # from per-variable attribute differences (cell_methods etc.).
-            merged = xr.merge(parts, compat="no_conflicts", join="outer", combine_attrs="override")
-            merged.to_netcdf(nc_path)
-        finally:
-            for ds in parts:
-                ds.close()
-        return nc_path
+        return _cds_extract_year(dl_path, year, dest, nc_path)
 
     return nc_path
 
@@ -554,6 +651,17 @@ def _cds_download_years(
             cached.append(nc_path)
             submit_pbar.set_postfix_str(f"{yr} cached")
             continue
+        # A ZIP that CDS already delivered but whose parts failed to merge
+        # (the request itself took the better part of an hour) is finished
+        # here rather than requested again.
+        zip_path = dest / f"_cds_{yr}.zip"
+        if zip_path.exists() and not force_overwrite:
+            try:
+                cached.append(_cds_extract_year(zip_path, yr, dest, nc_path))
+                submit_pbar.set_postfix_str(f"{yr} from cached zip")
+                continue
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                tqdm.write(f"Cached archive for {yr} could not be finished ({exc}); requesting it again")
         remote = client.submit(dataset, {**request, "year": [yr]})
         pending.append((yr, nc_path, remote))
         submit_pbar.set_postfix_str(f"{yr} → {remote.request_id}")
@@ -659,7 +767,9 @@ def carra_download_request(
     file_path = Path(file_path)
     suffix = file_path.suffix or ".nc"
 
-    client = _DatastoresClient()
+    client = _DatastoresClient(
+        progress=False
+    )  # no inner tqdm bar: it runs in a pool thread beside the outer bar's, and a shared tqdm lock across threads is the one place a finished download has been seen to hang
 
     path = file_path.parent
     carra2_path = path / Path("_".join(v for v in request["variable"]))
@@ -798,7 +908,9 @@ def download_request(
     )
 
     if not reuse_cache:
-        client = _DatastoresClient()
+        client = _DatastoresClient(
+            progress=False
+        )  # no inner tqdm bar: it runs in a pool thread beside the outer bar's, and a shared tqdm lock across threads is the one place a finished download has been seen to hang
 
         path = file_path.parent
         file_path.unlink(missing_ok=True)

@@ -23,7 +23,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
-import dask
 import matplotlib as mpl
 import matplotlib.pylab as plt
 import numpy as np
@@ -32,6 +31,7 @@ import xarray as xr
 
 from pism_terra.filtering import importance_sampling
 from pism_terra.likelihood import REDUCTIONS
+from pism_terra.progress import compute as compute_with_progress
 
 rc_params = {
     "axes.linewidth": 0.15,
@@ -135,7 +135,7 @@ def squared_error_blocks(sim, obs, block_size, dim="exp_id"):
     counts = valid.astype("int64").coarsen(**windows).sum().stack(block=("y", "x"))
     # One compute: `sums` and `counts` share the `sq_err` sub-graph, so the
     # inputs are read from disk a single time.
-    sums, counts = dask.compute(sums, counts)
+    sums, counts = compute_with_progress(sums, counts, desc="Block bootstrap: squared error per block")
     return np.asarray(sums.transpose(dim, "block").values, dtype=float), np.asarray(counts.values, dtype=int)
 
 
@@ -478,6 +478,8 @@ def importance_weights(
     likelihood_kwargs = {"reduction": reduction, "block_size": 1 if block_size is None else int(block_size)}
     log_likes = []
     for fudge_factor in fudge_factors:
+        # Left lazy so the fudge factors share one pass over the ensemble
+        # below, rather than reading it once per factor.
         filtered = importance_sampling(
             sim[[var]],
             obs[[obs_var, obs_std_var]],
@@ -490,14 +492,94 @@ def importance_weights(
             n_samples=1,
             seed=seed,
             dim=dim,
+            compute=False,
         )
         ll = filtered["log_likelihood"]
         ll = ll.squeeze([d for d in ll.dims if d != dim and ll.sizes[d] == 1], drop=True)
         log_likes.append(ll.transpose(dim))
     log_likelihood = xr.concat(log_likes, dim="fudge_factor").assign_coords(fudge_factor=list(fudge_factors))
+    (log_likelihood,) = compute_with_progress(
+        log_likelihood, desc=f"Importance weights: log-likelihood of {var} for {len(fudge_factors)} fudge factor(s)"
+    )
     weighted = weights_from_log_likelihood(log_likelihood, dim=dim, n_samples=n_samples, seed=seed)
     weighted.attrs.update({"reduction": reduction, "block_size": likelihood_kwargs["block_size"]})
     return weighted
+
+
+def _weighted_quantile_1d(values: np.ndarray, weights: np.ndarray, quantiles: np.ndarray) -> np.ndarray:
+    """
+    Compute the weighted quantiles of one vector, interpolating between the sorted values.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Sample values; non-finite entries are dropped.
+    weights : numpy.ndarray
+        Non-negative weight per value; non-finite entries count as zero.
+    quantiles : numpy.ndarray
+        Levels in ``[0, 1]``.
+
+    Returns
+    -------
+    numpy.ndarray
+        One quantile per level; NaN when nothing carries weight.
+    """
+    w = np.where(np.isfinite(weights), weights, 0.0)
+    keep = np.isfinite(values) & (w > 0)
+    v, w = values[keep], w[keep]
+    if v.size == 0:
+        return np.full(len(quantiles), np.nan)
+    order = np.argsort(v)
+    v, w = v[order], w[order]
+    # Each sorted value sits at the midpoint of its weight interval, so an
+    # unweighted vector reproduces numpy's default (linear) quantile up to
+    # the end-point convention, and a member with all the weight is the
+    # answer at every level.
+    positions = (np.cumsum(w) - 0.5 * w) / w.sum()
+    return np.interp(quantiles, positions, v)
+
+
+def weighted_quantiles(da: xr.DataArray, weights: xr.DataArray, quantiles, *, dim="exp_id") -> xr.DataArray:
+    """
+    Take quantiles over the member dimension with one weight per member.
+
+    The posterior of an importance-sampled ensemble is the prior with every
+    member counted by its weight, so the posterior band of a time series is
+    the weighted quantile at every instant; with equal weights this is the
+    prior band.
+
+    Parameters
+    ----------
+    da : xarray.DataArray
+        Values with a ``dim`` dimension and any others (``time``, say).
+    weights : xarray.DataArray
+        Weight per member on ``dim``; other dimensions broadcast against ``da``.
+    quantiles : float or sequence of float
+        Levels in ``[0, 1]``.
+    dim : str, default ``"exp_id"``
+        Member dimension.
+
+    Returns
+    -------
+    xarray.DataArray
+        ``da`` reduced over ``dim`` with a leading ``quantile`` dimension.
+    """
+    levels = np.atleast_1d(np.asarray(quantiles, dtype=float))
+    out = xr.apply_ufunc(
+        _weighted_quantile_1d,
+        da,
+        weights,
+        input_core_dims=[[dim], [dim]],
+        output_core_dims=[["quantile"]],
+        vectorize=True,
+        dask="parallelized",
+        output_dtypes=[float],
+        dask_gufunc_kwargs={"output_sizes": {"quantile": levels.size}},
+        kwargs={"quantiles": levels},
+    )
+    out = out.assign_coords(quantile=levels).transpose("quantile", ...)
+    out.attrs = dict(da.attrs)
+    return out
 
 
 def joint_log_likelihood(per_glacier: Mapping[str, xr.DataArray], dim="uq_id") -> tuple[xr.DataArray, list]:
@@ -655,5 +737,6 @@ __all__: Sequence[str] = (
     "rank_by_bootstrap_rmse",
     "short_labels",
     "squared_error_blocks",
+    "weighted_quantiles",
     "weights_from_log_likelihood",
 )

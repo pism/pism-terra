@@ -56,6 +56,36 @@ no `:toctree:` so the field descriptions are registered in exactly one place
     create_samples
 ```
 
+## Profiling
+
+Read the files PISM writes with `-profile` when `campaign.profile` is set
+(see {doc}`../features/run_configuration`).
+
+```{eval-rst}
+.. currentmodule:: pism_terra.profiling
+
+.. autosummary::
+    :toctree: generated/
+
+    load_profile
+    load_profiles
+    event_summary
+```
+
+```{eval-rst}
+.. currentmodule:: pism_terra.profile_analysis
+
+.. autosummary::
+    :toctree: generated/
+
+    analyze
+    component_breakdown
+    blatter_phases
+    blatter_kernels
+    solver_counts
+    rank_times
+```
+
 ## Glacier subpackage
 
 ### Staging entrypoints

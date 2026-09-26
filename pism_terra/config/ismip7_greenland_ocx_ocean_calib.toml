@@ -24,6 +24,7 @@ obs_file = "obs_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 outline_file = "mouginot_basins_w_shelves.gpkg"
 pathway = "historical"
 prefix = "ismip7/greenland/input"
+profile = true
 regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
 version = "v3"
@@ -41,8 +42,8 @@ OCX = {climate = 1, ocean = 1}
 
 'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
-'time.start' = "1990-01-01"
-'time.end' = "1992-01-01"
+'time.start' = "1985-01-01"
+'time.end' = "1987-01-01"
 
 [time_stepping]
 
@@ -72,7 +73,7 @@ OCX = {climate = 1, ocean = 1}
 'output.checkpoint.interval' = 24
 'output.compression_level' = 2
 'output.fill_value' = 9.969209968386869e+36
-'output.format' = "netcdf4_parallel"
+'output.format' = "netcdf4_serial"
 'output.scalar.file' = "none"
 'output.scalar.times' = "monthly"
 'output.size' = "medium"
@@ -80,7 +81,7 @@ OCX = {climate = 1, ocean = 1}
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "picop_fresh_water_melt_rate,picop_discharge_flux,picop_disch_q0,picop_disch_L5,picop_temperature,picop_local_slope,picop_grounding_line_elevation,subglacial_water_flux_mag,bwat,dHdt,grounding_line_flux,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,bmelt"
+'output.spatial.vars' = "bmelt,mask,plume_fresh_water_melt_rate,plume_discharge_flux,plume_disch_q0,plume_temperature,plume_shelf_base_elevation,ice_mass_transport_across_grounding_line,velsurf_mag"
 
 [grid]
 
@@ -122,7 +123,7 @@ model = 'hybrid'
 
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.model' = "ssa+sia"
-'stress_balance.sia.max_diffusivity' = 100000.0
+'stress_balance.sia.max_diffusivity' = 1e6
 'stress_balance.ssa.method' = "fd"
 
 [iceflow]
@@ -184,7 +185,7 @@ model = "given"
 
 [ocean]
 
-model = "picop_sgd"
+model = "plume_sgd"
 
 [ocean.options.pico]
 
@@ -207,9 +208,8 @@ model = "picop_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.file' = "none"
-'ocean.picop.length_scale_factor' = 0.15
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.length_scale_factor' = 0.15
 
 [ocean.options.picop_sgd]
 
@@ -221,12 +221,34 @@ model = "picop_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.add_fresh_water_melt' = "yes"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.file' = "none"
-'ocean.picop.power_alpha' = 0.54
-'ocean.picop.power_beta' = 1.18
-'ocean.picop.length_scale_factor' = 0.15
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.power_alpha' = 0.54
+'ocean.plume.power_beta' = 1.18
+'ocean.plume.length_scale_factor' = 0.15
+
+[ocean.options.plume]
+
+'ocean.models' = "plume"
+'ocean.plume.drag_coefficient' = 0.0025
+'ocean.plume.file' = "none"
+'ocean.plume.length_scale_factor' = 0.15
+'ocean.plume.melt_rate_parameter' = 3.5
+'ocean.plume.power_alpha' = 0.33333333
+'ocean.plume.power_beta' = 2.0
+'ocean.plume.temperature_as_thermal_forcing' = "yes"
+
+[ocean.options.plume_sgd]
+
+'ocean.models' = "plume"
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.drag_coefficient' = 0.0025
+'ocean.plume.file' = "none"
+'ocean.plume.length_scale_factor' = 0.15
+'ocean.plume.melt_rate_parameter' = 3.5
+'ocean.plume.power_alpha' = 0.33333333
+'ocean.plume.power_beta' = 2.0
+'ocean.plume.temperature_as_thermal_forcing' = "yes"
 
 [ocean.options.th]
 

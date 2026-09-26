@@ -43,6 +43,7 @@ from pism_terra.glacier.stage import campaign_years, stage_glacier
 from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
+    add_profile_option,
     add_provenance,
     apply_choice_mapping,
     check_template_legs,
@@ -372,6 +373,7 @@ def _build_init_leg(
             "output.spatial.file": (spatial_path / Path(f"spatial_{init_tag}.nc")).resolve(),
         }
     )
+    add_profile_option(run_init, cfg.campaign.profile)
 
     if pism_config_cdl is not None:
         validate_pism_options(run_init, pism_config_cdl)
@@ -564,6 +566,8 @@ def _render_inverse_run(
     stress_balance_cli = config_cli.get("stress_balance")
     if stress_balance_cli is not None:
         cfg.stress_balance.model = stress_balance_cli
+    if uq is not None:
+        cfg.select_models(normalize_row(uq))
 
     run = {}
     for section in (
@@ -580,6 +584,7 @@ def _render_inverse_run(
     run.update(cfg.ocean.selected())
     run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
+    run.update(cfg.hydrology.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
@@ -682,6 +687,7 @@ def _render_inverse_run(
             "output.spatial.file": spatial_file.resolve(),
         }
     )
+    add_profile_option(run, cfg.campaign.profile)
 
     # Leg 1 (init/prior): a short bootstrap run over
     # ``campaign.init_start``..``campaign.init_end``. It is built from ``run``
@@ -926,6 +932,8 @@ def _render_forward_run(
     stress_balance_cli = config_cli.get("stress_balance")
     if stress_balance_cli is not None:
         cfg.stress_balance.model = stress_balance_cli
+    if uq is not None:
+        cfg.select_models(normalize_row(uq))
 
     run = {}
     for section in (
@@ -943,6 +951,7 @@ def _render_forward_run(
     run.update(cfg.ocean.selected())
     run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
+    run.update(cfg.hydrology.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
@@ -1019,6 +1028,7 @@ def _render_forward_run(
             "output.spatial.file": spatial_file.resolve(),
         }
     )
+    add_profile_option(run, cfg.campaign.profile)
 
     # Optional init leg: when the campaign config carries init_start/init_end,
     # render a short bootstrap run first and restart the main leg from its

@@ -33,11 +33,18 @@ import pandas as pd
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
+from pism_terra.aws import local_to_s3
 from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.download import file_localizer
+from pism_terra.glacier.run import snapshot_project_file
 from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.ismip7.experiments import resolve_counter
 from pism_terra.ismip7.greenland.observations import prepare_observations
-from pism_terra.ismip7.greenland.stage import stage
+from pism_terra.ismip7.greenland.stage import (
+    place_dh_observations,
+    place_outline,
+    stage,
+)
 from pism_terra.ismip7.naming import (
     UQ_SEPARATOR,
     ISMIP7Names,
@@ -46,6 +53,7 @@ from pism_terra.ismip7.naming import (
 )
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
+    add_profile_option,
     add_provenance,
     apply_choice_mapping,
     check_template_legs,
@@ -256,6 +264,7 @@ def _build_init_leg(
             "output.spatial.file": (spatial_path / Path(f"spatial_{init_tag}.nc")).resolve(),
         }
     )
+    add_profile_option(run_init, cfg.campaign.profile)
 
     if pism_config_cdl is not None:
         validate_pism_options(run_init, pism_config_cdl)
@@ -407,7 +416,7 @@ def _build_forward_legs(
     proj_overrides: Mapping[str, object] | None,
     pism_config_cdl: str | Path | None,
     run_index: int | None = None,
-) -> dict[str, str]:
+) -> dict[str, str | list[str]]:
     """
     Build the forward leg command line(s) and post-processing strings.
 
@@ -579,7 +588,8 @@ def _build_forward_legs(
         tuple of pathlib.Path
             ``(state, spatial, scalar, basin)`` — absolute paths for PISM's
             ``output.file``, ``output.spatial.file``, ``output.scalar.file``,
-            and the per-basin scalar file written by the post-processing step.
+            and the per-region scalar file (``region_<tag>.nc``) written by the
+            post-processing step.
             The ISMIP7-tree ``spatial`` carries a ``{var}`` placeholder that
             PISM fills in per variable (one conforming file per variable); the
             flat ``spatial`` is a single combined file so it can be fed to
@@ -590,7 +600,7 @@ def _build_forward_legs(
         if ismip7_ctx is None or not ismip7:
             spatial = spatial_path / Path(f"spatial_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
             scalar = scalar_path / Path(f"scalar_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
-            basin = scalar_path / Path(f"basin_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
+            basin = scalar_path / Path(f"region_g{resolution}_{name_options}_{start_str}_{end_str}.nc")
             return state, spatial, scalar, basin
         end_ts = pd.Timestamp(end_str)
         last_year = end_ts.year - 1 if (end_ts.month == 1 and end_ts.day == 1) else end_ts.year
@@ -600,7 +610,7 @@ def _build_forward_legs(
         ismip7_dir.mkdir(parents=True, exist_ok=True)
         spatial = ismip7_dir / names.filename("{var}")
         scalar = ismip7_dir / f"scalar_{names.stem()}.nc"
-        basin = ismip7_dir / f"basin_{names.stem()}.nc"
+        basin = ismip7_dir / f"region_{names.stem()}.nc"
         return state, spatial, scalar, basin
 
     # Which leg is the ISMIP7 submission product: for a counter-driven run only the
@@ -631,6 +641,7 @@ def _build_forward_legs(
                 "output.scalar.file": scalar_one.resolve(),
             }
         )
+        add_profile_option(run_one, cfg.campaign.profile)
         # A projection pathway swaps the historical forcing (applied via ``uq``)
         # for the projection-epoch files ``_run`` passes on ``proj_overrides``.
         if not single_is_historical and proj_overrides:
@@ -659,7 +670,7 @@ def _build_forward_legs(
             post_process_str = (
                 f"pism-postprocess-scalar "
                 f"{spatial_one.resolve()} {basin_one.resolve()} {outline_file} "
-                f"--total-name GIS{_nt}"
+                f"--dim-name region --total-name GIS_GIS{_nt}"
             )
     else:
         # --- Counter-driven ISMIP7 two-leg run (historical -> projection) ---
@@ -676,6 +687,7 @@ def _build_forward_legs(
                 "output.scalar.file": scalar_hist.resolve(),
             }
         )
+        add_profile_option(run_hist, cfg.campaign.profile)
 
         if pism_config_cdl is not None:
             validate_pism_options(run_hist, pism_config_cdl)
@@ -720,6 +732,7 @@ def _build_forward_legs(
                     "output.scalar.file": scalar_proj.resolve(),
                 }
             )
+            add_profile_option(run_proj, cfg.campaign.profile)
             # Projection-epoch file paths supplied by ``_run()`` (climate / ocean
             # / gradient) — filtered against ``run_proj`` so a mis-typed key from
             # the caller doesn't silently vanish.
@@ -762,7 +775,7 @@ def _build_forward_legs(
             flux_command = (
                 f"pism-ismip7-postprocess-flux "
                 f"{submission_dir} {(output_path / 'basins').resolve()} {outline_file} "
-                f"--total-name GIS{_nt}"
+                f"--dim-name region --total-name GIS_GIS{_nt}"
             )
             # Appended, not assigned: a single-leg run with ISMIP7 naming on
             # reaches here having already put its own pism-postprocess-scalar
@@ -778,7 +791,38 @@ def _build_forward_legs(
         "post_process_str": post_process_str,
         "ism_checker_str": ism_checker_str,
         "post_scalar_str": post_scalar_str,
+        "output_dirs": run_directories(output_path),
     }
+
+
+def run_directories(output_path: Path | str) -> list[str]:
+    """
+    List the directories a run writes into, for the script to create itself.
+
+    The generator creates every output directory as it names the files --
+    the per-leg ``state``, ``scalar`` and ``spatial`` directories, the ISMIP7
+    submission tree, the profile directory -- but a run staged through S3
+    arrives without them: a bucket keeps no empty directories, and PISM does
+    not create the directory of a file it opens for writing. The rendered
+    script therefore carries a ``mkdir -p`` of everything that exists under
+    the output tree at render time, plus the log directory beside it.
+
+    Parameters
+    ----------
+    output_path : Path or str
+        The run's ``output/`` directory.
+
+    Returns
+    -------
+    list of str
+        Absolute directories, sorted; ``mkdir -p`` on an existing one is a no-op.
+    """
+    root = Path(output_path).resolve()
+    dirs = {root} | {p.resolve() for p in root.rglob("*") if p.is_dir()}
+    logs = root.parent / "logs"
+    if logs.is_dir():
+        dirs.add(logs.resolve())
+    return [str(d) for d in sorted(dirs)]
 
 
 def _render_forward_run(
@@ -891,6 +935,16 @@ def _render_forward_run(
     spatial_path = paths["spatial"]
     state_path = paths["state"]
 
+    # CLI override for the stress-balance model, then the models a UQ row
+    # selects (``<section>.model``), both applied to ``cfg`` before any run
+    # dict is built so the init leg and the forward leg agree and no stale
+    # option keys of the previous model leak into the run.
+    stress_balance = config_cli.get("stress_balance")
+    if stress_balance is not None:
+        cfg.stress_balance.model = stress_balance
+    if uq is not None:
+        cfg.select_models(normalize_row(uq))
+
     run_hist = _base_run_dict(cfg)
 
     template_file = Path(template_file)
@@ -918,15 +972,6 @@ def _render_forward_run(
 
     if resolution is None:
         resolution = cfg.model_dump(by_alias=True)["grid"]["resolution"]
-    # CLI override for the stress-balance model. Drop the previous model's
-    # options from ``run_hist`` first so leftover keys (e.g. blatter.*) don't
-    # leak into e.g. a sia run.
-    stress_balance = config_cli.get("stress_balance")
-    if stress_balance is not None:
-        for old_key in cfg.stress_balance.selected():
-            run_hist.pop(old_key, None)
-        cfg.stress_balance.model = stress_balance
-        run_hist.update(cfg.stress_balance.selected())
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
 
     energy = cfg.model_dump(by_alias=True)["energy"]["model"]
@@ -969,7 +1014,7 @@ def _render_forward_run(
     overrides, skipped = filter_overrides_by_config(all_overrides, run_hist.keys())
     skipped = [k for k in skipped if k not in init_surface_keys]
     if skipped:
-        print(f"Skipping uq overrides not in config: {skipped}")
+        print(f"WARNING: UQ overrides not in the selected config sections, NOT passed to PISM: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
     run_hist.update(overrides)
 
@@ -1198,6 +1243,10 @@ def _render_inverse_run(
     stress_balance = config_cli.get("stress_balance")
     if stress_balance is not None:
         cfg.stress_balance.model = stress_balance
+    # Models a UQ row selects (``<section>.model``) swap the whole option
+    # table, for the same reason and at the same point as the CLI override.
+    if uq is not None:
+        cfg.select_models(normalize_row(uq))
     stress_balance = cfg.model_dump(by_alias=True)["stress_balance"]["model"]
 
     # CLI overrides for time bounds apply to the *forward* legs only; the
@@ -1282,7 +1331,7 @@ def _render_inverse_run(
     fwd_overrides, _ = filter_overrides_by_config(all_overrides, run_fwd.keys())
     skipped = [k for k in all_overrides if k not in inv and k not in run_fwd and k not in init_surface_keys]
     if skipped:
-        print(f"Skipping uq overrides not in config: {skipped}")
+        print(f"WARNING: UQ overrides not in the selected config sections, NOT passed to PISM: {skipped}")
     inv.update(inv_overrides)
     run_fwd.update(fwd_overrides)
 
@@ -1423,6 +1472,12 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = description
+    parser.add_argument("--bucket", help="AWS S3 Bucket to upload output files to")
+    parser.add_argument(
+        "--bucket-prefix",
+        help="AWS prefix (location in bucket) to add to product files",
+        default="",
+    )
     parser.add_argument(
         "--output-path",
         help="Base path to save all files to.",
@@ -1619,10 +1674,20 @@ def _run(*, kind: str) -> None:
     output_path = path / Path("output")
     output_path.mkdir(parents=True, exist_ok=True)
 
-    config_file = options.CONFIG_FILE
-    template_file = options.TEMPLATE_FILE
-    uq_file = options.UQ_FILE
-    pism_config_cdl = options.pism_config_cdl
+    # Remote (s3:// or https://) project files are downloaded first: handed to
+    # ``Path`` as they are, an S3 URI collapses to ``s3:/bucket/...`` and is
+    # then looked up on the local disk. As in the glacier runner, a copy of
+    # every file that shaped this experiment is kept next to its outputs and
+    # the run uses the copies, so the scripts point at the snapshot.
+    config_path, template_path, uq_path = path / "config", path / "templates", path / "uq"
+    config_file = snapshot_project_file(file_localizer(options.CONFIG_FILE, config_path), config_path)
+    pism_config_cdl = (
+        snapshot_project_file(file_localizer(options.pism_config_cdl, config_path), config_path)
+        if options.pism_config_cdl
+        else None
+    )
+    template_file = snapshot_project_file(file_localizer(options.TEMPLATE_FILE, template_path), template_path)
+    uq_file = snapshot_project_file(file_localizer(options.UQ_FILE, uq_path), uq_path) if options.UQ_FILE else None
 
     cfg = load_config(config_file)
     # Applied before as_params(): the campaign dict is a plain snapshot, so a
@@ -1658,6 +1723,9 @@ def _run(*, kind: str) -> None:
         force_overwrite=force_overwrite,
         include_projection=include_projection,
         data_path=data_path,
+        # The front-retreat mask is per grid; stage the one this run's
+        # resolution was built for (see stage.select_retreat_file).
+        resolution=options.resolution or cfg.grid.resolution,
     )
 
     # The observed mass balance the run is validated against, staged into
@@ -1665,8 +1733,12 @@ def _run(*, kind: str) -> None:
     # does it. The cache sits beside the shared inputs so the ~500 MB GSFC file
     # is fetched once per campaign. Failures are logged, not raised: these are
     # validation data, not run inputs, and GRACE Tellus needs an Earthdata login.
+    input_dir = Path(data_path) if data_path is not None else path / Path("input")
+    place_dh_observations(campaign_config, input_dir, path)
+    # The basin outline the per-region post-processing reduces over, so the
+    # regions can be recomputed from the submission tree alone.
+    place_outline(campaign_config, input_dir, path)
     if not options.no_observations:
-        input_dir = Path(data_path) if data_path is not None else path / Path("input")
         prepare_observations(
             path,
             cache_path=input_dir / Path("observations"),
@@ -1732,7 +1804,7 @@ def _run(*, kind: str) -> None:
                 "surface.ismip7.file": row["climate_hist_file"],
                 "surface.ismip7.gradient.file": row["climate_gradient_hist_file"],
                 "ocean.pico.file": row["ocean_hist_file"],
-                "ocean.picop.file": row["ocean_hist_file"],
+                "ocean.plume.file": row["ocean_hist_file"],
                 "ocean.th.file": row["ocean_hist_file"],
                 "frontal_melt.routing.file": row["ocean_hist_file"],
             }
@@ -1751,7 +1823,7 @@ def _run(*, kind: str) -> None:
                 "surface.ismip7.file": row["climate_proj_file"],
                 "surface.ismip7.gradient.file": row["climate_gradient_proj_file"],
                 "ocean.pico.file": row["ocean_proj_file"],
-                "ocean.picop.file": row["ocean_proj_file"],
+                "ocean.plume.file": row["ocean_proj_file"],
                 "ocean.th.file": row["ocean_proj_file"],
                 "frontal_melt.routing.file": row["ocean_proj_file"],
             }
@@ -1788,6 +1860,12 @@ def _run(*, kind: str) -> None:
         # set to derive member ids from.
         if is_ismip7_run(cfg):
             record_member(path, ismip7_identity(cfg, sample, run_index), sampled_parameters)
+
+    # Ship the whole output tree (run scripts, config/template/uq snapshots,
+    # members table) to S3; PISM-Cloud reads the run scripts back from
+    # ``{bucket_prefix}/run_scripts/`` to launch the execute jobs.
+    if options.bucket:
+        local_to_s3(path, bucket=options.bucket, prefix=options.bucket_prefix)
 
 
 def run_forward() -> None:

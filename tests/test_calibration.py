@@ -21,6 +21,7 @@ from pism_terra.calibration import (
     posterior_table,
     rank_by_bootstrap_rmse,
     squared_error_blocks,
+    weighted_quantiles,
     weights_from_log_likelihood,
 )
 
@@ -334,3 +335,32 @@ def test_importance_weights_blocks_is_sharper_than_mean(ensemble):
     assert blocks["weights"].argmax("exp_id").item() == 0
     with pytest.raises(ValueError, match="reduction"):
         importance_weights(sim, obs, "smb", reduction="median")
+
+
+def test_weighted_quantiles_matches_numpy_with_equal_weights():
+    """
+    Equal weights give the plain quantiles, and one heavy member is the answer at every level.
+    """
+    rng = np.random.default_rng(0)
+    da = xr.DataArray(rng.normal(size=(200, 5)), dims=["uq_id", "time"], coords={"uq_id": np.arange(200).astype(str)})
+    equal = xr.ones_like(da["uq_id"], dtype=float)
+    q = weighted_quantiles(da, equal, [0.05, 0.5, 0.95], dim="uq_id")
+    assert q.dims == ("quantile", "time")
+    np.testing.assert_allclose(q.sel(quantile=0.5), da.median(dim="uq_id"), atol=0.02)
+    np.testing.assert_allclose(q.sel(quantile=0.05), da.quantile(0.05, dim="uq_id"), atol=0.05)
+    heavy = xr.zeros_like(equal)
+    heavy[7] = 1.0
+    q = weighted_quantiles(da, heavy, [0.05, 0.5, 0.95], dim="uq_id")
+    for level in (0.05, 0.5, 0.95):
+        np.testing.assert_allclose(q.sel(quantile=level), da.isel(uq_id=7))
+
+
+def test_weighted_quantiles_skips_missing_members():
+    """
+    A member without a value, or with zero weight, does not enter; no member at all gives NaN.
+    """
+    da = xr.DataArray([1.0, np.nan, 3.0, 100.0], dims=["uq_id"])
+    w = xr.DataArray([1.0, 1.0, 1.0, 0.0], dims=["uq_id"])
+    q = weighted_quantiles(da, w, 0.5, dim="uq_id")
+    np.testing.assert_allclose(q, [2.0])
+    assert np.isnan(weighted_quantiles(da, xr.zeros_like(w), 0.5, dim="uq_id")).all()

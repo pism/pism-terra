@@ -26,19 +26,13 @@ from __future__ import annotations
 import math
 import re
 from pathlib import Path
-from typing import Any, ClassVar, Iterator
+from typing import Any, ClassVar, Iterator, Mapping
 
 import pandas as pd
 import scipy.stats as st
 import toml
 from jinja2 import Environment
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Dependency-free (imports only the stdlib), so a top-level import here cannot
 # create a cycle back into this module.
@@ -1107,7 +1101,9 @@ class PismConfig(BaseModelWithDot):
         single source of truth for the experiment identity: it fills
         ``run_info.experiment``, ``campaign.pathway``, ``campaign.gcms``,
         ``campaign.climate_version`` / ``campaign.ocean_version`` (kept if
-        explicitly set), and the projection end (``time.end``) from
+        explicitly set), and the projection end -- both ``time.end`` and the
+        last year in the projection forcing filenames,
+        ``campaign.projection_end_year`` -- from
         :data:`pism_terra.ismip7.experiments.CORE_EXPERIMENTS`. This runs for both
         the staging and running entry points (both call :func:`load_config`), so a
         single field drives the whole ISMIP7 pipeline. Non-counter (legacy) configs
@@ -1127,6 +1123,11 @@ class PismConfig(BaseModelWithDot):
         self.campaign.pathway = spec.pathway
         self.campaign.gcms = [spec.esm_id]
         self.time.time_end = f"{spec.proj_end_year}-01-01"
+        # The published projection forcing spans 2015 to the pathway's end
+        # year (2100 for ssp370, 2300 otherwise), so the counter also fixes
+        # the year in the staged filenames; a config saying 2300 for an
+        # ssp370 counter would ask S3 for a file that does not exist.
+        self.campaign.projection_end_year = str(spec.proj_end_year)
         # Filename version tags of the published forcing (per-ESM and
         # per-forcing, decoupled from campaign.version which names the S3
         # directory). Explicit config values win, e.g. to point at a
@@ -1136,6 +1137,44 @@ class PismConfig(BaseModelWithDot):
         if self.campaign.ocean_version is None:
             self.campaign.ocean_version = spec.ocean_version
         return self
+
+    def select_models(self, overrides: Mapping[str, object]) -> None:
+        """
+        Point each model section at the model an ensemble row selects.
+
+        Sections with a ``model`` and per-model option tables (``surface``,
+        ``hydrology``, ``stress_balance``, ...) contribute only the selected
+        table to a run. A UQ row may pick the model itself through the dotted
+        ``<section>.model`` flag; applying that before the run dict is built
+        makes the whole option table follow the choice, instead of one flag
+        being overwritten while the previous model's options linger.
+
+        Parameters
+        ----------
+        overrides : Mapping[str, object]
+            Dotted PISM flags of one ensemble member. Only ``<section>.model``
+            keys are read here; the rest are applied as plain flag overrides
+            by the runners.
+
+        Raises
+        ------
+        ValueError
+            If a ``<section>.model`` override names no ``[<section>.options.*]``
+            table: keeping the config's model silently would make the member
+            a duplicate of another one.
+        """
+        for section, block in self:
+            if not isinstance(block, ModelWithOptions):
+                continue
+            model = overrides.get(f"{section}.model")
+            if model is None:
+                continue
+            if model not in block.options:
+                raise ValueError(
+                    f"uq override {section}.model = {model!r} names no [{section}.options.*] table "
+                    f"in the config; available: {sorted(block.options)}"
+                )
+            block.model = str(model)
 
 
 class RestartConfig(BaseModelWithDot):
@@ -1689,8 +1728,13 @@ class CampaignConfig(BaseModel):
         written by ``pism-ismip7-greenland-prepare --include dh``. PISM does
         not read them -- they are what a run is compared against afterwards --
         so they are optional and a config that omits them stages as before.
+        Staging also copies them into ``<output-path>/output/observations``,
+        beside the mass-balance products, where the comparison tools look.
     retreat_file : str or None
-        Path to the retreat NetCDF file (relative to the input directory).
+        Front-retreat mask NetCDF (relative to the input directory). The mask
+        is published once per grid resolution, named by a ``g<res>m`` token
+        (``pism_g450m_frontretreat_calfin_1972_2019_MS.nc``); staging swaps
+        that token for the run's resolution and warns when no such file exists.
     rgi_complex_file : str or None
         Filename of the RGI glacier-complex ("-C") outlines in the bucket.
     rgi_glacier_file : str or None
@@ -1720,6 +1764,12 @@ class CampaignConfig(BaseModel):
     historical_end_year : str, float, or None
         Last (inclusive) year of the historical forcing file (e.g. 2014
         under the ISMIP7 convention where projections start in 2015).
+    profile : bool
+        Save PETSc profiling data for every ``pism`` leg: the runners add
+        ``-profile <output>/profile/profile_<tag>.py``, ``<tag>`` being the
+        leg's state-file tag, so an ensemble member never overwrites
+        another's file. Read it with :func:`pism_terra.profiling.load_profile`.
+        Default ``False``.
     two_leg : bool
         Whether the forward run is the protocol's two legs -- historical to
         2015-01-01, then a projection to ``time.end`` on the projection-epoch
@@ -1801,6 +1851,7 @@ class CampaignConfig(BaseModel):
     projection_start_year: str | float | None = Field(default=None)
     projection_end_year: str | float | None = Field(default=None)
     two_leg: bool = Field(default=False)
+    profile: bool = Field(default=False)
     set_counter_start: int = Field(default=1)
     version: str | None = Field(default=None)
     climate_version: str | None = Field(default=None)

@@ -48,11 +48,12 @@ from pathlib import Path
 import numpy as np
 import rioxarray  # noqa: F401  pylint: disable=unused-import
 import xarray as xr
-from xarray.coders import CFDatetimeCoder
+from xarray.coders import CFDatetimeCoder  # pylint: disable=no-name-in-module
 
 from pism_terra.log import setup_logging
 from pism_terra.postprocess_scalar import dataset_crs
 from pism_terra.postprocess_spatial import DROP_VARS, _encoding, _unlimited
+from pism_terra.progress import compute as compute_with_progress
 
 xr.set_options(keep_attrs=True)
 warnings.filterwarnings("ignore", message="invalid value encountered in cast", category=RuntimeWarning)
@@ -247,7 +248,12 @@ def process_file_dh(
 
         outfile.unlink(missing_ok=True)
         logger.info("Writing %s", outfile)
-        dh.to_netcdf(outfile, engine="h5netcdf", encoding=encoding, unlimited_dims=_unlimited(dh))
+        # The reduction runs inside the write; a lazy write lets the Dask
+        # progress bar follow it on a terminal.
+        compute_with_progress(
+            dh.to_netcdf(outfile, engine="h5netcdf", encoding=encoding, unlimited_dims=_unlimited(dh), compute=False),
+            desc=f"Writing {outfile.name}",
+        )
     finally:
         ds.close()
 

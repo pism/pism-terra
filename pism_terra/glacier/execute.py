@@ -300,12 +300,18 @@ def main():
     rgi_dir = local_run_script.parents[1]
     log_file = work_dir / rgi_dir / "logs" / PROGRESS_NAME
 
-    if args.bucket:
-        key = "/".join(part for part in (args.bucket_prefix.strip("/"), rgi_dir.name, "logs", PROGRESS_NAME) if part)
-        with ProgressPublisher(log_file, args.bucket, key):
+    # The upload runs whether or not the script succeeded: a run that failed
+    # at its last step has hours of PISM output worth keeping, and the log
+    # that says what went wrong. The failure is re-raised afterwards.
+    try:
+        if args.bucket:
+            key = "/".join(
+                part for part in (args.bucket_prefix.strip("/"), rgi_dir.name, "logs", PROGRESS_NAME) if part
+            )
+            with ProgressPublisher(log_file, args.bucket, key):
+                execute(local_run_script, log_file=log_file)
+        else:
             execute(local_run_script, log_file=log_file)
-    else:
-        execute(local_run_script, log_file=log_file)
-
-    if args.bucket:
-        local_to_s3(work_dir, args.bucket, args.bucket_prefix)
+    finally:
+        if args.bucket:
+            local_to_s3(work_dir, args.bucket, args.bucket_prefix)

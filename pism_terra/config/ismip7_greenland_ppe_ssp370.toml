@@ -42,6 +42,7 @@ gcms = ["CESM2-WACCM", "MRI-ESM2-0"]
 outline_file = "mouginot_basins_w_shelves.gpkg"
 pathway = "ssp370"
 prefix = "ismip7/greenland/input"
+profile = true
 projection_end_year = "2100"
 two_leg = true
 projection_start_year = "2015"
@@ -96,7 +97,7 @@ MRI-ESM2-0 = {climate = 2, ocean = 1}
 'output.checkpoint.interval' = 24
 'output.compression_level' = 2
 'output.fill_value' = 9.969209968386869e+36
-'output.format' = "netcdf4_parallel"
+'output.format' = "netcdf4_serial"
 'output.scalar.file' = "yearly"
 'output.scalar.times' = "yearly"
 'output.size' = "medium"
@@ -146,7 +147,7 @@ model = 'hybrid'
 
 'stress_balance.calving_front_stress_bc' = 'yes'
 'stress_balance.model' = "ssa+sia"
-'stress_balance.sia.max_diffusivity' = 100000.0
+'stress_balance.sia.max_diffusivity' = 1e6
 'stress_balance.ssa.method' = "fd"
 
 [iceflow]
@@ -208,7 +209,7 @@ model = "given"
 
 [ocean]
 
-model = "picop_sgd"
+model = "plume_sgd"
 
 [ocean.options.pico]
 
@@ -231,8 +232,7 @@ model = "picop_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.file' = "none"
+'ocean.plume.drag_coefficient' = 0.0015
 
 [ocean.options.picop_sgd]
 
@@ -244,11 +244,33 @@ model = "picop_sgd"
 'ocean.pico.number_of_boxes' = 3
 'ocean.pico.overturning_coefficent' = 1e6
 'ocean.pico.temperature_as_thermal_forcing' = "yes"
-'ocean.picop.add_fresh_water_melt' = "yes"
-'ocean.picop.drag_coefficient' = 0.0015
-'ocean.picop.file' = "none"
-'ocean.picop.power_alpha' = 0.54
-'ocean.picop.power_beta' = 1.18
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.drag_coefficient' = 0.0015
+'ocean.plume.power_alpha' = 0.54
+'ocean.plume.power_beta' = 1.18
+
+[ocean.options.plume]
+
+'ocean.models' = "plume"
+'ocean.plume.drag_coefficient' = 0.0025
+'ocean.plume.file' = "none"
+'ocean.plume.length_scale_factor' = 0.15
+'ocean.plume.melt_rate_parameter' = 3.5
+'ocean.plume.power_alpha' = 0.33333333
+'ocean.plume.power_beta' = 2.0
+'ocean.plume.temperature_as_thermal_forcing' = "yes"
+
+[ocean.options.plume_sgd]
+
+'ocean.models' = "plume"
+'ocean.plume.add_fresh_water_melt' = "yes"
+'ocean.plume.drag_coefficient' = 0.0025
+'ocean.plume.file' = "none"
+'ocean.plume.length_scale_factor' = 0.15
+'ocean.plume.melt_rate_parameter' = 3.5
+'ocean.plume.power_alpha' = 0.33333333
+'ocean.plume.power_beta' = 2.0
+'ocean.plume.temperature_as_thermal_forcing' = "yes"
 
 [ocean.options.th]
 
