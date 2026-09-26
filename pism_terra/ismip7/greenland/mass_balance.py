@@ -579,15 +579,11 @@ def regional_sums(
     for var in spatial_vars:
         if units := ds[var].attrs.get("units"):
             out[var].attrs = dict(ds[var].attrs, units=f"{(ureg(units) * ureg('m^2')).units:~}")
-    # out["area"] = xr.DataArray(
-    #     [geom.area for geom in outline.geometry],
-    #     dims=(dim_name,),
-    #     coords={dim_name: names},
-    #     attrs={"units": "m^2", "long_name": "outline area"},
-    # )
     out["area"] = xr.DataArray(
-        1e3**2,
-        attrs={"units": "m^2", "long_name": "cell area"},
+        [geom.area for geom in outline.geometry],
+        dims=(dim_name,),
+        coords={dim_name: names},
+        attrs={"units": "m^2", "long_name": "outline area"},
     )
     if total is not None:
         # ``min_count`` keeps a step every basin lacks as missing rather than zero.
