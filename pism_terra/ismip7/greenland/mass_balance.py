@@ -94,7 +94,7 @@ DEFAULT_VARIABLES = ("acabf", "libmassbfgr", "ligroundf")
 DEFAULT_TREE = ("GrIS", "UAF", "PISM", "CORE")
 
 #: Reference year the cumulative series is zeroed at.
-DEFAULT_REFERENCE_YEAR = "1985"
+DEFAULT_REFERENCE_YEAR = "1990"
 
 #: Outline the basins are read from, looked for in the run's observations
 #: directory first and in the package's data otherwise.
