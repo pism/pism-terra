@@ -295,6 +295,7 @@ def test_run_writes_the_series_and_the_figure(tree: Path, tmp_path: Path):
     assert (out / "regional_mass_balance.nc").is_file()
     assert (out / "regional_mass_balance.csv").is_file()
     assert (out / "regional_mass_balance.png").is_file()
+    assert (out / "greenland_mass_balance.png").is_file()
     again = mb.run(str(tree), out, regions_file=out / "regional_mass_balance.nc")
     xr.testing.assert_allclose(again, regions)
 
@@ -340,3 +341,51 @@ def test_splice_historical_fills_the_pathways(tree: Path):
     assert mb.splice_historical(no_hist) is no_hist
     no_projection = ds.sel(ssp_id=["OCX", "historical"])
     assert mb.splice_historical(no_projection) is no_projection
+
+
+def test_to_sea_level_turns_mass_loss_into_sea_level_rise():
+    """
+    362.5 Gt lost is one millimetre of sea level; a gain lowers it.
+    """
+    cumulative = xr.DataArray([-362.5, 0.0, 725.0], dims="time", attrs={"units": "Gt"}, name="cumulative_mass_balance")
+    sle = mb.to_sea_level(cumulative)
+    np.testing.assert_allclose(sle, [1.0, 0.0, -2.0])
+    assert sle.attrs["units"] == "mm"
+
+
+def test_plot_region_draws_one_basin_with_a_sea_level_axis(tree: Path, tmp_path: Path, monkeypatch):
+    """
+    One basin in one panel, zeroed at the reference year, with the mm SLE axis on the right.
+
+    Parameters
+    ----------
+    tree : pathlib.Path
+        The run's ``output`` directory.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest fixture capturing the figure before it is closed.
+    """
+    ds = mb.open_submission(mb.find_files(str(tree), ["acabf", "ligroundf"]))
+    regions = mb.compute_regions(ds, outline(), variables=["acabf", "ligroundf"], reference_year="2013")
+    figures: list = []
+    monkeypatch.setattr(mb.plt, "close", figures.append)
+    out = tmp_path / "greenland.png"
+    mb.plot_region(regions, None, out, region="GIS_W", xlim=("2012", "2017"), sle_reference="2015")
+    assert out.is_file()
+    assert len(figures) == 1
+    fig = figures[0]
+    ax = fig.axes[0]
+    assert "since 2015" in ax.get_ylabel()
+    labels = [a.get_ylabel() for a in ax.child_axes]
+    assert any("mm SLE" in label for label in labels)
+    # Every drawn line passes through zero in 2015.
+    for line in ax.get_lines():
+        x, y = line.get_data()
+        if len(x) > 1:
+            at_2015 = [v for t, v in zip(x, y) if np.datetime64(t, "Y") == np.datetime64("2015", "Y")]
+            np.testing.assert_allclose(at_2015[:1], 0.0, atol=1e-9)
+    # A basin picked with a scalar selection works as well.
+    monkeypatch.undo()
+    mb.plot_region(regions.sel(region="GIS_W"), None, tmp_path / "scalar.png", region="GIS_W")
+    assert (tmp_path / "scalar.png").is_file()

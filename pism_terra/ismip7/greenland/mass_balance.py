@@ -109,6 +109,9 @@ TOTAL_REGION = "GIS_GIS"
 #: Units the regional fluxes are reported in.
 FLUX_UNITS = "Gt year-1"
 
+#: Ice mass per millimetre of global mean sea level, as ``(magnitude, units)``.
+GT_PER_MM_SLE = (362.5, "Gt mm^-1")
+
 #: How the files are opened: h5netcdf reads over fsspec, and each chunk is
 #: a few time steps of the whole grid, so the basin integration streams
 #: through a file in ~100 MB pieces at 1200 m.
@@ -822,6 +825,141 @@ def plot_regions(
     logger.info("Wrote %s", filename)
 
 
+def to_sea_level(cumulative: xr.DataArray) -> xr.DataArray:
+    """
+    Convert a cumulative mass balance to a contribution to sea level.
+
+    Mass lost from the ice sheet raises sea level, so the sign flips: a
+    cumulative mass balance of -362.5 Gt is +1 mm SLE (:data:`GT_PER_MM_SLE`).
+
+    Parameters
+    ----------
+    cumulative : xarray.DataArray
+        Cumulative mass balance with a mass ``units`` attribute (e.g. ``Gt``).
+
+    Returns
+    -------
+    xarray.DataArray
+        Sea-level contribution in ``mm``, positive for a sea-level rise.
+    """
+    ureg = pint.application_registry
+    per_mm = ureg.Quantity(*GT_PER_MM_SLE)
+    sle = -(cumulative.pint.quantify() / per_mm).pint.to("mm").pint.dequantify()
+    sle.attrs = {"units": "mm", "long_name": "contribution to sea level (sea-level equivalent)"}
+    return sle.rename(cumulative.name)
+
+
+def _zero_at(series: xr.DataArray, year: str) -> xr.DataArray:
+    """
+    Subtract each series' value in its first record of ``year``.
+
+    Parameters
+    ----------
+    series : xarray.DataArray
+        Series with a ``time`` dimension.
+    year : str
+        Year of the reference record, e.g. ``"2015"``.
+
+    Returns
+    -------
+    xarray.DataArray
+        The series minus its reference value, attributes kept; missing
+        wherever the series has no record in ``year``.
+    """
+    in_year = np.flatnonzero(series["time"].dt.year.values == int(year))
+    if in_year.size == 0:
+        return xr.full_like(series, np.nan)
+    reference = series.isel(time=int(in_year[0])).drop_vars("time")
+    with xr.set_options(keep_attrs=True):
+        return series - reference
+
+
+def plot_region(
+    regions: xr.Dataset,
+    mankoff: xr.Dataset | None,
+    filename: str | Path,
+    *,
+    region: str = TOTAL_REGION,
+    sigma: float = 1.0,
+    xlim: tuple[str, str] = ("1985", "2100"),
+    sle_reference: str = "2015",
+) -> None:
+    """
+    One basin in one panel, with its contribution to sea level on the right.
+
+    Every (GCM, pathway) cumulative mass balance is drawn over the observed
+    band. Both are zeroed at ``sle_reference`` first: a second y axis can only
+    be a fixed rescaling of the first, so "since 2015" on the right holds only
+    for series that are zero in 2015. Each series is zeroed at its own record
+    of that year; a line with none (a run not yet past it) is left out. The right axis is the same curve in
+    mm SLE (:func:`to_sea_level`), mass loss counting as sea-level rise.
+
+    Parameters
+    ----------
+    regions : xarray.Dataset
+        Output of :func:`compute_regions`.
+    mankoff : xarray.Dataset or None
+        Output of :func:`load_mankoff`; None draws the model alone.
+    filename : str or Path
+        Output figure.
+    region : str, optional
+        Basin to draw, the whole ice sheet by default.
+    sigma : float, optional
+        Half-width of the observed band, in standard deviations.
+    xlim : tuple of str, optional
+        Years shown.
+    sle_reference : str, optional
+        Year both axes are zeroed at.
+    """
+    variable = "cumulative_mass_balance"
+    series = regions[variable]
+    if "region" in series.dims:
+        series = series.sel(region=region)
+    series = _zero_at(series, sle_reference)
+    if not series.notnull().any():
+        raise ValueError(
+            f"no series has a record in {sle_reference}; pass another sle_reference "
+            f"(the series span {str(regions['time'].values[0])[:4]}-{str(regions['time'].values[-1])[:4]})"
+        )
+    units = regions[variable].attrs.get("units", "Gt")
+
+    # Axis transforms from pint, so the factor lives in one place.
+    gt_to_mm = float(to_sea_level(xr.DataArray(1.0, attrs={"units": units})))
+
+    with mpl.rc_context(rc=rc_params):
+        fig, ax = plt.subplots(figsize=(4.8, 2.6))
+        if mankoff is not None and region in mankoff["region"].values:
+            obs = mankoff.sel(region=region)
+            mean = _zero_at(obs["cumulative_mass_balance"], sle_reference)
+            spread = sigma * obs["cumulative_mass_balance_uncertainty"]
+            ax.fill_between(obs["time"].values, mean - spread, mean + spread, lw=0, color="0.75", alpha=0.5)
+            ax.plot(obs["time"].values, mean, lw=1.2, color="0.45", label="Mankoff et al. (2021)")
+        for gcm in series["gcm_id"].values:
+            for ssp in series["ssp_id"].values:
+                line = series.sel(gcm_id=gcm, ssp_id=ssp).dropna("time")
+                if line.size:
+                    ax.plot(
+                        line["time"].values,
+                        line,
+                        ls=GCM_STYLES.get(str(gcm), "solid"),
+                        color=SSP_COLORS.get(str(ssp), "0.3"),
+                        lw=0.8,
+                        label=str(ssp) if gcm == ssp else f"{gcm} {ssp}",
+                    )
+        ax.axhline(0.0, color="0.5", lw=0.4, zorder=0)
+        ax.set_xlim(np.datetime64(xlim[0]), np.datetime64(xlim[1]))
+        ax.set_ylabel(f"Cumulative mass balance\nsince {sle_reference} ({units})")
+        sle = ax.secondary_yaxis("right", functions=(lambda gt: gt * gt_to_mm, lambda mm: mm / gt_to_mm))
+        sle.set_ylabel(f"Contribution to sea level\nsince {sle_reference} (mm SLE)")
+        ax.set_title(region)
+        ax.legend(fontsize=5, frameon=False)
+        fig.tight_layout()
+        Path(filename).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
+    logger.info("Wrote %s", filename)
+
+
 # --- Driver ----------------------------------------------------------------------
 
 
@@ -896,6 +1034,7 @@ def run(
         except (FileNotFoundError, OSError) as err:
             logger.warning("No Mankoff product at %s (%s); plotting the model alone", obs_url, err)
     plot_regions(regions, observed, output_path / "regional_mass_balance.png", sigma=sigma, xlim=xlim)
+    plot_region(regions, observed, output_path / "greenland_mass_balance.png", sigma=sigma, xlim=xlim)
     return regions
 
 
