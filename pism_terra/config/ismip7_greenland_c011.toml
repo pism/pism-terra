@@ -64,6 +64,7 @@ version = "v3"
 
 'output.ISMIP' = "yes"
 'output.checkpoint.interval' = 24
+'output.clip_grounding_line_flux' = "yes"
 'output.compression_level' = 2
 'output.fill_value' = 9.969209968386869e+36
 'output.format' = "netcdf4_serial"
