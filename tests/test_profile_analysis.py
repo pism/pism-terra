@@ -27,6 +27,7 @@ from pism_terra.profile_analysis import (
     analyze,
     blatter_phases,
     component_breakdown,
+    debris_steps,
     find_profiles,
     load_runs,
     run_labels,
@@ -53,7 +54,16 @@ _EVENTS = {
 _COUNTS = {"SNESSolve": 10, "KSPSolve": 100, "KSPGMRESOrthog": 5000, "SNESJacobianEval": 300, "SNESFunctionEval": 350}
 
 
-def _profile_text(scale: float = 1.0) -> str:
+#: Debris transport events, only in the second run.
+_DEBRIS_EVENTS = {
+    "debris": (60.0, 60.0),
+    "debris.englacial": (40.0, 44.0),
+    "debris.supraglacial": (10.0, 12.0),
+    "debris.budget": (2.0, 2.0),
+}
+
+
+def _profile_text(scale: float = 1.0, debris: bool = False) -> str:
     """
     Build a PETSc ascii_info_detail script with the events above.
 
@@ -61,6 +71,8 @@ def _profile_text(scale: float = 1.0) -> str:
     ----------
     scale : float, optional
         Factor on every time, to tell two runs apart.
+    debris : bool, optional
+        Add the debris transport events.
 
     Returns
     -------
@@ -68,7 +80,8 @@ def _profile_text(scale: float = 1.0) -> str:
         The script.
     """
     lines = ["size = 2", "Stages = {}", 'Stages["time-stepping loop"] = {}']
-    for event, times in _EVENTS.items():
+    events = {**_EVENTS, **(_DEBRIS_EVENTS if debris else {})}
+    for event, times in events.items():
         lines.append(f'Stages["time-stepping loop"]["{event}"] = {{}}')
         for rank, t in enumerate(times):
             count = "" if event == "summary" else f'"count" : {_COUNTS.get(event, 1)}, '
@@ -97,7 +110,9 @@ def fixture_run_dir(tmp_path: Path) -> Path:
     out = tmp_path / "run" / "RGI" / "output"
     (out / "profile").mkdir(parents=True)
     (out / "profile" / "profile_g200m_RGI_id_0_uq_0_1986-01-01_1987-01-01.py").write_text(_profile_text())
-    (out / "profile" / "profile_g200m_RGI_id_0_uq_1_1986-01-01_1987-01-01.py").write_text(_profile_text(0.5))
+    (out / "profile" / "profile_g200m_RGI_id_0_uq_1_1986-01-01_1987-01-01.py").write_text(
+        _profile_text(0.5, debris=True)
+    )
     (out / "uq.csv").write_text("uq,hydrology.model\n0,routing\n1,null\n")
     return tmp_path / "run"
 
@@ -180,3 +195,29 @@ def test_analyze_writes_tables_figures_and_summary(run_dir: Path, tmp_path: Path
     summary = written["summary"].read_text()
     assert "Blatter solve: 780 s, 78% of the loop" in summary
     assert "3 Jacobian assemblies per Newton iteration" in summary
+
+
+def test_debris_steps_relate_to_the_debris_event(run_dir: Path, tmp_path: Path) -> None:
+    """
+    The debris sub-events are shares of ``debris``; a run without them has no rows.
+
+    Parameters
+    ----------
+    run_dir : pathlib.Path
+        The run directory.
+    tmp_path : pathlib.Path
+        Pytest scratch directory.
+    """
+    df = load_runs([run_dir])
+    steps = debris_steps(df)
+    with_debris = steps[steps["run"].str.startswith("uq_1")].set_index("step")
+    assert list(with_debris.index) == ["englacial transport", "supraglacial advection", "mass budget"]
+    assert with_debris.loc["englacial transport", "time_mean"] == pytest.approx(21.0)
+    assert with_debris.loc["englacial transport", "share_of_parent"] == pytest.approx(0.7)
+    assert not steps["run"].str.startswith("uq_0").any()
+    components = component_breakdown(df).set_index(["run", "component"])
+    assert components.loc[(with_debris["run"].iloc[0], "debris"), "time_mean"] == pytest.approx(30.0)
+
+    written = analyze([run_dir], tmp_path / "analysis")
+    assert written["debris_steps"].exists() and written["debris_steps_png"].exists()
+    assert "Debris transport: 30 s" in written["summary"].read_text()

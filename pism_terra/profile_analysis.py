@@ -77,9 +77,24 @@ COMPONENTS = (
     "bed_deformation",
     "basal_yield_stress",
     "age",
+    "debris",
     "fracture_density",
     "io",
 )
+
+#: Sub-events of PISM's debris transport model (``debris.models = transport``)
+#: inside the ``debris`` event, with a short label, in the order of a step.
+DEBRIS_EVENTS = {
+    "debris.input": "input rate",
+    "debris.englacial": "englacial transport",
+    "debris.sources": "melt-out and surface input",
+    "debris.supraglacial": "supraglacial advection",
+    "debris.gravity": "gravitational transport",
+    "debris.terminus": "removal at the margin",
+    "debris.ice_free_loss": "loss in ice-free cells",
+    "debris.budget": "mass budget",
+    "debris.concentration": "concentration",
+}
 
 #: PETSc events of one Newton step of the Blatter solve, with a short label.
 BLATTER_PHASES = {
@@ -267,6 +282,26 @@ def _event_table(df: pd.DataFrame, events: dict[str, str], stage: str, parent: s
                 }
             )
     return pd.DataFrame(rows)
+
+
+def debris_steps(df: pd.DataFrame, stage: str = STAGE) -> pd.DataFrame:
+    """
+    The steps of the debris transport model, per run.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Table from :func:`pism_terra.profiling.load_profiles`.
+    stage : str, optional
+        Stage to read.
+
+    Returns
+    -------
+    pandas.DataFrame
+        As :func:`_event_table`, labels in ``step``, shares of the ``debris``
+        event. Empty for runs without the debris model.
+    """
+    return _event_table(df, DEBRIS_EVENTS, stage, "debris", "step")
 
 
 def blatter_phases(df: pd.DataFrame, stage: str = STAGE, blatter_event: str = BLATTER_EVENT) -> pd.DataFrame:
@@ -580,23 +615,27 @@ def plot_components(breakdown: pd.DataFrame, path: Path, title: str = "Where a m
     plt.close(fig)
 
 
-def plot_phases(table: pd.DataFrame, label_column: str, path: Path, title: str) -> None:
+def plot_phases(
+    table: pd.DataFrame, label_column: str, path: Path, title: str, parent: str = "the Blatter solve"
+) -> None:
     """
     Grouped bars per phase (or kernel): mean over ranks, with the slowest and fastest rank as whiskers.
 
     The bars are side by side, not stacked, because the events overlap. The
-    share of the Blatter solve is written after each bar.
+    share of the parent event is written after each bar.
 
     Parameters
     ----------
     table : pandas.DataFrame
-        Output of :func:`blatter_phases` or :func:`blatter_kernels`.
+        Output of :func:`blatter_phases`, :func:`blatter_kernels` or :func:`debris_steps`.
     label_column : str
-        ``"phase"`` or ``"kernel"``.
+        ``"phase"``, ``"kernel"`` or ``"step"``.
     path : pathlib.Path
         Figure file.
     title : str
         Figure title.
+    parent : str, optional
+        What the shares refer to, for the axis label.
     """
     _style()
     runs = list(table["run"].unique())
@@ -627,7 +666,7 @@ def plot_phases(table: pd.DataFrame, label_column: str, path: Path, title: str) 
                 ax.text(x_hi, pos[yi], f"  {100 * share:.0f}%", va="center", fontsize=7.5, color=_INK)
     ax.set_yticks(y, labels)
     ax.invert_yaxis()
-    ax.set_xlabel("seconds per rank: mean, whiskers fastest to slowest rank; label = share of the Blatter solve")
+    ax.set_xlabel(f"seconds per rank: mean, whiskers fastest to slowest rank; label = share of {parent}")
     ax.set_xlim(0, table["time_max"].max() * 1.15)
     ax.grid(axis="y", visible=False)
     ax.set_title(title, loc="left", fontsize=10)
@@ -676,7 +715,13 @@ def plot_rank_balance(times: pd.DataFrame, path: Path, title: str = "Seconds per
 
 
 def write_summary(
-    components: pd.DataFrame, phases: pd.DataFrame, kernels: pd.DataFrame, counts: pd.DataFrame, path: Path
+    components: pd.DataFrame,
+    phases: pd.DataFrame,
+    kernels: pd.DataFrame,
+    counts: pd.DataFrame,
+    path: Path,
+    *,
+    debris: pd.DataFrame | None = None,
 ) -> str:
     """
     Write the headline numbers as Markdown and return the text.
@@ -693,6 +738,8 @@ def write_summary(
         Output of :func:`solver_counts`.
     path : pathlib.Path
         Markdown file.
+    debris : pandas.DataFrame or None, optional
+        Output of :func:`debris_steps`; a table per run that has debris events.
 
     Returns
     -------
@@ -732,6 +779,20 @@ def write_summary(
             lines.append(
                 f"| {r.kernel} | {r.time_mean:,.0f} | {r.time_max:,.0f} | {r.time_min:,.0f} | {r.balance:.2f} | {100 * r.share_of_parent:.0f}% |"
             )
+        steps = debris[debris["run"] == run] if debris is not None and not debris.empty else None
+        if steps is not None and not steps.empty:
+            lines += [
+                "",
+                f"Debris transport: {steps['parent_mean'].iloc[0]:,.0f} s, "
+                f"{100 * comp.loc['debris', 'share_mean']:.0f}% of the loop",
+                "",
+                "| debris step | mean s | slowest s | fastest s | balance | share |",
+                "|---|---:|---:|---:|---:|---:|",
+            ]
+            for _, r in steps.iterrows():
+                lines.append(
+                    f"| {r.step} | {r.time_mean:,.1f} | {r.time_max:,.1f} | {r.time_min:,.1f} | {r.balance:.2f} | {100 * r.share_of_parent:.0f}% |"
+                )
         lines.append("")
     lines += [
         "Shares of the Blatter solve are mean over mean; the phases overlap (the line search evaluates the residual),",
@@ -772,6 +833,7 @@ def analyze(
     phases = blatter_phases(df, stage, blatter_event)
     kernels = blatter_kernels(df, stage, blatter_event)
     counts = solver_counts(df, stage)
+    debris = debris_steps(df, stage)
     balance_events = [
         e for e in ("SNESJacobianEval", "SNESFunctionEval", "PCSetUp", "VecScatterEnd") if e in set(df["event"])
     ]
@@ -801,7 +863,14 @@ def analyze(
     plot_phases(kernels, "kernel", written["blatter_kernels_png"], "Inside the Blatter solve: linear-algebra kernels")
     if not ranks.empty:
         plot_rank_balance(ranks, written["rank_balance_png"])
-    print(write_summary(components, phases, kernels, counts, written["summary"]))
+    if not debris.empty:
+        written["debris_steps"] = out / "debris_steps.csv"
+        written["debris_steps_png"] = out / "debris_steps.png"
+        debris.to_csv(written["debris_steps"], index=False)
+        plot_phases(
+            debris, "step", written["debris_steps_png"], "Inside the debris transport model", parent="the debris model"
+        )
+    print(write_summary(components, phases, kernels, counts, written["summary"], debris=debris))
     for name, p in written.items():
         print(f"{name}: {p}")
     return written
