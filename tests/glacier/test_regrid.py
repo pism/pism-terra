@@ -30,6 +30,7 @@ import pytest
 
 from pism_terra.glacier.run import (
     DEFAULT_REGRID_VARS,
+    _apply_regrid,
     _render_forward_run,
     _resolve_regrid_file,
 )
@@ -238,3 +239,73 @@ def test_an_existing_state_file_resolves(tmp_path):
     state.touch()
 
     assert _resolve_regrid_file(str(state), tmp_path) == state.resolve()
+
+
+def spin_up(tmp_path, *variables: str) -> Path:
+    """
+    Write a spin-up state holding the given variables.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    *variables : str
+        Variable names, each a small 2-D field.
+
+    Returns
+    -------
+    pathlib.Path
+        The state file.
+    """
+    import numpy as np  # pylint: disable=import-outside-toplevel
+    import xarray as xr  # pylint: disable=import-outside-toplevel
+
+    path = tmp_path / "spinup.nc"
+    xr.Dataset({v: (("y", "x"), np.zeros((2, 3))) for v in variables}).to_netcdf(path)
+    return path
+
+
+@pytest.mark.parametrize(
+    "state_vars, models, expected",
+    [
+        (("enthalpy", "debris_thickness", "englacial_debris_concentration"), "transport",
+         DEFAULT_REGRID_VARS + ",debris_thickness,englacial_debris_concentration"),
+        (("enthalpy",), "transport", DEFAULT_REGRID_VARS),
+        (("enthalpy", "debris_thickness"), None, DEFAULT_REGRID_VARS),
+    ],
+    ids=["spin-up with debris", "spin-up without debris", "debris model off"],
+)  # fmt: skip
+def test_regrid_carries_the_debris_state_only_when_the_spin_up_has_it(tmp_path, state_vars, models, expected):
+    """
+    A debris run takes the spun-up debris if the state has it, and the boot file's otherwise.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    state_vars : tuple of str
+        Variables in the spin-up state.
+    models : str or None
+        ``debris.models`` of the run, or ``None`` for no debris model.
+    expected : str
+        The ``input.regrid.vars`` the run should get.
+    """
+    run = {"input.regrid.vars": "none"}
+    if models is not None:
+        run["debris.models"] = models
+    _apply_regrid(run, spin_up(tmp_path, *state_vars))
+    assert run["input.regrid.vars"] == expected
+
+
+def test_a_pinned_regrid_list_is_left_alone_with_debris(tmp_path):
+    """
+    A list pinned in ['input'] wins over the debris defaults.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    run = {"input.regrid.vars": "thk,enthalpy", "debris.models": "transport"}
+    _apply_regrid(run, spin_up(tmp_path, "thk", "enthalpy", "debris_thickness"))
+    assert run["input.regrid.vars"] == "thk,enthalpy"

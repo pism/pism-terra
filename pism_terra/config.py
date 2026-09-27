@@ -1027,6 +1027,9 @@ class PismConfig(BaseModelWithDot):
         Frontal melt model selection and its option set.
     hydrology : HydrologyConfig
         Hydrology model selection and its option set.
+    debris : DebrisConfig
+        Debris model selection and its option set. Optional; a config
+        without a ``[debris]`` section adds no debris flags.
     geometry : dict of str to Any, optional
         Geometry-related options to pass through. Defaults to ``{}``.
     bed_deformation : BedDeformationConfig
@@ -1083,6 +1086,8 @@ class PismConfig(BaseModelWithDot):
     frontal_melt: FrontalMeltConfig = Field(default_factory=lambda: _no_model(FrontalMeltConfig))
     bed_deformation: BedDeformationConfig = Field(default_factory=lambda: _no_model(BedDeformationConfig))
     hydrology: HydrologyConfig
+    # Optional like frontal_melt: only the glacier runs with debris declare it.
+    debris: DebrisConfig = Field(default_factory=lambda: _no_model(DebrisConfig))
     geometry: dict[str, Any] = {}
     calving: dict[str, Any] = {}
     iceflow: dict[str, Any] = {}
@@ -1574,6 +1579,21 @@ class FrontalMeltConfig(ModelWithOptions):
     """
 
     SECTION = "frontal_melt"
+
+
+class DebrisConfig(ModelWithOptions):
+    """
+    Supraglacial debris model configuration.
+
+    Selects PISM's debris model (``debris.models``), e.g. ``transport`` for
+    englacial and supraglacial debris transport. Not to be confused with
+    ``campaign.debris``, which names the debris-thickness dataset staged for
+    the glacier.
+
+    Inherits fields/behavior from :class:`ModelWithOptions`.
+    """
+
+    SECTION = "debris"
 
 
 def _no_model(cls: type) -> Any:

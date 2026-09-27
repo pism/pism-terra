@@ -31,6 +31,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
@@ -73,6 +74,47 @@ CLIMATE_FILE_OPTIONS = (
 #: ``input.regrid.vars``: the thermal/basal state, leaving the geometry to the
 #: boot file. Same choice as the ISMIP7 Greenland configs.
 DEFAULT_REGRID_VARS = "litho_temp,enthalpy,age,tillwat"
+
+#: Debris transport state carried over from a spin-up that ran the debris
+#: model. A spin-up without it has neither, and the run keeps the debris
+#: cover it bootstraps from the boot file.
+DEBRIS_REGRID_VARS = ("debris_thickness", "englacial_debris_concentration")
+
+
+def _debris_transport_on(run: Mapping[str, object]) -> bool:
+    """
+    Tell whether a run's options switch on PISM's debris transport model.
+
+    Parameters
+    ----------
+    run : Mapping[str, object]
+        Assembled option dict.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``debris.models`` lists ``transport``.
+    """
+    models = str(run.get("debris.models", ""))
+    return "transport" in [m.strip() for m in models.split(",")]
+
+
+def _debris_vars_in(path: Path) -> list[str]:
+    """
+    List the debris transport variables a state file holds.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        PISM state file.
+
+    Returns
+    -------
+    list of str
+        The members of :data:`DEBRIS_REGRID_VARS` found in ``path``, in that order.
+    """
+    with xr.open_dataset(path, decode_times=False, decode_cf=False) as ds:
+        return [name for name in DEBRIS_REGRID_VARS if name in ds.variables]
 
 
 def _resolve_regrid_file(spec: str | Path | None, input_path: Path) -> Path | None:
@@ -123,6 +165,13 @@ def _apply_regrid(run: dict, regrid_file: str | Path | None) -> None:
     at another resolution. Without one, the ``"none"`` placeholders a config
     may carry are removed so PISM never sees them.
 
+    With the debris transport model on, the default variable list also takes
+    the debris state (:data:`DEBRIS_REGRID_VARS`) when the spin-up holds it.
+    A spin-up that ran without the debris model holds none, and the run keeps
+    the debris cover it bootstraps from the boot file. (PISM cannot *restart*
+    from such a state: it stops when ``debris_thickness`` is missing, which is
+    why the debris-free case goes through the bootstrap-and-regrid path.)
+
     Parameters
     ----------
     run : dict
@@ -135,7 +184,10 @@ def _apply_regrid(run: dict, regrid_file: str | Path | None) -> None:
         # ['input'] may pin the variable list (e.g. add thk to carry the spun-up
         # geometry); otherwise fall back to the thermal state.
         if str(run.get("input.regrid.vars", "none")).strip().lower() == "none":
-            run["input.regrid.vars"] = DEFAULT_REGRID_VARS
+            regrid_vars = DEFAULT_REGRID_VARS.split(",")
+            if _debris_transport_on(run):
+                regrid_vars += _debris_vars_in(Path(regrid_file))
+            run["input.regrid.vars"] = ",".join(regrid_vars)
     else:
         run.pop("input.regrid.file", None)
         run.pop("input.regrid.vars", None)
@@ -585,6 +637,7 @@ def _render_inverse_run(
     run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.hydrology.selected())
+    run.update(cfg.debris.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
@@ -952,6 +1005,7 @@ def _render_forward_run(
     run.update(cfg.surface.selected())
     run.update(cfg.energy.selected())
     run.update(cfg.hydrology.selected())
+    run.update(cfg.debris.selected())
     run.update(cfg.grid.as_params())
     run.update(cfg.run_info.as_params())
     run.update(cfg.time.as_params())
@@ -1459,6 +1513,11 @@ def _run(*, kind: str) -> None:
         )
         if kind == "inverse":
             uq_overrides["inverse.file"] = row["obs_file"]
+        # The staged debris file carries the debris input rate; configs
+        # without a [debris] section skip the override.
+        debris_file = row["debris_file"] if "debris_file" in row else None
+        if isinstance(debris_file, (str, Path)) and str(debris_file).strip():
+            uq_overrides["debris.transport.input.file"] = debris_file
 
         outline_file = row["outline_file"] if "outline_file" in row else None
         # Keep numeric sample ids as ints (``id_0``) but preserve string period
