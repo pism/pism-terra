@@ -8,6 +8,7 @@
 bathymetry = "gebco"
 bucket = "pism-cloud-data"
 climate = "era5"
+debris = "rounce"
 dem = "glo_90"
 dh = "hugonnet"
 forcing_mask = "glacier"

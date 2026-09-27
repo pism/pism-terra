@@ -99,6 +99,35 @@ def _debris_transport_on(run: Mapping[str, object]) -> bool:
     return "transport" in [m.strip() for m in models.split(",")]
 
 
+def _require_debris_input(run: Mapping[str, object]) -> None:
+    """
+    Stop when the debris transport model is on but no debris file was staged.
+
+    The config carries ``debris.transport.input.file = "none"`` as a
+    placeholder that staging fills with ``debris_{rgi_id}.nc``; it only does
+    so when ``campaign.debris`` names a dataset. Left as ``"none"``, PISM would
+    try to open a file of that name.
+
+    Parameters
+    ----------
+    run : Mapping[str, object]
+        Option dict after the staged files were applied.
+
+    Raises
+    ------
+    ValueError
+        If the placeholder is still in place with the debris model on.
+    """
+    if not _debris_transport_on(run):
+        return
+    if str(run.get("debris.transport.input.file", "")).strip().lower() == "none":
+        raise ValueError(
+            "debris.models = transport but no debris file was staged, so debris.transport.input.file is still "
+            "'none'. Set campaign.debris (e.g. debris = \"rounce\") so pism-glacier-stage writes "
+            "debris_{rgi_id}.nc and the run points at it."
+        )
+
+
 def _debris_vars_in(path: Path) -> list[str]:
     """
     List the debris transport variables a state file holds.
@@ -724,6 +753,7 @@ def _render_inverse_run(
     # Apply to both runtime dicts (these should be dotted PISM flags)
     run.update(run_overrides)
     inv.update(inv_overrides)
+    _require_debris_input(run)
 
     # The prior leg is the one that bootstraps, so an optional spin-up state
     # (``--regrid-file`` / ``campaign.regrid_file``) is regridded there; the
@@ -1066,6 +1096,7 @@ def _render_forward_run(
         print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
+    _require_debris_input(run)
 
     # Optional spin-up state to regrid from (``--regrid-file`` /
     # ``campaign.regrid_file``). Applied before the init leg is split off so
