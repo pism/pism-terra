@@ -62,7 +62,7 @@ velocity = "its_live"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk,sftgif"
+'output.spatial.vars' = "debris_input_mass_flux,debris_lost_mass_flux,debris_mass_conservation_error,debris_melt_out_mass_flux,debris_output_mass_flux,englacial_debris_mass,ice_area_glacierized,ice_volume,supraglacial_debris_mass,total_debris_mass,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk,sftgif"
 
 [grid]
 
