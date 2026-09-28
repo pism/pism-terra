@@ -62,8 +62,10 @@ posterior and the summary tables at the top level.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import re
+import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping, Sequence
 from functools import partial
@@ -84,6 +86,7 @@ from pism_terra.calibration import (
 from pism_terra.likelihood import REDUCTIONS
 from pism_terra.log import setup_logging
 from pism_terra.processing import preprocess_netcdf
+from pism_terra.progress import compute, progress_bar
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +96,22 @@ MEMBER_DIM = "uq_id"
 
 #: Variables a model dh file may carry, in the order they are preferred when
 #: the file is not told which to use. ``lithk`` first because it is the
-#: thickness change the observations actually measure; ``usurf`` is what a
-#: plain, non-submission run reports instead -- see :func:`simulated_variable`
-#: for why the two are not the same quantity.
-SIM_VARS = ("lithk", "usurf")
+#: thickness change the observations actually measure, and ``thk`` is the
+#: same field under PISM's own name; ``usurf`` is what a plain run reports
+#: when it wrote no thickness -- see :func:`simulated_variable` for why that
+#: is not the same quantity.
+SIM_VARS = ("lithk", "thk", "usurf")
+
+#: Names under which a model file reports thickness change.
+THICKNESS_VARS = frozenset({"lithk", "thk"})
+
+#: How far, in days, an observed record may sit from the nearest model step
+#: and still be compared with it. PISM stamps spatial output at the middle
+#: of each reporting interval, so a monthly series puts its steps a couple
+#: of weeks from an observed record dated on the first of a month, and a
+#: yearly series half a year away; against a product integrated over
+#: sixteen years either is a small slop. The offset used is logged.
+DEFAULT_TIME_TOLERANCE_DAYS = 183.0
 
 #: Variables that are never the field being compared.
 NON_FIELD_VARS = frozenset({"time_bnds", "time_bounds", "mapping", "spatial_ref", "crs", "pism_config", "run_stats"})
@@ -279,6 +294,19 @@ def to_observed_grid(ds: xr.Dataset, obs: xr.Dataset) -> xr.Dataset:
     # Only the target's grid matters, so hand the regridder bare coordinates
     # rather than the observations and their data.
     target = xr.Dataset(coords={"y": obs["y"], "x": obs["x"]}).reset_coords(drop=True)
+    # One chunk per member and step: the regridder applies its weights with
+    # an einsum, and the many small on-disk chunks a member file opens with
+    # make it fan every chunk out further (dask's "increasing number of
+    # chunks" warning) and run tens of times slower. A 900 m Greenland
+    # field is 25 MB per step, so whole steps are cheap.
+    ds = ds.chunk({dim: -1 for dim in ("y", "x") if dim in ds.dims})
+    # Where the observed grid reaches beyond the model domain the regridder
+    # divides by a total weight of zero, and those cells come out NaN, which
+    # is right: nothing is compared there. numpy reports the division every
+    # time the lazy result is evaluated, so the report is switched off for
+    # that message; the graph runs later, hence a lasting filter rather
+    # than a scoped one.
+    warnings.filterwarnings("ignore", message=".*encountered in divide", category=RuntimeWarning)
     return ds.regrid.conservative(target)
 
 
@@ -316,7 +344,7 @@ def load_observations(
     xarray.Dataset
         ``dh`` and ``dh_error``.
     """
-    coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    coder = xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
     with xr.open_dataset(path, decode_times=coder) as ds:
         obs = ds[[OBS_VAR] + ([ERROR_VAR] if ERROR_VAR in ds else [])].load()
 
@@ -404,7 +432,7 @@ def load_ensemble(files: Sequence[Path], variable: str | None = None) -> xr.Data
     ValueError
         If the files do not carry the field being compared.
     """
-    coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    coder = xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
     # ISMIP7 file names carry none of the identifiers the glacier
     # preprocessor extracts, so every one of its dimensions is switched off
     # and the member dimension is attached here instead.
@@ -428,7 +456,7 @@ def load_ensemble(files: Sequence[Path], variable: str | None = None) -> xr.Data
         name = simulated_variable(ds, variable)
     except ValueError as err:
         raise ValueError(f"{err} in {files[0]}") from err
-    if name != SIM_VARS[0]:
+    if name not in THICKNESS_VARS:
         logger.warning(
             "Comparing %r against observed thickness change: these are different quantities "
             "(%s also moves with the bed, and carries firn the observations are corrected for)",
@@ -438,16 +466,66 @@ def load_ensemble(files: Sequence[Path], variable: str | None = None) -> xr.Data
     else:
         logger.info("Comparing %r", name)
     ds = ds[[name]].assign_coords({MEMBER_DIM: [member_label(Path(f)) for f in files]})
+    # A grid-mapping variable rides along as a scalar coordinate and would
+    # otherwise turn up as ``mapping_x``/``mapping_y`` columns in the tables.
+    ds = ds.drop_vars([v for v in NON_FIELD_VARS if v in ds.coords])
     return ds.rename({name: OBS_VAR})
 
 
-def align_to_observations(sim: xr.Dataset, obs: xr.Dataset) -> tuple[xr.Dataset, xr.Dataset]:
+def match_records(sim: xr.Dataset, obs: xr.Dataset, tolerance_days: float = DEFAULT_TIME_TOLERANCE_DAYS) -> xr.Dataset:
     """
-    Put the ensemble on the observed grid and keep the records both have.
+    Pick, for every observed record, the model step nearest in time.
 
-    Both sides are cumulative from the same 2003 reference, so their records
-    line up on their dates; an inner join keeps the ones present in both,
-    which for Smith's single total is the one date it reports.
+    Both sides are cumulative from the same reference date, but they are not
+    stamped alike: an observed product is dated on the day its record ends,
+    while PISM dates a spatial record at the middle of its reporting
+    interval. The nearest model step within ``tolerance_days`` stands in for
+    each observed date and is relabelled with it, so the two can be joined.
+
+    Parameters
+    ----------
+    sim : xarray.Dataset
+        Ensemble with a ``time`` dimension.
+    obs : xarray.Dataset
+        Observations with a ``time`` dimension.
+    tolerance_days : float, optional
+        Largest offset allowed between an observed record and its model step.
+
+    Returns
+    -------
+    xarray.Dataset
+        The matched model steps, on the observed dates.
+
+    Raises
+    ------
+    ValueError
+        If no observed record has a model step within the tolerance.
+    """
+    tolerance = datetime.timedelta(days=float(tolerance_days))
+    index = sim.indexes["time"]
+    positions = index.get_indexer(obs.indexes["time"], method="nearest", tolerance=tolerance)
+    kept = [(i, t) for i, t in zip(positions, obs["time"].values) if i >= 0]
+    if not kept:
+        raise ValueError(
+            f"no model step within {tolerance_days:g} days of an observed record "
+            f"(model {index[0]} to {index[-1]}, observed {obs['time'].values})"
+        )
+    for i, t in kept:
+        offset = abs(index[i] - t)
+        logger.info("Observed record %s matched to model step %s (%s apart)", t, index[i], offset)
+    matched = sim.isel(time=[i for i, _ in kept]).assign_coords(time=[t for _, t in kept])
+    return matched
+
+
+def align_to_observations(
+    sim: xr.Dataset, obs: xr.Dataset, tolerance_days: float = DEFAULT_TIME_TOLERANCE_DAYS
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """
+    Put the ensemble on the observed grid and the observed dates.
+
+    Every observed record is paired with the nearest model step
+    (:func:`match_records`); for Smith's single total that is the one model
+    step closest to the date it reports.
 
     Parameters
     ----------
@@ -455,6 +533,8 @@ def align_to_observations(sim: xr.Dataset, obs: xr.Dataset) -> tuple[xr.Dataset,
         Ensemble.
     obs : xarray.Dataset
         Observations.
+    tolerance_days : float, optional
+        Largest offset allowed between an observed record and its model step.
 
     Returns
     -------
@@ -464,10 +544,11 @@ def align_to_observations(sim: xr.Dataset, obs: xr.Dataset) -> tuple[xr.Dataset,
     Raises
     ------
     ValueError
-        If the two share no time step, which would otherwise be reported as
-        statistics over nothing.
+        If no observed record has a model step near it, which would
+        otherwise be reported as statistics over nothing.
     """
     sim = to_observed_grid(sim, obs)
+    sim = match_records(sim, obs, tolerance_days)
     sim, obs = xr.align(sim, obs, join="inner")
     if sim.sizes.get("time", 0) == 0:
         raise ValueError("the ensemble and the observations share no time step")
@@ -561,7 +642,7 @@ def score_product(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stats = error_stats(sim[OBS_VAR], obs[OBS_VAR]).compute()
+    (stats,) = compute(error_stats(sim[OBS_VAR], obs[OBS_VAR]), desc=f"{output_dir.name}: error statistics")
     # The ranking compares fields, not series, so it is taken on the record's
     # mean rather than once per time step.
     ranking = rank_by_bootstrap_rmse(
@@ -589,7 +670,9 @@ def score_product(
     table = table.merge(ranking.to_dataframe().reset_index(), on=MEMBER_DIM)
     table = table.sort_values(["fudge_factor", "rmse"])
 
-    xr.merge([weighted, stats, ranking]).to_netcdf(output_dir / "importance_sampling.nc")
+    # The three share only their member coordinate; ``override`` says so and
+    # keeps xarray from warning that its default will change.
+    xr.merge([weighted, stats, ranking], compat="override").to_netcdf(output_dir / "importance_sampling.nc")
     table.to_csv(output_dir / "importance_sampling.csv", index=False)
     logger.info(
         "%s: best RMSE %s (%.3f m), %d member(s) tied",
@@ -659,6 +742,7 @@ def run_pipeline(
     n_samples: int = DEFAULT_N_SAMPLES,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = 0,
+    tolerance_days: float = DEFAULT_TIME_TOLERANCE_DAYS,
 ) -> pd.DataFrame:
     """
     Score an ensemble against every observed product and weigh its members.
@@ -689,6 +773,9 @@ def run_pipeline(
         Bootstrap resamples of the RMSE ranking.
     seed : int, optional
         Seed of the resampler and the bootstrap.
+    tolerance_days : float, optional
+        Largest offset between an observed record and the model step that
+        stands in for it.
 
     Returns
     -------
@@ -701,11 +788,10 @@ def run_pipeline(
 
     tables = []
     log_likes: dict[str, xr.DataArray] = {}
-    for observed in observations:
-        observed = Path(observed)
+    for observed in progress_bar([Path(o) for o in observations], desc="Products", unit="product"):
         product = product_name(observed)
         obs = load_observations(observed, relative, floor, max_error=max_error)
-        sim, obs = align_to_observations(load_ensemble(files, variable), obs)
+        sim, obs = align_to_observations(load_ensemble(files, variable), obs, tolerance_days)
         weighted, table = score_product(
             sim,
             obs,
@@ -797,6 +883,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--n-samples", type=int, default=DEFAULT_N_SAMPLES, help="Draws resolving weights to counts.")
     parser.add_argument("--n-boot", type=int, default=DEFAULT_N_BOOT, help="Bootstrap resamples of the RMSE ranking.")
     parser.add_argument("--seed", type=int, default=0, help="Seed of the resampler and the bootstrap.")
+    parser.add_argument(
+        "--time-tolerance",
+        type=float,
+        default=DEFAULT_TIME_TOLERANCE_DAYS,
+        metavar="DAYS",
+        help="How far an observed record may sit from the nearest model step (PISM stamps spatial output "
+        "mid-interval) and still be compared with it.",
+    )
     parser.add_argument("RUN_DIR", nargs=1, help="Directory searched recursively for the member dh files.")
     parser.add_argument("OUTPUT_PATH", nargs=1, help="Directory to write the results into.")
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -819,6 +913,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         n_samples=args.n_samples,
         n_boot=args.n_boot,
         seed=args.seed,
+        tolerance_days=args.time_tolerance,
     )
     logger.info("\n%s", summary.to_string(index=False))
     return 0

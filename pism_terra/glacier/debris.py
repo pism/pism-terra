@@ -248,8 +248,9 @@ def assemble_debris(
     Returns
     -------
     xarray.Dataset
-        Variables ``debris_thickness`` (``m``) and ``debris_melt_factor``
-        (``1``) on ``target_grid``. No ``standard_name`` is set — CF has none
+        Variables ``debris_thickness`` (``m``), ``debris_melt_factor``
+        (``1``) and ``debris_input_rate`` (``m year^-1``, zero for now) on
+        ``target_grid``. No ``standard_name`` is set — CF has none
         for these fields, and PISM refuses input files where two variables
         share one.
     """
@@ -266,7 +267,18 @@ def assemble_debris(
         "long_name": "sub-debris melt enhancement factor",
         "source": _SOURCE,
     }
-    return xr.Dataset({"debris_thickness": thickness, "debris_melt_factor": melt_factor})
+    # No debris supply estimate yet: PISM's debris transport model reads the
+    # rate from this file, and zero keeps the staged cover evolving under
+    # transport alone.
+    input_rate = xr.zeros_like(thickness)
+    input_rate.attrs = {
+        "units": "m year^-1",
+        "long_name": "rate of debris input from the surrounding terrain (solid debris thickness)",
+        "comment": "placeholder: no debris input",
+    }
+    return xr.Dataset(
+        {"debris_thickness": thickness, "debris_melt_factor": melt_factor, "debris_input_rate": input_rate}
+    )
 
 
 def _add_static_time(ds: xr.Dataset) -> xr.Dataset:
@@ -296,6 +308,58 @@ def _add_static_time(ds: xr.Dataset) -> xr.Dataset:
     for name in ("time", "time_bnds"):
         ds[name].encoding.update({"dtype": "int64", "units": "hours since 2000-01-01"})
     return ds
+
+
+#: Debris fields copied into the glacier boot file.
+BOOT_DEBRIS_VARIABLES = ("debris_thickness", "debris_melt_factor")
+
+
+def add_debris_to_boot(boot: xr.Dataset, debris: xr.Dataset) -> xr.Dataset:
+    """
+    Put the debris thickness and melt factor into the boot file.
+
+    PISM's debris transport model regrids ``debris_thickness`` from the file
+    it bootstraps from (zero where the variable is absent), so the staged
+    estimate becomes the initial supraglacial debris of the init leg; later
+    legs restart from the state PISM writes. ``debris_melt_factor`` rides
+    along so the boot file can also serve as
+    ``debris.ice_melt_enhancement.file`` for the ``given`` enhancement model.
+    The boot file holds no time axis, so the single static record is dropped.
+
+    Parameters
+    ----------
+    boot : xarray.Dataset
+        Boot dataset on the domain grid.
+    debris : xarray.Dataset
+        Output of :func:`debris_from_grid` on the same grid.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``boot`` with the variables of :data:`BOOT_DEBRIS_VARIABLES` that
+        ``debris`` holds added.
+
+    Raises
+    ------
+    ValueError
+        If a debris field is not on the boot file's grid.
+    """
+    fields = {}
+    for name in BOOT_DEBRIS_VARIABLES:
+        if name not in debris:
+            continue
+        field = debris[name]
+        if "time" in field.dims:
+            field = field.isel(time=0, drop=True)
+        for dim in ("x", "y"):
+            if not np.allclose(field[dim].values, boot[dim].values):
+                raise ValueError(f"{name} is not on the boot file's {dim} grid")
+        field = field.drop_vars([c for c in field.coords if c not in ("x", "y")])
+        field = field.assign_coords(x=boot["x"], y=boot["y"]).transpose("y", "x")
+        field.attrs = {k: v for k, v in field.attrs.items() if k != "grid_mapping"}
+        field.encoding = {"_FillValue": None}
+        fields[name] = field
+    return boot.assign(fields)
 
 
 def debris_from_grid(
@@ -339,16 +403,22 @@ def debris_from_grid(
     Returns
     -------
     xarray.Dataset
-        Dataset with ``debris_thickness`` (``m``) and ``debris_melt_factor``
-        (``1``) on ``target_grid`` and a length-1 unlimited ``time`` axis.
+        Dataset with ``debris_thickness`` (``m``), ``debris_melt_factor``
+        (``1``) and ``debris_input_rate`` (``m year^-1``) on ``target_grid``
+        and a length-1 unlimited ``time`` axis.
     """
     print("")
     print(f"Generate Debris Thickness ({dataset})" + (f" for {rgi_id}" if rgi_id else ""))
     print("-" * 120)
 
     if check_xr_lazy(path) and not force_overwrite:
-        logger.info("Using cached debris file %s", path)
-        return xr.open_dataset(path)
+        cached = xr.open_dataset(path)
+        if "debris_input_rate" in cached:
+            logger.info("Using cached debris file %s", path)
+            return cached
+        # Staged before the input rate existed: rebuild (the tifs are cached).
+        cached.close()
+        logger.info("Cached debris file %s has no debris_input_rate; regenerating", path)
 
     path = Path(path)
     path.unlink(missing_ok=True)

@@ -70,6 +70,7 @@ features/postprocessing
 :hidden:
 
 greenland/inversion
+greenland/ismip7_submission
 ```
 
 ```{toctree}

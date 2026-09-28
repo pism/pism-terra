@@ -23,6 +23,8 @@ have to land under ``input/<project>``, and the global ones beside it, or two
 projects silently overwrite each other's files.
 """
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -369,3 +371,75 @@ def test_project_prefix(prefix, project, expected):
         Expected joined prefix.
     """
     assert project_prefix(prefix, project) == expected
+
+
+def test_both_outline_files_get_an_rgi_id_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, setup_file: Path):
+    """
+    Index ``rgi_id`` in the complexes file *and* the glaciers file.
+
+    Both are looked up by id downstream, and on a regional GeoPackage on a
+    network share an unindexed lookup is minutes per glacier.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to replace the network-bound RGI step and record indexing.
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    setup_file : pathlib.Path
+        Minimal setup TOML from the fixture.
+    """
+    indexed: list[Path] = []
+
+    def fake_prepare_rgi(regions, **kwargs):  # pylint: disable=unused-argument
+        """
+        Write empty placeholders where the real function writes GeoPackages.
+
+        Parameters
+        ----------
+        regions : pandas.DataFrame
+            Ignored.
+        **kwargs
+            Everything the real function takes.
+
+        Returns
+        -------
+        dict
+            The two output paths.
+        """
+        out = kwargs["output_path"]
+        files = {
+            "rgi_complexes": out / f"{kwargs['name_prefix']}_c.gpkg",
+            "rgi_glaciers": out / f"{kwargs['name_prefix']}_g.gpkg",
+        }
+        for path in files.values():
+            path.touch()
+        return files
+
+    monkeypatch.setattr(prepare_mod, "prepare_rgi", fake_prepare_rgi)
+
+    def record_index(path, column="rgi_id"):  # pylint: disable=unused-argument
+        """
+        Record which file was indexed instead of touching SQLite.
+
+        Parameters
+        ----------
+        path : Path or str
+            The GeoPackage.
+        column : str, optional
+            Ignored.
+
+        Returns
+        -------
+        list of str
+            Nothing was created.
+        """
+        indexed.append(Path(path))
+        return []
+
+    monkeypatch.setattr(prepare_mod, "index_geopackage", record_index)
+    out_path = tmp_path / "glacier_input"
+
+    prepare(["--include", "rgi", str(setup_file), str(out_path)])
+
+    assert sorted(p.name for p in indexed) == ["s4f_c.gpkg", "s4f_g.gpkg"]

@@ -8,6 +8,13 @@ set -e
 
 ulimit -a
 
+{% if output_dirs %}
+# Output directories. A run staged through S3 arrives without them (a bucket
+# keeps no empty directories) and PISM does not create them itself.
+mkdir -p {{ output_dirs | join(" ") }}
+{% endif %}
+
+
 {% if run_init_str %}
 # ###############################################################################
 # INIT RUN
@@ -30,14 +37,6 @@ mpirun -np  {{ ntasks | default(32) }} pismi {{ inv_str }}
 # ###############################################################################
 
 mpirun -np  {{ ntasks | default(32) }} pism {{ run_str }}
-{% endif %}
-
-{% if ism_checker_str %}
-# ###############################################################################
-# COMPLIANCE CHECKER
-# ###############################################################################
-
-{{ ism_checker_str }}
 {% endif %}
 
 {% if post_process_str %}

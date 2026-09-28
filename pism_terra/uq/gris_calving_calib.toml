@@ -2,5 +2,5 @@ samples = 2
 
 ['calving.vonmises_calving.sigma_max']
 
-choices = [5e5, 7.5e5]
+choices = [4e5, 5e5]
 distribution = "choices"

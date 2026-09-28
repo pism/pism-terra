@@ -99,7 +99,7 @@ model = 'blatter'
 
 'stress_balance.blatter.Mz' = 10
 'stress_balance.blatter.coarsening_factor' = 3
-'stress_balance.blatter.ue_eta_transform' = 'yes'
+'stress_balance.blatter.use_eta_transform' = 'yes'
 'stress_balance.calving_front_stress_bc' = 'no'
 'stress_balance.model' = "blatter"
 'stress_balance.sia.max_diffusivity' = 100000.0
@@ -189,7 +189,7 @@ model = "constant"
 
 'ocean.given.file' = "none"
 'ocean.given.periodic' = "yes"
-'ocean.model' = "given"
+'ocean.models' = "given"
 
 [ocean.options.constant]
 

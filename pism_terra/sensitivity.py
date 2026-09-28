@@ -48,6 +48,12 @@ logger = logging.getLogger(__name__)
 MEMBER_DIM = "uq_id"
 PARAM_DIM = "uq_var"
 INDICES = ("S1", "S1_conf", "delta", "delta_conf")
+# SALib 1.6 split the single ``delta``/``delta_conf`` pair into one per
+# bootstrap resampling mode (``delta_raw``, ``delta_balanced``, ``delta_step``)
+# and returns no plain ``delta`` any more. ``raw`` is the uniform bootstrap that
+# 1.5.x called ``delta``, so preferring it keeps indices comparable across
+# versions; ``balanced`` is the fallback for a build that drops ``raw``.
+DELTA_KEYS = ("delta", "delta_raw", "delta_balanced")
 DEFAULT_TARGET = "ice_mass"
 DEFAULT_N_RESAMPLES = 100
 FREQUENCIES = {"yearly": "YS", "monthly": "MS", "none": None}
@@ -115,15 +121,22 @@ def delta_indices(
     if finite.sum() <= problem["num_vars"] + 1 or np.nanstd(Y[finite]) == 0:
         return out
     try:
-        with warnings.catch_warnings():
+        # ``record=True`` and not just a filter: SALib 1.6's ``analyze`` calls
+        # ``warnings.simplefilter("once")`` itself, which would override the
+        # filter set here and emit one warning per parameter per instant.
+        with warnings.catch_warnings(record=True):
             warnings.simplefilter("ignore")
             res = delta.analyze(
                 problem, X[finite], Y[finite], num_resamples=num_resamples, seed=seed, print_to_console=False
             )
     except Exception:  # pylint: disable=broad-exception-caught
         return out
+    delta_key = next((key for key in DELTA_KEYS if key in res), None)
+    if delta_key is None:
+        return out
+    source = {"delta": delta_key, "delta_conf": f"{delta_key}_conf"}
     for k, name in enumerate(INDICES):
-        out[:, k] = np.asarray(res[name], dtype=float)
+        out[:, k] = np.asarray(res[source.get(name, name)], dtype=float)
     return out
 
 

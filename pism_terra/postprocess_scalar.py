@@ -435,6 +435,10 @@ def process_file(
 
     if "grounding_line_flux" in ds.data_vars:
         ds["grounding_line_flux_nonneg"] = ds["grounding_line_flux"].where(ds["grounding_line_flux"] < 0)
+    if "ice_mass_transport_across_grounding_line" in ds.data_vars:
+        ds["ice_mass_transport_across_grounding_line_nonneg"] = ds["ice_mass_transport_across_grounding_line"].where(
+            ds["ice_mass_transport_across_grounding_line"] < 0
+        )
 
     # ``where`` promotes integer variables to float so it can write NaN outside
     # the basin. Remember them and restore the dtype after summing, so the output

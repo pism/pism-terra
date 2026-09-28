@@ -124,6 +124,44 @@ The init leg is therefore *required* for an inverse run — a config without
 `campaign.init_start`/`init_end` exits with an error, since `pismi` would have
 no state to invert on.
 
+## Profiling
+
+`campaign.profile = true` makes every `pism` leg save PETSc's detailed log
+at the end of the run, through PISM's own `-profile` option (the
+`ascii_info_detail` format of `-log_view`). The runner names the file after
+the leg's state file, `<output>/profile/profile_<tag>.py` for
+`<output>/state/state_<tag>.nc`, so the init and main legs of one run and
+the members of an ensemble never overwrite each other. `pismi` has no
+profiling option and is left alone. The `log_view` entries some configs
+carry in `[solver.forward]` keep working alongside; they print the text
+summary into the job log.
+
+The file is a Python script that cannot be imported (PETSc assigns into
+events it never declared). `pism_terra.profiling` reads it instead:
+
+```python
+from pism_terra.profiling import event_summary, load_profiles
+
+df = load_profiles(sorted(Path("run/output/profile").glob("profile_*.py")))
+summary = event_summary(df, stage="time-stepping loop")
+```
+
+`load_profile` and `load_profiles` give one row per stage, event and rank
+(`count`, `time`, `flop`, messages, reductions), labelled by `run`, the tag
+from the file name. `event_summary` reduces a stage over the ranks to the
+slowest and fastest rank, their ratio (the load balance) and the share of
+the stage, the numbers PISM's `pism_plot_profiling` draws. Both tables are
+plain pandas frames, ready to group by `run` when comparing task counts or
+resolutions.
+
+`pism-profile-analysis RUN_DIR --output-path OUT` does the standard analysis
+for a Blatter run: the time-stepping loop split into PISM's components with
+the Blatter solve set apart, the solve's Newton-step phases (residual,
+Jacobian, preconditioner setup, linear solve, line search) and its
+linear-algebra kernels, each with the slowest and fastest rank, and seconds
+per rank for the assembly and scatter events, which is where load imbalance
+shows. Runs found under one directory are labelled from `output/uq.csv`.
+
 ## Jinja2 templates
 
 Templates expose the rendered `run_str` (PISM command-line flags) plus any

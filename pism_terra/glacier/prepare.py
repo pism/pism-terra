@@ -79,7 +79,7 @@ from pism_terra.heatflux import prepare_heatflux_lucazeau
 from pism_terra.log import setup_logging
 from pism_terra.prepare_select import add_include_argument, select_datasets
 from pism_terra.raster import write_cog
-from pism_terra.vector import glaciers_in_complex
+from pism_terra.vector import glaciers_in_complex, index_geopackage
 from pism_terra.workflow import check_xr_lazy
 
 xr.set_options(keep_attrs=True)
@@ -334,6 +334,14 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
             ntasks=ntasks,
             name_prefix=project_directory,
         )
+
+    # Index rgi_id in both outline files, whether just written or reused from
+    # a previous run. Everything downstream looks glaciers up by id, and on an
+    # unindexed GeoPackage that is a full scan -- minutes on a regional file
+    # that lives on a network share. Idempotent, so it costs nothing to repeat.
+    for rgi_file in rgi_files.values():
+        if Path(rgi_file).exists():
+            logger.info("Indexed rgi_id in %s: %s", rgi_file, index_geopackage(rgi_file))
 
     # Load the RGI outlines once if any consumer needs them.
     need_outlines = bool({"ice_thickness_frank", "ice_thickness_maffezzoli", "dh_hugonnet"} & set(selected)) or (

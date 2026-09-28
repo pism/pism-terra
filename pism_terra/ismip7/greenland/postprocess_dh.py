@@ -52,12 +52,13 @@ from typing import Sequence
 
 import rioxarray  # noqa: F401  pylint: disable=unused-import
 import xarray as xr
-from xarray.coders import CFDatetimeCoder
+from xarray.coders import CFDatetimeCoder  # pylint: disable=no-name-in-module
 
 from pism_terra.ismip7.postprocess_flux import find_flux_files, submission_crs
 from pism_terra.log import setup_logging
 from pism_terra.postprocess_dh import _nearest_time_index, process_file_dh
 from pism_terra.postprocess_spatial import DROP_VARS, _encoding
+from pism_terra.progress import compute as compute_with_progress
 
 xr.set_options(keep_attrs=True)
 
@@ -181,7 +182,12 @@ def process_file_cumulative(
             encoding["time_bnds"] = dict(time_enc)
 
         logger.info("Writing %s", outfile)
-        dh.to_netcdf(outfile, encoding=encoding, engine="h5netcdf")
+        # The reduction runs inside the write; a lazy write lets the Dask
+        # progress bar follow it on a terminal.
+        compute_with_progress(
+            dh.to_netcdf(outfile, encoding=encoding, engine="h5netcdf", compute=False),
+            desc=f"Writing {outfile.name}",
+        )
     logger.info("%s in %.0fs", outfile.name, time.time() - started)
     return outfile
 

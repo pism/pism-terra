@@ -52,7 +52,7 @@ from pism_terra.glacier.climate import (
     era5_monthly_mean,
     snap,
 )
-from pism_terra.glacier.debris import debris_from_grid
+from pism_terra.glacier.debris import add_debris_to_boot, debris_from_grid
 from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.glacier.observations import (
     add_dh_observations,
@@ -397,6 +397,26 @@ def stage_glacier(
         project_directory=config.get("project_directory"),
     )
 
+    # Debris thickness is opt-in: campaigns without a ``debris`` key stage
+    # exactly as before. ``as_params()`` drops unset fields, hence ``.get``.
+    # The thickness also goes into the boot file, where PISM's debris
+    # transport model picks it up as the initial debris cover.
+    debris = config.get("debris", "none")
+    debris_file: Path | None = None
+    if debris and debris != "none":
+        debris_file = path / f"debris_{rgi_id}.nc"
+        debris_ds = debris_from_grid(
+            grid_ds,
+            glacier_projected.geometry,
+            rgi_id=rgi_id,
+            dataset=debris,
+            path=debris_file,
+            staging_path=staging_path,
+            force_overwrite=force_overwrite,
+        )
+        check_xr_fully(debris_file)
+        boot_ds = add_debris_to_boot(boot_ds, debris_ds)
+
     print("")
     print("Saving bootfile")
     print("-" * 120)
@@ -449,23 +469,6 @@ def stage_glacier(
             force_overwrite=force_overwrite,
         )
         check_xr_fully(obs_file)
-
-    # Debris thickness is opt-in: campaigns without a ``debris`` key stage
-    # exactly as before. ``as_params()`` drops unset fields, hence ``.get``.
-    debris = config.get("debris", "none")
-    debris_file: Path | None = None
-    if debris and debris != "none":
-        debris_file = path / f"debris_{rgi_id}.nc"
-        _ = debris_from_grid(
-            grid_ds,
-            glacier_projected.geometry,
-            rgi_id=rgi_id,
-            dataset=debris,
-            path=debris_file,
-            staging_path=staging_path,
-            force_overwrite=force_overwrite,
-        )
-        check_xr_fully(debris_file)
 
     # Save domain extent polygon as a GPKG (intermediate, used for sanity checks)
     x_point_list = [

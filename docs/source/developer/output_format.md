@@ -81,7 +81,10 @@ The same test on `2026_09_ismip7_core_1200m` (96 ranks over two nodes,
 for 224 steps in **every** variant, `noout` included; the spread between
 node pairs is as large as the spread between variants. At one record per
 year the stall is paid four times in four years and vanishes behind 6 to
-8 s of compute per step. The ISMIP7 configs keep `netcdf4_parallel`.
+8 s of compute per step. All ISMIP7 configs nevertheless write
+`netcdf4_serial` since September 2026, the `async_nc4s` variant: it costs
+nothing at yearly output, was the fastest ISMIP7 variant on average, and is
+the format the monthly case below needs anyway.
 
 Monthly ISMIP7 output would change that: 48 records per four years, each
 about 375 MB. The writer would keep up (it compresses about 50 MB/s, the

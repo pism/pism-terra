@@ -280,6 +280,34 @@ def sort_dict_by_key(d: dict) -> dict:
     return {k: d[k] for k in sorted(d.keys())}
 
 
+def add_profile_option(run: dict[str, Any], enabled: bool) -> None:
+    """
+    Point PISM's ``-profile`` at a file named after the leg's state file.
+
+    PISM's ``-profile FILE`` writes PETSc's detailed log (the
+    ``ascii_info_detail`` Python format) at the end of the run. The file name
+    has to differ per leg and per ensemble member, so it is derived from the
+    leg's ``output.file``: ``<output>/state/state_<tag>.nc`` becomes
+    ``<output>/profile/profile_<tag>.py``. The directory is created here,
+    since PETSc only opens the file.
+
+    Parameters
+    ----------
+    run : dict
+        Dotted PISM flags of one leg; ``"output.file"`` must be set. Updated
+        in place with ``"profile"``.
+    enabled : bool
+        ``campaign.profile``; nothing happens when ``False``.
+    """
+    if not enabled:
+        return
+    state = Path(run["output.file"])
+    tag = state.stem.removeprefix("state_")
+    profile_path = state.parent.parent / "profile"
+    profile_path.mkdir(parents=True, exist_ok=True)
+    run["profile"] = (profile_path / f"profile_{tag}.py").resolve()
+
+
 def dict2str(d: dict) -> str:
     """
     Convert a dictionary into a formatted string of key-value pairs.

@@ -859,6 +859,7 @@ def test_counter_run_postprocesses_the_submission_fluxes(tmp_path):
     source, destination = flux.split()[1], flux.split()[2]
     assert source.endswith("/CORE/C005")
     assert destination.endswith("/output/basins")
+    assert "--dim-name region --total-name GIS_GIS" in script
 
 
 def test_single_leg_ismip7_run_postprocesses_only_the_fluxes(tmp_path):
@@ -898,6 +899,11 @@ def test_single_leg_flat_run_postprocesses_the_spatial_file(tmp_path):
     cfg_path.write_text(cfg_path.read_text().replace("'output.ISMIP' = \"yes\"", "'output.ISMIP' = \"no\""))
     script = _render_forward(tmp_path / "run", cfg_path, OUTLINE, sample="CESM2-WACCM")
     assert _postprocess_commands(script) == ["pism-postprocess-scalar"]
+    (command,) = [line for line in script.splitlines() if line.startswith("pism-postprocess-scalar")]
+    # ISMIP7 conventions: the region dimension and the GIS_GIS total match the
+    # observed mass-balance products, and the file is region_<tag>.nc.
+    assert "--dim-name region --total-name GIS_GIS" in command
+    assert "/region_" in command.split()[2]
 
 
 def test_run_without_outlines_postprocesses_nothing(tmp_path):
@@ -1288,3 +1294,282 @@ def test_is_ismip7_run_needs_both_the_flag_and_a_set(tmp_path: Path):
     assert is_ismip7_run(load_config(written(lambda d: None)))
     assert not is_ismip7_run(load_config(written(lambda d: d["reporting"].update({"output.ISMIP": "no"}))))
     assert not is_ismip7_run(load_config(written(lambda d: d["run_info"].pop("run_info.set"))))
+
+
+def _other_hydrology_model(config_file: Path) -> tuple[str, str]:
+    """
+    Return the config's hydrology model and one other model it has a table for.
+
+    Parameters
+    ----------
+    config_file : pathlib.Path
+        PISM configuration TOML.
+
+    Returns
+    -------
+    tuple of str
+        ``(selected, other)`` model names.
+    """
+    hydrology = load_config(config_file).hydrology
+    other = next(m for m in hydrology.options if m != hydrology.model)
+    return hydrology.model, other
+
+
+def test_forward_uq_row_swaps_the_hydrology_option_table(tmp_path):
+    """
+    ``hydrology.model`` in a UQ row selects that model's whole option table.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    selected, other = _other_hydrology_model(FREE_HY)
+    script = _render_forward(tmp_path, FREE_HY, uq={"hydrology.model": other}, sample=0)
+    for leg in _legs(script):
+        assert f"-hydrology.model {other}" in leg
+        assert f"-hydrology.model {selected}" not in leg
+    # The previous model's own option must not linger.
+    if selected == "null":
+        assert "null_diffuse_till_water" not in script
+    else:
+        assert "surface_input_from_runoff" not in script
+
+
+def test_inverse_uq_row_swaps_the_hydrology_option_table(tmp_path):
+    """
+    The inverse chain's init and forward legs follow a UQ-selected hydrology model.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    selected, other = _other_hydrology_model(FREE_HY)
+    script = _render_inverse(tmp_path, FREE_HY, uq={"hydrology.model": other}, sample=0)
+    init, _inv, fwd = _legs(script)
+    for leg in (init, fwd):
+        assert f"-hydrology.model {other}" in leg
+        assert f"-hydrology.model {selected}" not in leg
+
+
+def test_uq_row_naming_an_unknown_model_is_rejected(tmp_path):
+    """
+    A model with no ``[hydrology.options.*]`` table fails loudly.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    with pytest.raises(ValueError, match="hydrology.model = 'distributed'"):
+        _render_forward(tmp_path, FREE_HY, uq={"hydrology.model": "distributed"}, sample=0)
+
+
+def _with_profile(tmp_path: Path, config_file: Path, enabled: bool = True) -> Path:
+    """
+    Copy a config with ``campaign.profile`` set one way, whatever it ships with.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest scratch directory.
+    config_file : pathlib.Path
+        Config to copy.
+    enabled : bool, optional
+        ``True`` adds ``profile = true``; ``False`` leaves the key out.
+
+    Returns
+    -------
+    pathlib.Path
+        The modified copy.
+    """
+    text = "\n".join(line for line in config_file.read_text().splitlines() if not line.startswith("profile")) + "\n"
+    if enabled:
+        assert text.count("[campaign]\n") == 1
+        text = text.replace("[campaign]\n", "[campaign]\n\nprofile = true\n", 1)
+    copy = tmp_path / ("profile_on.toml" if enabled else "profile_off.toml")
+    copy.write_text(text)
+    return copy
+
+
+def _assert_profiled(script: str) -> None:
+    """
+    Every ``pism`` leg carries ``-profile`` named after its state file; ``pismi`` none.
+
+    Parameters
+    ----------
+    script : str
+        Rendered submission script.
+    """
+    profiles = []
+    for leg in _legs(script):
+        profile = re.search(r"-profile (\S+)", leg)
+        if leg.split()[0] != "pism":
+            assert profile is None
+            continue
+        assert profile is not None, leg
+        state = Path(_search(r"-output\.file (\S+)", leg))
+        tag = state.stem.removeprefix("state_")
+        assert profile.group(1) == str(state.parent.parent / "profile" / f"profile_{tag}.py")
+        profiles.append(profile.group(1))
+    assert len(profiles) == len(set(profiles)) >= 2
+
+
+def test_forward_legs_profile_into_their_own_files(tmp_path):
+    """
+    ``campaign.profile`` gives the init and forward legs separate ``-profile`` files.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    _assert_profiled(_render_forward(tmp_path, _with_profile(tmp_path, FREE_HY)))
+    assert "-profile" not in _render_forward(tmp_path / "off", _with_profile(tmp_path, FREE_HY, enabled=False))
+
+
+def test_inverse_legs_profile_into_their_own_files(tmp_path):
+    """
+    In the inverse chain the ``pism`` legs profile and the ``pismi`` leg does not.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    _assert_profiled(_render_inverse(tmp_path, _with_profile(tmp_path, FREE_HY)))
+
+
+def test_cli_uploads_the_output_tree_when_a_bucket_is_given(tmp_path, monkeypatch):
+    """
+    ``--bucket``/``--bucket-prefix`` sync the whole output path to S3, like the glacier runner.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture to stub staging, rendering and the upload.
+    """
+    from pism_terra.ismip7.greenland import run as ismip7  # pylint: disable=import-outside-toplevel
+
+    files = {
+        c: f"/in/{c}.nc"
+        for c in (
+            "boot_file",
+            "regrid_file",
+            "retreat_file",
+            "grid_file",
+            "heatflux_file",
+            "climate_hist_file",
+            "climate_gradient_hist_file",
+            "ocean_hist_file",
+            "climate_proj_file",
+            "climate_gradient_proj_file",
+            "ocean_proj_file",
+        )
+    }
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(ismip7, "stage", lambda *a, **k: pd.DataFrame([files]))
+    monkeypatch.setattr(ismip7, "prepare_observations", lambda *a, **k: None)
+    monkeypatch.setattr(ismip7, "_render_forward_run", lambda *a, **k: None)
+    monkeypatch.setattr(ismip7, "record_member", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ismip7, "local_to_s3", lambda src, bucket, prefix: calls.update(upload=(Path(src), bucket, prefix))
+    )
+
+    argv = [
+        "pism-ismip7-greenland-run-forward",
+        "--output-path",
+        str(tmp_path),
+        str(FREE_HY),
+        str(TEMPLATE_DIR / "debug-ismip7.j2"),
+    ]
+    monkeypatch.setattr("sys.argv", argv)
+    ismip7._run(kind="forward")  # pylint: disable=protected-access
+    assert "upload" not in calls
+    # Project files are snapshotted under the output path, as the glacier runner does.
+    assert (tmp_path / "config" / FREE_HY.name).read_text() == FREE_HY.read_text()
+    assert (tmp_path / "templates" / "debug-ismip7.j2").exists()
+
+    monkeypatch.setattr(
+        "sys.argv", argv + ["--bucket", "pism-cloud-data", "--bucket-prefix", "ismip7/test_ensemble/abc"]
+    )
+    ismip7._run(kind="forward")  # pylint: disable=protected-access
+    assert calls["upload"] == (tmp_path, "pism-cloud-data", "ismip7/test_ensemble/abc")
+
+
+def test_script_creates_its_output_directories(tmp_path):
+    """
+    The rendered script makes every output directory the generator made, so a copy staged through S3 works.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, C003, sample="CESM2-WACCM")
+    (mkdir,) = [line for line in script.splitlines() if line.startswith("mkdir -p ")]
+    made = set(mkdir.split()[2:])
+    root = tmp_path.resolve()
+    for sub in ("output", "output/C003/state", "output/C003/scalar", "output/C003/spatial", "logs"):
+        assert str(root / sub) in made, sub
+    submission = [d for d in made if d.startswith(str(root / "output" / "GrIS"))]
+    assert any(d.endswith("CORE/C003") for d in submission)
+    # Every directory the script writes a file into is made before the first leg.
+    for output in re.findall(r"-output\.(?:file|scalar\.file) (\S+)", script):
+        assert str(Path(output).parent) in made, output
+    assert script.index("mkdir -p ") < script.index("mpirun")
+
+
+def test_compliance_checker_does_not_abort_the_script(tmp_path):
+    """
+    The checker's exit status is reported, not fatal: its findings are in its log, and the run has finished by then.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(tmp_path, C003, sample="CESM2-WACCM")
+    (line,) = [line for line in script.splitlines() if line.startswith("ismip7-compliance-checker")]
+    assert "|| echo" in line and "compliance_checker_log.txt" in line
+
+
+def test_ec2_template_launches_the_writer_and_splits_the_scalars(tmp_path):
+    """
+    The cloud template runs the product legs with pism_ismip7_writer and post-processes the scalar file.
+
+    Only the writer turns the ``{var}`` placeholder of the ISMIP7 spatial file
+    name into one file per variable, and only the scalar post-processing
+    splits the scalar time series; without both, a cloud run leaves one
+    ``{var}_...nc`` and one scalar file, which the compliance checker rejects.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    # ``sample`` is annotated as an int but the runner takes a GCM name, as
+    # every other test passes through the untyped ``_render_forward``.
+    _render_forward_run(
+        C003, TEMPLATE_DIR / "ec2_ismip7.j2", None, path=tmp_path, sample="CESM2-WACCM"  # type: ignore[arg-type]
+    )
+    (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
+    text = script.read_text()
+    # The options are rendered over backslash-continued lines; join them back
+    # into one command per launch.
+    joined = text.replace("\\\n", " ")
+    legs = [" ".join(line.split()) for line in joined.splitlines() if line.startswith("mpirun")]
+    product = [line for line in legs if "pism_ismip7_writer" in line]
+    assert len(product) == 2, "historical and projection legs run with the writer"
+    for line in product:
+        assert line.startswith("mpirun -np 1 pism_ismip7_writer -r 1 : -np ")
+        assert line.endswith("-output.asynchronous")
+    # C003's product is the projection leg; the historical leg is an internal
+    # continuation with a flat file name, so one of the two carries {var}.
+    assert sum("{var}" in line for line in product) == 1, "the product leg hands the writer the per-variable name"
+    assert not any("pism_ismip7_writer" in line for line in legs if "-time.end 1985-01-01" in line), "not the init leg"
+    assert "postprocess_ismip7_scalar.sh" in text
+    assert text.index("postprocess_ismip7_scalar.sh") < text.index("ismip7-compliance-checker")

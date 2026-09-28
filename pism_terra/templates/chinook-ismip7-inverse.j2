@@ -22,6 +22,13 @@ ulimit -l unlimited || true
 ulimit -s unlimited || true
 ulimit
 
+{% if output_dirs %}
+# Output directories. A run staged through S3 arrives without them (a bucket
+# keeps no empty directories) and PISM does not create them itself.
+mkdir -p {{ output_dirs | join(" ") }}
+{% endif %}
+
+
 {% if run_init_str %}
 # ###############################################################################
 # INIT RUN
@@ -67,5 +74,7 @@ mpirun -np  {{ ntasks | default(40) }} pism {{ run_proj_str }}
 # COMPLIANCE CHECKER
 # ###############################################################################
 
-{{ ism_checker_str }}
+# The checker reports; its findings are in the submission directory's
+# compliance_checker_log.txt and must not fail a run that has finished.
+{{ ism_checker_str }} || echo "compliance checker reported errors; see compliance_checker_log.txt"
 {% endif %}

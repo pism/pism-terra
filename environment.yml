@@ -50,7 +50,10 @@ dependencies:
   - rioxarray
   - s3fs
   - scikit-learn
-  - salib
+  # 1.6 renamed the delta.analyze output keys (delta -> delta_raw/_balanced/_step);
+  # sensitivity.py reads either spelling, but pin so a campaign's indices come
+  # from one estimator rather than from whichever version got solved.
+  - salib>=1.6
   - threadpoolctl
   - scipy
   - seaborn

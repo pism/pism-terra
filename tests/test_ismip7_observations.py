@@ -242,3 +242,27 @@ def test_prepare_observations_skips_a_failure_only_when_asked(tmp_path: Path, mo
 
     with pytest.raises(RuntimeError, match="no Earthdata login"):
         obs.prepare_observations(tmp_path / "run2", cache_path=tmp_path / "cache2")
+
+
+def test_place_files_copies_into_the_observations_directory(tmp_path: Path, caplog):
+    """
+    Given files are copied beside the run, a missing one is logged and skipped, and a re-run is a no-op.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    caplog : pytest.LogCaptureFixture
+        Captures the warning about the missing file.
+    """
+    staged = tmp_path / "input" / "dh_smith_g5000m_ICESat1-ICESat2-2021.nc"
+    staged.parent.mkdir()
+    staged.write_bytes(b"dh")
+    placed = obs.place_files(tmp_path / "run", [staged, tmp_path / "input" / "missing.nc"])
+    destination = tmp_path / "run" / "output" / "observations"
+    assert placed == [destination / staged.name]
+    assert (destination / staged.name).read_bytes() == b"dh"
+    assert staged.is_file(), "a copy, not a move"
+    assert "missing.nc" in caplog.text
+    # Placing again overwrites quietly; placing the copy onto itself is fine too.
+    assert obs.place_files(tmp_path / "run", [staged, destination / staged.name]) == [destination / staged.name] * 2

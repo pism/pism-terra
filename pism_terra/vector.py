@@ -21,12 +21,16 @@
 Vector Functions.
 """
 
+import logging
+import sqlite3
 from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import shapely
 import xarray as xr
+
+logger = logging.getLogger(__name__)
 
 
 def glaciers_in_complex(rgi_c_id: str, rgi_g: gpd.GeoDataFrame) -> list:
@@ -179,3 +183,48 @@ def grid_cells_from_dataset(ds: xr.Dataset) -> gpd.GeoDataFrame:
         geometry=polys,
         crs=ds.spatial_ref.attrs.get("crs_wkt"),
     )
+
+
+def index_geopackage(path: Path | str, column: str = "rgi_id") -> list[str]:
+    """
+    Index a column in every feature layer of a GeoPackage, if not already done.
+
+    A GeoPackage is a SQLite file, and a lookup on an unindexed column scans
+    every row. On a regional outline file that is hundreds of MB, and over a
+    network share -- where SQLite's small random reads each cost a round
+    trip -- it takes minutes to find one glacier; the same lookup on an
+    indexed file takes milliseconds. GDAL keeps the index alongside its own
+    and reads the file as before.
+
+    Parameters
+    ----------
+    path : Path or str
+        The GeoPackage.
+    column : str, optional
+        Column to index; layers without it are skipped.
+
+    Returns
+    -------
+    list of str
+        Names of the indexes now present, one per layer that has the column.
+    """
+    created: list[str] = []
+    with sqlite3.connect(str(path)) as con:
+        try:
+            layers = [
+                row[0] for row in con.execute("SELECT table_name FROM gpkg_contents WHERE data_type = 'features'")
+            ]
+        except sqlite3.DatabaseError as exc:
+            # Not a GeoPackage (or not SQLite at all). An index is an
+            # optimisation; refusing to prepare over it would be absurd.
+            logger.warning("Not indexing %s: not a GeoPackage (%s)", path, exc)
+            return created
+        for layer in layers:
+            columns = {row[1] for row in con.execute(f'PRAGMA table_info("{layer}")')}
+            if column not in columns:
+                continue
+            name = f"{layer}_{column}_idx"
+            con.execute(f'CREATE INDEX IF NOT EXISTS "{name}" ON "{layer}"("{column}")')
+            created.append(name)
+        con.commit()
+    return created

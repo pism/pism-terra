@@ -164,7 +164,7 @@ model = "constant"
 
 'ocean.given.file' = "none"
 'ocean.given.periodic' = "yes"
-'ocean.model' = "given"
+'ocean.models' = "given"
 
 [ocean.options.constant]
 

@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 import pint_xarray  # pylint: disable=unused-import
 import xarray as xr
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from pism_terra.calibration import (
     block_size_from_field,
@@ -53,6 +54,7 @@ from pism_terra.glacier.observations import DH_END, DH_START
 from pism_terra.glacier.usgs import find_model_files, rgi_output_dir
 from pism_terra.likelihood import REDUCTIONS
 from pism_terra.processing import preprocess_netcdf
+from pism_terra.progress import compute, progress_bar
 
 logger = logging.getLogger(__name__)
 
@@ -439,7 +441,7 @@ def benchmark_glacier(
             reduction=reduction,
             block_size=block_size,
         )
-        rmse = plain_rmse(sim[sim_var], obs[obs_var]).compute()
+        (rmse,) = compute(plain_rmse(sim[sim_var], obs[obs_var]), desc=f"{rgi_id}/{sim_var}: RMSE")
         n_valid, n_glacier = coverage(obs_mean, sim_mean.isel({MEMBER_DIM: 0}).compute(), landice)
         result = weighted.assign(rmse=rmse)
         table = posterior_table(weighted, members, dim=MEMBER_DIM).assign(rmse=rmse.to_pandas())
@@ -581,6 +583,100 @@ def joint_posterior(
     return weighted, first
 
 
+def benchmark_one(
+    rgi_id: str,
+    files: Sequence[Path],
+    *,
+    data_root: Path,
+    run_dir: Path,
+    output_path: Path,
+    variables: Sequence[tuple[str, str, str]],
+    fudge_factors: Sequence[float],
+    n_samples: int,
+    seed: int,
+    n_boot: int,
+    bootstrap: bool,
+    min_members: int,
+    reduction: str,
+    acf_threshold: float,
+) -> tuple[xr.Dataset, pd.DataFrame, pd.DataFrame, pd.DataFrame] | None:
+    """
+    Load one glacier's observations and ensemble and benchmark them, or explain why not.
+
+    Parameters
+    ----------
+    rgi_id : str
+        Glacier.
+    files : sequence of Path
+        Its ``dh`` files.
+    data_root : Path
+        Staging tree holding ``<rgi_id>/input/obs_<rgi_id>.nc``.
+    run_dir : Path
+        Project directory holding the ``uq.csv``.
+    output_path : Path
+        Top-level output directory.
+    variables : sequence of tuple of str
+        ``(sim_var, obs_var, obs_std_var)`` triples to evaluate.
+    fudge_factors : sequence of float
+        Multipliers on the observed error.
+    n_samples : int
+        Draws with replacement that resolve weights into counts.
+    seed : int
+        Seed of the resampler and the bootstrap.
+    n_boot : int
+        Bootstrap resamples of the RMSE ranking.
+    bootstrap : bool
+        Skip the block-bootstrap ranking when False.
+    min_members : int
+        Glaciers with fewer finished members are skipped.
+    reduction : {"blocks", "mean", "sum"}
+        How the likelihood collapses the cells.
+    acf_threshold : float
+        Autocorrelation level defining the decorrelation length and block side.
+
+    Returns
+    -------
+    tuple or None
+        The result, summary and table of :func:`benchmark_glacier` and the
+        glacier's parameter table, or ``None`` when the glacier was skipped
+        (the reason is logged).
+    """
+    obs_file = data_root / rgi_id / "input" / f"obs_{rgi_id}.nc"
+    if not obs_file.is_file():
+        logger.warning("%s: no observations at %s, skipped", rgi_id, obs_file)
+        return None
+    try:
+        uq_df = load_uq_parameters(run_dir, rgi_id)
+    except FileNotFoundError as err:
+        logger.warning("%s: %s, skipped", rgi_id, err)
+        return None
+    if len(files) < min_members:
+        logger.warning("%s: only %d member(s) finished, fewer than %d, skipped", rgi_id, len(files), min_members)
+        return None
+    logger.info("%s: %d members", rgi_id, len(files))
+    obs = load_observations(obs_file, variables)
+    if not any(obs_var in obs and obs_std in obs for _, obs_var, obs_std in variables):
+        logger.warning("%s: %s has none of the observed variables, skipped", rgi_id, obs_file.name)
+        return None
+    sim = load_ensemble(files, obs, variables)
+    result, summary, table = benchmark_glacier(
+        rgi_id,
+        sim,
+        obs,
+        uq_df,
+        variables,
+        output_dir=output_path,
+        fudge_factors=fudge_factors,
+        n_samples=n_samples,
+        seed=seed,
+        n_boot=n_boot,
+        bootstrap=bootstrap,
+        reduction=reduction,
+        acf_threshold=acf_threshold,
+    )
+    return result, summary, table, uq_df
+
+
 def run_pipeline(
     run_dir: Path | str,
     *,
@@ -654,45 +750,36 @@ def run_pipeline(
     summaries, tables = [], []
     log_likes: dict[str, dict[str, xr.DataArray]] = {}
     uq_frames: dict[str, pd.DataFrame] = {}
-    for rgi_id, files in groups.items():
-        obs_file = data_root / rgi_id / "input" / f"obs_{rgi_id}.nc"
-        if not obs_file.is_file():
-            logger.warning("%s: no observations at %s, skipped", rgi_id, obs_file)
-            continue
-        try:
-            uq_df = load_uq_parameters(run_dir, rgi_id)
-        except FileNotFoundError as err:
-            logger.warning("%s: %s, skipped", rgi_id, err)
-            continue
-        if len(files) < min_members:
-            logger.warning("%s: only %d member(s) finished, fewer than %d, skipped", rgi_id, len(files), min_members)
-            continue
-        logger.info("%s: %d members", rgi_id, len(files))
-        obs = load_observations(obs_file, variables)
-        if not any(obs_var in obs and obs_std in obs for _, obs_var, obs_std in variables):
-            logger.warning("%s: %s has none of the observed variables, skipped", rgi_id, obs_file.name)
-            continue
-        sim = load_ensemble(files, obs, variables)
-        result, summary, table = benchmark_glacier(
-            rgi_id,
-            sim,
-            obs,
-            uq_df,
-            variables,
-            output_dir=output_path,
-            fudge_factors=fudge_factors,
-            n_samples=n_samples,
-            seed=seed,
-            n_boot=n_boot,
-            bootstrap=bootstrap,
-            reduction=reduction,
-            acf_threshold=acf_threshold,
-        )
-        summaries.append(summary)
-        tables.append(table)
-        uq_frames[rgi_id] = uq_df
-        for variable in result["variable"].values:
-            log_likes.setdefault(str(variable), {})[rgi_id] = result["log_likelihood"].sel(variable=variable, drop=True)
+    # The log lines go through tqdm while the bar is up, so they do not
+    # tear it; the bar itself is off when stderr is not a terminal.
+    with logging_redirect_tqdm():
+        for rgi_id, files in progress_bar(groups.items(), desc="Glaciers", unit="glacier"):
+            summary_and_table = benchmark_one(
+                rgi_id,
+                files,
+                data_root=data_root,
+                run_dir=run_dir,
+                output_path=output_path,
+                variables=variables,
+                fudge_factors=fudge_factors,
+                n_samples=n_samples,
+                seed=seed,
+                n_boot=n_boot,
+                bootstrap=bootstrap,
+                min_members=min_members,
+                reduction=reduction,
+                acf_threshold=acf_threshold,
+            )
+            if summary_and_table is None:
+                continue
+            result, summary, table, uq_df = summary_and_table
+            summaries.append(summary)
+            tables.append(table)
+            uq_frames[rgi_id] = uq_df
+            for variable in result["variable"].values:
+                log_likes.setdefault(str(variable), {})[rgi_id] = result["log_likelihood"].sel(
+                    variable=variable, drop=True
+                )
 
     if not summaries:
         raise FileNotFoundError("no glacier had both dh files and observations")

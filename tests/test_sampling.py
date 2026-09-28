@@ -21,6 +21,8 @@ Tests for the sampling back end, focused on categorical ("choices") variables.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pandas.api.types import is_numeric_dtype
 
@@ -85,3 +87,27 @@ def test_make_frozen_rejects_categorical():
     """`_make_frozen` refuses categorical specs, which have no SciPy counterpart."""
     with pytest.raises(ValueError, match="categorical"):
         _make_frozen("choices", {"distribution": "choices", "choices": CHOICES})
+
+
+def test_factorial_categoricals_use_their_own_levels():
+    """
+    Categorical variables contribute one level per choice, not ``n_levels``.
+
+    A single-choice entry therefore pins a constant without multiplying the
+    design, and a mixed design is the product of the per-variable level counts.
+    """
+    d: dict[str, dict[str, Any]] = {
+        "m0": {"distribution": "choices", "choices": [2.5, 3.5, 5.0]},
+        "alpha": {"distribution": "choices", "choices": [0.25, 0.3]},
+        "beta": {"distribution": "choices", "choices": [2.0]},
+        "x": {"distribution": "uniform", "loc": 0.0, "scale": 1.0},
+    }
+    df = create_grid_samples(d, n_levels=4)
+    assert len(df) == 3 * 2 * 1 * 4
+    assert len(df.drop_duplicates(subset=["m0", "alpha", "beta", "x"])) == len(df)
+    assert sorted(df["m0"].unique()) == [2.5, 3.5, 5.0]
+    assert sorted(df["alpha"].unique()) == [0.25, 0.3]
+    assert set(df["beta"]) == {2.0}
+    # weights do not change which choices are visited
+    d["alpha"]["weights"] = [1, 9]
+    assert sorted(create_grid_samples(d, n_levels=2)["alpha"].unique()) == [0.25, 0.3]
