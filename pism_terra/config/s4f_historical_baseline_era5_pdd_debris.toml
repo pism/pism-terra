@@ -62,14 +62,14 @@ velocity = "its_live"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "debris_thickness,englacial_debris_column_mass,debris_cover_fraction,debris_input_rate,debris_melt_out_rate,debris_removal_rate,ice_melt_enhancement,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk,sftgif"
+'output.spatial.vars' = "debris_thickness,englacial_debris_column_mass,debris_cover_fraction,debris_input_rate,debris_melt_out_rate,debris_removal_rate,velsurf_mag,velbase_mag,mask,usurf,thk,velsurf"
 
 [grid]
 
 'grid.Lbz' = 0
-'grid.Lz' = 2500
+'grid.Lz' = 1200
 'grid.Mbz' = 1
-'grid.Mz' = 251
+'grid.Mz' = 121
 'grid.file' = "none"
 'grid.registration' = "center"
 resolution = "200m"
