@@ -121,7 +121,7 @@ DEFAULT_CHUNKS: dict[str, int] = {"time": 5, "y": -1, "x": -1}
 #: Line colours per pathway and styles per GCM in the figures.
 SSP_COLORS = {
     "historical": "k",
-    "OCX": "k",
+    "OCX": "#009E73",
     "ctrl": "0.5",
     "ssp119": "#00ADCF",
     "ssp126": "#173C66",
