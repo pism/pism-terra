@@ -389,3 +389,96 @@ def test_plot_region_draws_one_basin_with_a_sea_level_axis(tree: Path, tmp_path:
     monkeypatch.undo()
     mb.plot_region(regions.sel(region="GIS_W"), None, tmp_path / "scalar.png", region="GIS_W")
     assert (tmp_path / "scalar.png").is_file()
+
+
+def _legend_ensemble() -> tuple[xr.Dataset, xr.Dataset]:
+    """
+    Build a one-basin ensemble with two GCMs and OCX, and a matching observed series.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``cumulative_mass_balance`` on ``(gcm_id, ssp_id, region, time)``: both
+        GCMs ran ssp585, only CESM2-WACCM ran ssp126, and OCX is its own GCM.
+    xarray.Dataset
+        Observed cumulative mass balance and uncertainty for the basin.
+    """
+    time = pd.date_range("2010-01-01", periods=12, freq="YS")
+    values = np.full((3, 3, 1, time.size), np.nan)
+    ramp = -np.arange(time.size, dtype=float)
+    values[0, 1, 0] = ramp  # CESM2-WACCM ssp126
+    values[0, 2, 0] = 2 * ramp  # CESM2-WACCM ssp585
+    values[1, 2, 0] = 3 * ramp  # MRI-ESM2-0 ssp585
+    values[2, 0, 0] = 0.5 * ramp  # OCX OCX
+    regions = xr.Dataset(
+        {"cumulative_mass_balance": (("gcm_id", "ssp_id", "region", "time"), values, {"units": "Gt"})},
+        coords={
+            "gcm_id": ["CESM2-WACCM", "MRI-ESM2-0", "OCX"],
+            "ssp_id": ["OCX", "ssp126", "ssp585"],
+            "region": ["GIS_GIS"],
+            "time": time,
+        },
+    )
+    observed = xr.Dataset(
+        {
+            "cumulative_mass_balance": (("region", "time"), ramp[None, :]),
+            "cumulative_mass_balance_uncertainty": (("region", "time"), np.ones((1, time.size))),
+        },
+        coords={"region": ["GIS_GIS"], "time": time},
+    )
+    return regions, observed
+
+
+def _legends(ax) -> list[list[tuple[str, str, str]]]:
+    """
+    Read every legend on an axes as (label, handle kind, line style) entries.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes with legends.
+
+    Returns
+    -------
+    list of list of tuple
+        One list per legend, first added first.
+    """
+    from matplotlib.legend import Legend  # pylint: disable=import-outside-toplevel
+
+    found = []
+    for legend in [c for c in ax.get_children() if isinstance(c, Legend)]:
+        entries = []
+        for text, handle in zip(legend.get_texts(), legend.legend_handles):
+            style = handle.get_linestyle() if hasattr(handle, "get_linestyle") else ""
+            entries.append((text.get_text(), type(handle).__name__, str(style)))
+        found.append(entries)
+    return found
+
+
+@pytest.mark.parametrize("single", [True, False])
+def test_legends_split_pathways_from_gcms(tmp_path: Path, monkeypatch, single: bool):
+    """
+    One legend lists the observed band and the pathways, the other the GCMs by line style.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest fixture capturing the figure before it is closed.
+    single : bool
+        Test :func:`plot_region` when True, :func:`plot_regions` otherwise.
+    """
+    regions, observed = _legend_ensemble()
+    figures: list = []
+    monkeypatch.setattr(mb.plt, "close", figures.append)
+    if single:
+        mb.plot_region(regions, observed, tmp_path / "one.png", xlim=("2010", "2022"), sle_reference="2015")
+    else:
+        mb.plot_regions(regions, observed, tmp_path / "all.png", xlim=("2010", "2022"))
+    legends = _legends(figures[0].axes[0])
+    assert len(legends) == 2
+    first, second = legends[0], legends[1]
+    assert [label for label, _, _ in first] == [mb.OBS_LABEL, "OCX", "ssp126", "ssp585"]
+    assert first[0][1] != "Line2D"  # the band, not the observed mean
+    assert [(label, style) for label, _, style in second] == [("CESM2-WACCM", "-"), ("MRI-ESM2-0", "--")]

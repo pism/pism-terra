@@ -66,6 +66,8 @@ import pint
 import pint_xarray  # pylint: disable=unused-import  # noqa: F401  (registers the .pint accessor)
 import rioxarray  # pylint: disable=unused-import  # noqa: F401  (registers the .rio accessor)
 import xarray as xr
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from pism_terra.ismip7.postprocess_flux import submission_crs
@@ -129,7 +131,11 @@ SSP_COLORS = {
     "ssp370": "#E71D25",
     "ssp585": "#951B1E",
 }
-GCM_STYLES = {"MRI-ESM2-0": "dashed", "CESM2-WACCM": "solid"}
+GCM_STYLES = {"CESM2-WACCM": "solid", "MRI-ESM2-0": "dashed"}
+
+#: Fill colour and label of the observed band.
+OBS_COLOR = "0.75"
+OBS_LABEL = "Mankoff et al. (2021)"
 
 #: File-name parsing for the submission tree: the GCM sits between the
 #: model and forcing counters, the experiment between the forcing counter
@@ -755,6 +761,110 @@ def load_mankoff(
 # --- Figure ----------------------------------------------------------------------
 
 
+def _in_table_order(names: Sequence[str], table: dict[str, str]) -> list[str]:
+    """
+    Sort names into the key order of a style table, unknown ones last.
+
+    Parameters
+    ----------
+    names : sequence of str
+        Names drawn.
+    table : dict
+        Style table (:data:`SSP_COLORS`, :data:`GCM_STYLES`) whose key order
+        sets the legend order.
+
+    Returns
+    -------
+    list of str
+        The names reordered; the sort is stable, so unknown names keep the
+        order they were met in.
+    """
+    rank = {k: i for i, k in enumerate(table)}
+    return sorted(names, key=lambda n: rank.get(n, len(rank)))
+
+
+def _draw_series(ax: Any, series: xr.DataArray, lw: float) -> tuple[list[str], list[str]]:
+    """
+    Draw every (GCM, pathway) series that has data.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to draw into.
+    series : xarray.DataArray
+        One basin's series on ``(gcm_id, ssp_id, time)``.
+    lw : float
+        Line width.
+
+    Returns
+    -------
+    list of str
+        Pathways drawn, in the order of :data:`SSP_COLORS` and then as met.
+    list of str
+        GCMs drawn, leaving out a GCM named like a pathway (OCX, which is
+        its own forcing rather than a GCM), in the order of :data:`GCM_STYLES`.
+    """
+    pathways: list[str] = []
+    gcms: list[str] = []
+    for gcm in series["gcm_id"].values:
+        for ssp in series["ssp_id"].values:
+            line = series.sel(gcm_id=gcm, ssp_id=ssp).dropna("time")
+            if not line.size:
+                continue
+            ax.plot(
+                line["time"].values,
+                line,
+                ls=GCM_STYLES.get(str(gcm), "solid"),
+                color=SSP_COLORS.get(str(ssp), "0.3"),
+                lw=lw,
+            )
+            if str(ssp) not in pathways:
+                pathways.append(str(ssp))
+            if gcm != ssp and str(gcm) not in gcms:
+                gcms.append(str(gcm))
+    return _in_table_order(pathways, SSP_COLORS), _in_table_order(gcms, GCM_STYLES)
+
+
+def _add_legends(
+    ax: Any,
+    pathways: Sequence[str],
+    gcms: Sequence[str],
+    observed: bool,
+    *,
+    fontsize: float,
+    lw: float,
+) -> None:
+    """
+    Add the two legends: observations and pathways by colour, GCMs by line style.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to put the legends on.
+    pathways : sequence of str
+        Pathways drawn, each shown as a solid line in its colour.
+    gcms : sequence of str
+        GCMs drawn, each shown as a black line in its style.
+    observed : bool
+        Whether the observed band is drawn; it is listed first, as a patch.
+    fontsize : float
+        Legend font size.
+    lw : float
+        Line width of the legend lines.
+    """
+    kwargs = {"fontsize": fontsize, "frameon": False, "handlelength": 2.5}
+    first: list[Any] = [Patch(facecolor=OBS_COLOR, alpha=0.5, lw=0, label=OBS_LABEL)] if observed else []
+    first += [Line2D([], [], color=SSP_COLORS.get(p, "0.3"), lw=lw, label=p) for p in pathways]
+    if first:
+        legend = ax.legend(handles=first, loc="lower left", **kwargs)
+        if gcms:
+            # A second ``ax.legend`` replaces the first; keep it as an artist.
+            ax.add_artist(legend)
+    if gcms:
+        second = [Line2D([], [], color="k", ls=GCM_STYLES.get(g, "solid"), lw=lw, label=g) for g in gcms]
+        ax.legend(handles=second, loc="upper right", **kwargs)
+
+
 def plot_regions(
     regions: xr.Dataset,
     mankoff: xr.Dataset | None,
@@ -790,6 +900,9 @@ def plot_regions(
         fig, axs = plt.subplots(nrows, ncols, figsize=(6.4, 1.9 * nrows), sharex=True, squeeze=False)
         for ax in axs.flat[len(names) :]:
             ax.set_visible(False)
+        pathways: list[str] = []
+        gcms: list[str] = []
+        observed = False
         for ax, region in zip(axs.flat, names):
             if mankoff is not None and region in mankoff["region"].values:
                 obs = mankoff.sel(region=region)
@@ -798,25 +911,23 @@ def plot_regions(
                     obs["cumulative_mass_balance"] - sigma * obs["cumulative_mass_balance_uncertainty"],
                     obs["cumulative_mass_balance"] + sigma * obs["cumulative_mass_balance_uncertainty"],
                     lw=0,
-                    color="0.75",
+                    color=OBS_COLOR,
                     alpha=0.5,
                 )
-            series = regions[variable].sel(region=region)
-            for gcm in series["gcm_id"].values:
-                for ssp in series["ssp_id"].values:
-                    line = series.sel(gcm_id=gcm, ssp_id=ssp).dropna("time")
-                    if line.size:
-                        ax.plot(
-                            line["time"].values,
-                            line,
-                            ls=GCM_STYLES.get(str(gcm), "solid"),
-                            color=SSP_COLORS.get(str(ssp), "0.3"),
-                            lw=0.5,
-                            label=str(ssp) if gcm == ssp else f"{gcm} {ssp}",
-                        )
+                observed = True
+            drawn = _draw_series(ax, regions[variable].sel(region=region), lw=0.5)
+            for names, seen in zip(drawn, (pathways, gcms)):
+                seen.extend(n for n in names if n not in seen)
             ax.set_xlim(np.datetime64(xlim[0]), np.datetime64(xlim[1]))
             ax.set_title(region)
-        axs.flat[0].legend(fontsize=3, frameon=False)
+        _add_legends(
+            axs.flat[0],
+            _in_table_order(pathways, SSP_COLORS),
+            _in_table_order(gcms, GCM_STYLES),
+            observed,
+            fontsize=3,
+            lw=0.5,
+        )
         fig.supylabel(f"{variable.replace('_', ' ')} ({regions[variable].attrs.get('units', '')})", fontsize=5)
         fig.tight_layout()
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
@@ -928,31 +1039,22 @@ def plot_region(
 
     with mpl.rc_context(rc=rc_params):
         fig, ax = plt.subplots(figsize=(4.8, 2.6))
+        observed = False
         if mankoff is not None and region in mankoff["region"].values:
+            observed = True
             obs = mankoff.sel(region=region)
             mean = _zero_at(obs["cumulative_mass_balance"], sle_reference)
             spread = sigma * obs["cumulative_mass_balance_uncertainty"]
-            ax.fill_between(obs["time"].values, mean - spread, mean + spread, lw=0, color="0.75", alpha=0.5)
-            ax.plot(obs["time"].values, mean, lw=1.2, color="0.45", label="Mankoff et al. (2021)")
-        for gcm in series["gcm_id"].values:
-            for ssp in series["ssp_id"].values:
-                line = series.sel(gcm_id=gcm, ssp_id=ssp).dropna("time")
-                if line.size:
-                    ax.plot(
-                        line["time"].values,
-                        line,
-                        ls=GCM_STYLES.get(str(gcm), "solid"),
-                        color=SSP_COLORS.get(str(ssp), "0.3"),
-                        lw=0.8,
-                        label=str(ssp) if gcm == ssp else f"{gcm} {ssp}",
-                    )
+            ax.fill_between(obs["time"].values, mean - spread, mean + spread, lw=0, color=OBS_COLOR, alpha=0.5)
+            ax.plot(obs["time"].values, mean, lw=1.2, color="0.45")
+        pathways, gcms = _draw_series(ax, series, lw=0.8)
         ax.axhline(0.0, color="0.5", lw=0.4, zorder=0)
         ax.set_xlim(np.datetime64(xlim[0]), np.datetime64(xlim[1]))
         ax.set_ylabel(f"Cumulative mass balance\nsince {sle_reference} ({units})")
         sle = ax.secondary_yaxis("right", functions=(lambda gt: gt * gt_to_mm, lambda mm: mm / gt_to_mm))
         sle.set_ylabel(f"Contribution to sea level\nsince {sle_reference} (mm SLE)")
         ax.set_title(region)
-        ax.legend(fontsize=5, frameon=False)
+        _add_legends(ax, pathways, gcms, observed, fontsize=5, lw=0.8)
         fig.tight_layout()
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(filename, dpi=300)
