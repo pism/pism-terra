@@ -269,7 +269,7 @@ model = "null"
 
 [inverse]
 
-'inverse.design.variable' = "tauc"
+'inverse.design.variable' = "tauc_hardav"
 'inverse.stress_balance.hardav_max' = 5e8
 'inverse.stress_balance.hardav_min' = 1e7
 'inverse.adjoint.method' =  "approximate"
