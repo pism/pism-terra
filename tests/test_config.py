@@ -380,7 +380,7 @@ def _campaign(name: str) -> CampaignConfig:
 
 def test_campaign_project_directory():
     """Campaign project_directory is parsed and exported by as_params()."""
-    s4f = _campaign("s4f_carra2_maffezzoli.toml")
+    s4f = _campaign("s4f_pytests.toml")
     assert s4f.prefix == "glacier/input"
     assert s4f.project_directory == "s4f"
     assert s4f.as_params()["project_directory"] == "s4f"
@@ -412,7 +412,7 @@ def _config_without(section: str, tmp_path: Path) -> Path:
     pathlib.Path
         The stripped config.
     """
-    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "s4f_carra2_maffezzoli.toml"
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "s4f_pytests.toml"
     kept, dropping = [], False
     for line in source.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()

@@ -30,7 +30,7 @@ import pytest
 
 from pism_terra.glacier.run import _render_forward_run, _render_inverse_run
 
-CONFIG = Path("pism_terra/config/s4f_carra2_maffezzoli.toml")
+CONFIG = Path("pism_terra/config/s4f_pytests.toml")
 TEMPLATE = Path("pism_terra/templates/debug.j2")
 RGI_ID = "RGI2000-v7.0-C-01-04374"
 
