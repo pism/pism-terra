@@ -284,6 +284,10 @@ def _open_member(path: str, chunks: dict[str, int] | None, **kwargs: Any) -> xr.
         :data:`preprocess_ismip7`, or None for a file a run in flight has
         left empty.
     """
+    # Decode to datetime64[s]: nanoseconds end in 2262, and a run past that
+    # would come back as cftime while the rest of the ensemble stays
+    # datetime64, which leaves one time axis of two incomparable types.
+    kwargs.setdefault("decode_times", xr.coders.CFDatetimeCoder(time_unit="s"))
     ds = xr.open_dataset(
         path,
         chunks=DEFAULT_CHUNKS if chunks is None else chunks,

@@ -32,6 +32,7 @@ square basins whose integrals are known, covering:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import geopandas as gpd
@@ -169,6 +170,46 @@ def test_wildcard_root_collects_several_job_directories(tmp_path: Path):
     assert sorted(ds["gcm_id"].values) == ["CESM2-WACCM", "MRI-ESM2-0", "OCX"]
     with pytest.raises(FileNotFoundError, match="no lithk files"):
         mb.find_files(root, ["lithk"])
+
+
+def test_a_run_past_2262_keeps_one_datetime_axis(tree: Path):
+    """
+    A run past 2262, where nanosecond dates end, still stacks with the rest as datetime64.
+
+    Decoded to nanoseconds such a file comes back as cftime while the others
+    stay datetime64, and the combined time axis then mixes types that
+    cannot be compared, which broke the regional series.
+
+    Parameters
+    ----------
+    tree : pathlib.Path
+        The run's ``output`` directory.
+    """
+    years = [2290, 2291]
+    # pandas cannot hold these dates at nanoseconds, so the times are written
+    # as numbers, as PISM writes them.
+    days = [(datetime(year, 7, 1) - datetime(1850, 1, 1)).days for year in years]
+    for var, level in (("acabf", 5.0), ("ligroundf", -4.0)):
+        ds = xr.Dataset(
+            {var: (("time", "y", "x"), np.full((2, NY, NX), level, "float32"), {"units": "kg m-2 s-1"})},
+            coords={"y": Y, "x": X},
+        )
+        ds["time"] = ("time", np.array(days, dtype="float64"), {"units": "days since 1850-01-01"})
+        ds["mapping"] = ((), np.int8(0), {"grid_mapping_name": "polar_stereographic", "proj_params": "EPSG:3413"})
+        ds[var].attrs["grid_mapping"] = "mapping"
+        directory = tree.joinpath(*mb.DEFAULT_TREE, "C006")
+        directory.mkdir(parents=True, exist_ok=True)
+        ds.to_netcdf(directory / f"{var}_GrIS_UAF_PISM_m001_MRI-ESM2-0_f001_ssp126_C006_2290-2291.nc")
+
+    ensemble = mb.open_submission(mb.find_files(str(tree), ["acabf", "ligroundf"]))
+    assert np.issubdtype(ensemble["time"].dtype, np.datetime64)
+    years_found = ensemble["time"].dt.year.values
+    assert years_found.min() == 2013 and years_found.max() == 2291
+
+    regions = mb.compute_regions(ensemble, outline(), variables=["acabf", "ligroundf"], reference_year="2013")
+    late = regions["mass_balance"].sel(gcm_id="MRI-ESM2-0", ssp_id="ssp126", region="GIS_W").dropna("time")
+    # The historical run of the GCM is spliced in front of the projection.
+    assert list(late["time"].dt.year.values) == [2013, 2014] + years
 
 
 def test_find_files_lists_the_tree(tree: Path):
