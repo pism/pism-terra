@@ -456,9 +456,6 @@ def splice_historical(ds: xr.Dataset, historical: str = "historical", projection
     return spliced
 
 
-# --- Basins ----------------------------------------------------------------------
-
-
 def read_outline(path: str) -> gpd.GeoDataFrame:
     """
     Read a basin outline from disk or S3.
@@ -696,9 +693,6 @@ def compute_regions(
         "long_name": f"cumulative mass balance since {reference_year}",
     }
     return regions
-
-
-# --- Observations ----------------------------------------------------------------
 
 
 #: The Mankoff series kept by default: the cumulative mass balance and its
@@ -1048,7 +1042,7 @@ def plot_region(
             ax.fill_between(obs["time"].values, mean - spread, mean + spread, lw=0, color=OBS_COLOR, alpha=0.5)
             ax.plot(obs["time"].values, mean, lw=1.2, color="0.45")
         pathways, gcms = _draw_series(ax, series, lw=0.8)
-        ax.axhline(0.0, color="0.5", lw=0.4, zorder=0)
+        ax.axhline(0.0, color="k", lw=0.4, ls="dotted", zorder=0)
         ax.set_xlim(np.datetime64(xlim[0]), np.datetime64(xlim[1]))
         ax.set_ylabel(f"Cumulative mass balance\nsince {sle_reference} ({units})")
         sle = ax.secondary_yaxis("right", functions=(lambda gt: gt * gt_to_mm, lambda mm: mm / gt_to_mm))
@@ -1060,9 +1054,6 @@ def plot_region(
         fig.savefig(filename, dpi=300)
         plt.close(fig)
     logger.info("Wrote %s", filename)
-
-
-# --- Driver ----------------------------------------------------------------------
 
 
 def run(
