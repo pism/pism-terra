@@ -6,10 +6,16 @@ Builds a 3D surface from a terrain variable (default ``usurf``) and colors it by
 a draped variable (default ``velsurf_mag``), one PNG per time step so the frames
 can be turned into an animation.
 
+By default the relief is shaded like a GIS hillshade: a hillshade of the terrain
+is computed from the grid and multiplied into the colors of both layers, so the
+shading does not depend on the camera. ``--shading lit`` uses PyVista's lights
+instead.
+
 Examples
 --------
     python render_terrain_3d.py path/to/spatial.nc
     python render_terrain_3d.py spatial.nc --z-exaggeration 4 --cmap turbo --log
+    python render_terrain_3d.py spatial.nc --overlay-var debris_thickness --overlay-cmap batlow
     # then, e.g.:
     ffmpeg -framerate 15 -i frames/frame_%04d.png -pix_fmt yuv420p out.mp4
 """
@@ -23,10 +29,13 @@ import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+# Imported for its side effect: registering Crameri's "cmc.*" colormaps.
+import cmcrameri.cm  # noqa: F401  pylint: disable=unused-import
 import matplotlib
 import numpy as np
 import pyvista as pv
 import xarray as xr
+from matplotlib.colors import LightSource, LogNorm, Normalize
 
 from pism_terra.colormaps import register_colormaps
 
@@ -77,10 +86,15 @@ def resolve_cmap(name: str) -> matplotlib.colors.Colormap:
     :func:`register_colormaps` (e.g. ``"speed"``) are used instead of a
     same-named cmocean map.
 
+    Crameri's scientific colormaps are registered with a ``cmc.`` prefix
+    (``cmc.batlow``) and can also be given without it (``batlow``). A bare name
+    that matplotlib already has (``berlin``, ``managua``, ``vanimo``) resolves
+    to matplotlib's version; use the prefix for Crameri's.
+
     Parameters
     ----------
     name : str
-        Registered colormap name.
+        Registered colormap name, or a Crameri colormap name without ``cmc.``.
 
     Returns
     -------
@@ -92,10 +106,10 @@ def resolve_cmap(name: str) -> matplotlib.colors.Colormap:
     SystemExit
         If ``name`` is not a registered colormap.
     """
-    try:
-        return matplotlib.colormaps[name]
-    except KeyError as exc:
-        raise SystemExit(f"Unknown colormap {name!r}. Registered: {', '.join(sorted(matplotlib.colormaps))}") from exc
+    for candidate in (name, f"cmc.{name}"):
+        if candidate in matplotlib.colormaps:
+            return matplotlib.colormaps[candidate]
+    raise SystemExit(f"Unknown colormap {name!r}. Registered: {', '.join(sorted(matplotlib.colormaps))}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -114,15 +128,52 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--z-exaggeration", type=float, default=3.0, help="Vertical exaggeration factor (default: 3).")
     # Base terrain layer (elevation).
     p.add_argument("--base-var", default="usurf", help="Variable colored on the base terrain (default: usurf).")
-    p.add_argument("--base-cmap", default="dem_ak", help="Colormap for the base terrain (default: dem_ak).")
+    p.add_argument(
+        "--base-cmap",
+        default="dem_ak",
+        help="Colormap for the base terrain; Crameri maps as batlow or cmc.batlow (default: dem_ak).",
+    )
     p.add_argument("--base-clim", type=float, nargs=2, default=None, help="Base color limits MIN MAX (default: auto).")
+    p.add_argument(
+        "--base-tint",
+        type=float,
+        default=0.4,
+        help="Strength of the base colormap over the grey hillshade, 0 (grey) to 1 (full color); default 0.4.",
+    )
+    # Shading.
+    p.add_argument(
+        "--shading",
+        choices=["multidirectional", "hillshade", "lit"],
+        default="multidirectional",
+        help=(
+            "multidirectional: hillshade lit from four directions around --light-azimuth (default); "
+            "hillshade: lit from --light-azimuth only; lit: PyVista's lights, no hillshade."
+        ),
+    )
+    p.add_argument(
+        "--light-azimuth", type=float, default=315.0, help="Hillshade light azimuth, degrees from north (default 315)."
+    )
+    p.add_argument("--light-altitude", type=float, default=45.0, help="Hillshade light altitude, degrees (default 45).")
+    p.add_argument(
+        "--hillshade-exaggeration",
+        type=float,
+        default=2.0,
+        help="Vertical exaggeration of the hillshade, independent of --z-exaggeration (default 2).",
+    )
     # Overlay layer (velocity on ice).
     p.add_argument("--overlay-var", default="velsurf_mag", help="Variable overlaid on ice (default: velsurf_mag).")
-    p.add_argument("--overlay-cmap", default="speed", help="Colormap for the overlay (default: speed).")
+    p.add_argument(
+        "--overlay-cmap",
+        default="speed",
+        help="Colormap for the overlay; Crameri maps as batlow or cmc.batlow (default: speed).",
+    )
     p.add_argument(
         "--overlay-clim", type=float, nargs=2, default=None, help="Overlay limits MIN MAX (default: robust)."
     )
     p.add_argument("--overlay-log", action="store_true", help="Log-scale the overlay color mapping.")
+    p.add_argument(
+        "--overlay-opacity", type=float, default=0.85, help="Opacity of the overlay on ice, 0 to 1 (default 0.85)."
+    )
     p.add_argument(
         "--overlay-thk",
         type=float,
@@ -147,6 +198,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--elevation", type=float, default=15.0, help="Camera elevation from isometric (default: 15).")
     p.add_argument(
         "--zoom", type=float, default=1.6, help="Camera zoom factor; >1 tightens onto the terrain (default: 1.6)."
+    )
+    p.add_argument(
+        "--pan",
+        type=float,
+        nargs=2,
+        default=(0.0, 0.0),
+        metavar=("X", "Y"),
+        help=(
+            "Shift the picture right by X and up by Y, as fractions of the frame height "
+            "(e.g. --pan 0 0.1 moves it up by a tenth of the frame); default 0 0."
+        ),
     )
     p.add_argument(
         "--aa",
@@ -272,6 +334,159 @@ def bar_args(title: str, position_x: float) -> dict:
     }
 
 
+def hillshade(
+    z: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    azimuth: float = 315.0,
+    altitude: float = 45.0,
+    multidirectional: bool = True,
+    vert_exag: float = 1.0,
+) -> np.ndarray:
+    """
+    Compute the hillshade of a gridded surface.
+
+    Parameters
+    ----------
+    z : numpy.ndarray
+        Surface heights, shape ``(ny, nx)``; non-finite values are set to the
+        lowest finite height.
+    x, y : numpy.ndarray
+        Cell-center coordinates in m, lengths ``nx`` and ``ny``, in either order.
+    azimuth : float, default 315
+        Direction the light comes from, degrees clockwise from north.
+    altitude : float, default 45
+        Angle of the light above the horizon, degrees.
+    multidirectional : bool, default True
+        Average the hillshades lit from ``azimuth - 90``, ``- 45``, ``+ 0`` and
+        ``+ 45`` degrees, as GDAL's ``-multidirectional`` does, so slopes facing
+        away from the main light keep their detail.
+    vert_exag : float, default 1
+        Vertical exaggeration applied to the heights before shading.
+
+    Returns
+    -------
+    numpy.ndarray
+        Illumination in ``[0, 1]``, same shape and row order as ``z``.
+    """
+    z = np.asarray(z, dtype=float)
+    z = np.where(np.isfinite(z), z, np.nanmin(z) if np.isfinite(z).any() else 0.0)
+    dx = abs(float(x[1] - x[0])) if len(x) > 1 else 1.0
+    dy = abs(float(y[1] - y[0])) if len(y) > 1 else 1.0
+    # LightSource expects the first row to be the northern edge.
+    north_up = len(y) < 2 or y[0] > y[-1]
+    zz = z if north_up else z[::-1]
+    azimuths = [azimuth - 90, azimuth - 45, azimuth, azimuth + 45] if multidirectional else [azimuth]
+    hs = np.mean(
+        [
+            LightSource(azdeg=az % 360, altdeg=altitude).hillshade(zz, vert_exag=vert_exag, dx=dx, dy=dy)
+            for az in azimuths
+        ],
+        axis=0,
+    )
+    return hs if north_up else hs[::-1]
+
+
+def shaded_colors(
+    values: np.ndarray,
+    cmap: matplotlib.colors.Colormap,
+    norm: Normalize,
+    shade: np.ndarray,
+    tint: float = 1.0,
+) -> np.ndarray:
+    """
+    Map values to colors, fade them toward white and multiply in a hillshade.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Data, shape ``(ny, nx)``; non-finite values take the colormap's "bad" color.
+    cmap : matplotlib.colors.Colormap
+        Colormap.
+    norm : matplotlib.colors.Normalize
+        Maps ``values`` to ``[0, 1]``.
+    shade : numpy.ndarray
+        Illumination in ``[0, 1]``, same shape as ``values``.
+    tint : float, default 1
+        Colormap strength: 1 keeps the colors, 0 makes every cell white, so only
+        the hillshade remains.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``uint8`` RGB, shape ``(ny * nx, 3)``, in the Fortran order PyVista's
+        ``StructuredGrid`` uses for point data.
+    """
+    rgb = cmap(norm(np.ma.masked_invalid(values)))[..., :3]
+    rgb = (1.0 - tint * (1.0 - rgb)) * shade[..., None]
+    rgb = np.clip(np.round(rgb * 255), 0, 255).astype(np.uint8)
+    return np.stack([rgb[..., i].ravel(order="F") for i in range(3)], axis=1)
+
+
+def faded_cmap(cmap: matplotlib.colors.Colormap, tint: float) -> matplotlib.colors.Colormap:
+    """
+    Return ``cmap`` faded toward white, for a scalar bar matching :func:`shaded_colors`.
+
+    Parameters
+    ----------
+    cmap : matplotlib.colors.Colormap
+        Colormap to fade.
+    tint : float
+        Colormap strength, as in :func:`shaded_colors`.
+
+    Returns
+    -------
+    matplotlib.colors.Colormap
+        The faded colormap (``cmap`` itself when ``tint`` is 1).
+    """
+    if tint >= 1.0:
+        return cmap
+    colors = cmap(np.linspace(0.0, 1.0, 256))
+    colors[:, :3] = 1.0 - tint * (1.0 - colors[:, :3])
+    return matplotlib.colors.ListedColormap(colors, name=f"{cmap.name}_faded")
+
+
+def _add_scalar_bar(
+    pl: pv.Plotter,
+    cmap: matplotlib.colors.Colormap,
+    clim: tuple[float, float],
+    log: bool,
+    bar_kwargs: dict,
+) -> None:
+    """
+    Add a scalar bar for a mesh drawn with precomputed RGB colors.
+
+    PyVista draws no scalar bar for RGB point data, so the bar hangs off an
+    invisible one-point mesh that carries the colormap and limits.
+
+    Parameters
+    ----------
+    pl : pyvista.Plotter
+        Plotter to draw into.
+    cmap : matplotlib.colors.Colormap
+        Colormap shown on the bar.
+    clim : tuple of float
+        Color limits.
+    log : bool
+        Log-scale the bar.
+    bar_kwargs : dict
+        Scalar-bar layout from :func:`bar_args`.
+    """
+    anchor = pv.PolyData(np.zeros((1, 3)))
+    anchor["value"] = np.array([clim[0]])
+    pl.add_mesh(
+        anchor,
+        scalars="value",
+        cmap=cmap,
+        clim=clim,
+        log_scale=log,
+        opacity=0.0,
+        show_scalar_bar=True,
+        scalar_bar_args=bar_kwargs,
+    )
+
+
 def _var_title(ds: xr.Dataset, var: str) -> str:
     """
     Build a scalar-bar title ``var [units]`` for a dataset variable.
@@ -323,6 +538,8 @@ def _setup_worker(infile: str, cfg: dict) -> None:
             pass
     _WORKER.update(
         ds=ds,
+        x=ds["x"].values,
+        y=ds["y"].values,
         xx=xx,
         yy=yy,
         pl=pl,
@@ -350,7 +567,19 @@ def _render_frame(t: int) -> str:
     ds, xx, yy, pl, cfg = w["ds"], w["xx"], w["yy"], w["pl"], w["cfg"]
 
     z = np.asarray(ds[cfg["surface_var"]].isel(time=t).values, dtype=float)
-    z = np.nan_to_num(z, nan=float(np.nanmin(z)) if np.isfinite(z).any() else 0.0) * cfg["z_exaggeration"]
+    z = np.nan_to_num(z, nan=float(np.nanmin(z)) if np.isfinite(z).any() else 0.0)
+    shade = None
+    if cfg["shading"] != "lit":
+        shade = hillshade(
+            z,
+            w["x"],
+            w["y"],
+            azimuth=cfg["light_azimuth"],
+            altitude=cfg["light_altitude"],
+            multidirectional=cfg["shading"] == "multidirectional",
+            vert_exag=cfg["hillshade_exaggeration"],
+        )
+    z = z * cfg["z_exaggeration"]
     b = np.asarray(ds[cfg["base_var"]].isel(time=t).values, dtype=float)
     ov = np.asarray(ds[cfg["overlay_var"]].isel(time=t).values, dtype=float)
     thk = np.asarray(ds["thk"].isel(time=t).values, dtype=float)
@@ -361,35 +590,50 @@ def _render_frame(t: int) -> str:
     grid[cfg["base_var"]] = b.ravel(order="F")
     grid[cfg["overlay_var"]] = ov.ravel(order="F")
     grid["thk"] = thk.ravel(order="F")
+    if shade is not None:
+        overlay_norm = LogNorm(*cfg["overlay_clim"]) if cfg["overlay_log"] else Normalize(*cfg["overlay_clim"])
+        grid["base_rgb"] = shaded_colors(b, w["base_cmap"], Normalize(*cfg["base_clim"]), shade, cfg["base_tint"])
+        grid["overlay_rgb"] = shaded_colors(ov, w["overlay_cmap"], overlay_norm, shade)
 
     # Ice overlay: keep only cells where thk > threshold, lift it slightly.
     ice = grid.threshold(cfg["overlay_thk"], scalars="thk")
     if ice.n_points:
         ice.points[:, 2] += cfg["z_offset"]
 
+    base_bar = bar_args(_var_title(ds, cfg["base_var"]), position_x=0.05)
+    overlay_bar = bar_args(_var_title(ds, cfg["overlay_var"]), position_x=0.55)
     pl.clear()
-    pl.add_mesh(
-        grid,
-        scalars=cfg["base_var"],
-        cmap=w["base_cmap"],
-        clim=cfg["base_clim"],
-        lighting=True,
-        smooth_shading=True,
-        show_scalar_bar=True,
-        scalar_bar_args=bar_args(_var_title(ds, cfg["base_var"]), position_x=0.05),
-    )
-    if ice.n_points:
+    if shade is not None:
+        # Colors carry the hillshade already, so the meshes are drawn unlit.
+        pl.add_mesh(grid, scalars="base_rgb", rgb=True, lighting=False)
+        _add_scalar_bar(pl, faded_cmap(w["base_cmap"], cfg["base_tint"]), cfg["base_clim"], False, base_bar)
+        if ice.n_points:
+            pl.add_mesh(ice, scalars="overlay_rgb", rgb=True, lighting=False, opacity=cfg["overlay_opacity"])
+        _add_scalar_bar(pl, w["overlay_cmap"], cfg["overlay_clim"], cfg["overlay_log"], overlay_bar)
+    else:
         pl.add_mesh(
-            ice,
-            scalars=cfg["overlay_var"],
-            cmap=w["overlay_cmap"],
-            clim=cfg["overlay_clim"],
-            log_scale=cfg["overlay_log"],
+            grid,
+            scalars=cfg["base_var"],
+            cmap=w["base_cmap"],
+            clim=cfg["base_clim"],
             lighting=True,
             smooth_shading=True,
             show_scalar_bar=True,
-            scalar_bar_args=bar_args(_var_title(ds, cfg["overlay_var"]), position_x=0.55),
+            scalar_bar_args=base_bar,
         )
+        if ice.n_points:
+            pl.add_mesh(
+                ice,
+                scalars=cfg["overlay_var"],
+                cmap=w["overlay_cmap"],
+                clim=cfg["overlay_clim"],
+                log_scale=cfg["overlay_log"],
+                opacity=cfg["overlay_opacity"],
+                lighting=True,
+                smooth_shading=True,
+                show_scalar_bar=True,
+                scalar_bar_args=overlay_bar,
+            )
     pl.add_text(
         time_label(ds, t),
         position="upper_left",
@@ -420,7 +664,7 @@ def _compute_camera(
     z0 : numpy.ndarray
         First-frame (exaggerated) terrain heights, shape ``(ny, nx)``.
     args : argparse.Namespace
-        Parsed arguments providing ``azimuth``, ``elevation``, and ``zoom``.
+        Parsed arguments providing ``azimuth``, ``elevation``, ``zoom`` and ``pan``.
     window_size : list
         ``[width, height]`` in pixels for the off-screen render.
 
@@ -436,6 +680,16 @@ def _compute_camera(
     pl.camera.azimuth += args.azimuth
     pl.camera.elevation += args.elevation
     pl.camera.zoom(args.zoom)  # shrinks the view angle -> zooms in
+    # Pan by moving camera and focal point together, opposite to the shift of the
+    # picture, in units of the frame height at the focal point.
+    position, focal, up = (np.asarray(v, dtype=float) for v in pl.camera_position)
+    view = focal - position
+    height = 2.0 * np.linalg.norm(view) * np.tan(np.radians(pl.camera.view_angle) / 2.0)
+    up = up / np.linalg.norm(up)
+    right = np.cross(view, up)
+    right /= np.linalg.norm(right)
+    shift = -height * (args.pan[0] * right + args.pan[1] * up)
+    pl.camera_position = [tuple(position + shift), tuple(focal + shift), tuple(up)]
     cam = {
         "position": [tuple(p) for p in pl.camera_position],
         "view_angle": float(pl.camera.view_angle),
@@ -487,6 +741,12 @@ def main() -> None:
         "overlay_clim": overlay_clim,
         "overlay_log": args.overlay_log,
         "overlay_thk": args.overlay_thk,
+        "overlay_opacity": args.overlay_opacity,
+        "base_tint": args.base_tint,
+        "shading": args.shading,
+        "light_azimuth": args.light_azimuth,
+        "light_altitude": args.light_altitude,
+        "hillshade_exaggeration": args.hillshade_exaggeration,
         "z_exaggeration": args.z_exaggeration,
         "z_offset": z_offset,
         "window_size": window_size,
