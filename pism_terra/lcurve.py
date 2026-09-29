@@ -28,31 +28,35 @@ misfit-weight-weighted RMS of ``inv_residual``, in m/yr — gives the familiar
 L-shaped curve, and the corner of that L (maximum Menger curvature in log-log
 space) is the conventional pick for the regularization parameter.
 
-The model-norm axis is labelled with the field the run inverted for — ``tauc``
-or ``hardav``, read off the variables ``pismi`` wrote — and with the units of
-the norm. Those are usually *not* the units of that field: ``J_design`` is
-evaluated on the parameterized design variable zeta, which is dimensionless
-under PISM's default ``inverse.design.param = "exp"``.
+What a member inverted for is its *strategy*, the value of
+``inverse.design.variable``: ``tauc`` or ``hardav`` alone, or a pair,
+``tauc_hardav`` or ``hardav_tauc``, which alternates between the two in that
+order, each phase holding the other field fixed. One ensemble can sample the
+strategy the way it samples the penalty weight, and the tool then draws one
+L-curve per strategy on one pair of axes.
+
+A pair writes a design functional per phase and cycle, and each phase's norm
+is taken from its last cycle. ``J_design`` measures the departure of zeta from
+its prior, and a single-field run leaves the other field at its prior, so the
+norm of every strategy is ``N = sqrt(sum of J_design over its phases)`` — for
+a single field just ``sqrt(J_design)``. Under PISM's default
+``inverse.design.param = "exp"`` every zeta is dimensionless and the curves
+share one axis. The misfit is shared by the phases of a pair: there is one
+residual, produced by both fields together.
 
 The tool reads the ensemble members named on the command line, tabulates the
-regularization parameters straight out of each file's ``pism_config``
-attributes, and writes the plot plus the underlying table:
+regularization parameters and the strategy straight out of each file's
+``pism_config`` attributes, and writes the plot plus a table with one row per
+member:
 
 ```bash
 pism-inverse-lcurve --parameters inverse.tikhonov.penalty_weight \
     -o lcurve.png inv_g*.nc
 ```
 
-An alternating ``tauc``/``hardav`` co-inversion optimizes each phase in turn
-and writes a design functional per phase and cycle, so it gives one curve per
-phase — ``lcurve_tauc.png`` and ``lcurve_hardav.png``, each with its table —
-taking each phase's norm from its last cycle. The misfit is shared: there is
-one residual, produced by both design variables together, so the curves
-differ only in ``N``. Outputs are suffixed only when there is more than one
-curve, so a single-design run keeps the name it was given, and a third figure
-— ``lcurve_combined.png`` — overlays the phases on one pair of axes, which
-the dimensionless norm of the default ``exp`` parameterization makes
-comparable.
+Every pair strategy also gets a figure of its phases, e.g.
+``lcurve_tauc_hardav.png``, one curve per phase against the shared misfit,
+which shows which field the regularization is biting on.
 
 Members that are still running, or that crashed before writing the inversion
 diagnostics, lack the residual or a phase's design functional and are skipped
@@ -96,6 +100,10 @@ REQUIRED_VARS = ("vel_misfit_weight", "inv_residual")
 # filled in from the flow law's ``n``.
 DESIGN_VARIABLES = {"tauc": "Pa", "hardav": "Pa s^(1/n)"}
 
+# Values of ``inverse.design.variable``: one field, or a pair that ``pismi``
+# alternates between in the order given.
+STRATEGIES = ("tauc", "hardav", "tauc_hardav", "hardav_tauc")
+
 # Config keys holding the Glen exponent, most specific stress balance first.
 _GLEN_EXPONENT_KEYS = (
     "stress_balance.blatter.Glen_exponent",
@@ -133,25 +141,113 @@ def short_name(parameter: str) -> str:
     return parameter.split(".")[-1]
 
 
+def config_value(value: Any) -> float | str:
+    """
+    Read a ``pism_config`` attribute as a number where it is one.
+
+    Parameters
+    ----------
+    value : Any
+        Attribute value.
+
+    Returns
+    -------
+    float or str
+        The value as a float, or as a string for a keyword such as
+        ``inverse.design.variable``.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def format_value(value: Any) -> str:
+    """
+    Format a parameter value for a label.
+
+    Parameters
+    ----------
+    value : Any
+        Number or keyword.
+
+    Returns
+    -------
+    str
+        ``"1e+03"`` style for numbers, the keyword itself otherwise.
+    """
+    return f"{value:g}" if isinstance(value, (int, float, np.number)) else str(value)
+
+
+def design_strategy(ds: xr.Dataset) -> str | None:
+    """
+    Which strategy the inversion followed, as a value of :data:`STRATEGIES`.
+
+    ``inverse.design.variable`` names it: ``tauc`` or ``hardav`` for a
+    single-field run, or the pair ``tauc_hardav`` / ``hardav_tauc`` for an
+    alternating co-inversion in that order. ``pismi`` ignores
+    ``inverse.alternating_cycles`` for a single field, so the cycle count
+    does not decide it.
+
+    The variables the run wrote override a single-field configuration when
+    they show both phases (``zeta_inv_tauc`` *and* ``zeta_inv_hardav``):
+    before PISM took pairs, a positive cycle count alternated starting with
+    the configured field. Output written before PISM had the parameter at all
+    falls back to the variables alone — per-phase zeta for an alternating
+    run, a single ``<design>_prior``, or as the last resort a single plain
+    field.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Inversion output.
+
+    Returns
+    -------
+    str or None
+        The strategy, or ``None`` when neither the configuration nor the
+        variables say.
+    """
+    config = ds["pism_config"].attrs if "pism_config" in ds else {}
+    names = set(ds.variables)
+    alternated = all(f"zeta_inv_{v}" in names for v in DESIGN_VARIABLES)
+    configured = str(config.get("inverse.design.variable", "")).lower()
+    if configured in STRATEGIES:
+        if configured in DESIGN_VARIABLES and alternated:
+            other = next(v for v in DESIGN_VARIABLES if v != configured)
+            return f"{configured}_{other}"
+        return configured
+    if alternated:
+        return "tauc_hardav"
+    for candidates in (
+        [v for v in DESIGN_VARIABLES if f"{v}_prior" in names],
+        [v for v in DESIGN_VARIABLES if v in names],
+    ):
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
+
+
+def strategy_phases(strategy: str) -> list[str]:
+    """
+    Split a strategy into the design variables it inverts for, in order.
+
+    Parameters
+    ----------
+    strategy : str
+        A value of :data:`STRATEGIES`.
+
+    Returns
+    -------
+    list of str
+        ``["tauc"]`` for ``tauc``, ``["hardav", "tauc"]`` for ``hardav_tauc``.
+    """
+    return strategy.split("_")
+
+
 def design_variables(ds: xr.Dataset) -> list[str]:
     """
-    Which fields the inversion solved for: ``tauc``, ``hardav``, or both.
-
-    Read from ``pism_config`` where possible, since that describes the run
-    rather than how far it has got:
-
-    - ``inverse.alternating_cycles > 0`` is a co-inversion, which solves for
-      both in turn — true from the first timestep, before either phase has
-      written anything.
-    - ``inverse.design.variable`` names the field of a single-design run.
-      (``pismi``'s ``-inv_design`` is its short option.)
-
-    Output written before PISM gained that parameter carries neither, so the
-    fallback reads the variables the run wrote: an alternating run names zeta
-    per phase (``zeta_inv_tauc`` *and* ``zeta_inv_hardav``), a single-design
-    run writes ``zeta_inv`` and a ``<design>_prior``. The plain field is the
-    last resort, since a ``tauc`` inversion of a Blatter forward problem may
-    carry a prescribed ``hardav`` alongside it.
+    Which fields the inversion solved for, in the order it solved for them.
 
     Parameters
     ----------
@@ -161,30 +257,12 @@ def design_variables(ds: xr.Dataset) -> list[str]:
     Returns
     -------
     list of str
-        The design variables, in :data:`DESIGN_VARIABLES` order — two for an
-        alternating co-inversion, one for a single-design run, none when
-        neither the configuration nor the variables say.
+        The phases of :func:`design_strategy` — two for an alternating
+        co-inversion, one for a single-field run, none when the strategy
+        cannot be told.
     """
-    config = ds["pism_config"].attrs if "pism_config" in ds else {}
-    try:
-        cycles = int(float(config.get("inverse.alternating_cycles", 0)))
-    except (TypeError, ValueError):
-        cycles = 0
-    if cycles > 0:
-        return list(DESIGN_VARIABLES)
-    configured = str(config.get("inverse.design.variable", "")).lower()
-    if configured in DESIGN_VARIABLES:
-        return [configured]
-
-    names = set(ds.variables)
-    for candidates in (
-        [v for v in DESIGN_VARIABLES if f"zeta_inv_{v}" in names],
-        [v for v in DESIGN_VARIABLES if f"{v}_prior" in names],
-        [v for v in DESIGN_VARIABLES if v in names],
-    ):
-        if candidates:
-            return candidates
-    return []
+    strategy = design_strategy(ds)
+    return strategy_phases(strategy) if strategy else []
 
 
 def design_variable(ds: xr.Dataset) -> str | None:
@@ -374,7 +452,7 @@ def model_norm(ds: xr.Dataset, design: str | None = None) -> float:
     return float(np.sqrt(history.isel({history.dims[-1]: -1})))
 
 
-def collect_lcurve(files: list[Path], parameters: list[str], designs: list[str] | None = None) -> pd.DataFrame:
+def collect_lcurve(files: list[Path], parameters: list[str], strategies: list[str] | None = None) -> pd.DataFrame:
     """
     Tabulate misfit, model norm and regularization parameters of an ensemble.
 
@@ -383,7 +461,9 @@ def collect_lcurve(files: list[Path], parameters: list[str], designs: list[str] 
     together — while the model norm is that phase's own. Files that do not
     carry the full set of inversion diagnostics, and phases a member has not
     reached, are skipped with a warning, as are files missing one of
-    ``parameters`` in their ``pism_config`` attributes.
+    ``parameters`` in their ``pism_config`` attributes and files whose
+    strategy cannot be told. :func:`member_norms` turns the rows into one per
+    member.
 
     Parameters
     ----------
@@ -392,18 +472,19 @@ def collect_lcurve(files: list[Path], parameters: list[str], designs: list[str] 
     parameters : list of str
         Dotted ``pism_config`` keys to read from each file; they become
         columns named after their last dotted component.
-    designs : list of str or None, optional
-        Design variables to tabulate, or ``None`` to detect them per file
-        with :func:`design_variables`.
+    strategies : list of str or None, optional
+        Strategies (values of :data:`STRATEGIES`) to keep, or ``None`` for
+        every member.
 
     Returns
     -------
     pandas.DataFrame
-        One row per usable (file, design) pair with the ``parameters``
-        columns plus ``M`` (data misfit, m/yr), ``N`` (model norm),
-        ``design`` (the inverted field), ``norm_units`` (empty when the norm
-        is dimensionless) and ``file``, sorted by design then the parameter
-        columns.
+        One row per usable (file, phase) pair with the ``parameters``
+        columns plus ``M`` (data misfit, m/yr), ``N`` (model norm of the
+        phase), ``strategy``, ``design`` (the field of the phase),
+        ``norm_units`` (empty when the norm is dimensionless) and ``file``,
+        sorted by strategy (in :data:`STRATEGIES` order), then the parameter
+        columns, then phase.
 
     Raises
     ------
@@ -425,20 +506,27 @@ def collect_lcurve(files: list[Path], parameters: list[str], designs: list[str] 
                     logger.warning("%s: skipped, pism_config has no %s", path.name, ", ".join(missing))
                     continue
 
-                found = designs or design_variables(ds) or [None]  # type: ignore[list-item]
+                strategy = design_strategy(ds)
+                if strategy is None:
+                    logger.warning("%s: skipped, cannot tell what the inversion solved for", path.name)
+                    continue
+                if strategies and strategy not in strategies:
+                    continue
                 misfit = data_misfit(ds)
-                for design in found:
+                for phase, design in enumerate(strategy_phases(strategy)):
                     if j_design_variable(ds, design) is None:
                         logger.warning(
                             "%s: no %s design functional, that phase is not written yet",
                             path.name,
-                            design or "J_design",
+                            design,
                         )
                         continue
-                    row: dict[str, Any] = {c: float(config[p]) for c, p in zip(columns, parameters)}
+                    row: dict[str, Any] = {c: config_value(config[p]) for c, p in zip(columns, parameters)}
                     row["M"] = misfit
                     row["N"] = model_norm(ds, design)
-                    row["design"] = design or ""
+                    row["strategy"] = strategy
+                    row["design"] = design
+                    row["phase"] = phase
                     row["norm_units"] = model_norm_units(ds, design) or ""
                     row["file"] = path.name
                     rows.append(row)
@@ -451,7 +539,80 @@ def collect_lcurve(files: list[Path], parameters: list[str], designs: list[str] 
             f"they need {', '.join(REQUIRED_VARS)}, a design functional and {', '.join(parameters)}"
         )
     logger.info("collected %d rows from %d files", len(rows), len(files))
-    return pd.DataFrame(rows).sort_values(["design"] + columns).reset_index(drop=True)
+    return _in_strategy_order(pd.DataFrame(rows), columns + ["phase"])
+
+
+def _in_strategy_order(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """
+    Sort a table by strategy, in :data:`STRATEGIES` order, then by ``columns``.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Table with a ``strategy`` column.
+    columns : list of str
+        Further sort keys.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The sorted table with a fresh index.
+    """
+    order = df["strategy"].map({s: i for i, s in enumerate(STRATEGIES)})
+    return df.assign(_order=order).sort_values(["_order"] + columns).drop(columns="_order").reset_index(drop=True)
+
+
+def member_norms(df: pd.DataFrame, parameters: list[str]) -> pd.DataFrame:
+    """
+    Combine the phases of each member into its total model norm.
+
+    ``J_design`` measures the departure of zeta from its prior, and a
+    single-field run leaves the other field at its prior, so
+    ``N = sqrt(sum of J_design over the phases)`` puts every strategy on the
+    same axis. Adding the phases needs every phase to be written and the
+    norms to be dimensionless (``inverse.design.param = "exp"``); members that
+    fall short are left out with a warning.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Per-phase table from :func:`collect_lcurve`.
+    parameters : list of str
+        Dotted ``pism_config`` keys behind the table's parameter columns.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per member with the ``parameters`` columns plus
+        ``strategy``, ``M``, ``N`` (total norm), ``N_<design>`` per phase,
+        ``norm_units`` and ``file``, in strategy then parameter order.
+    """
+    columns = [short_name(p) for p in parameters]
+    rows: list[dict[str, Any]] = []
+    for file, group in df.groupby("file", sort=False):
+        strategy = str(group["strategy"].iloc[0])
+        phases = strategy_phases(strategy)
+        norms = dict(zip(group["design"], group["N"]))
+        missing = [p for p in phases if p not in norms]
+        if missing:
+            logger.warning("%s: left out, %s phase not written yet", file, ", ".join(missing))
+            continue
+        units = set(group["norm_units"])
+        if len(phases) > 1 and units != {""}:
+            logger.warning("%s: left out, phase norms carry units (%s) and cannot be added", file, ", ".join(units))
+            continue
+        row: dict[str, Any] = {c: group[c].iloc[0] for c in columns}
+        row["strategy"] = strategy
+        row["M"] = float(group["M"].iloc[0])
+        row["N"] = float(np.sqrt(sum(norms[p] ** 2 for p in phases)))
+        for design in DESIGN_VARIABLES:
+            row[f"N_{design}"] = norms.get(design, np.nan)
+        row["norm_units"] = str(group["norm_units"].iloc[0]) if len(phases) == 1 else ""
+        row["file"] = file
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    return _in_strategy_order(pd.DataFrame(rows), columns)
 
 
 def corner(norm: np.ndarray, misfit: np.ndarray) -> int | None:
@@ -529,9 +690,46 @@ def norm_axis_label(df: pd.DataFrame, mixed_ok: bool = False) -> str:
     return f"{base}, {designs[0]} ({mathtext_units(units[0])})"
 
 
-# One color and marker per design variable, so the combined figure reads at a
-# glance and keeps the same assignment across runs.
+def total_norm_label(table: pd.DataFrame) -> str:
+    """
+    Build the model-norm axis label of the per-strategy L-curve.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        Per-member table from :func:`member_norms`.
+
+    Returns
+    -------
+    str
+        For a single single-field strategy the label of :func:`norm_axis_label`;
+        otherwise the norm summed over the phases, dimensionless unless every
+        member is a single field under ``param = "ident"`` in one unit.
+    """
+    strategies = list(dict.fromkeys(table["strategy"]))
+    units = sorted(set(table["norm_units"]) - {""})
+    if len(strategies) == 1 and strategies[0] in DESIGN_VARIABLES:
+        return norm_axis_label(table.assign(design=strategies[0]))
+    if len(units) > 1:
+        logger.warning("strategies carry norms in different units (%s); labelling generically", ", ".join(units))
+        return r"model norm  $N=\sqrt{\sum J_\mathrm{design}}$"
+    shown = mathtext_units(units[0]) if units and set(table["norm_units"]) == set(units) else r"dimensionless $\zeta$"
+    return rf"model norm  $N=\sqrt{{\sum J_\mathrm{{design}}}}$ ({shown})"
+
+
+# One color and marker per design variable and per strategy, so the figures
+# read at a glance and keep the same assignment across runs.
 DESIGN_STYLE = {"tauc": ("C0", "o"), "hardav": ("C1", "s")}
+STRATEGY_STYLE = {
+    "tauc": ("C0", "o"),
+    "hardav": ("C1", "s"),
+    "tauc_hardav": ("C2", "^"),
+    "hardav_tauc": ("C3", "D"),
+}
+
+# Point-label offsets, in points, cycled over the curves of one figure so the
+# labels of overlaid curves do not land on top of each other.
+LABEL_OFFSETS = ((3, 3), (3, -9), (-14, 3), (-14, -9))
 
 
 def _draw_curve(
@@ -573,7 +771,7 @@ def _draw_curve(
     ax.plot(g["N"], g["M"], marker=marker, ls="-", ms=2, lw=0.75, label=label, color=color)
     for _, row in g.iterrows():
         ax.annotate(
-            f"{row[sweep]:g}",
+            format_value(row[sweep]),
             (row["N"], row["M"]),
             fontsize=fontsize,
             xytext=offset,
@@ -588,27 +786,69 @@ def _draw_curve(
     return g.loc[index].to_dict()
 
 
+def _finish(
+    ax: Any, fig: Any, *, xlabel: str, title: str, legend: bool, log: bool, output_file: Path, dpi: int
+) -> None:
+    """
+    Label, scale and write an L-curve figure.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes drawn on.
+    fig : matplotlib.figure.Figure
+        Figure to write and close.
+    xlabel : str
+        Model-norm axis label.
+    title : str
+        Figure title.
+    legend : bool
+        Draw the legend.
+    log : bool
+        Use logarithmic axes.
+    output_file : pathlib.Path
+        Where to write the figure.
+    dpi : int
+        Resolution of raster output.
+    """
+    if legend:
+        handle = ax.legend(loc="best")
+        handle.get_frame().set_linewidth(0.0)
+        handle.get_frame().set_alpha(0.0)
+    if log:
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(r"data misfit  $M$ (m yr$^{-1}$)")
+    ax.set_title(title)
+    ax.grid(True, which="both", alpha=0.3)
+    fig.tight_layout()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_file, dpi=dpi)
+    plt.close(fig)
+    logger.info("wrote %s", output_file)
+
+
 def plot_lcurve(
-    df: pd.DataFrame,
+    table: pd.DataFrame,
     parameters: list[str],
     output_file: Path,
     log: bool = False,
     dpi: int = 300,
 ) -> pd.DataFrame:
     """
-    Plot the L-curve of an inversion ensemble and mark its corner.
+    Plot one L-curve per strategy and mark each corner.
 
     Points are joined in order of the *first* parameter, whose value labels
-    each marker. Any further parameters split the ensemble into one curve per
-    combination of their values, drawn with a legend, so a 2-D sweep stays
-    readable. The corner of every curve is marked with a star. The abscissa is
-    labelled with the field the inversion solved for (see
-    :func:`norm_axis_label`).
+    each marker. The ensemble splits into one curve per strategy and, within
+    it, per combination of any further parameters, drawn with a legend when
+    there is more than one curve. The corner of every curve is marked with a
+    star.
 
     Parameters
     ----------
-    df : pandas.DataFrame
-        Table from :func:`collect_lcurve`.
+    table : pandas.DataFrame
+        Per-member table from :func:`member_norms`.
     parameters : list of str
         Dotted ``pism_config`` keys behind the table's parameter columns; the
         first one is the abscissa of the sweep.
@@ -622,43 +862,50 @@ def plot_lcurve(
     Returns
     -------
     pandas.DataFrame
-        The corner rows, one per curve, with the parameter values, ``M`` and
-        ``N`` of the picked member.
+        The corner rows, one per curve, with the strategy, parameter values,
+        ``M`` and ``N`` of the picked member.
     """
     columns = [short_name(p) for p in parameters]
     sweep, grouping = columns[0], columns[1:]
-    groups = df.groupby(grouping, sort=True) if grouping else [((), df)]
+    strategies = list(dict.fromkeys(table["strategy"]))
 
     corners: list[dict[str, Any]] = []
+    curves = 0
     with mpl.rc_context(rc=rc_params):
         fig, ax = plt.subplots(figsize=(3.2, 2.4))
-        for key, group in groups:
-            g = group.sort_values(sweep).reset_index(drop=True)
-            label = ", ".join(f"{c}={v:g}" for c, v in zip(grouping, np.atleast_1d(key))) if grouping else None
-            found = _draw_curve(ax, g, sweep, label=label)
-            if found is not None:
-                corners.append(found)
-
-        if grouping:
-            legend = ax.legend(loc="best")
-            legend.get_frame().set_linewidth(0.0)
-            legend.get_frame().set_alpha(0.0)
-        if log:
-            ax.set_xscale("log")
-            ax.set_yscale("log")
-        ax.set_xlabel(norm_axis_label(df))
-        ax.set_ylabel(r"data misfit  $M$ (m yr$^{-1}$)")
-        ax.set_title("L-curve")
-        ax.grid(True, which="both", alpha=0.3)
-        fig.tight_layout()
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(output_file, dpi=dpi)
-        plt.close(fig)
-    logger.info("wrote %s", output_file)
+        for strategy in strategies:
+            rows = table[table["strategy"] == strategy]
+            color, marker = STRATEGY_STYLE.get(strategy, (None, "o"))
+            for key, group in rows.groupby(grouping, sort=True) if grouping else [((), rows)]:
+                g = group.sort_values(sweep).reset_index(drop=True)
+                parts = [strategy] if len(strategies) > 1 else []
+                parts += [f"{c}={format_value(v)}" for c, v in zip(grouping, np.atleast_1d(key))]
+                found = _draw_curve(
+                    ax,
+                    g,
+                    sweep,
+                    label=", ".join(parts) or None,
+                    color=color if len(strategies) > 1 else None,
+                    marker=marker,
+                    offset=LABEL_OFFSETS[curves % len(LABEL_OFFSETS)],
+                )
+                curves += 1
+                if found is not None:
+                    corners.append(found)
+        _finish(
+            ax,
+            fig,
+            xlabel=total_norm_label(table),
+            title="L-curve",
+            legend=curves > 1,
+            log=log,
+            output_file=output_file,
+            dpi=dpi,
+        )
     return pd.DataFrame(corners)
 
 
-def plot_combined(
+def plot_phases(
     df: pd.DataFrame,
     parameters: list[str],
     output_file: Path,
@@ -666,7 +913,7 @@ def plot_combined(
     dpi: int = 300,
 ) -> pd.DataFrame:
     """
-    Overlay every phase of an alternating co-inversion on one L-curve.
+    Overlay the phases of an alternating strategy on one L-curve.
 
     The phases of an alternating run share a misfit and differ only in their
     model norm, so putting them on one pair of axes shows directly which
@@ -680,8 +927,7 @@ def plot_combined(
     Parameters
     ----------
     df : pandas.DataFrame
-        Table from :func:`collect_lcurve`, covering more than one design
-        variable.
+        Per-phase rows of one strategy, from :func:`collect_lcurve`.
     parameters : list of str
         Dotted ``pism_config`` keys behind the table's parameter columns; the
         first one is the abscissa of the sweep.
@@ -695,56 +941,52 @@ def plot_combined(
     Returns
     -------
     pandas.DataFrame
-        The corner rows, one per design variable. Empty when the figure was
-        refused because the norms are not comparable.
+        The corner rows, one per phase. Empty when the figure was refused
+        because the norms are not comparable.
     """
     units = sorted(set(df["norm_units"]))
     if len(units) > 1:
         logger.warning(
-            "not drawing the combined L-curve: the norms are not comparable (%s)",
+            "not drawing the phase L-curve: the norms are not comparable (%s)",
             ", ".join(u or "dimensionless" for u in units),
         )
         return pd.DataFrame()
 
     columns = [short_name(p) for p in parameters]
     sweep, grouping = columns[0], columns[1:]
+    strategy = str(df["strategy"].iloc[0]) if "strategy" in df else ""
     corners: list[dict[str, Any]] = []
+    curves = 0
     with mpl.rc_context(rc=rc_params):
         fig, ax = plt.subplots(figsize=(3.2, 2.4))
-        for index, (design, rows) in enumerate(df.groupby("design", sort=True)):
+        for index, design in enumerate(strategy_phases(strategy) if strategy else sorted(set(df["design"]))):
+            rows = df[df["design"] == design]
             color, marker = DESIGN_STYLE.get(str(design), (f"C{index}", "o"))
             for key, group in rows.groupby(grouping, sort=True) if grouping else [((), rows)]:
                 g = group.sort_values(sweep).reset_index(drop=True)
-                extra = ", ".join(f"{c}={v:g}" for c, v in zip(grouping, np.atleast_1d(key))) if grouping else ""
+                extra = ", ".join(f"{c}={format_value(v)}" for c, v in zip(grouping, np.atleast_1d(key)))
                 found = _draw_curve(
                     ax,
                     g,
                     sweep,
-                    label=f"{design}{', ' + extra if extra else ''}",
+                    label=f"{design} phase{', ' + extra if extra else ''}",
                     color=color,
                     marker=marker,
-                    # Stagger the point labels so the overlaid curves' do not
-                    # land on top of each other.
-                    offset=(3, 3) if index % 2 == 0 else (3, -9),
+                    offset=LABEL_OFFSETS[curves % len(LABEL_OFFSETS)],
                 )
+                curves += 1
                 if found is not None:
                     corners.append(found)
-
-        legend = ax.legend(loc="best")
-        legend.get_frame().set_linewidth(0.0)
-        legend.get_frame().set_alpha(0.0)
-        if log:
-            ax.set_xscale("log")
-            ax.set_yscale("log")
-        ax.set_xlabel(norm_axis_label(df, mixed_ok=True))
-        ax.set_ylabel(r"data misfit  $M$ (m yr$^{-1}$)")
-        ax.set_title("L-curve, both phases")
-        ax.grid(True, which="both", alpha=0.3)
-        fig.tight_layout()
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(output_file, dpi=dpi)
-        plt.close(fig)
-    logger.info("wrote %s", output_file)
+        _finish(
+            ax,
+            fig,
+            xlabel=norm_axis_label(df, mixed_ok=True),
+            title=f"L-curve, phases of {strategy}" if strategy else "L-curve, phases",
+            legend=True,
+            log=log,
+            output_file=output_file,
+            dpi=dpi,
+        )
     return pd.DataFrame(corners)
 
 
@@ -755,14 +997,15 @@ def main() -> None:
     Returns
     -------
     None
-        A figure and its ``.csv`` table are written to disk, one pair per
-        design variable.
+        The L-curve figure and its ``.csv`` table are written to disk, plus
+        one phase figure per alternating strategy.
     """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = (
         "L-curve of a PISM Tikhonov inversion ensemble: data misfit against model norm, "
         "with the corner of the L marked as the conventional pick for the "
-        "regularization parameter. An alternating co-inversion gives one curve per phase."
+        "regularization parameter. One curve per strategy (inverse.design.variable); "
+        "every alternating strategy also gets a figure of its phases."
     )
     parser.add_argument(
         "--parameters",
@@ -776,21 +1019,20 @@ def main() -> None:
         "-o",
         "--output-file",
         help="Figure to write; the suffix picks the format. The underlying table is written "
-        "alongside it with a .csv suffix.",
+        "alongside it with a .csv suffix, and the phase figures with the strategy appended "
+        "to the stem.",
         type=str,
         default="lcurve.png",
     )
     parser.add_argument(
-        "--design-variable",
-        help=f"Comma-separated design variables to curve ({', '.join(DESIGN_VARIABLES)}). The default "
-        "reads them from each file, which yields one curve per phase of an alternating "
-        "co-inversion.",
+        "--strategy",
+        help=f"Comma-separated strategies to keep ({', '.join(STRATEGIES)}). The default keeps every " "member.",
         type=str,
         default=None,
     )
     parser.add_argument(
-        "--no-combined",
-        help="Skip the extra figure overlaying every phase of an alternating co-inversion " "on one pair of axes.",
+        "--no-phases",
+        help="Skip the figures of the phases of each alternating strategy.",
         action="store_true",
     )
     parser.add_argument(
@@ -815,48 +1057,42 @@ def main() -> None:
     if not parameters:
         parser.error("--parameters needs at least one pism_config key")
 
+    strategies = None
+    if options.strategy:
+        strategies = [d.strip() for d in options.strategy.split(",") if d.strip()]
+        unknown = [d for d in strategies if d not in STRATEGIES]
+        if unknown or not strategies:
+            parser.error(f"--strategy takes any of {', '.join(STRATEGIES)}; got {', '.join(unknown) or 'nothing'}")
+
     output_file = Path(options.output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
     setup_logging(output_file.parent / "lcurve.log")
 
-    designs = None
-    if options.design_variable:
-        designs = [d.strip() for d in options.design_variable.split(",") if d.strip()]
-        unknown = [d for d in designs if d not in DESIGN_VARIABLES]
-        if unknown or not designs:
-            parser.error(
-                f"--design-variable takes any of {', '.join(DESIGN_VARIABLES)}; "
-                f"got {', '.join(unknown) or 'nothing'}"
-            )
+    df = collect_lcurve([Path(f) for f in options.INFILES], parameters, strategies)
+    table = member_norms(df, parameters)
+    if table.empty:
+        raise SystemExit("no member has written every phase of its strategy; nothing to plot")
+    table_file = output_file.with_suffix(".csv")
+    table.to_csv(table_file, index=False)
+    logger.info("wrote %s", table_file)
 
-    df = collect_lcurve([Path(f) for f in options.INFILES], parameters, designs)
-    # An alternating co-inversion gives one curve per phase; only then are the
-    # outputs suffixed, so a single-design run keeps the name it was given.
-    found = list(df["design"].unique())
-    for design in found:
-        rows = df[df["design"] == design].reset_index(drop=True)
-        path = output_file
-        if len(found) > 1:
-            path = output_file.with_name(f"{output_file.stem}_{design}{output_file.suffix}")
-        table_file = path.with_suffix(".csv")
-        rows.to_csv(table_file, index=False)
-        logger.info("wrote %s", table_file)
+    corners = plot_lcurve(table, parameters, output_file, log=options.log, dpi=options.dpi)
+    print(table.drop(columns=["norm_units", "file"]).to_string(index=False))
+    if not corners.empty:
+        print("\nL-curve corners:")
+        shown = [c for c in ["strategy"] + [short_name(p) for p in parameters] + ["M", "N"] if c in corners]
+        print(corners[shown].to_string(index=False))
 
-        corners = plot_lcurve(rows, parameters, path, log=options.log, dpi=options.dpi)
-
-        if len(found) > 1:
-            print(f"\n=== {design} ===")
-        print(rows.to_string(index=False))
-        if not corners.empty:
-            print("L-curve corner:")
-            print(corners.to_string(index=False))
-
-    if len(found) > 1 and not options.no_combined:
-        combined_file = output_file.with_name(f"{output_file.stem}_combined{output_file.suffix}")
-        combined = plot_combined(df, parameters, combined_file, log=options.log, dpi=options.dpi)
-        if not combined.empty:
-            print("\n=== both phases ===")
-            print(f"wrote {combined_file}")
+    if options.no_phases:
+        return
+    for strategy in dict.fromkeys(df["strategy"]):
+        if strategy in DESIGN_VARIABLES:
+            continue
+        phase_file = output_file.with_name(f"{output_file.stem}_{strategy}{output_file.suffix}")
+        rows = df[df["strategy"] == strategy].reset_index(drop=True)
+        phase_corners = plot_phases(rows, parameters, phase_file, log=options.log, dpi=options.dpi)
+        if not phase_corners.empty:
+            print(f"\nwrote {phase_file}")
 
 
 if __name__ == "__main__":

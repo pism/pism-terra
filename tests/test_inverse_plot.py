@@ -43,8 +43,10 @@ from pism_terra.inverse_plot import (
     FIELDS,
     completed_phases,
     field_items,
+    figure_name,
     item_key,
     main,
+    panel_slots,
     plot_field,
     read_member,
     shared_limits,
@@ -65,6 +67,7 @@ def write_member(
     complete: bool = True,
     alternating: bool = False,
     completed: str = "c1_hardav",
+    strategy: str | None = None,
 ) -> Path:
     """
     Write a synthetic inversion output with distinguishable masked regions.
@@ -100,6 +103,9 @@ def write_member(
     completed : str, optional
         Value of the ``pismi_alternation_completed`` stamp, written only for
         an alternating run.
+    strategy : str or None, optional
+        Value of ``inverse.design.variable``; ``None`` leaves it out, as
+        output written before PISM had the parameter does.
 
     Returns
     -------
@@ -112,8 +118,11 @@ def write_member(
 
     field = np.where(free, tauc_free, tauc_fixed)[np.newaxis, ...]
     zeta_field = np.where(free, zeta, -zeta)[np.newaxis, ...]
+    config: dict[str, Any] = {PENALTY: np.float64(penalty_weight)}
+    if strategy is not None:
+        config["inverse.design.variable"] = strategy
     data: dict[str, Any] = {
-        "pism_config": ((), np.int8(0), {PENALTY: np.float64(penalty_weight)}),
+        "pism_config": ((), np.int8(0), config),
         "zeta_fixed_mask": (("time", "y", "x"), np.where(free, 0.0, 1.0)[np.newaxis, ...]),
         "vel_misfit_weight": (("time", "y", "x"), free.astype(float)[np.newaxis, ...]),
     }
@@ -641,7 +650,131 @@ def test_completed_phases_reads_the_alternation_stamp(tmp_path: Path) -> None:
         with xr.open_dataset(path) as ds:
             assert completed_phases(ds) == expected, stamp
 
+    # hardav_tauc runs the phases the other way round.
+    reversed_cases = {"c0_hardav": {"hardav"}, "c0_tauc": {"tauc", "hardav"}, "c1_hardav": {"tauc", "hardav"}}
+    for stamp, expected in reversed_cases.items():
+        path = write_member(
+            tmp_path / f"rev_{stamp}.nc", 1.0, alternating=True, completed=stamp, strategy="hardav_tauc"
+        )
+        with xr.open_dataset(path) as ds:
+            assert completed_phases(ds) == expected, stamp
+
     # A single-design run carries no stamp.
     plain = write_member(tmp_path / "plain.nc", 1.0)
     with xr.open_dataset(plain) as ds:
         assert completed_phases(ds) is None
+
+
+@pytest.fixture(name="strategies")
+def fixture_strategies(tmp_path: Path) -> list[Path]:
+    """
+    One project sampling all four strategies at two penalty weights.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The member files.
+    """
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    files = []
+    for strategy in ("tauc", "hardav", "tauc_hardav", "hardav_tauc"):
+        pair = "_" in strategy
+        for p in (1.0, 10.0):
+            files.append(
+                write_member(
+                    runs / f"{strategy}_{p:g}.nc",
+                    p,
+                    design=strategy if not pair else "tauc",
+                    alternating=pair,
+                    completed=f"c0_{strategy.rsplit('_', maxsplit=1)[-1]}",
+                    strategy=strategy,
+                )
+            )
+    return files
+
+
+def test_strategies_get_a_row_each(strategies: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Map every field once, with one row per strategy that inverted for it.
+
+    Parameters
+    ----------
+    strategies : list of pathlib.Path
+        Four-strategy ensemble from the fixture.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to set ``sys.argv``.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    members = [m for m in (read_member(f, [PENALTY], list(FIELDS)) for f in strategies) if m is not None]
+    assert [m["strategy"] for m in members][::2] == ["tauc", "hardav", "tauc_hardav", "hardav_tauc"]
+    assert members[-1]["designs"] == ["hardav", "tauc"]
+
+    # The tauc of a hardav-only run is not a result, so its figure has three rows.
+    tauc = [m for m in members if "design:tauc" in m]
+    slots, rows = panel_slots(tauc, "penalty_weight", ncols=4)
+    assert rows == ["tauc", "tauc_hardav", "hardav_tauc"]
+    assert slots[(2, 1)]["strategy"] == "hardav_tauc" and slots[(2, 1)]["penalty_weight"] == 10.0
+    # A single-field zeta beside the pairs is named after its field.
+    assert figure_name(tauc, "zeta", "tauc") == "zeta_inv_tauc"
+
+    base = tmp_path / "out" / "maps.png"
+    monkeypatch.setattr("sys.argv", ["pism-inverse-plot", "-o", str(base)] + [str(f) for f in strategies])
+    main()
+    assert {p.name for p in base.parent.glob("*.png")} == {
+        "maps_tauc.png",
+        "maps_hardav.png",
+        "maps_zeta_inv_tauc.png",
+        "maps_zeta_inv_hardav.png",
+        "maps_inv_residual.png",
+    }
+
+
+def test_strategy_keeps_a_subset(strategies: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    ``--strategy`` keeps only the members of the strategies named.
+
+    Parameters
+    ----------
+    strategies : list of pathlib.Path
+        Four-strategy ensemble from the fixture.
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to set ``sys.argv``.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    assert read_member(strategies[0], [PENALTY], list(FIELDS), strategies=["hardav"]) is None
+
+    base = tmp_path / "tauc" / "maps.png"
+    monkeypatch.setattr(
+        "sys.argv", ["pism-inverse-plot", "--strategy", "tauc", "-o", str(base)] + [str(f) for f in strategies]
+    )
+    main()
+    # One strategy keeps the plain names of a single-field sweep.
+    assert {p.name for p in base.parent.glob("*.png")} == {
+        "maps_tauc.png",
+        "maps_zeta_inv.png",
+        "maps_inv_residual.png",
+    }
+
+    monkeypatch.setattr(
+        "sys.argv", ["pism-inverse-plot", "--strategy", "tauc,speed", "-o", str(base), str(strategies[0])]
+    )
+    with pytest.raises(SystemExit):
+        main()
