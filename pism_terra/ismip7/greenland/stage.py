@@ -104,6 +104,24 @@ def retreat_file_for_resolution(name: str, resolution: int | float | str | None)
     return _RESOLUTION_TOKEN.sub(f"g{resolution_in_meters(resolution)}m", name, count=1)
 
 
+def retreat_disabled(name: str | None) -> bool:
+    """
+    Tell whether ``campaign.retreat_file`` turns the prescribed retreat off.
+
+    Parameters
+    ----------
+    name : str or None
+        ``campaign.retreat_file`` as written in the config.
+
+    Returns
+    -------
+    bool
+        True for a missing value, an empty string or ``"none"`` (any case):
+        no mask is staged and PISM's front is not prescribed.
+    """
+    return name is None or str(name).strip().lower() in {"", "none"}
+
+
 def select_retreat_file(
     configured: str, resolution: int | float | str | None, input_path: Path, bucket: str, prefix: str
 ) -> str:
@@ -485,8 +503,15 @@ def stage(
     boot_file = input_path / Path(config["boot_file"])
     heatflux_file = input_path / Path(config["heatflux_file"])
     regrid_file = input_path / Path(config["regrid_file"])
-    retreat_name = select_retreat_file(config["retreat_file"], resolution, input_path, bucket, prefix)
-    retreat_file = input_path / Path(retreat_name)
+    # ``retreat_file = "none"`` (or no key) runs without a prescribed front:
+    # nothing is staged and the run leaves the retreat options out.
+    retreat_name: str | None = None
+    retreat_file: Path | None = None
+    if retreat_disabled(config.get("retreat_file")):
+        print("Front retreat mask: none (campaign.retreat_file), the front is not prescribed")
+    else:
+        retreat_name = select_retreat_file(config["retreat_file"], resolution, input_path, bucket, prefix)
+        retreat_file = input_path / Path(retreat_name)
     outline_file = input_path / Path(config["outline_file"])
     obs_file = input_path / Path(config["obs_file"])
 
@@ -499,10 +524,11 @@ def stage(
         (config["boot_file"], boot_file),
         (config["heatflux_file"], heatflux_file),
         (config["regrid_file"], regrid_file),
-        (retreat_name, retreat_file),
         (config["outline_file"], outline_file),
         (config["obs_file"], obs_file),
     ]
+    if retreat_name is not None and retreat_file is not None:
+        required_files.append((retreat_name, retreat_file))
     # Observed thickness change, for comparing the run against afterwards.
     # Optional: PISM never reads these, so a config without them stages
     # exactly as before.
@@ -587,7 +613,7 @@ def stage(
     check_xr_fully(grid_file)
 
     # Validate the lazy-check inputs concurrently; only invalid files print.
-    input_lazy_files = [boot_file, heatflux_file, regrid_file, retreat_file]
+    input_lazy_files = [f for f in (boot_file, heatflux_file, regrid_file, retreat_file) if f is not None]
     # Processes (not threads): HDF5 isn't reliably thread-safe across all
     # builds (Chinook segfaults), so each worker gets its own interpreter
     # and HDF5 state.
@@ -609,7 +635,8 @@ def stage(
         "grid_file": grid_file.resolve(),
         "heatflux_file": heatflux_file.resolve(),
         "regrid_file": regrid_file.resolve(),
-        "retreat_file": retreat_file.resolve(),
+        # "none" leaves the prescribed retreat out of the run (run.py).
+        "retreat_file": retreat_file.resolve() if retreat_file is not None else "none",
         "outline_file": outline_file.resolve(),
         "obs_file": obs_file.resolve(),
     }

@@ -49,7 +49,9 @@ from pism_terra.ismip7.greenland.run import (
     is_ismip7_run,
     ismip7_identity,
     record_member,
+    without_unset_retreat,
 )
+from pism_terra.ismip7.greenland.stage import retreat_disabled
 from pism_terra.ismip7.naming import ISMIP7Names, member_ids, split_sample_id
 
 REPO = Path(__file__).resolve().parents[1]
@@ -574,6 +576,67 @@ def test_forward_c011_ocx(tmp_path):
     # The one leg is the ISMIP7 product: submission names, spanning 1990-2024.
     assert "/CORE/C011/" in fwd
     assert "_OCX_C011_1990-2024.nc" in fwd
+
+
+@pytest.mark.parametrize("value", [None, "none", "None", " NONE ", ""])
+def test_retreat_disabled_names(value):
+    """
+    A missing, empty or "none" retreat file turns the prescribed retreat off.
+
+    Parameters
+    ----------
+    value : str or None
+        ``campaign.retreat_file`` as a config might spell it.
+    """
+    assert retreat_disabled(value)
+    assert not retreat_disabled("pism_g450m_frontretreat_calfin_1972_2019_MS.nc")
+
+
+def test_without_unset_retreat_drops_only_an_unset_mask():
+    """
+    The retreat options are dropped for "none" and kept for a real mask.
+    """
+    unset = {
+        "geometry.front_retreat.prescribed.file": "none",
+        "geometry.front_retreat.prescribed.periodic": "yes",
+        "geometry.front_retreat.use_cfl": "yes",
+    }
+    assert without_unset_retreat(unset) == {"geometry.front_retreat.use_cfl": "yes"}
+    real = dict(unset, **{"geometry.front_retreat.prescribed.file": Path("/in/mask.nc")})
+    assert without_unset_retreat(real) is real
+    assert without_unset_retreat({"a": 1}) == {"a": 1}
+
+
+@pytest.mark.parametrize("mask", ["/in/pism_g900m_frontretreat.nc", "none"])
+def test_forward_legs_prescribe_the_retreat_only_with_a_mask(tmp_path, mask):
+    """
+    With ``retreat_file = "none"`` no leg carries the prescribed-retreat options.
+
+    PISM switches the prescribed retreat off only for an empty file option and
+    would try to open a file called "none"; with a mask every leg reads it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    mask : str
+        Staged retreat file, as the staging table records it.
+    """
+    script = _render_forward(
+        tmp_path,
+        C011,
+        sample="OCX",
+        uq={"geometry.front_retreat.prescribed.file": mask, "surface.force_to_thickness.file": "boot.nc"},
+    )
+    legs = _legs(script)
+    assert len(legs) == 2
+    for leg in legs:
+        if mask == "none":
+            assert "front_retreat.prescribed" not in leg
+            # Only the prescribed mask goes; the rest of the front handling stays.
+            assert "-geometry.front_retreat.use_cfl yes" in leg
+        else:
+            assert f"-geometry.front_retreat.prescribed.file {mask}" in leg
 
 
 def test_forward_c011_ocx_postprocesses_the_submission_fluxes(tmp_path):

@@ -1755,6 +1755,8 @@ class CampaignConfig(BaseModel):
         is published once per grid resolution, named by a ``g<res>m`` token
         (``pism_g450m_frontretreat_calfin_1972_2019_MS.nc``); staging swaps
         that token for the run's resolution and warns when no such file exists.
+        ``"none"`` (or leaving it out) runs without a prescribed front: no
+        mask is staged and the retreat options stay off PISM's command line.
     rgi_complex_file : str or None
         Filename of the RGI glacier-complex ("-C") outlines in the bucket.
     rgi_glacier_file : str or None
