@@ -357,6 +357,42 @@ def test_resolve_outline_falls_back_to_the_packaged_file(tree: Path):
     assert mb.resolve_outline(str(tree), None) == str(tree / "observations" / mb.DEFAULT_OUTLINE)
 
 
+def test_the_control_run_continues_the_historical_run(tree: Path):
+    """
+    A ctrl run (C009/C010) is spliced onto its GCM's historical run like an SSP.
+
+    It starts in 2015, so left on its own it has no record in a reference year
+    before that and its cumulative mass balance is missing throughout.
+
+    Parameters
+    ----------
+    tree : pathlib.Path
+        The run's ``output`` directory.
+    """
+    time = pd.to_datetime(["2015-07-01", "2016-07-01"])
+    for var, level in (("acabf", 6.0), ("ligroundf", -5.0)):
+        ds = xr.Dataset(
+            {var: (("time", "y", "x"), np.full((2, NY, NX), level, "float32"), {"units": "kg m-2 s-1"})},
+            coords={"time": time, "y": Y, "x": X},
+        )
+        ds["mapping"] = ((), np.int8(0), {"grid_mapping_name": "polar_stereographic", "proj_params": "EPSG:3413"})
+        ds[var].attrs["grid_mapping"] = "mapping"
+        directory = tree.joinpath(*mb.DEFAULT_TREE, "C010")
+        directory.mkdir(parents=True, exist_ok=True)
+        ds.to_netcdf(directory / f"{var}_GrIS_UAF_PISM_m001_MRI-ESM2-0_f001_ctrl_C010_2015-2016.nc")
+
+    ensemble = mb.open_submission(mb.find_files(str(tree), ["acabf", "ligroundf"]))
+    spliced = mb.splice_historical(ensemble)
+    ctrl = spliced["acabf"].sel(gcm_id="MRI-ESM2-0", ssp_id="ctrl").isel(y=0, x=0).dropna("time").compute()
+    # MRI's historical run (2.0) in front of its control run (6.0).
+    np.testing.assert_allclose(ctrl.values, [2.0, 2.0, 6.0, 6.0])
+
+    regions = mb.compute_regions(ensemble, outline(), variables=["acabf", "ligroundf"], reference_year="2013")
+    cumulative = regions["cumulative_mass_balance"].sel(gcm_id="MRI-ESM2-0", ssp_id="ctrl", region="GIS_W")
+    assert cumulative.notnull().sum() == 4
+    assert float(cumulative.sel(time="2013").squeeze()) == 0.0
+
+
 def test_splice_historical_fills_the_pathways(tree: Path):
     """
     Each pathway gets its GCM's historical values where it has none.

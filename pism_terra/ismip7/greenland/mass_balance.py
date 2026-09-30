@@ -421,7 +421,7 @@ def open_submission(paths: Sequence[str], chunks: dict[str, int] | None = None, 
     return ds
 
 
-def splice_historical(ds: xr.Dataset, historical: str = "historical", projections: str = r"ssp\d+") -> xr.Dataset:
+def splice_historical(ds: xr.Dataset, historical: str = "historical", projections: str = r"ssp\d+|ctrl") -> xr.Dataset:
     """
     Prepend a GCM's historical run to each of its projections.
 
@@ -433,8 +433,10 @@ def splice_historical(ds: xr.Dataset, historical: str = "historical", projection
         Name of the historical pathway.
     projections : str, optional
         Regular expression matching the pathways that continue the historical
-        run. Others, such as OCX, stand on their own and are left untouched,
-        so a GCM without an OCX run does not grow one.
+        run: the SSPs and the control run (C009/C010, constant 2000-2029
+        climate from 2015), which starts from the historical state like a
+        projection. Others, such as OCX, stand on their own and are left
+        untouched, so a GCM without an OCX run does not grow one.
 
     Returns
     -------
