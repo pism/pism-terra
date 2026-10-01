@@ -67,6 +67,7 @@ dependencies:
   - seaborn
   # pism-cloud Voila app (notebooks/pism_cloud_app.ipynb)
   - hyp3_sdk
+  - ipyfilechooser
   - ipywidgets
   - voila
   # for development and testing
