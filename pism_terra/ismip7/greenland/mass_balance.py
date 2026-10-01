@@ -1007,6 +1007,29 @@ def add_legends(
         ax.legend(handles=second, loc="upper right", **kwargs)
 
 
+def within(data: Any, xlim: tuple[str, str]) -> Any:
+    """
+    Keep the records inside the years shown.
+
+    Matplotlib autoscales the y axis to everything drawn, also what
+    ``set_xlim`` hides; cutting the series first makes the y limits follow the
+    years shown.
+
+    Parameters
+    ----------
+    data : xarray.Dataset or xarray.DataArray
+        Series with a ``time`` dimension.
+    xlim : tuple of str
+        First and last year shown, both included.
+
+    Returns
+    -------
+    xarray.Dataset or xarray.DataArray
+        The records from ``xlim[0]`` to ``xlim[1]``.
+    """
+    return data.sel(time=slice(*xlim))
+
+
 def plot_regions(
     regions: xr.Dataset,
     mankoff: xr.Dataset | None,
@@ -1030,10 +1053,13 @@ def plot_regions(
     sigma : float, optional
         Half-width of the observed band, in standard deviations.
     xlim : tuple of str, optional
-        Years shown.
+        Years shown; the y limits follow the records inside them.
     variable : str, optional
         Series to plot.
     """
+    regions = within(regions, xlim)
+    if mankoff is not None:
+        mankoff = within(mankoff, xlim)
     names = [str(r) for r in regions["region"].values]
     ncols = 4
     nrows = -(-len(names) // ncols)
@@ -1160,7 +1186,7 @@ def plot_region(
     sigma : float, optional
         Half-width of the observed band, in standard deviations.
     xlim : tuple of str, optional
-        Years shown.
+        Years shown; the y limits follow the records inside them.
     sle_reference : str, optional
         Year both axes are zeroed at.
     """
@@ -1175,6 +1201,8 @@ def plot_region(
             f"(the series span {str(regions['time'].values[0])[:4]}-{str(regions['time'].values[-1])[:4]})"
         )
     units = regions[variable].attrs.get("units", "Gt")
+    # Cut after zeroing: the reference year may lie outside the years shown.
+    series = within(series, xlim)
 
     # Axis transforms from pint, so the factor lives in one place.
     gt_to_mm = float(to_sea_level(xr.DataArray(1.0, attrs={"units": units})))
@@ -1185,8 +1213,9 @@ def plot_region(
         if mankoff is not None and region in mankoff["region"].values:
             observed = True
             obs = mankoff.sel(region=region)
-            mean = _zero_at(obs["cumulative_mass_balance"], sle_reference)
-            spread = sigma * obs["cumulative_mass_balance_uncertainty"]
+            mean = within(_zero_at(obs["cumulative_mass_balance"], sle_reference), xlim)
+            spread = sigma * within(obs["cumulative_mass_balance_uncertainty"], xlim)
+            obs = within(obs, xlim)
             ax.fill_between(obs["time"].values, mean - spread, mean + spread, lw=0, color=OBS_COLOR, alpha=0.5)
             ax.plot(obs["time"].values, mean, lw=1.2, color="0.45")
         pathways, gcms = draw_series(ax, series, lw=0.8)
