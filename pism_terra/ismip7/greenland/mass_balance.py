@@ -925,7 +925,7 @@ def _in_table_order(names: Sequence[str], table: dict[str, str]) -> list[str]:
     return sorted(names, key=lambda n: rank.get(n, len(rank)))
 
 
-def _draw_series(ax: Any, series: xr.DataArray, lw: float) -> tuple[list[str], list[str]]:
+def draw_series(ax: Any, series: xr.DataArray, lw: float) -> tuple[list[str], list[str]]:
     """
     Draw every (GCM, pathway) series that has data.
 
@@ -967,7 +967,7 @@ def _draw_series(ax: Any, series: xr.DataArray, lw: float) -> tuple[list[str], l
     return _in_table_order(pathways, SSP_COLORS), _in_table_order(gcms, GCM_STYLES)
 
 
-def _add_legends(
+def add_legends(
     ax: Any,
     pathways: Sequence[str],
     gcms: Sequence[str],
@@ -1057,12 +1057,12 @@ def plot_regions(
                     alpha=0.5,
                 )
                 observed = True
-            drawn = _draw_series(ax, regions[variable].sel(region=region), lw=0.5)
+            drawn = draw_series(ax, regions[variable].sel(region=region), lw=0.5)
             for names, seen in zip(drawn, (pathways, gcms)):
                 seen.extend(n for n in names if n not in seen)
             ax.set_xlim(np.datetime64(xlim[0]), np.datetime64(xlim[1]))
             ax.set_title(region)
-        _add_legends(
+        add_legends(
             axs.flat[0],
             _in_table_order(pathways, SSP_COLORS),
             _in_table_order(gcms, GCM_STYLES),
@@ -1189,14 +1189,14 @@ def plot_region(
             spread = sigma * obs["cumulative_mass_balance_uncertainty"]
             ax.fill_between(obs["time"].values, mean - spread, mean + spread, lw=0, color=OBS_COLOR, alpha=0.5)
             ax.plot(obs["time"].values, mean, lw=1.2, color="0.45")
-        pathways, gcms = _draw_series(ax, series, lw=0.8)
+        pathways, gcms = draw_series(ax, series, lw=0.8)
         ax.axhline(0.0, color="k", lw=0.4, ls="dotted", zorder=0)
         ax.set_xlim(np.datetime64(xlim[0]), np.datetime64(xlim[1]))
         ax.set_ylabel(f"Cumulative mass balance\nsince {sle_reference} ({units})")
         sle = ax.secondary_yaxis("right", functions=(lambda gt: gt * gt_to_mm, lambda mm: mm / gt_to_mm))
         sle.set_ylabel(f"Contribution to sea level\nsince {sle_reference} (mm SLE)")
         ax.set_title(region)
-        _add_legends(ax, pathways, gcms, observed, fontsize=5, lw=0.8)
+        add_legends(ax, pathways, gcms, observed, fontsize=5, lw=0.8)
         fig.tight_layout()
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(filename, dpi=300)
