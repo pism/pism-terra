@@ -40,7 +40,10 @@ import time
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import Counter
+from functools import reduce
+from operator import or_
 from pathlib import Path
+from typing import cast
 
 import cf_xarray
 import dask
@@ -72,6 +75,10 @@ logger = logging.getLogger(__name__)
 # does not name one: the packaged Mouginot basins carry ``glacier_id``, RGI
 # files ``rgi_id``, and older Greenland outlines only ``SUBREGION1``.
 DEFAULT_COLUMNS = ("glacier_id", "rgi_id", "SUBREGION1")
+
+
+#: Reductions over a region's cells that ``--aggregate`` offers.
+AGGREGATES = ("sum", "min", "max", "mean", "median")
 
 
 def _raise_fd_limit() -> None:
@@ -324,12 +331,13 @@ def process_file(
     dim_name: str = "glacier_id",
     total_name: str | None = None,
     all_touched: bool = False,
+    aggregate: str = "sum",
 ):
     """
-    Reduce a NetCDF dataset to per-region scalar sums and write them to ``outfile``.
+    Reduce a NetCDF dataset to per-region scalars and write them to ``outfile``.
 
     The outlines are rasterized onto the dataset grid once, then every region's
-    sum is assembled into a single Dask graph and evaluated in one pass: each
+    reduction (a sum by default, see ``aggregate``) is assembled into a single Dask graph and evaluated in one pass: each
     chunk of ``infile`` is read and decompressed exactly once and feeds all the
     per-region reductions. Peak memory is a chunk, not the dataset, so this does
     not depend on the cluster being able to hold the file.
@@ -362,8 +370,9 @@ def process_file(
         Name of the region dimension in the output. Greenland campaigns pass
         ``"basin"`` to stay compatible with existing analysis code.
     total_name : str or None, optional
-        Name of an extra whole-domain region appended as the sum over all the
-        outlines. ``None`` (default) writes no total, which is what per-glacier
+        Name of an extra whole-domain region covering all the outlines: the
+        sum of the regions for ``aggregate="sum"``, the reduction over the
+        union of the outlines otherwise. ``None`` (default) writes no total, which is what per-glacier
         runs want. Skipped when the outlines already contain a region of this
         name (older Greenland files carry their own ``GIS`` polygon). Note that
         such a total covers only what the outlines cover: with
@@ -373,7 +382,19 @@ def process_file(
         Count a cell as part of a region when the outline touches it at all,
         rather than only when the cell center falls inside. Useful for
         glaciers small relative to the grid spacing.
+    aggregate : {"sum", "min", "max", "mean", "median"}, default "sum"
+        How a region's cells are reduced to one number. Cells without data
+        are skipped; a region with none gives 0 for the sum and NaN for the
+        others. The median needs each time chunk's whole grid in memory at
+        once, unlike the others, which reduce chunk by chunk.
+
+    Raises
+    ------
+    ValueError
+        On an unknown ``aggregate``.
     """
+    if aggregate not in AGGREGATES:
+        raise ValueError(f"unknown aggregate {aggregate!r}; expected one of {AGGREGATES}")
 
     infile_name = Path(infile).name
     outfile = resolve_outfile(infile, outfile)
@@ -443,16 +464,26 @@ def process_file(
     # ``where`` promotes integer variables to float so it can write NaN outside
     # the basin. Remember them and restore the dtype after summing, so the output
     # schema does not depend on how the masking is done. (Sums of small integers
-    # over a Greenland grid stay far inside float64's exact-integer range.)
-    integer_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.integer)]
+    # over a Greenland grid stay far inside float64's exact-integer range.) The
+    # other reductions stay float: a mean is not an integer, and a region
+    # without data has no minimum to store as one.
+    integer_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.integer)] if aggregate == "sum" else []
 
     masks = basin_masks(ds, outline, column=column, all_touched=all_touched, client=client)
-    logger.info("Reducing over %d regions in a single pass", len(masks))
+    areas = [geom.area for geom in outline.geometry]
+    add_total = total_name is not None and total_name not in {name for name, _ in masks}
+    n_regions = len(masks)
+    if add_total and aggregate != "sum":
+        # Only a sum over everything is the sum of the regions' results; the
+        # others have to see the cells, so reduce over the union of the outlines.
+        masks.append((cast(str, total_name), reduce(or_, (mask for _, mask in masks))))
+        areas.append(sum(areas))
+    logger.info("Reducing (%s) over %d regions in a single pass", aggregate, len(masks))
 
     # One graph for every region. The per-region branches share the same source
     # chunk tasks, so Dask reads each chunk once and fans it out to all of them.
     lazy = xr.concat(
-        [ds.where(mask).sum(dim=["y", "x"]).expand_dims({dim_name: [name]}) for name, mask in masks],
+        [getattr(ds.where(mask), aggregate)(dim=["y", "x"]).expand_dims({dim_name: [name]}) for name, mask in masks],
         dim=dim_name,
     )
 
@@ -464,19 +495,22 @@ def process_file(
         scalar[var] = scalar[var].round().astype(np.int64)
 
     # Outline area, in the same row order as the reduction. This is the
-    # polygon's own area, not the area of the cells that were summed, so it is
+    # polygon's own area, not the area of the cells that were reduced, so it is
     # independent of the grid resolution.
     scalar["area"] = xr.DataArray(
-        np.asarray([geom.area for geom in outline.geometry], dtype="float64"),
+        np.asarray(areas, dtype="float64"),
         dims=(dim_name,),
         coords={dim_name: scalar[dim_name]},
         attrs={"units": "m^2", "long_name": "outline area"},
     )
 
-    if total_name is not None and total_name not in set(scalar[dim_name].values):
+    if add_total and aggregate == "sum":
         total = scalar.sum(dim=dim_name).expand_dims({dim_name: [total_name]})
         scalar = xr.concat([scalar, total], dim=dim_name)
-        logger.info("Added %s as the sum over %d regions", total_name, len(masks))
+    if add_total:
+        logger.info("Added %s as the %s over %d regions", total_name, aggregate, n_regions)
+    # The file does not otherwise say what its numbers are.
+    scalar.attrs["aggregate"] = aggregate
 
     logger.info("Writing %s", outfile)
     # Keep non-spatial vars (e.g. pism_config)
@@ -506,7 +540,7 @@ def postprocess_scalar(
     **kwargs,
 ):
     """
-    Reduce a PISM spatial file to per-region sums, managing the Dask cluster.
+    Reduce a PISM spatial file to per-region scalars, managing the Dask cluster.
 
     Thin wrapper around :func:`process_file`: raises the open-file limit,
     starts a local Dask cluster with sensible scratch, runs the reduction and
@@ -532,7 +566,7 @@ def postprocess_scalar(
         honours ``$TMPDIR`` (SLURM sets it to node-local storage).
     **kwargs
         Forwarded to :func:`process_file` (``column``, ``crs``, ``dim_name``,
-        ``total_name``, ``all_touched``).
+        ``total_name``, ``all_touched``, ``aggregate``).
     """
 
     start = time.time()
@@ -566,7 +600,7 @@ def main():
 
     # set up the option parser
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.description = "Reduce a PISM spatial file to per-region scalar sums."
+    parser.description = "Reduce a PISM spatial file to per-region scalars (sums by default)."
     parser.add_argument(
         "--ntasks",
         help="Sets number of tasks.",
@@ -601,7 +635,7 @@ def main():
     )
     parser.add_argument(
         "--total-name",
-        help="Append a whole-domain region summing all outlines under this name. Off when unset.",
+        help="Append a whole-domain region covering all outlines under this name. Off when unset.",
         type=str,
         default=None,
     )
@@ -610,6 +644,12 @@ def main():
         help="Count every cell the outline touches, not only those whose center it contains.",
         action="store_true",
         default=False,
+    )
+    parser.add_argument(
+        "--aggregate",
+        help="How a region's cells are reduced to one number.",
+        choices=AGGREGATES,
+        default="sum",
     )
     parser.add_argument(
         "INFILE",
@@ -650,6 +690,7 @@ def main():
         dim_name=options.dim_name,
         total_name=options.total_name,
         all_touched=options.all_touched,
+        aggregate=options.aggregate,
     )
 
 

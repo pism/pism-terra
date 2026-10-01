@@ -681,6 +681,75 @@ def test_process_file_dim_name_and_total_are_configurable(tmp_path, basins, outl
         named.close()
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("aggregate", ["min", "max", "mean", "median"])
+def test_process_file_aggregates(tmp_path, basins, outlinefile, aggregate):
+    """
+    ``aggregate`` swaps the sum for another reduction, also for the total.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file``.
+    aggregate : str
+        Reduction under test.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    ds = synthetic_greenland(basins, n_time=3)
+    infile = tmp_path / "spatial.nc"
+    outfile = tmp_path / "basin.nc"
+    ds.to_netcdf(infile, engine="h5netcdf")
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        process_file(infile, outfile, outlinefile, client, total_name="GIS", aggregate=aggregate)
+
+    scalar = xr.open_dataset(outfile)
+    try:
+        assert scalar.attrs["aggregate"] == aggregate
+        names = basins[resolve_column(basins)].tolist()
+        assert scalar["glacier_id_name"].values.tolist() == names + ["GIS"]
+        scalar = scalar.set_index(glacier_id="glacier_id_name")
+
+        masks = {name: np.asarray(mask) for name, mask in basin_masks(ds, basins)}
+        # The total is reduced over the union of the outlines, not over the
+        # regions' results: a mean of means is not the mean.
+        masks["GIS"] = np.logical_or.reduce(list(masks.values()))
+        oracle = getattr(np, f"nan{aggregate}")
+        for name, mask in masks.items():
+            for var in ("thk", "ice_mass", "mask"):
+                np.testing.assert_allclose(
+                    scalar[var].sel(glacier_id=name).values,
+                    oracle(ds[var].values[:, mask].astype(float), axis=1),
+                    rtol=1e-6,
+                    err_msg=f"{aggregate} of {var} over {name}",
+                )
+        # Integers are restored after a sum only.
+        assert np.issubdtype(scalar["mask"].dtype, np.floating)
+        np.testing.assert_allclose(scalar["area"].sel(glacier_id="GIS"), scalar["area"].sel(glacier_id=names).sum())
+    finally:
+        scalar.close()
+
+
+def test_process_file_rejects_an_unknown_aggregate(tmp_path, outlinefile):
+    """
+    An aggregate outside :data:`AGGREGATES` fails before anything is opened.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file``.
+    """
+    with pytest.raises(ValueError, match="unknown aggregate"):
+        process_file(tmp_path / "missing.nc", tmp_path / "basin.nc", outlinefile, None, aggregate="mode")
+
+
 def test_process_file_reports_outline_area(tmp_path, basins, outlinefile):
     """
     Each region carries its outline area, independent of the grid.
