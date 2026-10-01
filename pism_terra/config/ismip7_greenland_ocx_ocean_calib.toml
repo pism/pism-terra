@@ -3,7 +3,7 @@
 'run_info.contact_email' = "aaschwanden@alaska.edu"
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.domain' = "GrIS"
-'run_info.experiment' = "ocx_prescribed"
+'run_info.experiment' = "ocx_free"
 'run_info.group' = "UAF"
 'run_info.institution' = "University of Alaska Fairbanks"
 'run_info.ism' = "PISM"
