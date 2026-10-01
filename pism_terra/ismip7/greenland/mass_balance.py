@@ -1027,7 +1027,10 @@ def within(data: Any, xlim: tuple[str, str]) -> Any:
     xarray.Dataset or xarray.DataArray
         The records from ``xlim[0]`` to ``xlim[1]``.
     """
-    return data.sel(time=slice(*xlim))
+    # By year rather than ``sel(time=slice(*xlim))``: pandas resolves a year
+    # string in nanoseconds, which overflows past 2262.
+    year = data["time"].dt.year
+    return data.isel(time=np.flatnonzero((year >= int(xlim[0][:4])) & (year <= int(xlim[1][:4]))))
 
 
 def plot_regions(
