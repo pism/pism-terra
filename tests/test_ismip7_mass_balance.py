@@ -559,3 +559,56 @@ def test_legends_split_pathways_from_gcms(tmp_path: Path, monkeypatch, single: b
     assert [label for label, _, _ in first] == [mb.OBS_LABEL, "OCX", "ssp126", "ssp585"]
     assert first[0][1] != "Line2D"  # the band, not the observed mean
     assert [(label, style) for label, _, style in second] == [("CESM2-WACCM", "-"), ("MRI-ESM2-0", "--")]
+
+
+def test_onto_labels_pads_lazily_and_matches_reindex():
+    """
+    Putting a lazy field on more labels gives what ``reindex`` gives, in chunks no larger than the data's.
+    """
+    time = pd.to_datetime(["2014-07-01", "2015-07-01"])
+    data = np.arange(2 * NY * NX, dtype="float32").reshape(2, NY, NX)
+    ds = xr.Dataset(
+        {"acabf": (("time", "y", "x"), data, {"units": "kg m-2 s-1"}), "count": (("time",), [1, 2])},
+        coords={"time": time, "y": Y, "x": X},
+    ).chunk({"time": 1})
+    labels = pd.to_datetime(["2013-07-01", "2015-07-01", "2014-07-01", "2016-07-01"])
+    out = mb.onto_labels(ds, "time", labels)
+    assert out["acabf"].chunks[0] == (1, 1, 1, 1)
+    assert out["acabf"].attrs == {"units": "kg m-2 s-1"}
+    # The padding is NaN blocks, not real data read and masked.
+    assert not any("where" in str(key) for key in out["acabf"].data.dask.layers)
+    xr.testing.assert_equal(out.compute(), ds.compute().reindex(time=labels))
+    assert mb.onto_labels(ds, "time", ds.indexes["time"]) is ds
+
+
+def test_regional_sums_agree_however_the_grid_is_chunked(tree: Path):
+    """
+    A chunk holding the whole grid is reduced in one task; the result matches the masked contraction.
+
+    Parameters
+    ----------
+    tree : pathlib.Path
+        The run's ``output`` directory.
+    """
+    paths = mb.find_files(str(tree), ["acabf", "ligroundf"])
+    whole = mb.regional_sums(mb.open_submission(paths, chunks={"time": 1, "y": -1, "x": -1}), outline())
+    split = mb.regional_sums(mb.open_submission(paths, chunks={"time": 1, "y": 2, "x": -1}), outline())
+    assert any("basin_block" in str(key) for key in whole["acabf"].data.dask.layers)
+    assert not any("basin_block" in str(key) for key in split["acabf"].data.dask.layers)
+    whole, split = whole.compute(), split.compute()
+    assert whole["acabf"].isnull().any() and whole["acabf"].notnull().any()
+    xr.testing.assert_allclose(whole, split)
+    # In memory, the same reduction runs without Dask.
+    eager = mb.regional_sums(mb.open_submission(paths).compute(), outline())
+    xr.testing.assert_allclose(eager, whole)
+
+
+def test_basin_block_counts_missing_cells_as_zero_and_empty_basins_as_missing():
+    """
+    Missing cells add nothing; a basin with no valid cell, or no cell at all, is missing.
+    """
+    block = np.array([[[1.0, np.nan], [np.nan, np.nan]]], dtype="float32")
+    cells = np.array([0, 1, 2, 3], dtype=np.int32)
+    out = mb.basin_block(block, cells, np.array([0, 2, 4, 4]), cell_area=10.0)
+    assert out.shape == (1, 3) and out.dtype == np.float64
+    np.testing.assert_array_equal(out, [[10.0, np.nan, np.nan]])

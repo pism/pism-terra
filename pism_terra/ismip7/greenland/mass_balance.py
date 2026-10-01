@@ -57,11 +57,14 @@ from pathlib import Path
 from typing import Any, cast
 
 import cf_xarray.units  # pylint: disable=unused-import  # noqa: F401  (teaches pint UDUNITS: "kg m-2 s-1")
+import dask
+import dask.array as dask_array
 import fsspec
 import geopandas as gpd
 import matplotlib as mpl
 import matplotlib.pylab as plt
 import numpy as np
+import pandas as pd
 import pint
 import pint_xarray  # pylint: disable=unused-import  # noqa: F401  (registers the .pint accessor)
 import rioxarray  # pylint: disable=unused-import  # noqa: F401  (registers the .rio accessor)
@@ -358,6 +361,62 @@ def nonempty(paths: Sequence[str]) -> list[str]:
     return [str(ds.encoding["source"]) for ds in open_members(paths)]
 
 
+def onto_labels(ds: xr.Dataset, dim: str, labels: pd.Index) -> xr.Dataset:
+    """
+    Put a dataset on the given labels of one dimension, padding lazily.
+
+    This is ``ds.reindex({dim: labels})`` without what makes that expensive
+    on gridded Dask arrays: xarray builds a boolean mask as large as the
+    whole variable in a single chunk along the other dimensions, 1.5 GB for
+    315 steps of the 1 km Greenland grid, and reads a neighbouring chunk
+    of real data for every missing one only to mask it out. Here the lazy
+    floating-point variables are padded with NaN blocks chunked like the
+    data, which cost nothing until computed and nothing to speak of then.
+    Everything else, small by comparison, goes through ``reindex``.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset with an index on ``dim``.
+    dim : str
+        Dimension to put on ``labels``.
+    labels : pandas.Index
+        The labels wanted, in order; those ``ds`` lacks come out missing.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``ds`` on ``labels``.
+    """
+    index = ds.indexes[dim]
+    if index.equals(labels):
+        return ds
+    lazy = [
+        name
+        for name, var in ds.data_vars.items()
+        if dim in var.dims and var.chunks is not None and var.dtype.kind == "f"
+    ]
+    out = ds.drop_vars(lazy).reindex({dim: labels})
+    missing = labels.difference(index, sort=False)
+    # Position of every wanted label in the data followed by the padding.
+    order = index.append(missing).get_indexer(labels)
+    in_place = len(order) == len(index) + len(missing) and bool((order == np.arange(len(order))).all())
+    for name in lazy:
+        var = ds[name]
+        axis = var.get_axis_num(dim)
+        data = var.data
+        if len(missing):
+            shape = list(data.shape)
+            shape[axis] = len(missing)
+            chunks = [max(c) for c in data.chunks]
+            pad = dask_array.full(shape, np.nan, dtype=data.dtype, chunks=tuple(chunks))
+            data = dask_array.concatenate([data, pad], axis=axis)
+        if not in_place:
+            data = dask_array.take(data, order, axis=axis)
+        out[name] = (var.dims, data, var.attrs)
+    return out[list(ds.data_vars)]
+
+
 def open_submission(paths: Sequence[str], chunks: dict[str, int] | None = None, **kwargs: Any) -> xr.Dataset:
     """
     Open submission files as one lazy ensemble on ``(gcm_id, ssp_id)``.
@@ -410,8 +469,20 @@ def open_submission(paths: Sequence[str], chunks: dict[str, int] | None = None, 
         by_gcm.setdefault(gcm, []).append(
             xr.merge(parts, compat="override", join="outer", combine_attrs="drop_conflicts")
         )
-    per_gcm = [xr.concat(runs, dim="ssp_id", **combine) for _, runs in sorted(by_gcm.items())]
-    ds = xr.concat(per_gcm, dim="gcm_id", **combine).sortby("time")
+    # Every run goes onto the union of the time axes, and every GCM onto the
+    # union of the pathways, before anything is concatenated, so the joins
+    # below find nothing left to align (:func:`onto_labels` says why).
+    time = pd.Index([])
+    for runs in by_gcm.values():
+        for run in runs:
+            time = run.indexes["time"] if time.empty else time.union(run.indexes["time"])
+    time = time.sort_values()
+    per_gcm = [
+        xr.concat([onto_labels(run, "time", time) for run in runs], dim="ssp_id", **combine)
+        for _, runs in sorted(by_gcm.items())
+    ]
+    pathways = pd.Index(sorted({str(p) for gcm in per_gcm for p in gcm["ssp_id"].values}), dtype=object)
+    ds = xr.concat([onto_labels(gcm, "ssp_id", pathways) for gcm in per_gcm], dim="gcm_id", **combine)
     logger.info(
         "Ensemble: GCMs %s, pathways %s, %d time step(s)",
         list(ds["gcm_id"].values),
@@ -515,6 +586,37 @@ def resolve_outline(root: str, outline: str | None) -> str:
     return str(packaged)
 
 
+def basin_block(block: np.ndarray, cells: np.ndarray, bounds: np.ndarray, cell_area: float) -> np.ndarray:
+    """
+    Integrate one block of a gridded field over every basin.
+
+    Parameters
+    ----------
+    block : numpy.ndarray
+        Field with the whole grid on its last two axes, ``(..., y, x)``.
+    cells : numpy.ndarray
+        Flat ``(y, x)`` indices of the cells of all basins, basin after basin.
+    bounds : numpy.ndarray
+        Where each basin starts in ``cells``, with the total length appended.
+    cell_area : float
+        Area of a grid cell, m^2.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(..., basin)`` integrals in float64. Missing cells count as zero;
+        a basin without a single valid cell is missing.
+    """
+    flat = block.reshape(block.shape[:-2] + (-1,))
+    out = np.full(flat.shape[:-1] + (len(bounds) - 1,), np.nan)
+    for i, (start, stop) in enumerate(zip(bounds[:-1], bounds[1:])):
+        values = flat[..., cells[start:stop]]
+        valid = ~np.isnan(values)
+        total = np.sum(values, axis=-1, dtype=np.float64, where=valid) * cell_area
+        out[..., i] = np.where(valid.any(axis=-1), total, np.nan)
+    return out
+
+
 def regional_sums(
     ds: xr.Dataset,
     outline: gpd.GeoDataFrame | str,
@@ -529,12 +631,14 @@ def regional_sums(
     """
     Integrate every gridded flux over each outline, lazily and in one pass.
 
-    Each basin mask is rasterized once, the masks are stacked on
-    ``dim_name`` and the fluxes are contracted with them in a single
-    ``xr.dot``, so every chunk of the data is read once however many basins
-    there are; masking and summing basin by basin would read it once per
-    basin. Missing values count as zero, which is right for a flux over
-    cells without ice.
+    Each basin mask is rasterized once and every chunk of the data is read
+    once however many basins there are; masking and summing basin by basin
+    would read it once per basin. A chunk holding the whole grid is reduced
+    to its basin integrals in a single task (:func:`basin_block`), so
+    nothing of it outlives that task and memory stays at a few chunks per
+    thread. A chunk holding part of the grid is contracted with the stacked
+    masks in an ``xr.dot`` instead. Missing values count as zero, which is
+    right for a flux over cells without ice.
 
     Parameters
     ----------
@@ -571,12 +675,43 @@ def regional_sums(
     grid = ds[spatial_vars].rio.write_crs(dst_crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
     cell_area = abs(float(ds["x"][1] - ds["x"][0]) * float(ds["y"][1] - ds["y"][0]))
 
-    masks = basin_masks(grid, outline, column=column, all_touched=all_touched, client=client or distributed_client())
+    client = client or distributed_client()
+    whole_grid = [v for v in spatial_vars if all(len(grid[v].chunksizes.get(d, (1,))) == 1 for d in ("y", "x"))]
+    masks = basin_masks(grid, outline, column=column, all_touched=all_touched, client=None if whole_grid else client)
     names = [name for name, _ in masks]
     weights = xr.concat([mask for _, mask in masks], dim=dim_name).assign_coords({dim_name: names})
     out = xr.Dataset()
+    cells = bounds = np.empty(0, dtype=np.int32)
+    shared = None
+    if whole_grid:
+        rasters = weights.transpose(dim_name, "y", "x").values
+        per_basin = [np.flatnonzero(raster).astype(np.int32) for raster in rasters]
+        bounds = np.concatenate([[0], np.cumsum([len(c) for c in per_basin])])
+        cells = np.concatenate(per_basin)
+        # One copy of the cell indices in the graph, shared by all tasks.
+        shared = dask.delayed(cells)
     for var in spatial_vars:
-        field = grid[var]
+        field = grid[var].transpose(..., "y", "x")
+        if var in whole_grid:
+            dims = field.dims[:-2] + (dim_name,)
+            if field.chunks is None:
+                data = basin_block(field.values, cells, bounds, cell_area)
+            else:
+                data = dask_array.map_blocks(
+                    basin_block,
+                    field.data,
+                    cells=shared,
+                    bounds=bounds,
+                    cell_area=cell_area,
+                    drop_axis=[field.ndim - 2, field.ndim - 1],
+                    new_axis=field.ndim - 2,
+                    chunks=field.data.chunks[:-2] + ((len(names),),),
+                    dtype=np.float64,
+                    meta=np.array((), dtype=np.float64),
+                )
+            coords = {d: field[d] for d in dims[:-1] if d in field.coords} | {dim_name: names}
+            out[var] = xr.DataArray(data, dims=dims, coords=coords)
+            continue
         w = weights.astype(field.dtype)
         # Missing cells count as zero in the integral, but a basin with no
         # data at all -- a pathway this GCM never ran, a year outside a run's
