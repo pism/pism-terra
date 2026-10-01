@@ -24,7 +24,7 @@ reduces an ensemble. The first gets a :mod:`tqdm` bar
 (:func:`progress_bar`); the second gets whichever Dask progress display
 fits the scheduler in use (:func:`compute`): the distributed dashboard-style
 bar when a :class:`dask.distributed.Client` is active in the process, and
-the local :class:`dask.diagnostics.ProgressBar` otherwise. Both are drawn
+the same :mod:`tqdm` bar counting tasks otherwise. Both are drawn
 on a terminal and in a Jupyter notebook, and quiet elsewhere, so a job's
 log file is not filled with carriage returns.
 """
@@ -36,8 +36,8 @@ from collections.abc import Iterable, Iterator
 from typing import Any, TypeVar
 
 import dask
-from dask.diagnostics import ProgressBar
 from tqdm.auto import tqdm
+from tqdm.dask import TqdmCallback
 
 T = TypeVar("T")
 
@@ -132,8 +132,9 @@ def compute(*objects: Any, desc: str | None = None) -> tuple:
 
     With a distributed client the graph is persisted on the cluster and
     :func:`dask.distributed.progress` follows the tasks; on the local
-    scheduler :class:`dask.diagnostics.ProgressBar` does, once the compute
-    has run for :data:`BAR_MINIMUM_SECONDS`. Objects that are not
+    scheduler a :mod:`tqdm` bar labelled ``desc`` counts them, the widget
+    of :func:`progress_bar` in a notebook, once the compute has run for
+    :data:`BAR_MINIMUM_SECONDS`. Objects that are not
     Dask-backed pass through :func:`dask.compute` unchanged, and when none
     of them is lazy nothing is announced or drawn: there is nothing to wait
     for.
@@ -143,8 +144,9 @@ def compute(*objects: Any, desc: str | None = None) -> tuple:
     *objects : Any
         Lazy xarray objects, Dask collections or plain values.
     desc : str or None, optional
-        One line printed before the bar, so a run with several computes
-        says which one it is at.
+        What is being computed, so a run with several computes says which
+        one it is at: the label of the local bar, a line printed before
+        the distributed one.
 
     Returns
     -------
@@ -153,10 +155,10 @@ def compute(*objects: Any, desc: str | None = None) -> tuple:
     """
     if not show_progress() or not any(dask.is_dask_collection(o) for o in objects):
         return dask.compute(*objects)
-    if desc:
-        print(desc, file=sys.stderr, flush=True)
     client = distributed_client()
     if client is not None:
+        if desc:
+            print(desc, file=sys.stderr, flush=True)
         # pylint: disable-next=import-outside-toplevel
         from dask.distributed import progress
 
@@ -164,7 +166,7 @@ def compute(*objects: Any, desc: str | None = None) -> tuple:
         progress(persisted)
         print(file=sys.stderr)  # the distributed bar leaves the cursor on its line
         return dask.compute(*persisted)
-    with ProgressBar(minimum=BAR_MINIMUM_SECONDS, out=sys.stderr):
+    with TqdmCallback(desc=desc, tqdm_class=tqdm, delay=BAR_MINIMUM_SECONDS, unit="task"):
         return dask.compute(*objects)
 
 
