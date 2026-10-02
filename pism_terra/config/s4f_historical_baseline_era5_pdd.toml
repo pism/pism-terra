@@ -61,7 +61,7 @@ velocity = "its_live"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk,sftgif"
+'output.spatial.vars' = "dHdt,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk,sftgif"
 
 [grid]
 
@@ -277,7 +277,7 @@ model = "null"
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
 'inverse.design.param' = "exp"
-'inverse.design.variable' = "tauc"
+'inverse.design.variable' = "tauc_hardav"
 'inverse.file' = "none"
 'inverse.huber.delta' =  1e2
 'inverse.max_iterations' = 500

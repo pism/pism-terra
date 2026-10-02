@@ -73,6 +73,16 @@ sign_accept_encoding = false
 `pism` has no credentials, so rclone reads the bucket anonymously. `source` takes its
 credentials from the environment (`env_auth = true`, see the next step).
 
+The file does not always survive a restart of the hub server. `rclone config show` lists
+the remotes that are there; these two commands write them again:
+
+```bash
+rclone config create pism s3 provider AWS region us-west-2
+rclone config create source s3 provider Other endpoint https://data.source.coop \
+    env_auth true region us-west-2 list_version 2 list_url_encode false \
+    sign_accept_encoding false
+```
+
 The last four settings of `source` are needed because the endpoint is a proxy behind
 Cloudflare rather than AWS itself. `sign_accept_encoding = false` is the essential one:
 Cloudflare rewrites the `Accept-Encoding` header, so a signature that covers it no longer
@@ -130,20 +140,29 @@ right, run the copy:
 ```bash
 rclone copy pism:pism-cloud-data/ismip7_production/<project>/output/GrIS \
     source:ismip/ismip7-uaf-pism/submitted/GrIS/ \
-    --progress --s3-upload-cutoff 50Mi --s3-chunk-size 50Mi
+    --progress --s3-upload-cutoff 0 --s3-chunk-size 50Mi --s3-no-check-bucket
 ```
 
+- **Check the dry run's list.** A misspelled `<project>` is not an error: rclone finds
+  nothing under the prefix and reports `There was nothing to transfer`.
 - **Keep the trailing slash on the destination.** Without it, rclone probes the path with a
   request that the proxy answers as if an object existed there, and stops with
   `is a file not a directory`.
-- **Upload in 50 MiB parts.** With these two flags every file above 50 MiB is sent in
-  parts, so no single request comes close to the request-size limits common behind
-  Cloudflare. rclone's default sends files of up to 200 MiB in one request.
+- **Send every file as a multipart upload** (`--s3-upload-cutoff 0`). rclone uploads a file
+  at or below the cutoff in a single request that carries a `Content-MD5` header, which the
+  proxy passes on to the storage without signing it; the storage then refuses the request
+  (see [Troubleshooting](#troubleshooting)). Multipart uploads are not affected, and a
+  cutoff of zero makes even the smallest file one.
+- **Upload in 50 MiB parts** (`--s3-chunk-size 50Mi`), so that no single request comes
+  close to the request-size limits common behind Cloudflare.
+- **Do not create the bucket** (`--s3-no-check-bucket`). rclone otherwise first tries to
+  create the bucket `ismip`, which the proxy refuses with `400 Bad Request`.
 - **Rerun after an interruption.** `rclone copy` skips files that are already in place, so
   after expired credentials or a dropped connection, export fresh credentials and run the
   same command again.
 
-A submission of a few tens of GB copies in minutes from the hub.
+The 210 GiB (429 files) of `2026_10_core_plume` copied in about twenty minutes from the
+hub.
 
 ## 6. Verify the upload
 
@@ -155,8 +174,10 @@ rclone check pism:pism-cloud-data/ismip7_production/<project>/output/GrIS \
     --size-only --one-way
 ```
 
-It should report no differences. `--size-only` compares sizes rather than checksums, which
-the proxy does not necessarily return in the same form as the cloud bucket.
+It should report `0 differences found` and the number of files of the submission as
+`matching files`. Without a `matching files` line, both sides were empty: check
+`<project>`. `--size-only` compares sizes rather than checksums, which the proxy does not
+necessarily return in the same form as the cloud bucket.
 
 ## Troubleshooting
 
@@ -164,8 +185,23 @@ the proxy does not necessarily return in the same form as the cloud bucket.
 |---|---|---|
 | `SignatureDoesNotMatch: signature mismatch` | rclone signs `Accept-Encoding`, which Cloudflare rewrites | `sign_accept_encoding = false` on the `source` remote |
 | `is a file not a directory` | The proxy answers rclone's probe of the destination path | Trailing slash on the destination |
-| `AccessDenied` or `ExpiredToken` | Credentials expired or not exported in this terminal | Export fresh credentials from the product page |
+| `didn't find section in config file` | `rclone.conf` is missing, for example after a restart of the hub server | Write the remotes again, see [step 2](#2-configure-the-two-remotes) |
+| `AccessDenied: There were headers present in the request which were not signed` on `PutObject` | A single-request upload carries `Content-MD5`, which the proxy forwards unsigned | `--s3-upload-cutoff 0` |
+| `400 Bad Request` on `PUT /ismip` (with `-vv --dump headers`) | rclone tries to create the bucket | `--s3-no-check-bucket` |
+| `There was nothing to transfer`, or a check without a `matching files` line | Nothing under the source prefix | Check `<project>` |
+| `AccessDenied`, `ExpiredToken`, or `Forbidden` on `HeadObject` | Credentials expired or not exported in this terminal | Export fresh credentials from the product page |
 | `AccessDenied` on the first upload although listing works | The account can read but not write the product | Ask for write access to `ismip/ismip7-uaf-pism` |
+
+To see why the storage refuses a request, print the body of its answer. It names, for
+example, the header that was not signed (`<HeadersNotSigned>content-md5</HeadersNotSigned>`):
+
+```bash
+rclone copy <source file> <destination>/ --s3-no-check-bucket --retries 1 \
+    -vv --dump responses 2>&1 | grep -ao "<Error>.*</Error>"
+```
+
+`--dump headers` prints the session token of the credentials in clear text; do not share
+its output unredacted.
 
 ## Further reading
 

@@ -2,7 +2,7 @@ name: pism-terra
 channels:
   - conda-forge
 dependencies:
-  - python=3.12
+  - python>=3.12
   - pip
   # runtime requirements
   - awscli
@@ -103,3 +103,5 @@ dependencies:
   - isschecker
   - pip:
       - pytest-codeblocks>=0.18
+      # project colormaps ("cmg.speed", "cmg.akbathtopo", ...); not on PyPI or conda-forge
+      - git+https://github.com/pism/cmglaciology.git

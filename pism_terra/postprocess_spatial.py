@@ -61,6 +61,7 @@ from pathlib import Path
 
 import dask
 import geopandas as gpd
+import h5py
 import numpy as np
 import rioxarray  # noqa: F401  pylint: disable=unused-import
 import xarray as xr
@@ -86,6 +87,108 @@ DEFAULT_METHOD = "netcdf"
 #: as the scalar module (dangling dims on merge; ``spatial_ref``
 #: coordinate/data-variable conflict).
 DROP_VARS = ["x_bnds", "x_bounds", "y_bnds", "y_bounds", "mapping", "spatial_ref", "crs", "polar_stereographic"]
+
+#: ``_FillValue`` of a float variable the input gives none: the netCDF default
+#: (``NC_FILL_FLOAT``/``NC_FILL_DOUBLE``), which lies outside any valid range as
+#: CF asks. Masking outside a basin makes every float variable need one.
+DEFAULT_FILL_VALUE = 9.969209968386869e36
+
+#: HDF5 bookkeeping attributes of the netCDF-4 format, not text attributes of the file.
+_HDF5_ATTRS = ("CLASS", "NAME", "DIMENSION_LIST", "REFERENCE_LIST")
+
+
+def char_attributes(path: str | Path) -> bool:
+    """
+    Whether a netCDF-4 file stores its text attributes as ``NC_CHAR``.
+
+    netCDF-4 has two text types: ``NC_CHAR`` (``bmelt:units = "m"`` in
+    ``ncdump``; what PISM and the netCDF library write) and ``NC_STRING``
+    (``string bmelt:units = "m"``; what h5netcdf writes from a ``str``).
+    Tools written for the classic model, ncview among them, read only the
+    former and do not recognize a time axis whose ``units`` is an
+    ``NC_STRING``. The output follows the input (:func:`netcdf_format`).
+
+    Parameters
+    ----------
+    path : str or Path
+        A netCDF-4 (HDF5) file.
+
+    Returns
+    -------
+    bool
+        ``True`` when the first text attribute found is an ``NC_CHAR``, and
+        when the file has no text attribute at all.
+    """
+    with h5py.File(path, "r") as handle:
+        for obj in (handle, *handle.values()):
+            for name in obj.attrs:
+                if name.startswith("_") or name in _HDF5_ATTRS:
+                    continue
+                info = h5py.check_string_dtype(obj.attrs.get_id(name).dtype)
+                if info is not None:
+                    return info.length is not None
+    return True
+
+
+def netcdf_format(char_attrs: bool) -> str:
+    """
+    The netCDF format that writes text attributes the way the input has them.
+
+    h5netcdf writes a ``str`` attribute as ``NC_STRING`` in the ``NETCDF4``
+    format and as ``NC_CHAR`` in ``NETCDF4_CLASSIC``. The format decides it
+    for every attribute at once: the ones carried over, the ones added here
+    (``basin``, the grid mapping) and the ones xarray adds on writing
+    (``coordinates``). The classic model has no 64-bit integers or string
+    variables; neither has PISM output.
+
+    Parameters
+    ----------
+    char_attrs : bool
+        Result of :func:`char_attributes` on the input.
+
+    Returns
+    -------
+    str
+        ``format`` for :meth:`xarray.Dataset.to_netcdf`.
+    """
+    return "NETCDF4_CLASSIC" if char_attrs else "NETCDF4"
+
+
+def fill_values(ds: xr.Dataset) -> dict[str, float]:
+    """
+    The ``_FillValue`` each variable of a decoded dataset was read with.
+
+    Read off the encoding right after opening: masking drops the encoding,
+    and the scratch stores of the ``zarr``/``shards`` methods replace it.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset as opened from the input file.
+
+    Returns
+    -------
+    dict
+        ``_FillValue`` by variable name, for the variables that have one.
+    """
+    return {str(name): var.encoding["_FillValue"] for name, var in ds.variables.items() if "_FillValue" in var.encoding}
+
+
+def bounds_names(ds: xr.Dataset) -> set[str]:
+    """
+    List the variables a coordinate points at with its ``bounds`` attribute.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset to look through.
+
+    Returns
+    -------
+    set of str
+        The bounds variables present in ``ds`` (``time_bounds``).
+    """
+    return {str(c.attrs["bounds"]) for c in ds.coords.values() if c.attrs.get("bounds") in ds.variables}
 
 
 def _bbox_slices(mask: xr.DataArray) -> tuple[slice, slice]:
@@ -162,9 +265,16 @@ def extract_basin(ds: xr.Dataset, mask: xr.DataArray, crop: bool = True) -> xr.D
     return out[list(ds.data_vars)]
 
 
-def _encoding(ds: xr.Dataset) -> dict[str, dict]:
+def _encoding(ds: xr.Dataset, fills: dict[str, float] | None = None, char_attrs: bool = False) -> dict[str, dict]:
     """
     Fresh write encoding: compressed data variables, no coord fill values.
+
+    A variable keeps the ``_FillValue`` of the input (``fills``). A float
+    spatial variable without one gets :data:`DEFAULT_FILL_VALUE` rather than
+    xarray's NaN; coordinates, bounds variables, integers and the variables
+    without ``y`` and ``x`` (not masked) get none. With
+    ``char_attrs`` empty text attributes (PISM's ``history = ""``) are
+    dropped: h5netcdf cannot write a zero-length ``NC_CHAR``.
 
     Also clears every variable's stale on-disk encoding **in place**: the
     input's encoding carries ``chunksizes`` from the source file, which after
@@ -178,7 +288,12 @@ def _encoding(ds: xr.Dataset) -> dict[str, dict]:
     Parameters
     ----------
     ds : xarray.Dataset
-        Dataset about to be written. Modified in place (encodings cleared).
+        Dataset about to be written. Modified in place (encodings cleared,
+        empty text attributes dropped with ``char_attrs``).
+    fills : dict or None, optional
+        ``_FillValue`` by variable name, from :func:`fill_values` on the input.
+    char_attrs : bool, default False
+        The file is written in the format of :func:`netcdf_format`.
 
     Returns
     -------
@@ -186,17 +301,57 @@ def _encoding(ds: xr.Dataset) -> dict[str, dict]:
         Encoding mapping for :meth:`xarray.Dataset.to_netcdf`.
     """
     comp = {"zlib": True, "complevel": 2, "shuffle": True}
+    fills = fills or {}
+    bounds = bounds_names(ds)
     enc: dict[str, dict] = {}
     for name, var in ds.variables.items():
         grid_mapping = var.encoding.get("grid_mapping")
+        char_dim = var.encoding.get("char_dim_name")
         var.encoding = {}
         if grid_mapping and grid_mapping in ds.variables:
             var.attrs.setdefault("grid_mapping", grid_mapping)
+        if name in bounds:
+            # A bounds variable carries no attributes of its own (CF); keep
+            # xarray from listing the grid mapping in a ``coordinates`` one.
+            var.encoding["coordinates"] = None
+        if name in ds.coords or name in bounds:
+            fill = None
+        elif name in fills:
+            fill = np.array(fills[str(name)]).astype(var.dtype)[()]
+        elif np.issubdtype(var.dtype, np.floating) and {"y", "x"} <= set(var.dims):
+            # Masked outside the basin, so it needs one.
+            fill = var.dtype.type(DEFAULT_FILL_VALUE)
+        else:
+            fill = None
         if name in ds.data_vars and np.issubdtype(var.dtype, np.number):
-            enc[name] = dict(comp)
+            enc[name] = dict(comp, _FillValue=fill)
         elif name in ds.coords:
             enc[name] = {"_FillValue": None}
+        elif char_dim:
+            # Keep the name of the string-length dimension (``cfg``).
+            enc[name] = {"char_dim_name": char_dim}
+        if char_attrs:
+            var.attrs = _without_empty_text(var.attrs)
+    if char_attrs:
+        ds.attrs = _without_empty_text(ds.attrs)
     return enc
+
+
+def _without_empty_text(attrs: dict) -> dict:
+    """
+    Drop the attributes that are an empty string.
+
+    Parameters
+    ----------
+    attrs : dict
+        Attributes of a variable or a dataset.
+
+    Returns
+    -------
+    dict
+        The attributes without the empty ``str`` ones.
+    """
+    return {k: v for k, v in attrs.items() if not (isinstance(v, str) and not v)}
 
 
 def _unlimited(ds: xr.Dataset) -> list[str]:
@@ -251,7 +406,9 @@ def _zarr_safe_chunks(sub: xr.Dataset) -> xr.Dataset:
     return sub
 
 
-def _write_zarr(sub: xr.Dataset, path: Path, scratch: Path) -> None:
+def _write_zarr(
+    sub: xr.Dataset, path: Path, scratch: Path, fills: dict[str, float] | None = None, char_attrs: bool = False
+) -> None:
     """
     Write ``sub`` via a scratch Zarr store, then stream Zarr → NetCDF.
 
@@ -269,13 +426,19 @@ def _write_zarr(sub: xr.Dataset, path: Path, scratch: Path) -> None:
         Final NetCDF path.
     scratch : pathlib.Path
         Directory for the temporary Zarr store.
+    fills : dict or None, optional
+        ``_FillValue`` by variable name (:func:`_encoding`).
+    char_attrs : bool, default False
+        Write text attributes as ``NC_CHAR`` (:func:`netcdf_format`).
     """
     non_numeric = [v for v in sub.data_vars if not np.issubdtype(sub[v].dtype, np.number)]
     store = scratch / (path.stem + ".zarr")
     shutil.rmtree(store, ignore_errors=True)
     try:
         sub.drop_vars(non_numeric).pipe(_zarr_safe_chunks).to_zarr(store, mode="w", consolidated=True)
-        staged = xr.open_zarr(store)
+        # Undecoded, like the input: decoded times would be written back in
+        # units of xarray's choosing.
+        staged = xr.open_zarr(store, decode_times=False, decode_timedelta=False)
         # Non-indexed coordinates (``spatial_ref``) can come back as data
         # variables; restore their coordinate status so the three write
         # methods produce identical files.
@@ -288,13 +451,27 @@ def _write_zarr(sub: xr.Dataset, path: Path, scratch: Path) -> None:
         # ``_write_shards``). The store is on local scratch, so a synchronous
         # chunk-by-chunk copy is cheap and needs no cluster.
         with dask.config.set(scheduler="synchronous"):
-            staged.to_netcdf(path, engine="h5netcdf", encoding=_encoding(staged), unlimited_dims=_unlimited(staged))
+            encoding = _encoding(staged, fills, char_attrs)
+            staged.to_netcdf(
+                path,
+                engine="h5netcdf",
+                format=netcdf_format(char_attrs),
+                encoding=encoding,
+                unlimited_dims=_unlimited(staged),
+            )
         staged.close()
     finally:
         shutil.rmtree(store, ignore_errors=True)
 
 
-def _write_shards(sub: xr.Dataset, path: Path, scratch: Path, time_batch: int) -> None:
+def _write_shards(
+    sub: xr.Dataset,
+    path: Path,
+    scratch: Path,
+    time_batch: int,
+    fills: dict[str, float] | None = None,
+    char_attrs: bool = False,
+) -> None:
     """
     Write ``sub`` serially in time slabs, then concatenate the shards.
 
@@ -314,9 +491,20 @@ def _write_shards(sub: xr.Dataset, path: Path, scratch: Path, time_batch: int) -
         Directory for the temporary shard files.
     time_batch : int
         Time steps per shard.
+    fills : dict or None, optional
+        ``_FillValue`` by variable name (:func:`_encoding`).
+    char_attrs : bool, default False
+        Write text attributes as ``NC_CHAR`` (:func:`netcdf_format`).
     """
     if "time" not in sub.dims:
-        sub.to_netcdf(path, engine="h5netcdf", encoding=_encoding(sub), unlimited_dims=_unlimited(sub))
+        encoding = _encoding(sub, fills, char_attrs)
+        sub.to_netcdf(
+            path,
+            engine="h5netcdf",
+            format=netcdf_format(char_attrs),
+            encoding=encoding,
+            unlimited_dims=_unlimited(sub),
+        )
         return
 
     shard_dir = scratch / (path.stem + "_shards")
@@ -347,7 +535,14 @@ def _write_shards(sub: xr.Dataset, path: Path, scratch: Path, time_batch: int) -
         # scheduler serializes read and write in this thread with a plain
         # lock; memory stays one chunk.
         with dask.config.set(scheduler="synchronous"):
-            stitched.to_netcdf(path, engine="h5netcdf", encoding=_encoding(stitched), unlimited_dims=["time"])
+            encoding = _encoding(stitched, fills, char_attrs)
+            stitched.to_netcdf(
+                path,
+                engine="h5netcdf",
+                format=netcdf_format(char_attrs),
+                encoding=encoding,
+                unlimited_dims=["time"],
+            )
         for shard in shards:
             shard.close()
     finally:
@@ -449,6 +644,10 @@ def process_file_spatial(
         chunks="auto",
         engine="h5netcdf",
     )
+    # What the output takes over from the input: the text type of the
+    # attributes and each variable's ``_FillValue``.
+    char_attrs = char_attributes(infile)
+    fills = fill_values(ds)
     # Read the projection off the grid mapping before DROP_VARS removes it,
     # then bring the outlines onto it (RGI outlines ship in EPSG:4326).
     dst_crs = dataset_crs(ds, crs)
@@ -456,10 +655,12 @@ def process_file_spatial(
 
     ds = ds.drop_vars(DROP_VARS, errors="ignore")
 
-    # Split off variables that lack spatial dims; the time-less ones (e.g.
-    # ``pism_config``) are carried into every basin file, like the scalar module.
+    # Split off variables that lack spatial dims (``pism_config``,
+    # ``time_bounds``, PISM's per-step ``wall_clock_time``...). They are small
+    # and carried unchanged into every basin file, so that the output has
+    # every variable of the input.
     non_spatial_vars = [var for var in ds.data_vars if "x" not in ds[var].dims or "y" not in ds[var].dims]
-    extra = ds[[v for v in non_spatial_vars if "time" not in ds[v].dims]].compute()
+    extra = ds[non_spatial_vars].compute()
     ds = ds.drop_vars(non_spatial_vars)
 
     if variables is not None:
@@ -506,7 +707,12 @@ def process_file_spatial(
         # (no lock contention), shared input chunks are read once.
         writes = [
             sub.to_netcdf(
-                path, engine="h5netcdf", encoding=_encoding(sub), unlimited_dims=_unlimited(sub), compute=False
+                path,
+                engine="h5netcdf",
+                format=netcdf_format(char_attrs),
+                encoding=_encoding(sub, fills, char_attrs),
+                unlimited_dims=_unlimited(sub),
+                compute=False,
             )
             for path, sub in subs
         ]
@@ -517,9 +723,9 @@ def process_file_spatial(
         for path, sub in subs:
             logger.info("Writing %s", path.name)
             if method == "zarr":
-                _write_zarr(sub, path, scratch)
+                _write_zarr(sub, path, scratch, fills, char_attrs)
             else:
-                _write_shards(sub, path, scratch, time_batch)
+                _write_shards(sub, path, scratch, time_batch, fills, char_attrs)
 
     ds.close()
     logger.info("Time elapsed for %s: %.0fs", infile.name, time.time() - start)

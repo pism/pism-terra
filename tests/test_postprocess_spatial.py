@@ -35,6 +35,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import geopandas as gpd
+import h5py
 import numpy as np
 import pytest
 import rioxarray  # pylint: disable=unused-import
@@ -43,6 +44,7 @@ from test_postprocess_scalar import synthetic_greenland
 
 from pism_terra.postprocess_scalar import basin_masks, resolve_column
 from pism_terra.postprocess_spatial import (
+    DEFAULT_FILL_VALUE,
     _bbox_slices,
     _write_zarr,
     extract_basin,
@@ -438,5 +440,87 @@ def test_write_zarr_handles_irregular_chunks(tmp_path, basins):
     try:
         np.testing.assert_array_equal(out["thk"].values, sub["thk"].values)
         np.testing.assert_array_equal(out["ice_mass"].values, sub["ice_mass"].values)
+    finally:
+        out.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("method", ["netcdf", "zarr", "shards"])
+def test_process_file_spatial_follows_the_input_conventions(tmp_path, basins, outlinefile, method):
+    """
+    Text attributes, fill values and the time bounds follow a PISM-like input.
+
+    PISM writes ``NC_CHAR`` attributes; h5netcdf would turn every one of them
+    into an ``NC_STRING``, which ncview cannot read (no time axis); the ones
+    xarray adds on writing (``coordinates``) are no exception. A
+    variable keeps the ``_FillValue`` it came with, a float without one gets
+    the netCDF default, and the variables without ``y`` and ``x``
+    (``time_bounds``, PISM's per-step ``wall_clock_time``) come along.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest per-test temporary directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file_spatial``.
+    method : str
+        Write strategy under test.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    ds = synthetic_greenland(basins, n_time=3)
+    ds["time"].attrs.update(units="seconds since 1850-01-01", calendar="standard", axis="T", bounds="time_bounds")
+    time = ds["time"].values.astype(float)
+    ds["time_bounds"] = (("time", "nv"), np.stack([time, time + 1.0], axis=1))
+    ds["wall_clock_time"] = ("time", np.arange(3, dtype="float32"), {"units": "hours"})
+    ds["thk"].attrs.update(units="m", long_name="land ice thickness")
+    ds.attrs.update(history="", title="synthetic")
+    infile = tmp_path / "spatial_g20000m_test.nc"
+    # The netCDF library writes ``str`` attributes as NC_CHAR, like PISM.
+    encoding = {"thk": {"_FillValue": -2e9}} | {
+        v: {"_FillValue": None} for v in ("ice_mass", "time_bounds", "wall_clock_time")
+    }
+    ds.to_netcdf(infile, engine="netcdf4", encoding=encoding)
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        written = process_file_spatial(
+            infile, tmp_path / "out", outlinefile, client, method=method, time_batch=2, scratch=tmp_path / "scratch"
+        )
+
+    with h5py.File(written[0], "r") as handle:
+        text = 0
+        for obj in (handle, *handle.values()):
+            for name in obj.attrs:
+                info = h5py.check_string_dtype(obj.attrs.get_id(name).dtype)
+                if info is not None and not name.startswith("_") and name not in ("CLASS", "NAME"):
+                    assert info.length is not None, f"{obj.name}:{name} is an NC_STRING"
+                    text += 1
+        assert text > 5
+        assert handle["thk"].attrs["_FillValue"] == -2e9
+        assert handle["ice_mass"].attrs["_FillValue"] == DEFAULT_FILL_VALUE
+        assert "_FillValue" not in handle["time"].attrs
+        assert "_FillValue" not in handle["time_bounds"].attrs
+        assert "coordinates" not in handle["time_bounds"].attrs
+        assert "_FillValue" not in handle["mask"].attrs
+        # Not masked, so no fill value the input does not have.
+        assert "_FillValue" not in handle["wall_clock_time"].attrs
+
+    out = xr.open_dataset(written[0], engine="netcdf4")
+    try:
+        # Decoded by the netCDF library, as ncview reads it.
+        assert np.issubdtype(out["time"].dtype, np.datetime64)
+        assert out["time"].attrs["bounds"] == "time_bounds"
+        assert out["time_bounds"].shape == (3, 2)
+        # Every variable of the input is there, the ones without y and x unchanged.
+        # (The grid mapping is written anew, here under rioxarray's name.)
+        assert set(ds.data_vars) - {"mapping"} <= set(out.variables)
+        np.testing.assert_array_equal(out["wall_clock_time"].values, ds["wall_clock_time"].values)
+        assert out["thk"].attrs["units"] == "m"
+        assert out.rio.crs is not None
+        # An empty text attribute cannot be written as NC_CHAR and is dropped.
+        assert "history" not in out.attrs and out.attrs["title"] == "synthetic"
+        assert np.isnan(out["thk"].values).any() and np.isnan(out["ice_mass"].values).any()
     finally:
         out.close()

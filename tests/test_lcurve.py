@@ -26,7 +26,11 @@ needs (``vel_misfit_weight``, ``inv_residual``, ``J_design``) plus a
 - ``corner`` on a curve with a known corner, and its short-curve guard.
 - ``collect_lcurve`` skipping incomplete members, and erroring when none is
   usable.
-- ``plot_lcurve`` writing a figure and picking one corner per parameter group.
+- ``plot_lcurve`` writing a figure and picking one corner per parameter group
+  and per strategy.
+- the strategy of a member (``inverse.design.variable``: ``tauc``, ``hardav``,
+  ``tauc_hardav``, ``hardav_tauc``), the per-member total norm over the
+  phases, and the phase figure of an alternating strategy.
 - the ``main`` entry point end to end.
 """
 
@@ -36,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -45,9 +50,10 @@ from pism_terra.lcurve import (
     corner,
     data_misfit,
     main,
+    member_norms,
     model_norm,
-    plot_combined,
     plot_lcurve,
+    plot_phases,
 )
 
 PENALTY = "inverse.tikhonov.penalty_weight"
@@ -290,9 +296,9 @@ def test_plot_lcurve_writes_figure(ensemble: list[Path], tmp_path: Path) -> None
     None
         Asserts only.
     """
-    df = collect_lcurve(ensemble, [PENALTY])
+    table = member_norms(collect_lcurve(ensemble, [PENALTY]), [PENALTY])
     output_file = tmp_path / "figures" / "lcurve.png"
-    corners = plot_lcurve(df, [PENALTY], output_file, log=True)
+    corners = plot_lcurve(table, [PENALTY], output_file, log=True)
     assert output_file.exists()
     assert list(corners["penalty_weight"]) == [1.0]
 
@@ -323,8 +329,8 @@ def test_plot_lcurve_groups_second_parameter(tmp_path: Path) -> None:
                     cH1=cH1,
                 )
             )
-    df = collect_lcurve(files, [PENALTY, CH1])
-    corners = plot_lcurve(df, [PENALTY, CH1], tmp_path / "lcurve.pdf")
+    table = member_norms(collect_lcurve(files, [PENALTY, CH1]), [PENALTY, CH1])
+    corners = plot_lcurve(table, [PENALTY, CH1], tmp_path / "lcurve.pdf")
     assert (tmp_path / "lcurve.pdf").exists()
     assert list(corners["cH1"]) == [0.5, 1.0]
     assert list(corners["penalty_weight"]) == [1.0, 1.0]
@@ -516,6 +522,7 @@ def test_collect_lcurve_one_row_per_phase(tmp_path: Path) -> None:
                 residual=np.full((3, 3), misfit),
                 j_design=np.array([1.0, 1.0]),
                 alternating={"c0_tauc": 1.0, "c0_hardav": 1.0, "c1_tauc": tauc_j, "c1_hardav": hardav_j},
+                config_design="tauc_hardav",
             )
         )
     # One member has not reached the hardav phase.
@@ -526,10 +533,13 @@ def test_collect_lcurve_one_row_per_phase(tmp_path: Path) -> None:
             residual=np.full((3, 3), 30.0),
             j_design=np.array([1.0, 1.0]),
             alternating={"c0_tauc": 4.0},
+            config_design="tauc_hardav",
         )
     )
     df = collect_lcurve(files, [PENALTY])
-    assert list(df["design"]) == ["hardav", "hardav", "tauc", "tauc", "tauc"]
+    # Ordered by penalty weight, then by phase in the order the strategy runs them.
+    assert list(df["design"]) == ["tauc", "hardav", "tauc", "hardav", "tauc"]
+    assert set(df["strategy"]) == {"tauc_hardav"}
     hardav = df[df["design"] == "hardav"]
     tauc = df[df["design"] == "tauc"]
     assert list(hardav["N"]) == pytest.approx([2.0, 3.0])
@@ -539,9 +549,9 @@ def test_collect_lcurve_one_row_per_phase(tmp_path: Path) -> None:
     assert list(tauc["M"])[:2] == pytest.approx([10.0, 20.0])
 
 
-def test_main_writes_a_curve_per_phase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_writes_one_curve_and_a_phase_figure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Suffix the outputs only when there is more than one phase to draw.
+    An alternating sweep gives the L-curve of its total norm plus a phase figure.
 
     Parameters
     ----------
@@ -562,27 +572,18 @@ def test_main_writes_a_curve_per_phase(tmp_path: Path, monkeypatch: pytest.Monke
             residual=np.full((3, 3), m),
             j_design=np.array([1.0, 1.0]),
             alternating={"c0_tauc": t, "c0_hardav": h},
+            config_design="tauc_hardav",
         )
-        for p, m, t, h in [(0.1, 10.0, 64.0, 4.0), (1.0, 20.0, 16.0, 9.0), (10.0, 40.0, 4.0, 16.0)]
+        for p, m, t, h in [(0.1, 10.0, 64.0, 36.0), (1.0, 20.0, 16.0, 9.0), (10.0, 40.0, 9.0, 16.0)]
     ]
     out = tmp_path / "alt" / "lcurve.png"
     monkeypatch.setattr("sys.argv", ["pism-inverse-lcurve", "-o", str(out)] + [str(f) for f in files])
     main()
-    assert {p.name for p in out.parent.iterdir()} >= {
-        "lcurve_tauc.png",
-        "lcurve_hardav.png",
-        "lcurve_tauc.csv",
-        "lcurve_hardav.csv",
-    }
-
-    # Restricting to one phase drops the suffix again.
-    single = tmp_path / "one" / "lcurve.png"
-    monkeypatch.setattr(
-        "sys.argv",
-        ["pism-inverse-lcurve", "--design-variable", "tauc", "-o", str(single)] + [str(f) for f in files],
-    )
-    main()
-    assert {p.name for p in single.parent.iterdir()} >= {"lcurve.png", "lcurve.csv"}
+    assert {p.name for p in out.parent.glob("*.png")} == {"lcurve.png", "lcurve_tauc_hardav.png"}
+    table = pd.read_csv(out.with_suffix(".csv"))
+    # One row per member, its norm summed over the phases.
+    assert list(table["N"]) == pytest.approx([10.0, 5.0, 5.0])
+    assert list(table["N_tauc"]) == pytest.approx([8.0, 4.0, 3.0])
 
 
 def _two_phase_ensemble(tmp_path: Path, param: str = "exp") -> list[Path]:
@@ -602,6 +603,7 @@ def _two_phase_ensemble(tmp_path: Path, param: str = "exp") -> list[Path]:
     list of pathlib.Path
         The member files.
     """
+    tmp_path.mkdir(parents=True, exist_ok=True)
     return [
         write_member(
             tmp_path / f"alt_{p:g}.nc",
@@ -610,6 +612,7 @@ def _two_phase_ensemble(tmp_path: Path, param: str = "exp") -> list[Path]:
             j_design=np.array([1.0, 1.0]),
             param=param,
             alternating={"c0_tauc": t, "c0_hardav": h},
+            config_design="tauc_hardav",
         )
         for p, m, t, h in [
             (0.1, 110.0, 0.01, 0.04),
@@ -620,7 +623,7 @@ def _two_phase_ensemble(tmp_path: Path, param: str = "exp") -> list[Path]:
     ]
 
 
-def test_plot_combined_overlays_the_phases(tmp_path: Path) -> None:
+def test_plot_phases_overlays_the_phases(tmp_path: Path) -> None:
     """
     Draw one curve per phase on shared axes, each with its own corner.
 
@@ -635,13 +638,13 @@ def test_plot_combined_overlays_the_phases(tmp_path: Path) -> None:
         Asserts only.
     """
     df = collect_lcurve(_two_phase_ensemble(tmp_path), [PENALTY])
-    output_file = tmp_path / "figures" / "combined.png"
-    corners = plot_combined(df, [PENALTY], output_file)
+    output_file = tmp_path / "figures" / "phases.png"
+    corners = plot_phases(df, [PENALTY], output_file)
     assert output_file.exists()
     assert sorted(corners["design"]) == ["hardav", "tauc"]
 
 
-def test_plot_combined_refuses_incommensurate_norms(tmp_path: Path) -> None:
+def test_plot_phases_refuses_incommensurate_norms(tmp_path: Path) -> None:
     """
     Refuse to overlay Pa against Pa s^(1/n) under ``param = "ident"``.
 
@@ -659,13 +662,13 @@ def test_plot_combined_refuses_incommensurate_norms(tmp_path: Path) -> None:
     # The two phases carry their fields' own units, which do not compare.
     assert set(df["norm_units"]) == {"Pa", "Pa s^(1/3)"}
     output_file = tmp_path / "refused.png"
-    assert plot_combined(df, [PENALTY], output_file).empty
+    assert plot_phases(df, [PENALTY], output_file).empty
     assert not output_file.exists()
 
 
-def test_main_writes_the_combined_figure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_skips_the_phase_figures_when_told(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Add the combined figure for a co-inversion, and skip it when told to.
+    ``--no-phases`` leaves only the L-curve; ``param = "ident"`` drops the pairs.
 
     Parameters
     ----------
@@ -680,40 +683,187 @@ def test_main_writes_the_combined_figure(tmp_path: Path, monkeypatch: pytest.Mon
         Asserts only.
     """
     files = _two_phase_ensemble(tmp_path)
-    out = tmp_path / "with" / "lcurve.png"
+    without = tmp_path / "without" / "lcurve.png"
+    monkeypatch.setattr(
+        "sys.argv", ["pism-inverse-lcurve", "--no-phases", "-o", str(without)] + [str(f) for f in files]
+    )
+    main()
+    assert {p.name for p in without.parent.glob("*.png")} == {"lcurve.png"}
+
+    # Norms in Pa and Pa s^(1/3) cannot be added, so no member has a total.
+    ident = _two_phase_ensemble(tmp_path / "ident", param="ident")
+    monkeypatch.setattr(
+        "sys.argv", ["pism-inverse-lcurve", "-o", str(tmp_path / "ident.png")] + [str(f) for f in ident]
+    )
+    with pytest.raises(SystemExit, match="every phase"):
+        main()
+
+
+def _strategy_ensemble(tmp_path: Path) -> list[Path]:
+    """
+    Write one sweep over three penalty weights for each of the four strategies.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The member files.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    files = []
+    for offset, strategy in enumerate(lcurve.STRATEGIES):
+        for p, m, j in [(0.1, 100.0, 0.01), (10.0, 30.0, 1.0), (1000.0, 25.0, 16.0)]:
+            path = tmp_path / f"{strategy}_{p:g}.nc"
+            residual = np.full((3, 3), m - 5.0 * offset)
+            if "_" in strategy:
+                first, second = strategy.split("_")
+                files.append(
+                    write_member(
+                        path,
+                        p,
+                        residual,
+                        np.array([1.0, 1.0]),
+                        alternating={f"c0_{first}": j, f"c0_{second}": j},
+                        config_design=strategy,
+                        cycles=1.0,
+                    )
+                )
+            else:
+                files.append(
+                    write_member(
+                        path, p, residual, np.array([1.0, j]), design=strategy, config_design=strategy, cycles=1.0
+                    )
+                )
+    return files
+
+
+def test_main_draws_one_curve_per_strategy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    One project sampling the strategy gives four curves and two phase figures.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to set ``sys.argv``.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    files = _strategy_ensemble(tmp_path / "runs")
+    out = tmp_path / "out" / "lcurve.png"
     monkeypatch.setattr("sys.argv", ["pism-inverse-lcurve", "-o", str(out)] + [str(f) for f in files])
     main()
     assert {p.name for p in out.parent.glob("*.png")} == {
-        "lcurve_tauc.png",
-        "lcurve_hardav.png",
-        "lcurve_combined.png",
+        "lcurve.png",
+        "lcurve_tauc_hardav.png",
+        "lcurve_hardav_tauc.png",
     }
+    table = pd.read_csv(out.with_suffix(".csv"))
+    assert list(dict.fromkeys(table["strategy"])) == list(lcurve.STRATEGIES)
+    # A pair adds its two phases; a single field is its own norm.
+    last = table[table["penalty_weight"] == 1000.0].set_index("strategy")["N"]
+    assert last["tauc"] == pytest.approx(4.0)
+    assert last["tauc_hardav"] == pytest.approx(np.sqrt(32.0))
 
-    without = tmp_path / "without" / "lcurve.png"
+    # --strategy keeps a subset, and a single field has no phase figure.
+    only = tmp_path / "only" / "lcurve.png"
     monkeypatch.setattr(
-        "sys.argv", ["pism-inverse-lcurve", "--no-combined", "-o", str(without)] + [str(f) for f in files]
+        "sys.argv", ["pism-inverse-lcurve", "--strategy", "tauc,hardav", "-o", str(only)] + [str(f) for f in files]
     )
     main()
-    assert {p.name for p in without.parent.glob("*.png")} == {"lcurve_tauc.png", "lcurve_hardav.png"}
+    assert {p.name for p in only.parent.glob("*.png")} == {"lcurve.png"}
+    assert set(pd.read_csv(only.with_suffix(".csv"))["strategy"]) == {"tauc", "hardav"}
 
-    # A single-design run has nothing to combine.
-    single = tmp_path / "single" / "lcurve.png"
-    monkeypatch.setattr(
-        "sys.argv",
-        ["pism-inverse-lcurve", "--design-variable", "tauc", "-o", str(single)] + [str(f) for f in files],
+
+def test_plot_lcurve_picks_a_corner_per_strategy(tmp_path: Path) -> None:
+    """
+    Every strategy is its own curve with its own corner.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    table = member_norms(collect_lcurve(_strategy_ensemble(tmp_path), [PENALTY]), [PENALTY])
+    corners = plot_lcurve(table, [PENALTY], tmp_path / "lcurve.png")
+    assert list(corners["strategy"]) == list(lcurve.STRATEGIES)
+    assert "sum" in lcurve.total_norm_label(table)
+
+
+def test_member_norms_leaves_out_unfinished_pairs(tmp_path: Path) -> None:
+    """
+    A pair that has written only its first phase has no total norm yet.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    done = write_member(
+        tmp_path / "done.nc",
+        1.0,
+        np.full((3, 3), 5.0),
+        np.array([1.0, 1.0]),
+        alternating={"c0_hardav": 9.0, "c0_tauc": 16.0},
+        config_design="hardav_tauc",
     )
-    main()
-    assert {p.name for p in single.parent.glob("*.png")} == {"lcurve.png"}
+    half = write_member(
+        tmp_path / "half.nc",
+        10.0,
+        np.full((3, 3), 5.0),
+        np.array([1.0, 1.0]),
+        alternating={"c0_hardav": 4.0},
+        config_design="hardav_tauc",
+    )
+    df = collect_lcurve([done, half], [PENALTY])
+    # The phases come in the order the strategy runs them.
+    assert list(df[df["file"] == "done.nc"]["design"]) == ["hardav", "tauc"]
+    table = member_norms(df, [PENALTY])
+    assert list(table["file"]) == ["done.nc"]
+    assert table["N"].iloc[0] == pytest.approx(5.0)
+
+
+def test_config_values_may_be_keywords() -> None:
+    """
+    A keyword parameter such as the strategy is kept as a string.
+
+    Returns
+    -------
+    None
+        Asserts only.
+    """
+    assert lcurve.config_value(np.float64(10.0)) == 10.0
+    assert lcurve.config_value("tauc_hardav") == "tauc_hardav"
+    assert lcurve.format_value(1000.0) == "1000"
+    assert lcurve.format_value("hardav") == "hardav"
 
 
 def test_design_variables_prefer_the_configuration(tmp_path: Path) -> None:
     """
-    Read the design variable from ``pism_config`` before the written fields.
+    Read the strategy from ``pism_config`` before the written fields.
 
     The configuration describes the run rather than how far it has got, so a
-    co-inversion is recognised from its first timestep — before the hardav
-    phase has written anything — where the fields alone would call it a
-    single-design tauc run.
+    pair is recognised from its first timestep — before its second phase has
+    written anything — where the fields alone would call it a single-field
+    run. ``pismi`` ignores the cycle count for a single field.
 
     Parameters
     ----------
@@ -727,24 +877,40 @@ def test_design_variables_prefer_the_configuration(tmp_path: Path) -> None:
     """
     residual, j_design = np.full((3, 3), 5.0), np.array([10.0, 4.0])
 
-    # A co-inversion that has only started its tauc phase: on the fields
-    # alone this is indistinguishable from a plain tauc run.
-    early = write_member(
-        tmp_path / "early.nc", 1.0, residual, j_design, design="tauc", cycles=2.0, config_design="tauc"
-    )
-    with xr.open_dataset(early) as ds:
-        assert lcurve.design_variables(ds) == ["tauc", "hardav"]
-        assert lcurve.design_variable(ds) is None
+    # A pair that has only started its first phase: on the fields alone this
+    # is indistinguishable from a plain run of that field.
+    for strategy, phases in [("tauc_hardav", ["tauc", "hardav"]), ("hardav_tauc", ["hardav", "tauc"])]:
+        early = write_member(
+            tmp_path / f"early_{strategy}.nc", 1.0, residual, j_design, design=phases[0], config_design=strategy
+        )
+        with xr.open_dataset(early) as ds:
+            assert lcurve.design_strategy(ds) == strategy
+            assert lcurve.design_variables(ds) == phases
+            assert lcurve.design_variable(ds) is None
+
+    # A single field with a positive cycle count is still a single-field run.
+    single = write_member(tmp_path / "single.nc", 1.0, residual, j_design, cycles=1.0, config_design="tauc")
+    with xr.open_dataset(single) as ds:
+        assert lcurve.design_variables(ds) == ["tauc"]
 
     # A single-design hardav run whose fields would also allow "tauc".
     hardav = write_member(tmp_path / "hardav.nc", 1.0, residual, j_design, design="tauc", config_design="hardav")
     with xr.open_dataset(hardav) as ds:
         assert lcurve.design_variables(ds) == ["hardav"]
 
-    # cycles = 0 is a single-design run, not a co-inversion.
-    plain = write_member(tmp_path / "plain.nc", 1.0, residual, j_design, cycles=0.0, config_design="tauc")
-    with xr.open_dataset(plain) as ds:
-        assert lcurve.design_variables(ds) == ["tauc"]
+    # Output from before PISM took pairs: a single field that alternated,
+    # starting with that field, as its per-phase zeta shows.
+    legacy = write_member(
+        tmp_path / "legacy_alt.nc",
+        1.0,
+        residual,
+        j_design,
+        alternating={"c0_tauc": 4.0, "c0_hardav": 9.0},
+        config_design="tauc",
+        cycles=2.0,
+    )
+    with xr.open_dataset(legacy) as ds:
+        assert lcurve.design_strategy(ds) == "tauc_hardav"
 
 
 def test_design_variables_fall_back_to_the_fields(tmp_path: Path) -> None:

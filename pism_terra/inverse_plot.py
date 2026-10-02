@@ -47,17 +47,23 @@ pism-inverse-plot --parameters inverse.tikhonov.penalty_weight \
 
 writes ``maps_tauc.png``, ``maps_zeta_inv.png`` and ``maps_inv_residual.png``.
 
-An alternating ``tauc``/``hardav`` co-inversion solves for both, so the
-design variable and zeta each get a figure per phase — ``maps_tauc.png``,
-``maps_hardav.png``, ``maps_zeta_inv_tauc.png``, ``maps_zeta_inv_hardav.png``
-— while the residual stays shared. ``--design-variable`` takes a
-comma-separated subset when only one phase is wanted. A field no member has
-reached yet is skipped rather than half-drawn, so asking for ``--variables
-zeta --design-variable tauc`` will map a sweep that is still in its first
-cycle. A phase the run has not reached is warned about rather than passed off
-as a result: until ``pismi`` has inverted for ``hardav``, the ``hardav`` in
-the file is the prior it computed from enthalpy.
+An alternating co-inversion (``inverse.design.variable = "tauc_hardav"`` or
+``"hardav_tauc"``) solves for both, so the design variable and zeta each get a
+figure per field — ``maps_tauc.png``, ``maps_hardav.png``,
+``maps_zeta_inv_tauc.png``, ``maps_zeta_inv_hardav.png`` — while the residual
+stays shared. ``--design-variable`` takes a comma-separated subset when only
+one field is wanted.
 
+An ensemble that samples the strategy as well as the penalty weight gets one
+row of panels per strategy and one column per penalty weight, so reading down
+a column compares the strategies at the same weight. Each design-variable
+figure has a row only for the strategies that inverted for that field: the
+``tauc`` of a ``hardav``-only run is not a result. ``--strategy`` keeps a
+subset of the strategies.
+
+A phase the run has not reached is warned about rather than passed off as a
+result: until ``pismi`` has inverted for ``hardav``, the ``hardav`` in the
+file is the prior it computed from enthalpy.
 The design variable and zeta are masked to the cells the inversion was free
 to change (``zeta_fixed_mask == 0``) and the residual to the misfit area PISM
 actually fit (``vel_misfit_weight > 0``) — elsewhere the field is just the
@@ -69,7 +75,6 @@ with a warning.
 from __future__ import annotations
 
 import logging
-import math
 import re
 import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -88,12 +93,16 @@ from matplotlib.colors import LogNorm, Normalize
 from pism_terra.lcurve import (
     DEFAULT_PARAMETERS,
     DESIGN_VARIABLES,
+    STRATEGIES,
+    config_value,
+    design_strategy,
     design_units,
-    design_variables,
     fontsize,
+    format_value,
     mathtext_units,
     rc_params,
     short_name,
+    strategy_phases,
 )
 from pism_terra.log import setup_logging
 
@@ -295,6 +304,7 @@ def read_member(
     fields: list[str],
     *,
     designs: list[str] | None = None,
+    strategies: list[str] | None = None,
     mask: bool = True,
 ) -> dict[str, Any] | None:
     """
@@ -311,9 +321,12 @@ def read_member(
         Keys of :data:`FIELDS` to read. A file missing any of them is
         skipped, so ask only for what will be plotted.
     designs : list of str or None, optional
-        Design variables to read, or ``None`` to detect them per file with
-        :func:`pism_terra.lcurve.design_variables`. An alternating
-        co-inversion yields both, and each gets its own entry.
+        Design variables to map, or ``None`` for every field the member
+        inverted for. An alternating co-inversion yields both, and each gets
+        its own entry; a field the member did not invert for is never read.
+    strategies : list of str or None, optional
+        Strategies (values of :data:`pism_terra.lcurve.STRATEGIES`) to keep,
+        or ``None`` for every member.
     mask : bool, optional
         Mask each field to where it is meaningful.
 
@@ -321,23 +334,27 @@ def read_member(
     -------
     dict or None
         One entry per expanded field, keyed by :func:`item_key`, plus
-        ``designs``, ``resolved`` (the variable each entry came from), ``x``,
-        ``y``, ``file`` and one entry per parameter — or ``None`` when the
-        file cannot contribute a panel, which is logged.
+        ``strategy``, ``designs``, ``resolved`` (the variable each entry came
+        from), ``x``, ``y``, ``file`` and one entry per parameter — or ``None``
+        when the file cannot contribute a panel, which is logged, or belongs
+        to a strategy not asked for.
     """
     try:
         with xr.open_dataset(path) as ds:
-            found = designs or design_variables(ds)
-            if not found:
-                logger.warning("%s: skipped, cannot tell tauc from hardav; pass --design-variable", path.name)
+            strategy = design_strategy(ds)
+            if strategy is None:
+                logger.warning("%s: skipped, cannot tell what the inversion solved for", path.name)
                 return None
+            if strategies and strategy not in strategies:
+                return None
+            found = [d for d in strategy_phases(strategy) if not designs or d in designs]
             config = ds["pism_config"].attrs
             absent = [p for p in parameters if p not in config]
             if absent:
                 logger.warning("%s: skipped, pism_config has no %s", path.name, ", ".join(absent))
                 return None
 
-            member: dict[str, Any] = {short_name(p): float(config[p]) for p in parameters}
+            member: dict[str, Any] = {short_name(p): config_value(config[p]) for p in parameters}
             resolved: dict[str, str] = {}
             for key, design in field_items(fields, found):
                 spec = FIELDS[key]
@@ -354,6 +371,7 @@ def read_member(
                 entry = item_key(key, design)
                 member[entry] = _apply_mask(ds, values, spec, path.name, entry) if mask else values
                 resolved[entry] = name
+            member["strategy"] = strategy
             member["designs"] = found
             member["resolved"] = resolved
             member["units"] = {d: design_units(ds, d) for d in found}
@@ -372,11 +390,12 @@ def completed_phases(ds: xr.Dataset) -> set[str] | None:
     Which phases of an alternating co-inversion have finished.
 
     ``pismi`` stamps the output with ``pismi_alternation_completed``, the last
-    phase it got through, as ``c<cycle>_<design>``. Each cycle runs ``tauc``
-    then ``hardav``, so finishing ``c0_hardav`` means both are done, while
-    finishing ``c0_tauc`` means ``hardav`` has never been inverted — the
+    phase it got through, as ``c<cycle>_<design>``. Each cycle runs the phases
+    in the order of the strategy — ``tauc`` then ``hardav`` for
+    ``tauc_hardav`` — so finishing ``c0_hardav`` there means both are done,
+    while finishing ``c0_tauc`` means ``hardav`` has never been inverted: the
     ``hardav`` in the file is then still the prior computed from enthalpy, not
-    a result.
+    a result. ``hardav_tauc`` runs them the other way round.
 
     Parameters
     ----------
@@ -395,9 +414,11 @@ def completed_phases(ds: xr.Dataset) -> set[str] | None:
     if match is None:
         return None
     cycle, design = int(match.group(1)), match.group(2)
-    if design == "hardav":
-        return {"tauc", "hardav"}
-    return {"tauc", "hardav"} if cycle >= 1 else {"tauc"}
+    strategy = design_strategy(ds)
+    phases = strategy_phases(strategy) if strategy and "_" in strategy else list(DESIGN_VARIABLES)
+    if cycle >= 1 or design not in phases:
+        return set(phases)
+    return set(phases[: phases.index(design) + 1])
 
 
 def _warn_unfinished_phases(ds: xr.Dataset, designs: list[str], filename: str) -> None:
@@ -531,7 +552,9 @@ def plot_field(
     percentile : float, optional
         Percentile for the shared limits (see :func:`shared_limits`).
     ncols : int, optional
-        Panels per row; the members wrap onto as many rows as they need.
+        Panels per row when the members share one strategy; they wrap onto as
+        many rows as they need. Members of several strategies get one row per
+        strategy and one column per value of ``sweep`` instead.
     panel_width : float, optional
         Width of one panel, inches.
     dpi : int, optional
@@ -549,7 +572,7 @@ def plot_field(
     # alternating run's two zeta figures do not collide.
     label = spec.label.replace("{design}", design or "")
     units = mathtext_units(spec.units.replace("{design_units}", members[0]["units"].get(design or "", "")))
-    variable = members[0]["resolved"][entry]
+    variable = figure_name(members, key, design)
     scale = scale or spec.scale
     low, high = shared_limits([m[entry] for m in members], percentile=percentile, vmin=vmin, vmax=vmax, scale=scale)
     norm = LogNorm(vmin=low, vmax=high) if scale == "log" else Normalize(vmin=low, vmax=high)
@@ -557,8 +580,9 @@ def plot_field(
     with mpl.rc_context(rc=rc_params):
         extent = [members[0]["x"][0], members[0]["x"][-1], members[0]["y"][0], members[0]["y"][-1]]
         aspect = abs((extent[3] - extent[2]) / (extent[1] - extent[0]))
-        columns = max(1, min(ncols, len(members)))
-        rows = math.ceil(len(members) / columns)
+        slots, row_labels = panel_slots(members, sweep, ncols)
+        rows = 1 + max(r for r, _ in slots)
+        columns = 1 + max(c for _, c in slots)
         fig, axs = plt.subplots(
             rows,
             columns,
@@ -567,7 +591,8 @@ def plot_field(
             layout="constrained",
         )
         flat = axs.ravel()
-        for ax, member in zip(flat, members):
+        for (row, column), member in slots.items():
+            ax = axs[row][column]
             image = ax.imshow(
                 member[entry],
                 origin="lower",
@@ -578,12 +603,17 @@ def plot_field(
             )
             ax.set_xticks([])
             ax.set_yticks([])
-            ax.set_title(f"{sweep} = {member[sweep]:g}", fontsize=fontsize)
-        # A partly-filled last row would otherwise show empty framed panels.
-        for ax in flat[len(members) :]:
-            ax.set_visible(False)
+            ax.set_title(f"{sweep} = {format_value(member[sweep])}", fontsize=fontsize)
+        # A partly-filled last row, or a (strategy, weight) no member covers,
+        # would otherwise show an empty framed panel.
         for row in range(rows):
-            axs[row][0].set_ylabel(label, fontsize=fontsize)
+            for column in range(columns):
+                if (row, column) not in slots:
+                    axs[row][column].set_visible(False)
+        for row in range(rows):
+            first = min(c for r, c in slots if r == row)
+            text = f"{row_labels[row]}\n{label}" if row_labels else label
+            axs[row][first].set_ylabel(text, fontsize=fontsize)
         colorbar = fig.colorbar(image, ax=list(flat), fraction=0.02, pad=0.01, extend="both")
         colorbar.set_label(f"{label} ({units})" if units else label, fontsize=fontsize)
         colorbar.ax.tick_params(labelsize=fontsize)
@@ -596,24 +626,73 @@ def plot_field(
     return path
 
 
-def _in_every(item: tuple[str, str | None], members: list[dict[str, Any]]) -> bool:
+def panel_slots(
+    members: list[dict[str, Any]], sweep: str, ncols: int
+) -> tuple[dict[tuple[int, int], dict[str, Any]], list[str]]:
     """
-    Check that every member carries one expanded field.
+    Place the members on the panel grid.
+
+    Members of one strategy wrap onto rows of ``ncols`` panels in the order
+    given. Members of several strategies get one row per strategy, in
+    :data:`pism_terra.lcurve.STRATEGIES` order, and one column per value of
+    ``sweep``, so a column compares the strategies at one weight. When
+    further parameters make a (strategy, value) pair ambiguous, the members
+    wrap as for one strategy.
 
     Parameters
     ----------
-    item : tuple
-        ``(field key, design variable or None)`` from :func:`field_items`.
     members : list of dict
-        Member dicts from :func:`read_member`.
+        Member dicts from :func:`read_member`, in plotting order.
+    sweep : str
+        Column naming the swept parameter.
+    ncols : int
+        Panels per row when wrapping.
 
     Returns
     -------
-    bool
-        True when every member has the field, so the figure would be
-        complete.
+    tuple
+        ``{(row, column): member}`` and the row labels — the strategies, or
+        an empty list when the members wrap.
     """
-    return all(item_key(*item) in member for member in members)
+    strategies = [s for s in STRATEGIES if any(m.get("strategy") == s for m in members)]
+    if len(strategies) > 1:
+        values = sorted({m[sweep] for m in members}, key=lambda v: (isinstance(v, str), v))
+        slots = {(strategies.index(m["strategy"]), values.index(m[sweep])): m for m in members}
+        if len(slots) == len(members):
+            return slots, strategies
+    columns = max(1, min(ncols, len(members)))
+    return {divmod(i, columns): m for i, m in enumerate(members)}, []
+
+
+def figure_name(members: list[dict[str, Any]], key: str, design: str | None) -> str:
+    """
+    Name the variable a figure shows, for its file name.
+
+    The members' own variable names it — ``tauc``, ``zeta_inv``,
+    ``inv_residual`` — as long as they all agree. They do not for zeta when
+    the members mix strategies: a single-field run writes ``zeta_inv`` and a
+    pair ``zeta_inv_tauc``. A mixed zeta figure, and a single-field one drawn
+    beside other strategies, is named after its field, ``zeta_inv_tauc``, so
+    the ``tauc`` and ``hardav`` figures stay apart.
+
+    Parameters
+    ----------
+    members : list of dict
+        Member dicts from :func:`read_member` drawn in the figure.
+    key : str
+        Field key, one of :data:`FIELDS`.
+    design : str or None
+        Design variable the figure belongs to.
+
+    Returns
+    -------
+    str
+        Name appended to the output file's stem.
+    """
+    names = {m["resolved"][item_key(key, design)] for m in members}
+    if key == "zeta" and (len(names) > 1 or len({m["strategy"] for m in members}) > 1):
+        return f"zeta_inv_{design}"
+    return sorted(names)[0]
 
 
 def main() -> None:
@@ -656,9 +735,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--design-variable",
-        help=f"Comma-separated design variables to plot ({', '.join(DESIGN_VARIABLES)}), each getting its "
-        "own figure. The default reads them from each file, which yields both phases of an "
-        "alternating co-inversion.",
+        help=f"Comma-separated design variables to map ({', '.join(DESIGN_VARIABLES)}), each getting its "
+        "own figure. The default maps every field the members inverted for.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--strategy",
+        help=f"Comma-separated strategies to keep ({', '.join(STRATEGIES)}). The default keeps every "
+        "member; members of several strategies get one row of panels each.",
         type=str,
         default=None,
     )
@@ -724,6 +809,13 @@ def main() -> None:
                 f"got {', '.join(unknown) or 'nothing'}"
             )
 
+    strategies = None
+    if options.strategy:
+        strategies = [d.strip() for d in options.strategy.split(",") if d.strip()]
+        unknown = [d for d in strategies if d not in STRATEGIES]
+        if unknown or not strategies:
+            parser.error(f"--strategy takes any of {', '.join(STRATEGIES)}; got {', '.join(unknown) or 'nothing'}")
+
     output_file = Path(options.output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
     setup_logging(output_file.parent / "inverse_plot.log")
@@ -731,7 +823,8 @@ def main() -> None:
     members = [
         member
         for member in (
-            read_member(Path(f), parameters, fields, designs=designs, mask=not options.no_mask) for f in options.INFILES
+            read_member(Path(f), parameters, fields, designs=designs, strategies=strategies, mask=not options.no_mask)
+            for f in options.INFILES
         )
         if member is not None
     ]
@@ -741,15 +834,16 @@ def main() -> None:
             f"they need {', '.join(fields)} and {', '.join(parameters)}"
         )
     sweep = short_name(parameters[0])
-    members.sort(key=lambda m: tuple(m[short_name(p)] for p in parameters))
+    members.sort(key=lambda m: (STRATEGIES.index(m["strategy"]),) + tuple(m[short_name(p)] for p in parameters))
     logger.info("plotting %d of %d files", len(members), len(options.INFILES))
 
-    # Members may disagree on which phases they have reached, so plot only
-    # the fields every one of them carries.
-    items = [item for item in field_items(fields, members[0]["designs"]) if _in_every(item, members)]
+    # Each design-variable figure shows the members that inverted for that
+    # field; the residual shows every member.
+    items = list(dict.fromkeys(item for member in members for item in field_items(fields, member["designs"])))
     for key, design in items:
+        drawn = [member for member in members if item_key(key, design) in member]
         path = plot_field(
-            members,
+            drawn,
             key,
             design,
             sweep,
@@ -763,7 +857,7 @@ def main() -> None:
             panel_width=options.panel_width,
             dpi=options.dpi,
         )
-        print(f"wrote {path} ({len(members)} members)")
+        print(f"wrote {path} ({len(drawn)} members)")
 
 
 if __name__ == "__main__":

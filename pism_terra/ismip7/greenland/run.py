@@ -43,6 +43,7 @@ from pism_terra.ismip7.greenland.observations import prepare_observations
 from pism_terra.ismip7.greenland.stage import (
     place_dh_observations,
     place_outline,
+    retreat_disabled,
     stage,
 )
 from pism_terra.ismip7.naming import (
@@ -76,6 +77,35 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 # ``OSError: [Errno 24] Too many open files`` before any work starts. The
 # post-processing is a per-basin clip + field sum, so a handful of workers is
 # plenty regardless of how wide the PISM run was.
+#: PISM options of the prescribed front retreat, left out of a leg that has no mask.
+RETREAT_OPTIONS = ("geometry.front_retreat.prescribed.file", "geometry.front_retreat.prescribed.periodic")
+
+
+def without_unset_retreat(options: dict) -> dict:
+    """
+    Drop the prescribed-retreat options when no retreat mask is set.
+
+    ``campaign.retreat_file = "none"`` stages no mask and leaves the file
+    option at ``"none"``. PISM turns the prescribed retreat off only when the
+    option is empty, its default, and would try to open a file called
+    ``none``, so the options are left out of the command instead.
+
+    Parameters
+    ----------
+    options : dict
+        PISM options of one leg.
+
+    Returns
+    -------
+    dict
+        ``options`` itself when a mask is set, otherwise a copy without the
+        :data:`RETREAT_OPTIONS`.
+    """
+    if RETREAT_OPTIONS[0] not in options or not retreat_disabled(str(options[RETREAT_OPTIONS[0]])):
+        return options
+    return {key: value for key, value in options.items() if key not in RETREAT_OPTIONS}
+
+
 def _make_output_paths(path: str | Path, *, inverse: bool = False, counter: str | None = None) -> dict[str, Path]:
     """
     Create the run's output directory tree and return the paths.
@@ -269,7 +299,7 @@ def _build_init_leg(
     if pism_config_cdl is not None:
         validate_pism_options(run_init, pism_config_cdl)
 
-    return dict2str(sort_dict_by_key(run_init)), state_init, init_tag
+    return dict2str(sort_dict_by_key(without_unset_retreat(run_init))), state_init, init_tag
 
 
 #: Per-run record of what each ``set_counter`` was, written beside the run
@@ -652,7 +682,7 @@ def _build_forward_legs(
             run_one.update(proj_clean)
         if pism_config_cdl is not None:
             validate_pism_options(run_one, pism_config_cdl)
-        one_str = dict2str(sort_dict_by_key(run_one))
+        one_str = dict2str(sort_dict_by_key(without_unset_retreat(run_one)))
         # Route to the matching slot; the other stays empty so the template omits it.
         run_hist_str = one_str if single_is_historical else ""
         run_proj_str = "" if single_is_historical else one_str
@@ -692,7 +722,7 @@ def _build_forward_legs(
         if pism_config_cdl is not None:
             validate_pism_options(run_hist, pism_config_cdl)
 
-        run_hist_str = dict2str(sort_dict_by_key(run_hist))
+        run_hist_str = dict2str(sort_dict_by_key(without_unset_retreat(run_hist)))
 
         # Projection continuation leg. Skipped entirely for historical-only
         # experiments (C001/C002), whose projection forcing is neither staged nor run;
@@ -742,7 +772,7 @@ def _build_forward_legs(
                 if proj_skipped:
                     print(f"Skipping proj overrides not in config: {proj_skipped}")
                 run_proj.update(proj_clean)
-            run_proj_str = dict2str(sort_dict_by_key(run_proj))
+            run_proj_str = dict2str(sort_dict_by_key(without_unset_retreat(run_proj)))
 
     # Point the compliance checker at this run's actual ISMIP7 submission
     # directory (output/<domain>/<source>/<ism>/<set>/<set_counter>/) rather than a
@@ -1354,7 +1384,7 @@ def _render_inverse_run(
     # Feed the init leg's state file into pismi as its input.
     inv.update({"input.file": state_init.resolve()})
     inv.update({"o": inv_file.resolve()})
-    inv_str = dict2str(sort_dict_by_key(inv))
+    inv_str = dict2str(sort_dict_by_key(without_unset_retreat(inv)))
 
     # Leg-3 wiring, applied AFTER the uq overrides so it always wins: restart
     # from the init state (no bootstrap) and regrid exactly the fields the

@@ -1,23 +1,24 @@
 [run_info]
 
 'run_info.institution' = "University of Alaska Fairbanks"
-'run_info.title' = "PISM-TERRA S4F Inverse Model Calibration"
+'run_info.title' = "PISM-TERRA Historical Baseline Run"
 
 [campaign]
 
 bathymetry = "gebco"
 bucket = "pism-cloud-data"
-climate = "carra2-monthly-mean"
+climate = "era5"
 debris = "rounce"
 dem = "glo_90"
-dh = "none"
-forcing_mask = "all"
+dh = "hugonnet"
+forcing_mask = "glacier"
 heatflux = "lucazeau"
 ice_thickness = "maffezzoli"
-init_end = "0002-01-01"
-init_forcing = "carra2-monthly-mean"
+init_end = "0001-02-01"
+init_forcing = "era5-monthly-mean"
 init_start = "0001-01-01"
-name = "Calibration"
+init_surface_model = "debm_enhanced_forcing"
+name = "Hindcast"
 prefix = "glacier/input"
 profile = true
 project_directory = "s4f"
@@ -27,10 +28,10 @@ velocity = "its_live"
 
 [time]
 
-'time.calendar' =  "365_day"
-'time.end' =  "0002-01-01"
-'time.reference_date' = "0001-01-01"
-'time.start' = "0001-01-01"
+'time.calendar' =  "standard"
+'time.end' =  "2025-01-01"
+'time.reference_date' = "1980-01-01"
+'time.start' = "1986-01-01"
 
 [time_stepping]
 
@@ -42,6 +43,7 @@ velocity = "its_live"
 'geometry.front_retreat.use_cfl' = 'yes'
 'geometry.part_grid.enabled' = 'yes'
 'geometry.remove_icebergs' = 'yes'
+'geometry.update.enabled' = "yes"
 
 ['input']
 
@@ -49,9 +51,6 @@ velocity = "its_live"
 'input.file' = "none"
 'input.forcing.buffer_size' = 24
 'input.forcing.time_extrapolation' = "yes"
-# Regridded from the spin-up state given by --regrid-file (or
-# campaign.regrid_file); dropped from the command when neither is set.
-'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat"
 
 [reporting]
 
@@ -63,22 +62,22 @@ velocity = "its_live"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
-'output.spatial.times' = "yearly"
-'output.spatial.vars' = "velsurf_mag"
+'output.spatial.times' = "monthly"
+'output.spatial.vars' = "debris_thickness,englacial_debris_column_mass,debris_cover_fraction,debris_input_rate,debris_melt_out_rate,debris_removal_rate,velsurf_mag,velbase_mag,mask,usurf,thk,velsurf"
 
 [grid]
 
 'grid.Lbz' = 0
-'grid.Lz' = 1500
+'grid.Lz' = 1200
 'grid.Mbz' = 1
-'grid.Mz' = 151
+'grid.Mz' = 121
 'grid.file' = "none"
 'grid.registration' = "center"
 resolution = "200m"
 
 [energy]
 
-model = "none"
+model = "enthalpy"
 
 [energy.options.none]
 
@@ -139,13 +138,20 @@ model = 'blatter'
 
 [surface]
 
-model = "pdd_forcing"
+model = "debm_enhanced"
+
+[surface.options.pdd]
+
+'surface.models' = "pdd"
+'surface.pdd.air_temp_all_precip_as_rain' = 275.15
+'surface.pdd.air_temp_all_precip_as_snow' = 273.15
+'surface.pdd.factor_ice' = 0.00879120879120879
+'surface.pdd.factor_snow' = 0.0032967032967033
+'surface.pdd.refreeze' = 0.6
+'surface.pdd.refreeze_ice_melt' = "no"
 
 [surface.options.pdd_forcing]
 
-'surface.force_to_thickness.alpha' = 0.95
-'surface.force_to_thickness.file' = "none"
-'surface.force_to_thickness.ice_free_alpha_factor' = 10
 'surface.models' = "pdd,forcing"
 'surface.pdd.air_temp_all_precip_as_rain' = 275.15
 'surface.pdd.air_temp_all_precip_as_snow' = 273.15
@@ -153,8 +159,6 @@ model = "pdd_forcing"
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
 'surface.pdd.refreeze_ice_melt' = "no"
-'surface.pdd.std_dev.file' = "none"
-'surface.pdd.std_dev.periodic' = "yes"
 
 [surface.options.debm_simple]
 
@@ -269,15 +273,13 @@ model = "null"
 
 [inverse]
 
-'inverse.design.variable' = "tauc"
-'inverse.stress_balance.hardav_max' = 5e8
-'inverse.stress_balance.hardav_min' = 1e7
 'inverse.adjoint.method' =  "approximate"
 'inverse.alternating_cycles' = 1
 'inverse.alternating_misfit_tol' = 0.01
 'inverse.design.cH1' = 1
 'inverse.design.cL2' = 0
 'inverse.design.param' = "exp"
+'inverse.design.variable' = "tauc_hardav"
 'inverse.file' = "none"
 'inverse.huber.delta' =  1e2
 'inverse.max_iterations' = 500
@@ -287,10 +289,6 @@ model = "null"
 'inverse.stress_balance.tauc_max' = 1e8
 'inverse.stress_balance.tauc_min' = 1e2
 'inverse.stress_balance.velocity_scale' = 1e2
-# Gradient-norm stopping criterion. The default (1e-10) is never reached, so
-# phases run to max_iterations; at 1e-5 the S4F runs stop once the misfit
-# changes by less than ~1e-4 per iteration (a few 0.1% above the final value).
-'inverse.tikhonov.atol' = 1e-5
 'inverse.tikhonov.penalty_weight' = 1000
 'inverse.tikhonov.rtol' = 0.15
 'inverse.use_zeta_fixed_mask' = "yes"

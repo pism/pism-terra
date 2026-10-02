@@ -3,7 +3,7 @@
 'run_info.contact_email' = "aaschwanden@alaska.edu"
 'run_info.contact_name' = "Andy Aschwanden"
 'run_info.domain' = "GrIS"
-'run_info.experiment' = "ocx_prescribed"
+'run_info.experiment' = "ocx_free"
 'run_info.group' = "UAF"
 'run_info.institution' = "University of Alaska Fairbanks"
 'run_info.ism' = "PISM"
@@ -26,7 +26,7 @@ pathway = "historical"
 prefix = "ismip7/greenland/input"
 profile = true
 regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
-retreat_file = "pism_g450m_frontretreat_calfin_1972_2019_MS.nc"
+retreat_file = "none"
 version = "v3"
 
 [campaign.forcing_versions]
@@ -43,7 +43,7 @@ OCX = {climate = 1, ocean = 1}
 'time.calendar' =  "standard"
 'time.reference_date' = "1850-01-01"
 'time.start' = "1985-01-01"
-'time.end' = "1987-01-01"
+'time.end' = "2005-01-01"
 
 [time_stepping]
 
@@ -82,7 +82,7 @@ OCX = {climate = 1, ocean = 1}
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "monthly"
-'output.spatial.vars' = "bmelt,mask,plume_fresh_water_melt_rate,plume_discharge_flux,plume_disch_q0,plume_temperature,plume_shelf_base_elevation,ice_mass_transport_across_grounding_line,velsurf_mag"
+'output.spatial.vars' = "bmelt,mask,plume_basal_melt_rate,plume_fresh_water_melt_rate,plume_discharge_flux,ice_mass_transport_across_grounding_line,velsurf_mag,velsurf,thk,strain_rates,dHdt,ice_mass_transport_across_grounding_line,ice_mass,mass_fluxes,usurf,velsurf_mag,thk,mask,sftgif,frontal_melt_rate,frontal_melt_retreat_rate"
 
 [grid]
 

@@ -32,6 +32,7 @@ square basins whose integrals are known, covering:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import geopandas as gpd
@@ -169,6 +170,46 @@ def test_wildcard_root_collects_several_job_directories(tmp_path: Path):
     assert sorted(ds["gcm_id"].values) == ["CESM2-WACCM", "MRI-ESM2-0", "OCX"]
     with pytest.raises(FileNotFoundError, match="no lithk files"):
         mb.find_files(root, ["lithk"])
+
+
+def test_a_run_past_2262_keeps_one_datetime_axis(tree: Path):
+    """
+    A run past 2262, where nanosecond dates end, still stacks with the rest as datetime64.
+
+    Decoded to nanoseconds such a file comes back as cftime while the others
+    stay datetime64, and the combined time axis then mixes types that
+    cannot be compared, which broke the regional series.
+
+    Parameters
+    ----------
+    tree : pathlib.Path
+        The run's ``output`` directory.
+    """
+    years = [2290, 2291]
+    # pandas cannot hold these dates at nanoseconds, so the times are written
+    # as numbers, as PISM writes them.
+    days = [(datetime(year, 7, 1) - datetime(1850, 1, 1)).days for year in years]
+    for var, level in (("acabf", 5.0), ("ligroundf", -4.0)):
+        ds = xr.Dataset(
+            {var: (("time", "y", "x"), np.full((2, NY, NX), level, "float32"), {"units": "kg m-2 s-1"})},
+            coords={"y": Y, "x": X},
+        )
+        ds["time"] = ("time", np.array(days, dtype="float64"), {"units": "days since 1850-01-01"})
+        ds["mapping"] = ((), np.int8(0), {"grid_mapping_name": "polar_stereographic", "proj_params": "EPSG:3413"})
+        ds[var].attrs["grid_mapping"] = "mapping"
+        directory = tree.joinpath(*mb.DEFAULT_TREE, "C006")
+        directory.mkdir(parents=True, exist_ok=True)
+        ds.to_netcdf(directory / f"{var}_GrIS_UAF_PISM_m001_MRI-ESM2-0_f001_ssp126_C006_2290-2291.nc")
+
+    ensemble = mb.open_submission(mb.find_files(str(tree), ["acabf", "ligroundf"]))
+    assert np.issubdtype(ensemble["time"].dtype, np.datetime64)
+    years_found = ensemble["time"].dt.year.values
+    assert years_found.min() == 2013 and years_found.max() == 2291
+
+    regions = mb.compute_regions(ensemble, outline(), variables=["acabf", "ligroundf"], reference_year="2013")
+    late = regions["mass_balance"].sel(gcm_id="MRI-ESM2-0", ssp_id="ssp126", region="GIS_W").dropna("time")
+    # The historical run of the GCM is spliced in front of the projection.
+    assert list(late["time"].dt.year.values) == [2013, 2014] + years
 
 
 def test_find_files_lists_the_tree(tree: Path):
@@ -316,6 +357,42 @@ def test_resolve_outline_falls_back_to_the_packaged_file(tree: Path):
     assert mb.resolve_outline(str(tree), None) == str(tree / "observations" / mb.DEFAULT_OUTLINE)
 
 
+def test_the_control_run_continues_the_historical_run(tree: Path):
+    """
+    A ctrl run (C009/C010) is spliced onto its GCM's historical run like an SSP.
+
+    It starts in 2015, so left on its own it has no record in a reference year
+    before that and its cumulative mass balance is missing throughout.
+
+    Parameters
+    ----------
+    tree : pathlib.Path
+        The run's ``output`` directory.
+    """
+    time = pd.to_datetime(["2015-07-01", "2016-07-01"])
+    for var, level in (("acabf", 6.0), ("ligroundf", -5.0)):
+        ds = xr.Dataset(
+            {var: (("time", "y", "x"), np.full((2, NY, NX), level, "float32"), {"units": "kg m-2 s-1"})},
+            coords={"time": time, "y": Y, "x": X},
+        )
+        ds["mapping"] = ((), np.int8(0), {"grid_mapping_name": "polar_stereographic", "proj_params": "EPSG:3413"})
+        ds[var].attrs["grid_mapping"] = "mapping"
+        directory = tree.joinpath(*mb.DEFAULT_TREE, "C010")
+        directory.mkdir(parents=True, exist_ok=True)
+        ds.to_netcdf(directory / f"{var}_GrIS_UAF_PISM_m001_MRI-ESM2-0_f001_ctrl_C010_2015-2016.nc")
+
+    ensemble = mb.open_submission(mb.find_files(str(tree), ["acabf", "ligroundf"]))
+    spliced = mb.splice_historical(ensemble)
+    ctrl = spliced["acabf"].sel(gcm_id="MRI-ESM2-0", ssp_id="ctrl").isel(y=0, x=0).dropna("time").compute()
+    # MRI's historical run (2.0) in front of its control run (6.0).
+    np.testing.assert_allclose(ctrl.values, [2.0, 2.0, 6.0, 6.0])
+
+    regions = mb.compute_regions(ensemble, outline(), variables=["acabf", "ligroundf"], reference_year="2013")
+    cumulative = regions["cumulative_mass_balance"].sel(gcm_id="MRI-ESM2-0", ssp_id="ctrl", region="GIS_W")
+    assert cumulative.notnull().sum() == 4
+    assert float(cumulative.sel(time="2013").squeeze()) == 0.0
+
+
 def test_splice_historical_fills_the_pathways(tree: Path):
     """
     Each pathway gets its GCM's historical values where it has none.
@@ -345,17 +422,17 @@ def test_splice_historical_fills_the_pathways(tree: Path):
 
 def test_to_sea_level_turns_mass_loss_into_sea_level_rise():
     """
-    362.5 Gt lost is one millimetre of sea level; a gain lowers it.
+    362.5 Gt lost is one millimetre (0.1 cm) of sea level; a gain lowers it.
     """
     cumulative = xr.DataArray([-362.5, 0.0, 725.0], dims="time", attrs={"units": "Gt"}, name="cumulative_mass_balance")
     sle = mb.to_sea_level(cumulative)
-    np.testing.assert_allclose(sle, [1.0, 0.0, -2.0])
-    assert sle.attrs["units"] == "mm"
+    np.testing.assert_allclose(sle, [0.1, 0.0, -0.2], atol=1e-12)
+    assert sle.attrs["units"] == "cm"
 
 
 def test_plot_region_draws_one_basin_with_a_sea_level_axis(tree: Path, tmp_path: Path, monkeypatch):
     """
-    One basin in one panel, zeroed at the reference year, with the mm SLE axis on the right.
+    One basin in one panel, zeroed at the reference year, with the cm SLE axis on the right.
 
     Parameters
     ----------
@@ -378,7 +455,7 @@ def test_plot_region_draws_one_basin_with_a_sea_level_axis(tree: Path, tmp_path:
     ax = fig.axes[0]
     assert "since 2015" in ax.get_ylabel()
     labels = [a.get_ylabel() for a in ax.child_axes]
-    assert any("mm SLE" in label for label in labels)
+    assert any("cm SLE" in label for label in labels)
     # Every drawn line passes through zero in 2015.
     for line in ax.get_lines():
         x, y = line.get_data()
@@ -482,3 +559,56 @@ def test_legends_split_pathways_from_gcms(tmp_path: Path, monkeypatch, single: b
     assert [label for label, _, _ in first] == [mb.OBS_LABEL, "OCX", "ssp126", "ssp585"]
     assert first[0][1] != "Line2D"  # the band, not the observed mean
     assert [(label, style) for label, _, style in second] == [("CESM2-WACCM", "-"), ("MRI-ESM2-0", "--")]
+
+
+def test_onto_labels_pads_lazily_and_matches_reindex():
+    """
+    Putting a lazy field on more labels gives what ``reindex`` gives, in chunks no larger than the data's.
+    """
+    time = pd.to_datetime(["2014-07-01", "2015-07-01"])
+    data = np.arange(2 * NY * NX, dtype="float32").reshape(2, NY, NX)
+    ds = xr.Dataset(
+        {"acabf": (("time", "y", "x"), data, {"units": "kg m-2 s-1"}), "count": (("time",), [1, 2])},
+        coords={"time": time, "y": Y, "x": X},
+    ).chunk({"time": 1})
+    labels = pd.to_datetime(["2013-07-01", "2015-07-01", "2014-07-01", "2016-07-01"])
+    out = mb.onto_labels(ds, "time", labels)
+    assert out["acabf"].chunks[0] == (1, 1, 1, 1)
+    assert out["acabf"].attrs == {"units": "kg m-2 s-1"}
+    # The padding is NaN blocks, not real data read and masked.
+    assert not any("where" in str(key) for key in out["acabf"].data.dask.layers)
+    xr.testing.assert_equal(out.compute(), ds.compute().reindex(time=labels))
+    assert mb.onto_labels(ds, "time", ds.indexes["time"]) is ds
+
+
+def test_regional_sums_agree_however_the_grid_is_chunked(tree: Path):
+    """
+    A chunk holding the whole grid is reduced in one task; the result matches the masked contraction.
+
+    Parameters
+    ----------
+    tree : pathlib.Path
+        The run's ``output`` directory.
+    """
+    paths = mb.find_files(str(tree), ["acabf", "ligroundf"])
+    whole = mb.regional_sums(mb.open_submission(paths, chunks={"time": 1, "y": -1, "x": -1}), outline())
+    split = mb.regional_sums(mb.open_submission(paths, chunks={"time": 1, "y": 2, "x": -1}), outline())
+    assert any("basin_block" in str(key) for key in whole["acabf"].data.dask.layers)
+    assert not any("basin_block" in str(key) for key in split["acabf"].data.dask.layers)
+    whole, split = whole.compute(), split.compute()
+    assert whole["acabf"].isnull().any() and whole["acabf"].notnull().any()
+    xr.testing.assert_allclose(whole, split)
+    # In memory, the same reduction runs without Dask.
+    eager = mb.regional_sums(mb.open_submission(paths).compute(), outline())
+    xr.testing.assert_allclose(eager, whole)
+
+
+def test_basin_block_counts_missing_cells_as_zero_and_empty_basins_as_missing():
+    """
+    Missing cells add nothing; a basin with no valid cell, or no cell at all, is missing.
+    """
+    block = np.array([[[1.0, np.nan], [np.nan, np.nan]]], dtype="float32")
+    cells = np.array([0, 1, 2, 3], dtype=np.int32)
+    out = mb.basin_block(block, cells, np.array([0, 2, 4, 4]), cell_area=10.0)
+    assert out.shape == (1, 3) and out.dtype == np.float64
+    np.testing.assert_array_equal(out, [[10.0, np.nan, np.nan]])

@@ -73,8 +73,7 @@ the staged data on disk.
 import xarray as xr
 import matplotlib.pyplot as plt
 
-from pism_terra.colormaps import register_colormaps
-register_colormaps()
+import cmglaciology  # registers the "cmg.*" colormaps
 
 frank_ds = xr.open_dataset("frank/RGI2000-v7.0-C-01-04374/input/bootfile_RGI2000-v7.0-C-01-04374.nc")
 frank_thickness = frank_ds.thickness.where(frank_ds.thickness > 0)
@@ -103,8 +102,7 @@ axs[2].set_title("Ice Thickness (EFrank - Maffezzoli)")
 import xarray as xr
 import matplotlib.pyplot as plt
 
-from pism_terra.colormaps import register_colormaps
-register_colormaps()
+import cmglaciology  # registers the "cmg.*" colormaps
 
 frank_ds = xr.open_dataset("../_data/frank_thickness.nc")
 frank_thickness = frank_ds.thickness.where(frank_ds.thickness > 0)
@@ -192,8 +190,8 @@ maffezzoli_speed = maffezzoli_state.velsurf_mag
 diff_speed = frank_speed - maffezzoli_speed
 
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(12, 16))
-frank_speed.plot(ax=axs[0], cmap="speed", vmin=0, vmax=1000)
-maffezzoli_speed.plot(ax=axs[1], cmap="speed" , vmin=0, vmax=1000)
+frank_speed.plot(ax=axs[0], cmap="cmg.speed", vmin=0, vmax=1000)
+maffezzoli_speed.plot(ax=axs[1], cmap="cmg.speed" , vmin=0, vmax=1000)
 diff_speed.plot(ax=axs[2], cmap="RdBu", vmin=-250, vmax=250)
 axs[0].set_title("Frank surface speed")
 axs[1].set_title("Maffezzoli surface speed")
@@ -225,8 +223,8 @@ maffezzoli_speed = maffezzoli_state.velsurf_mag
 diff_speed = frank_speed - maffezzoli_speed
 
 fig, axs = plt.subplots(3, 1, sharex=True, figsize=(12, 16))
-frank_speed.plot(ax=axs[0], cmap="speed", vmin=0, vmax=1000)
-maffezzoli_speed.plot(ax=axs[1], cmap="speed" , vmin=0, vmax=1000)
+frank_speed.plot(ax=axs[0], cmap="cmg.speed", vmin=0, vmax=1000)
+maffezzoli_speed.plot(ax=axs[1], cmap="cmg.speed" , vmin=0, vmax=1000)
 diff_speed.plot(ax=axs[2], cmap="RdBu", vmin=-250, vmax=250)
 axs[0].set_title("Frank surface speed")
 axs[1].set_title("Maffezzoli surface speed")

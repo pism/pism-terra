@@ -116,6 +116,8 @@ def test_compute_is_silent_for_eager_inputs(monkeypatch, capsys):
     np.testing.assert_allclose(out, [1.0, 2.0])
     assert capsys.readouterr().err == ""
     lazy = xr.DataArray([1.0, 2.0], dims=["a"]).chunk({"a": 1})
+    # The bar carries the label; without the delay it is drawn at once.
+    monkeypatch.setattr(progress, "BAR_MINIMUM_SECONDS", 0.0)
     progress.compute(lazy, desc="should print")
     assert "should print" in capsys.readouterr().err
 
