@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-var", default="usurf", help="Variable colored on the base terrain (default: usurf).")
     p.add_argument(
         "--base-cmap",
-        default="akbathtopo",
+        default="aktopo",
         help="Colormap for the base terrain; Crameri maps as batlow or cmc.batlow (default: akbathtopo).",
     )
     p.add_argument("--base-clim", type=float, nargs=2, default=None, help="Base color limits MIN MAX (default: auto).")
@@ -1239,7 +1239,7 @@ def main() -> None:
     steps = list(range(0, int(ds.sizes.get("time", 1)), args.time_stride))
 
     # Fixed color limits (defaults match the elevation/velocity scales).
-    base_clim = tuple(args.base_clim) if args.base_clim else (-2000.0, 3500.0)
+    base_clim = tuple(args.base_clim) if args.base_clim else (0.0, 3500.0)
     overlay_clim = tuple(args.overlay_clim) if args.overlay_clim else (1.0, 100.0)
 
     # Small upward offset so the ice overlay wins the depth test over the base.
