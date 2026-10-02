@@ -27,7 +27,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pism_terra.glacier.render_terrain_3d import (
+# The renderer is a development tool: PyVista is in environment-dev.yml only,
+# so the test environment may not have it.
+pytest.importorskip("pyvista")
+
+# pylint: disable=wrong-import-position
+from pism_terra.glacier.render_terrain_3d import (  # noqa: E402
     SECONDS_PER_YEAR,
     GridSampler,
     advect,

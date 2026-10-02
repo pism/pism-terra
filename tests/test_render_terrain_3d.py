@@ -23,9 +23,15 @@ from __future__ import annotations
 
 import geopandas as gpd
 import numpy as np
+import pytest
 import shapely
 
-from pism_terra.glacier.render_terrain_3d import (
+# The renderer is a development tool: PyVista is in environment-dev.yml only,
+# so the test environment may not have it.
+pytest.importorskip("pyvista")
+
+# pylint: disable=wrong-import-position
+from pism_terra.glacier.render_terrain_3d import (  # noqa: E402
     GridSampler,
     drape_outlines,
     load_outlines,
