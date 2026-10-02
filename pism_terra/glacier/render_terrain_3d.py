@@ -20,12 +20,18 @@ fraction of a pixel per frame. Particles respawn at random on moving ice when
 they reach the end of their lives, leave the ice or stall. They are traced once,
 before rendering, so the frames can still be rendered in parallel.
 
+``--outlines FILE`` drapes the outlines of a vector file (glacier outlines, say)
+over the terrain as lines, black by default. The file may be in any CRS: the
+outlines are reprojected to the grid's, which is read from the netCDF file's
+grid mapping (or given with ``--crs``), and only those in view are drawn.
+
 Examples
 --------
     python render_terrain_3d.py path/to/spatial.nc
     python render_terrain_3d.py spatial.nc --z-exaggeration 4 --cmap turbo --log
     python render_terrain_3d.py spatial.nc --overlay-var debris_thickness --overlay-cmap batlow
     python render_terrain_3d.py spatial.nc --overlay-var dHdt --particles 3000
+    python render_terrain_3d.py spatial.nc --outlines glacier_s4f_input/s4f_c.gpkg
     # then, e.g.:
     ffmpeg -framerate 15 -i frames/frame_%04d.png -pix_fmt yuv420p out.mp4
 """
@@ -44,12 +50,20 @@ import cmcrameri.cm  # noqa: F401  pylint: disable=unused-import
 
 # Imported for its side effect: registering the project's "cmg.*" colormaps.
 import cmglaciology.cm  # noqa: F401  pylint: disable=unused-import
+import geopandas as gpd
 import matplotlib
 import numpy as np
+import pyogrio
 import pyvista as pv
+
+# Imported for its side effect: registering the ``.rio`` accessor.
+import rioxarray  # noqa: F401  pylint: disable=unused-import
+import shapely
 import xarray as xr
 from matplotlib.colors import LightSource, ListedColormap, LogNorm, Normalize
 from scipy.ndimage import map_coordinates
+
+from pism_terra.workflow import dataset_crs
 
 
 def detect_screen_size(default: tuple[int, int] = (1600, 1200)) -> tuple[int, int]:
@@ -218,6 +232,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--particle-color", default="white", help="Particle and trail color (default: white).")
     p.add_argument("--particle-width", type=float, default=2.5, help="Trail line width in pixels (default 2.5).")
     p.add_argument("--particle-seed", type=int, default=0, help="Random seed for placing the particles (default 0).")
+    # Outlines draped over the terrain.
+    p.add_argument(
+        "--outlines",
+        default=None,
+        help="Vector file (GeoPackage, shapefile, ...) whose outlines are drawn on the terrain; any CRS.",
+    )
+    p.add_argument("--outline-color", default="black", help="Outline color (default: black).")
+    p.add_argument("--outline-width", type=float, default=2.0, help="Outline line width in pixels (default 2).")
+    p.add_argument(
+        "--crs",
+        default=None,
+        help="CRS of the grid, e.g. EPSG:32606, for --outlines (default: read from the file's grid mapping).",
+    )
     p.add_argument("--time-stride", type=int, default=1, help="Render every Nth time step (default: 1).")
     p.add_argument(
         "--font-size",
@@ -796,6 +823,92 @@ def particle_trails(
     return poly
 
 
+def load_outlines(path: str | Path, crs: str, x: np.ndarray, y: np.ndarray) -> list[np.ndarray]:
+    """
+    Read the outlines of a vector file that lie on the grid, as lines in its CRS.
+
+    Only the features that touch the grid are read, so a file covering a whole
+    region costs no more than the part in view. Polygons give their outer
+    boundaries and their holes (nunataks). The lines are cut at the edge of
+    the grid, thinned to the grid spacing, which is all the detail a surface on
+    that grid can show, and then given a vertex at least every grid spacing,
+    so that a line draped over the terrain follows it between its corners.
+
+    Parameters
+    ----------
+    path : str or Path
+        Vector file readable by GeoPandas, in any CRS.
+    crs : str
+        CRS of the grid.
+    x, y : numpy.ndarray
+        Cell-center coordinates, evenly spaced, in either order.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        One ``(n, 2)`` array of map coordinates ``(x, y)`` per line; empty when
+        no outline lies on the grid.
+    """
+    spacing = min(abs(float(x[1] - x[0])), abs(float(y[1] - y[0])))
+    # The extent of the cell centers: heights can be interpolated up to there.
+    extent = shapely.box(float(np.min(x)), float(np.min(y)), float(np.max(x)), float(np.max(y)))
+    file_crs = pyogrio.read_info(path)["crs"]
+    # The grid's box has curved edges in the file's CRS; give it enough vertices.
+    window = gpd.GeoSeries([shapely.segmentize(extent, spacing)], crs=crs).to_crs(file_crs)
+    outlines = gpd.read_file(path, bbox=tuple(window.total_bounds)).to_crs(crs)
+    lines = shapely.intersection(shapely.boundary(outlines.geometry.values), extent)
+    lines = shapely.segmentize(shapely.simplify(lines, spacing / 2.0), spacing)
+    parts = shapely.get_parts(lines[~shapely.is_empty(lines)])
+    # Cutting at the edge can leave points behind; only lines can be drawn.
+    parts = parts[
+        np.isin(shapely.get_type_id(parts), (shapely.GeometryType.LINESTRING, shapely.GeometryType.LINEARRING))
+    ]
+    return [shapely.get_coordinates(part) for part in parts if shapely.get_num_coordinates(part) > 1]
+
+
+def outline_cells(lines: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Pack lines into the points and connectivity of one PyVista line mesh.
+
+    Parameters
+    ----------
+    lines : list of numpy.ndarray
+        Output of :func:`load_outlines`.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        All the points, ``(n, 2)``, and the ``lines`` array of
+        :class:`pyvista.PolyData`: for each line its length and point indices.
+    """
+    offsets = np.cumsum([0] + [len(line) for line in lines])
+    cells = [np.concatenate([[len(line)], start + np.arange(len(line))]) for line, start in zip(lines, offsets)]
+    return np.concatenate(lines), np.concatenate(cells)
+
+
+def drape_outlines(xy: np.ndarray, cells: np.ndarray, height: np.ndarray, sample: GridSampler) -> pv.PolyData:
+    """
+    Lay the outlines on a surface.
+
+    Parameters
+    ----------
+    xy, cells : numpy.ndarray
+        Output of :func:`outline_cells`.
+    height : numpy.ndarray
+        Height to drape the outlines at, ``(ny, nx)``, already exaggerated and lifted.
+    sample : GridSampler
+        Interpolator for the grid.
+
+    Returns
+    -------
+    pyvista.PolyData
+        The outlines as polylines at the height of the surface.
+    """
+    z = sample(height, xy)
+    z[~np.isfinite(z)] = np.nanmax(height)
+    return pv.PolyData(np.column_stack([xy, z]), lines=cells)
+
+
 def _var_title(ds: xr.Dataset, var: str) -> str:
     """
     Build a scalar-bar title ``var [units]`` for a dataset variable.
@@ -974,6 +1087,17 @@ def _render_frame(t: int) -> str:
                 lighting=False,
                 show_scalar_bar=False,
             )
+    outlines = cfg.get("outlines")
+    if outlines is not None:
+        # Above the ice overlay and the particle trails.
+        draped = drape_outlines(outlines["xy"], outlines["cells"], z + 3.0 * cfg["z_offset"], w["sampler"])
+        pl.add_mesh(
+            draped,
+            color=cfg["outline_color"],
+            line_width=cfg["outline_width"],
+            lighting=False,
+            show_scalar_bar=False,
+        )
     pl.add_text(
         time_label(ds, t),
         position="upper_left",
@@ -1124,6 +1248,17 @@ def main() -> None:
     z_offset = 0.002 * float(np.nanmax(z_all) - np.nanmin(z_all))
     camera = _compute_camera(xx, yy, np.nan_to_num(surf0, nan=float(np.nanmin(surf0))), args, window_size)
     particles = _trace(ds, steps, args) if args.particles > 0 else None
+    outlines = None
+    if args.outlines:
+        try:
+            crs = dataset_crs(ds, args.crs)
+        except ValueError as err:
+            raise SystemExit(f"--outlines needs the CRS of the grid: {err}") from err
+        lines = load_outlines(Path(args.outlines).expanduser(), crs, ds["x"].values, ds["y"].values)
+        print(f"Drawing {len(lines)} outline(s) from {args.outlines}")
+        if lines:
+            xy, cells = outline_cells(lines)
+            outlines = {"xy": xy, "cells": cells}
     ds.close()  # each worker opens its own handle
 
     cfg = {
@@ -1154,6 +1289,9 @@ def main() -> None:
         "particle_trail": args.particle_trail,
         "particle_width": args.particle_width,
         "particle_color": args.particle_color,
+        "outlines": outlines,
+        "outline_color": args.outline_color,
+        "outline_width": args.outline_width,
     }
 
     total = len(steps)
