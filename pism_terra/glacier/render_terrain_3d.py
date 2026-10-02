@@ -41,17 +41,15 @@ from pathlib import Path
 
 # Imported for its side effect: registering Crameri's "cmc.*" colormaps.
 import cmcrameri.cm  # noqa: F401  pylint: disable=unused-import
+
+# Imported for its side effect: registering the project's "cmg.*" colormaps.
+import cmglaciology.cm  # noqa: F401  pylint: disable=unused-import
 import matplotlib
 import numpy as np
 import pyvista as pv
 import xarray as xr
 from matplotlib.colors import LightSource, ListedColormap, LogNorm, Normalize
 from scipy.ndimage import map_coordinates
-
-from pism_terra.colormaps import register_colormaps
-
-# Register the project's QGIS colormaps (e.g. "speed") into matplotlib's registry.
-register_colormaps()
 
 
 def detect_screen_size(default: tuple[int, int] = (1600, 1200)) -> tuple[int, int]:
@@ -93,19 +91,21 @@ def resolve_cmap(name: str) -> matplotlib.colors.Colormap:
     Resolve a colormap name to a matplotlib ``Colormap`` object.
 
     Passing the object (rather than the name) to PyVista bypasses its built-in
-    cmocean/colorcet name handling, so project colormaps registered via
-    :func:`register_colormaps` (e.g. ``"speed"``) are used instead of a
-    same-named cmocean map.
+    cmocean/colorcet name handling, so the project colormaps from
+    ``cmglaciology`` (e.g. ``"speed"``) are used instead of a same-named
+    cmocean map.
 
-    Crameri's scientific colormaps are registered with a ``cmc.`` prefix
-    (``cmc.batlow``) and can also be given without it (``batlow``). A bare name
-    that matplotlib already has (``berlin``, ``managua``, ``vanimo``) resolves
-    to matplotlib's version; use the prefix for Crameri's.
+    The project colormaps are registered with a ``cmg.`` prefix (``cmg.speed``)
+    and Crameri's scientific colormaps with a ``cmc.`` prefix (``cmc.batlow``);
+    both can also be given without it (``speed``, ``batlow``). A bare name that
+    matplotlib already has (``berlin``, ``managua``, ``vanimo``) resolves to
+    matplotlib's version; use the prefix for Crameri's.
 
     Parameters
     ----------
     name : str
-        Registered colormap name, or a Crameri colormap name without ``cmc.``.
+        Registered colormap name, or a ``cmglaciology`` or Crameri colormap name
+        without its ``cmg.`` or ``cmc.`` prefix.
 
     Returns
     -------
@@ -117,7 +117,7 @@ def resolve_cmap(name: str) -> matplotlib.colors.Colormap:
     SystemExit
         If ``name`` is not a registered colormap.
     """
-    for candidate in (name, f"cmc.{name}"):
+    for candidate in (name, f"cmg.{name}", f"cmc.{name}"):
         if candidate in matplotlib.colormaps:
             return matplotlib.colormaps[candidate]
     raise SystemExit(f"Unknown colormap {name!r}. Registered: {', '.join(sorted(matplotlib.colormaps))}")
