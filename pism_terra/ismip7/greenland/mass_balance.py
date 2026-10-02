@@ -1126,8 +1126,8 @@ def to_sea_level(cumulative: xr.DataArray) -> xr.DataArray:
     """
     ureg = pint.application_registry
     per_mm = ureg.Quantity(*GT_PER_MM_SLE)
-    sle = -(cumulative.pint.quantify() / per_mm).pint.to("mm").pint.dequantify()
-    sle.attrs = {"units": "mm", "long_name": "contribution to sea level (sea-level equivalent)"}
+    sle = -(cumulative.pint.quantify() / per_mm).pint.to("cm").pint.dequantify()
+    sle.attrs = {"units": "cm", "long_name": "contribution to sea level (sea-level equivalent)"}
     return sle.rename(cumulative.name)
 
 
@@ -1174,7 +1174,7 @@ def plot_region(
     be a fixed rescaling of the first, so "since 2015" on the right holds only
     for series that are zero in 2015. Each series is zeroed at its own record
     of that year; a line with none (a run not yet past it) is left out. The right axis is the same curve in
-    mm SLE (:func:`to_sea_level`), mass loss counting as sea-level rise.
+    cm SLE (:func:`to_sea_level`), mass loss counting as sea-level rise.
 
     Parameters
     ----------
@@ -1208,7 +1208,7 @@ def plot_region(
     series = within(series, xlim)
 
     # Axis transforms from pint, so the factor lives in one place.
-    gt_to_mm = float(to_sea_level(xr.DataArray(1.0, attrs={"units": units})))
+    gt_to_cm = float(to_sea_level(xr.DataArray(1.0, attrs={"units": units})))
 
     with mpl.rc_context(rc=rc_params):
         fig, ax = plt.subplots(figsize=(4.8, 2.6))
@@ -1225,8 +1225,8 @@ def plot_region(
         ax.axhline(0.0, color="k", lw=0.4, ls="dotted", zorder=0)
         ax.set_xlim(np.datetime64(xlim[0]), np.datetime64(xlim[1]))
         ax.set_ylabel(f"Cumulative mass balance\nsince {sle_reference} ({units})")
-        sle = ax.secondary_yaxis("right", functions=(lambda gt: gt * gt_to_mm, lambda mm: mm / gt_to_mm))
-        sle.set_ylabel(f"Contribution to sea level\nsince {sle_reference} (mm SLE)")
+        sle = ax.secondary_yaxis("right", functions=(lambda gt: gt * gt_to_cm, lambda cm: cm / gt_to_cm))
+        sle.set_ylabel(f"Contribution to sea level\nsince {sle_reference} (cm SLE)")
         ax.set_title(region)
         add_legends(ax, pathways, gcms, observed, fontsize=5, lw=0.8)
         fig.tight_layout()
