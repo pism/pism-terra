@@ -141,8 +141,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-var", default="usurf", help="Variable colored on the base terrain (default: usurf).")
     p.add_argument(
         "--base-cmap",
-        default="dem_ak",
-        help="Colormap for the base terrain; Crameri maps as batlow or cmc.batlow (default: dem_ak).",
+        default="akbathtopo",
+        help="Colormap for the base terrain; Crameri maps as batlow or cmc.batlow (default: akbathtopo).",
     )
     p.add_argument("--base-clim", type=float, nargs=2, default=None, help="Base color limits MIN MAX (default: auto).")
     p.add_argument(
