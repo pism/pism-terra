@@ -32,15 +32,6 @@ regrid_file = "g900m_1985_id_BAYES-MEDIAN_HYBRID.nc"
 retreat_file = "none"
 version = "v3"
 
-[campaign.forcing_versions]
-
-# Version tags in the forcing *filenames*, per ESM and product — the same
-# numbers as [gcms.OCX.source] in setup_ismip7_greenland.toml. The Core
-# counters carry these per experiment; this config has no counter, so
-# without them staging picks the newest file present, which silently
-# selects a superseded product that is still on S3.
-OCX = {climate = 1, ocean = 1}
-
 [time]
 
 'time.calendar' =  "standard"
