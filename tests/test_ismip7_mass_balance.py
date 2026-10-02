@@ -422,17 +422,17 @@ def test_splice_historical_fills_the_pathways(tree: Path):
 
 def test_to_sea_level_turns_mass_loss_into_sea_level_rise():
     """
-    362.5 Gt lost is one millimetre of sea level; a gain lowers it.
+    362.5 Gt lost is one millimetre (0.1 cm) of sea level; a gain lowers it.
     """
     cumulative = xr.DataArray([-362.5, 0.0, 725.0], dims="time", attrs={"units": "Gt"}, name="cumulative_mass_balance")
     sle = mb.to_sea_level(cumulative)
-    np.testing.assert_allclose(sle, [1.0, 0.0, -2.0])
-    assert sle.attrs["units"] == "mm"
+    np.testing.assert_allclose(sle, [0.1, 0.0, -0.2], atol=1e-12)
+    assert sle.attrs["units"] == "cm"
 
 
 def test_plot_region_draws_one_basin_with_a_sea_level_axis(tree: Path, tmp_path: Path, monkeypatch):
     """
-    One basin in one panel, zeroed at the reference year, with the mm SLE axis on the right.
+    One basin in one panel, zeroed at the reference year, with the cm SLE axis on the right.
 
     Parameters
     ----------
@@ -455,7 +455,7 @@ def test_plot_region_draws_one_basin_with_a_sea_level_axis(tree: Path, tmp_path:
     ax = fig.axes[0]
     assert "since 2015" in ax.get_ylabel()
     labels = [a.get_ylabel() for a in ax.child_axes]
-    assert any("mm SLE" in label for label in labels)
+    assert any("cm SLE" in label for label in labels)
     # Every drawn line passes through zero in 2015.
     for line in ax.get_lines():
         x, y = line.get_data()

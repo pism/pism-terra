@@ -1112,7 +1112,8 @@ def to_sea_level(cumulative: xr.DataArray) -> xr.DataArray:
     Convert a cumulative mass balance to a contribution to sea level.
 
     Mass lost from the ice sheet raises sea level, so the sign flips: a
-    cumulative mass balance of -362.5 Gt is +1 mm SLE (:data:`GT_PER_MM_SLE`).
+    cumulative mass balance of -362.5 Gt is +1 mm SLE (:data:`GT_PER_MM_SLE`),
+    reported here as 0.1 cm.
 
     Parameters
     ----------
@@ -1122,7 +1123,7 @@ def to_sea_level(cumulative: xr.DataArray) -> xr.DataArray:
     Returns
     -------
     xarray.DataArray
-        Sea-level contribution in ``mm``, positive for a sea-level rise.
+        Sea-level contribution in ``cm``, positive for a sea-level rise.
     """
     ureg = pint.application_registry
     per_mm = ureg.Quantity(*GT_PER_MM_SLE)
