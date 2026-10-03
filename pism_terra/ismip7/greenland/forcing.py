@@ -1541,7 +1541,7 @@ def extend_final_time_bound(path: Path | str, end: str = FRONT_RETREAT_END) -> P
 
 #: Resolutions (m) the CalFin retreat mask is published at. A run picks the
 #: file of its own grid (see :func:`pism_terra.ismip7.greenland.stage.retreat_file_for_resolution`).
-CALFIN_RESOLUTIONS: tuple[int, ...] = (450, 600, 900, 1200, 1500, 1800, 2400, 3600, 4500)
+CALFIN_RESOLUTIONS: tuple[int, ...] = (450, 600, 900, 1200, 1500, 1800, 2400, 3600, 4500, 4800)
 
 
 def calfin_filename(resolution: int, freq: str = "MS") -> str:
