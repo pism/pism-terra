@@ -22,20 +22,191 @@
 Provide raster functions.
 """
 
+import math
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
+import rasterio.shutil
 import rioxarray as rxr
 import xarray as xr
-from geocube.api.core import make_geocube
-from rasterio.warp import Resampling, calculate_default_transform, reproject
+from pyproj import CRS, Transformer
+from rasterio.features import rasterize
+from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from pism_terra.workflow import check_xr_lazy
+from pism_terra.domain import create_domain
+from pism_terra.workflow import check_xr_lazy, drop_geotransform_attr
+
+
+def retreat_geometry(ds1: gpd.GeoDataFrame, ds2: gpd.GeoDataFrame, crs: str = "EPSG:3413") -> gpd.GeoSeries:
+    """
+    Area where ice may exist at one date: the reference outline minus the retreated area.
+
+    Parameters
+    ----------
+    ds1 : gpd.GeoDataFrame
+        Retreated area (the cumulative CalFin front polygons up to the date).
+    ds2 : gpd.GeoDataFrame
+        Reference outline the ice may fill (basins united with the fronts).
+    crs : str, optional
+        The coordinate reference system, by default "EPSG:3413".
+
+    Returns
+    -------
+    gpd.GeoSeries
+        ``ds2`` with ``ds1`` (buffered by 5 m) cut out.
+    """
+    ds = gpd.GeoDataFrame(ds1, crs=crs)
+    ds.geometry = ds.geometry.make_valid()
+    ds_dissolved = ds.dissolve()
+    return ds2.difference(ds_dissolved.buffer(5))
+
+
+def rasterize_retreat_mask(
+    output_file: Path | str,
+    date: pd.Timestamp,
+    allowed: gpd.GeoSeries,
+    x_bnds: list | np.ndarray,
+    y_bnds: list | np.ndarray,
+    resolution: float,
+    crs: str = "EPSG:3413",
+    encoding_time: dict = {"time": {"units": "hours since 1972-01-01 00:00:00", "calendar": "standard"}},
+) -> Path:
+    """
+    Write the 0/1 ice-extent mask of one date on the PISM grid of one resolution.
+
+    The mask is rasterized straight onto the cell centres that
+    :func:`pism_terra.domain.create_domain` places for ``resolution`` -- the
+    grid PISM builds from the same bounds -- so a run at that resolution reads
+    it without regridding. That matters: PISM's prescribed front retreat zeroes
+    the ice of every margin cell whose mask value is below 1, and interpolating
+    a 0/1 mask from any other grid puts a fraction on every margin cell. Coarse
+    runs fed the 450 m mask lost whole cells of grounded ice each step and
+    aborted with "ice thickness would exceed Lz". A cell is 1 when its centre
+    lies inside ``allowed`` and 0 otherwise; nothing in between.
+
+    Parameters
+    ----------
+    output_file : Path or str
+        The path to the output NetCDF file.
+    date : pd.Timestamp
+        The date the mask holds for; recorded as the first of its month.
+    allowed : gpd.GeoSeries
+        Area where ice may exist, from :func:`retreat_geometry`.
+    x_bnds : list or numpy.ndarray
+        Domain x bounds (either order).
+    y_bnds : list or numpy.ndarray
+        Domain y bounds (either order).
+    resolution : float
+        Grid resolution in meters; must divide both domain extents.
+    crs : str, optional
+        The coordinate reference system, by default "EPSG:3413".
+    encoding_time : dict, optional
+        The encoding settings for the time variable.
+
+    Returns
+    -------
+    Path
+        The path to the saved NetCDF file.
+    """
+    start = date.replace(day=1)
+    x_lo, x_hi = sorted((float(x_bnds[0]), float(x_bnds[1])))
+    y_lo, y_hi = sorted((float(y_bnds[0]), float(y_bnds[1])))
+    grid = create_domain([x_lo, x_hi], [y_lo, y_hi], resolution, crs=crs)
+    nx, ny = grid.sizes["x"], grid.sizes["y"]
+
+    # rasterio rasters are north-up (row 0 at the top edge); create_domain's
+    # y ascends, so the rows are flipped after burning.
+    transform = from_origin(x_lo, y_hi, resolution, resolution)
+    shapes = [(g, 1) for g in allowed.geometry if g is not None and not g.is_empty]
+    mask = np.zeros((ny, nx), dtype="uint8")
+    if shapes:
+        mask = rasterize(shapes, out_shape=(ny, nx), transform=transform, fill=0, dtype="uint8")
+    mask = mask[::-1, :]
+
+    # Only the mask, its coordinates and the grid mapping go into the file:
+    # cdo's mergetime (which prepare_calfin stacks the dates with) drops the
+    # grid-mapping variable when it rides along as a scalar coordinate next to
+    # the domain builder's bounds variables, and PISM reads the projection
+    # from that variable's ``crs_wkt`` (with the global ``proj`` as fallback).
+    x = xr.DataArray(grid["x"].values, dims="x", attrs={k: v for k, v in grid["x"].attrs.items() if k != "bounds"})
+    y = xr.DataArray(grid["y"].values, dims="y", attrs={k: v for k, v in grid["y"].attrs.items() if k != "bounds"})
+    ds = xr.Dataset(
+        {
+            "land_ice_area_fraction_retreat": xr.DataArray(
+                mask.astype("float32")[np.newaxis, :, :],
+                dims=("time", "y", "x"),
+                attrs={"units": "1", "long_name": "maximum ice extent mask", "grid_mapping": "spatial_ref"},
+            ),
+            "spatial_ref": xr.DataArray(0, attrs=dict(grid["spatial_ref"].attrs)),
+        },
+        coords={"time": [start], "y": y, "x": x},
+        attrs={"Conventions": "CF-1.8", "proj": crs},
+    )
+    # The grid mapping comes with rioxarray's GeoTransform, whose dy > 0
+    # follows the ascending y; GDAL prefers it over the y coordinate and
+    # QGIS draws the mask upside down.
+    drop_geotransform_attr(ds)
+    encoding: dict = {var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)}
+    encoding["land_ice_area_fraction_retreat"].update({"zlib": True, "complevel": 2})
+    encoding.update(encoding_time)
+    ds.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
+    return Path(output_file)
+
+
+def rasterize_retreat_masks(
+    output_dir: Path | str,
+    date: pd.Timestamp,
+    ds1: gpd.GeoDataFrame,
+    ds2: gpd.GeoDataFrame,
+    x_bnds: list | np.ndarray,
+    y_bnds: list | np.ndarray,
+    resolutions: Sequence[int],
+    crs: str = "EPSG:3413",
+) -> dict[int, Path]:
+    """
+    Rasterize one date's ice-extent mask at every resolution.
+
+    The vector difference is computed once and burnt onto each grid, so adding
+    a resolution costs a rasterization, not another polygon operation.
+
+    Parameters
+    ----------
+    output_dir : Path or str
+        Directory the per-date files ``frontretreat_g<res>m_<date>.nc`` go to.
+    date : pd.Timestamp
+        The date the mask holds for.
+    ds1 : gpd.GeoDataFrame
+        Retreated area (the cumulative CalFin front polygons up to the date).
+    ds2 : gpd.GeoDataFrame
+        Reference outline the ice may fill.
+    x_bnds : list or numpy.ndarray
+        Domain x bounds.
+    y_bnds : list or numpy.ndarray
+        Domain y bounds.
+    resolutions : sequence of int
+        Grid resolutions in meters.
+    crs : str, optional
+        The coordinate reference system, by default "EPSG:3413".
+
+    Returns
+    -------
+    dict of int to Path
+        The written file per resolution.
+    """
+    allowed = retreat_geometry(ds1, ds2, crs=crs)
+    stamp = f"{date.year}-{date.month}-{date.day}"
+    return {
+        int(res): rasterize_retreat_mask(
+            Path(output_dir) / f"frontretreat_g{int(res)}m_{stamp}.nc", date, allowed, x_bnds, y_bnds, int(res), crs=crs
+        )
+        for res in resolutions
+    }
 
 
 def create_ds(
@@ -51,6 +222,9 @@ def create_ds(
     """
     Create a dataset representing land ice area fraction retreat and save it to a NetCDF file.
 
+    Kept for callers that pass a GeoJSON-like ``geom``; the grid comes from its
+    ``bbox`` and the mask is written by :func:`rasterize_retreat_mask`.
+
     Parameters
     ----------
     output_file : Path or str
@@ -62,56 +236,24 @@ def create_ds(
     ds2 : gpd.GeoDataFrame
         The second GeoDataFrame containing the geometries to be compared.
     geom : dict
-        The geometry dictionary for the geocube.
+        Geometry dictionary whose ``bbox`` is ``[x_min, y_min, x_max, y_max]``.
     resolution : float, optional
-        The resolution of the geocube, by default 450.
+        The grid resolution, by default 450.
     crs : str, optional
         The coordinate reference system, by default "EPSG:3413".
     encoding_time : dict, optional
-        The encoding settings for the time variable, by default {"time": {"units": "hours since 1972-01-01 00:00:00", "calendar": "standard"}}.
+        The encoding settings for the time variable.
 
     Returns
     -------
     Path
         The path to the saved NetCDF file.
-
-    Examples
-    --------
-    >>> import geopandas as gp
-    >>> import pandas as pd
-    >>> from pathlib import Path
-    >>> date = pd.Timestamp("2023-01-01")
-    >>> ds1 = gpd.read_file("path_to_ds1.shp")
-    >>> ds2 = gpd.read_file("path_to_ds2.shp")
-    >>> geom = {"type": "Polygon", "coordinates": [[[...]]]}
-    >>> result_path = create_ds(date, ds1, ds2, geom)
-    >>> print(result_path)
     """
-
-    start = date.replace(day=1)
-
-    ds = gpd.GeoDataFrame(ds1, crs=crs)
-    geom_valid = ds.geometry.make_valid()
-    ds.geometry = geom_valid
-    ds_dissolved = ds.dissolve()
-    diff = ds2.difference(ds_dissolved.buffer(5))
-    n = len(diff)
-    diff_df = {"land_ice_area_fraction_retreat": np.ones(n)}
-    diff_gp = gpd.GeoDataFrame(data=diff_df, geometry=diff, crs=crs)
-    ds = make_geocube(vector_data=diff_gp, geom=geom, resolution=(resolution, resolution))
-    ds = ds.fillna(0)
-    ds["land_ice_area_fraction_retreat"].attrs["units"] = "1"
-    ds["land_ice_area_fraction_retreat"].attrs.pop("coordinates", None)
-    ds["land_ice_area_fraction_retreat"].attrs["grid_mapping"] = "spatial_ref"
-    ds = ds.expand_dims(time=[start])
-    comp = {"zlib": True, "complevel": 2}
-    encoding = {var: comp for var in ds.data_vars}
-    encoding.update(encoding_time)
-    encoding.update({var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)})
-
-    ds.to_netcdf(output_file, encoding=encoding)
-
-    return output_file
+    x_min, y_min, x_max, y_max = geom["bbox"]
+    allowed = retreat_geometry(ds1, ds2, crs=crs)
+    return rasterize_retreat_mask(
+        output_file, date, allowed, [x_min, x_max], [y_min, y_max], resolution, crs=crs, encoding_time=encoding_time
+    )
 
 
 def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:
@@ -302,50 +444,285 @@ def raster_overlaps_glacier(
     return glacier_box.intersects(raster_box)
 
 
-def reproject_file(src_file: str | Path, dst_crs: str | dict, resolution: float) -> str:
+def local_scale_factor(
+    crs,
+    x,
+    y,
+    eps_deg: float = 1.0e-6,
+):
     """
-    Reproject a raster file to a new coordinate reference system and resolution.
+    Local linear scale factor of a projected CRS at a point.
 
-    This function opens a source raster file, reprojects its contents to a specified
-    destination CRS and resolution using average resampling, and writes the result
-    to a temporary GeoTIFF file. The path to this reprojected file is returned.
+    Returns the dimensionless number ``k`` such that **1 metre of true
+    ground displacement at ``(x, y)`` corresponds to ``k`` metres measured
+    in ``crs`` map units**. ``k = 1`` for an isometric projection (e.g.
+    polar stereographic near its true-scale latitude); ``k > 1`` where the
+    projection inflates distances (e.g. Web Mercator at high latitudes;
+    ``k ≈ 1/cos(lat)`` there); ``k < 1`` where it shrinks them.
+
+    The factor is computed as ``sqrt(|det J|)``, where ``J`` is the
+    Jacobian of the *true-to-map* coordinate transform at the point:
+
+    .. math::
+
+        J = \\begin{pmatrix}
+            \\partial x_\\mathrm{crs} / \\partial x_\\mathrm{true} &
+            \\partial x_\\mathrm{crs} / \\partial y_\\mathrm{true} \\\\
+            \\partial y_\\mathrm{crs} / \\partial x_\\mathrm{true} &
+            \\partial y_\\mathrm{crs} / \\partial y_\\mathrm{true}
+        \\end{pmatrix}
+
+    The Jacobian is estimated by finite-differencing the
+    geographic-to-map transform a small distance from the point. The
+    geographic step (in degrees) is converted to a true-metres step using
+    the **prime-vertical radius of curvature** ``N(lat)`` along longitude
+    and the **meridional radius of curvature** ``M(lat)`` along latitude,
+    both evaluated on the source CRS's own ellipsoid (no spherical-Earth
+    approximation):
+
+    .. math::
+
+        e^2 = 2f - f^2, \\quad
+        N(\\varphi) = \\frac{a}{\\sqrt{1 - e^2 \\sin^2 \\varphi}}, \\quad
+        M(\\varphi) = \\frac{a (1 - e^2)}{(1 - e^2 \\sin^2 \\varphi)^{3/2}}
+
+    where ``a`` is the ellipsoid's semi-major axis and ``f`` its
+    flattening. One degree of latitude corresponds to ``M·π/180`` metres;
+    one degree of longitude at latitude ``φ`` corresponds to
+    ``N·cos(φ)·π/180`` metres. Using these to normalise the Jacobian gives
+    ``det J`` in units of ``m_crs² / m_true²``; its square root is the
+    scalar scale factor.
+
+    For **conformal** CRSs (Mercator, polar stereographic, UTM,
+    Lambert conformal conic, …) the projection is locally isotropic, so
+    ``k_x = k_y = k`` — the single returned number fully describes the
+    distortion. For **non-conformal** CRSs (Albers equal-area, …)
+    ``k_x ≠ k_y``; ``sqrt(|det J|)`` is the area-equivalent (geometric
+    mean) scale and is good enough for vector-magnitude corrections.
 
     Parameters
     ----------
-    src_file : str or Path
-        Path to the source raster file.
-    dst_crs : str or dict
-        Destination coordinate reference system (e.g., "EPSG:32633" or a CRS dict).
-    resolution : float
-        Target resolution for the output raster in units of the destination CRS.
+    crs : str or pyproj.CRS
+        Source CRS for the velocity (or other vector) field. Anything
+        :class:`pyproj.CRS` accepts: ``"EPSG:3857"``, WKT, PROJ4, etc.
+    x, y : float or numpy.ndarray
+        Position(s) in ``crs`` units (typically metres) where the scale
+        factor is evaluated. Scalars or broadcastable arrays.
+    eps_deg : float, default ``1.0e-6``
+        Geographic step (degrees) used for the numerical Jacobian. The
+        default keeps the truncation error below 1 part in 10⁵ for the
+        projections used in glaciology while staying well above floating
+        -point precision.
 
     Returns
     -------
-    str
-        Path to the temporary reprojected raster file (GeoTIFF).
+    float or numpy.ndarray
+        Local scale factor ``k`` (dimensionless). Same shape as ``x``/``y``.
 
     Notes
     -----
-    - The output file is written to a temporary location and is not automatically deleted.
-      It is the caller's responsibility to clean it up.
-    - The reprojected data is resampled using `Resampling.average`.
-    """
-    with rasterio.open(src_file) as src:
-        transform, width, height = calculate_default_transform(src.crs, dst_crs, src.width, src.height, *src.bounds)
-        kwargs = src.meta.copy()
-        kwargs.update({"crs": dst_crs, "transform": transform, "width": width, "height": height})
+    **How to use this to correct a finite-difference velocity transform.**
 
-        with NamedTemporaryFile(suffix=".tif", delete=False) as projected_file:
-            with rasterio.open(projected_file.name, "w", **kwargs) as dst:
-                for i in range(1, src.count + 1):
-                    reproject(
-                        source=rasterio.band(src, i),
-                        destination=rasterio.band(dst, i),
-                        src_transform=src.transform,
-                        src_crs=src.crs,
-                        dst_transform=transform,
-                        dst_crs=dst_crs,
-                        resampling=Resampling.average,
-                        resolution=resolution,
-                    )
-            return projected_file.name
+    Vector products like ITS_LIVE store velocity components as the
+    *true ground motion* in m/yr, projected onto the raster CRS's
+    coordinate axes. The advect-and-roundtrip pattern used by
+    :func:`pism_terra.glacier.observations.glacier_velocities_from_grid`,
+    however, implicitly assumes the components describe the *rate of
+    change of the map coordinate* (i.e. ``v = dx_crs/dt``). The two
+    conventions agree when the source CRS has unit scale factor at the
+    point of interest (polar stereographic over Greenland or Antarctica
+    near 70°S/70°N, UTM near its central meridian), but diverge wherever
+    ``k != 1`` — most visibly with Web Mercator (EPSG:3857), where
+    ``k = 1/cos(φ) ≈ 2`` at 60° latitude.
+
+    To make the FD round-trip recover the right magnitude regardless of
+    the source CRS, pre-multiply the source-side velocity by the local
+    scale factor before advecting:
+
+    .. code-block:: python
+
+        from pism_terra.raster import local_scale_factor
+
+        k = local_scale_factor(src_crs, X_, Y_)   # X_, Y_ in src_crs metres
+        vx_pts *= k
+        vy_pts *= k
+        # ... continue with the existing FD round-trip; the result is now
+        # in m/yr aligned with the destination CRS axes, independent of
+        # the source CRS's local distortion.
+
+    Equivalently, divide by ``k`` *after* the round-trip. For an isometric
+    source (``k ≈ 1``) the correction is a no-op, so it's safe to apply
+    unconditionally as a defensive measure.
+
+    Examples
+    --------
+    Mercator (EPSG:3857) inflates distances by ``1/cos(φ)``. At about 60° N
+    the local scale factor is therefore close to 2:
+
+    >>> from pism_terra.raster import local_scale_factor
+    >>> round(local_scale_factor("EPSG:3857", 0.0, 8362900.0), 2)
+    1.99
+
+    Polar stereographic NSIDC (EPSG:3413) has true scale at 70° N, so the
+    factor is close to 1 over most of the Greenland Ice Sheet:
+
+    >>> round(local_scale_factor("EPSG:3413", 0.0, -1_000_000.0), 2)
+    0.98
+
+    Vectorised call — pass arrays of points and get an array back:
+
+    >>> import numpy as np
+    >>> ks = local_scale_factor("EPSG:3857", np.zeros(3), np.linspace(0, 8e6, 3))
+    >>> [round(float(k), 2) for k in ks]
+    [1.0, 1.2, 1.89]
+    """
+    crs_obj = CRS(crs)
+    ellps = crs_obj.geodetic_crs.ellipsoid
+    a = ellps.semi_major_metre
+    inv_f = ellps.inverse_flattening
+    f = 1.0 / inv_f if inv_f and not math.isinf(inv_f) else 0.0
+    e2 = 2.0 * f - f * f
+
+    to_geo = Transformer.from_crs(crs_obj, "EPSG:4326", always_xy=True)
+    from_geo = Transformer.from_crs("EPSG:4326", crs_obj, always_xy=True)
+
+    lon, lat = to_geo.transform(x, y)
+
+    # Numerical Jacobian d(crs) / d(lon, lat) in m_crs / deg.
+    xp, yp = from_geo.transform(np.add(lon, eps_deg), lat)
+    xm, ym = from_geo.transform(np.subtract(lon, eps_deg), lat)
+    xyp, yyp = from_geo.transform(lon, np.add(lat, eps_deg))
+    xym, yym = from_geo.transform(lon, np.subtract(lat, eps_deg))
+
+    j_xlon = (np.asarray(xp) - np.asarray(xm)) / (2.0 * eps_deg)
+    j_ylon = (np.asarray(yp) - np.asarray(ym)) / (2.0 * eps_deg)
+    j_xlat = (np.asarray(xyp) - np.asarray(xym)) / (2.0 * eps_deg)
+    j_ylat = (np.asarray(yyp) - np.asarray(yym)) / (2.0 * eps_deg)
+
+    # Convert deg → true-metres using the local radii of curvature.
+    sin_lat = np.sin(np.radians(lat))
+    cos_lat = np.cos(np.radians(lat))
+    w = np.sqrt(1.0 - e2 * sin_lat * sin_lat)
+    n_prime = a / w  # prime-vertical radius (m)
+    m_meridional = a * (1.0 - e2) / w**3  # meridional radius (m)
+    deg_to_rad = math.pi / 180.0
+    m_per_deg_lon = n_prime * cos_lat * deg_to_rad
+    m_per_deg_lat = m_meridional * deg_to_rad
+
+    # det of the Jacobian in (m_crs / m_true)^2.
+    det = np.abs(j_xlon * j_ylat - j_xlat * j_ylon) / (m_per_deg_lon * m_per_deg_lat)
+
+    k = np.sqrt(det)
+    return float(k) if np.isscalar(x) and np.isscalar(y) else k
+
+
+# COG creation options that the GTiff driver understands too. Only these reach the
+# staging GeoTIFF; the rest (blocksize, overview_resampling, statistics, level, ...)
+# are COG-specific and belong to the CreateCopy step.
+_GTIFF_STAGING_OPTIONS = ("compress", "predictor", "num_threads", "bigtiff")
+
+
+def geotiff_to_cog(geotiff: str | Path, cog: str | Path, **creation_options) -> Path:
+    """
+    Copy a GeoTIFF into a Cloud Optimized GeoTIFF through GDAL's CreateCopy.
+
+    Every COG in this package goes through here rather than through
+    ``rasterio.open(..., "w", driver="COG")``. GDAL 3.13 added a ``Create()``
+    entry point to the COG driver, so from then on rasterio (and rioxarray's
+    ``to_raster``) hand "w"-mode COG writes to it instead of the buffered
+    CreateCopy path -- and that entry point drops band descriptions and writes
+    NaN nodata pixels as 0 (rasterio 1.5.1 / GDAL 3.13.3). CreateCopy from a
+    finished GeoTIFF is the documented route and behaves on every GDAL.
+
+    Parameters
+    ----------
+    geotiff : str or pathlib.Path
+        Source GeoTIFF.
+    cog : str or pathlib.Path
+        Output path; parent directories are created.
+    **creation_options
+        COG driver creation options (``compress``, ``predictor``,
+        ``blocksize``, ``overview_resampling``, ``num_threads``, ...).
+
+    Returns
+    -------
+    pathlib.Path
+        The written COG.
+    """
+    cog = Path(cog)
+    cog.parent.mkdir(parents=True, exist_ok=True)
+    rasterio.shutil.copy(  # pylint: disable=c-extension-no-member
+        str(geotiff), str(cog), driver="COG", **creation_options
+    )
+    return cog
+
+
+@contextmanager
+def cog_writer(path: str | Path, profile: dict, **creation_options) -> Iterator[rasterio.io.DatasetWriter]:
+    """
+    Open a dataset for writing whose contents become the COG at ``path`` on exit.
+
+    Bands, descriptions and tags are written to a tiled staging GeoTIFF next to
+    ``path``; leaving the block copies it into the COG (see
+    :func:`geotiff_to_cog`) and removes the staging file, also on error.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Output COG.
+    profile : dict
+        Rasterio creation profile (``dtype``, ``count``, ``width``, ``height``,
+        ``crs``, ``transform``, ``nodata``); a ``driver`` entry is ignored.
+    **creation_options
+        COG driver creation options; the ones GTiff shares are applied to the
+        staging file as well.
+
+    Yields
+    ------
+    rasterio.io.DatasetWriter
+        The staging dataset to write into.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f"{path.stem}.staging.tif")
+    gtiff = {k: v for k, v in profile.items() if k != "driver"}
+    gtiff.update({k: v for k, v in creation_options.items() if k.lower() in _GTIFF_STAGING_OPTIONS})
+    try:
+        with rasterio.open(staging, "w", driver="GTiff", tiled=True, **gtiff) as dst:
+            yield dst
+        geotiff_to_cog(staging, path, **creation_options)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def write_cog(da: xr.DataArray, path: str | Path, **creation_options) -> Path:
+    """
+    Write a georeferenced DataArray as a Cloud Optimized GeoTIFF.
+
+    ``da.rio.to_raster`` writes a tiled staging GeoTIFF next to ``path`` (so a
+    Dask-backed array streams block by block instead of being held in memory),
+    which is then copied into the COG (see :func:`geotiff_to_cog`).
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Array carrying rioxarray CRS and spatial dimensions.
+    path : str or pathlib.Path
+        Output COG.
+    **creation_options
+        COG driver creation options.
+
+    Returns
+    -------
+    pathlib.Path
+        The written COG.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f"{path.stem}.staging.tif")
+    gtiff = {k: v for k, v in creation_options.items() if k.lower() in _GTIFF_STAGING_OPTIONS}
+    try:
+        da.rio.to_raster(staging, driver="GTiff", tiled=True, **gtiff)
+        return geotiff_to_cog(staging, path, **creation_options)
+    finally:
+        staging.unlink(missing_ok=True)

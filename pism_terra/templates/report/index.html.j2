@@ -1,0 +1,23 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="lead">Calibration and benchmark report for the glacier runs below <code>{{ run_dir }}</code>.</p>
+<div class="grid">
+{% for t in tools %}
+  <div class="card">
+    <a class="card-title" href="{{ t.href }}">{{ t.label }}</a>
+    <div>{{ t.blurb }}</div>
+    <span class="status {{ t.status }}">{{ t.status }}{% if t.elapsed %} &middot; {{ t.elapsed }}{% endif %}</span>
+    {% if t.n_glaciers is not none %}<div class="meta">{{ t.n_glaciers }} glacier(s)</div>{% endif %}
+  </div>
+{% endfor %}
+</div>
+<h2 id="setup">Setup</h2>
+<div class="table-wrap"><table class="table">
+<tbody>
+{% for k, v in setup %}<tr><th style="text-align:left">{{ k }}</th><td style="text-align:left"><code>{{ v }}</code></td></tr>{% endfor %}
+</tbody></table></div>
+{% for t in tools if t.error %}
+<div class="admonition error"><div class="title">{{ t.label }} failed</div><pre>{{ t.error }}</pre></div>
+{% endfor %}
+{% endblock %}

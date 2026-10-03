@@ -1,0 +1,7 @@
+samples = 20
+
+['calving.vonmises_calving.sigma_max']
+
+loc = 400000
+scale = 400000
+distribution = "uniform"
