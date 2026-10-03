@@ -15,7 +15,7 @@
 boot_file = "boot_1985_g450m_GreenlandObsISMIP7-v1.3.nc"
 bucket = "pism-cloud-data"
 dh_files = ["dh_smith_g5000m_ICESat1-ICESat2-2021.nc"]
-gcms = "CESM2-WACCM"
+gcms = ["CESM2-WACCM", "MRI-ESM2-0"]
 grid_file = "pism_bedmachine_greenland_grid.nc"
 heatflux_file  = "heatflux_g450m_GreenlandObsISMIP7-v1.3.nc"
 historical_end_year = "2014"
