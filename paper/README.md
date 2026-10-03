@@ -21,8 +21,10 @@ and the Copernicus package to the case-study data, the figures and the PDF.
   inputs `build/<name>.tex` for each `sections/<name>.md`; a new section needs a
   file here and an `\input` there.
 - `#` headings inside a section file become subsections.
-- Cite with `[@key]` for `\citep` and `@key` for `\citet`; the keys are those of
-  `docs/source/refs.bib`, shared with the documentation.
+- Cite with `[@key]` for `\citep` and `@key` for `\citet`. The keys are those of
+  `docs/source/refs.bib` (pism-terra's, shared with the documentation) and of
+  PISM's `doc/ice-bib.bib`, which `make` fetches at the commit pinned in the
+  Makefile (`PISM_BIB_COMMIT`).
 - Figures: `![Caption.](file.png){#fig:name width=100%}` gives a figure with
   `\label{fig:name}`; refer to it with `Fig. \ref{fig:name}`. Figures are looked
   up in `paper/figures/` and in `docs/source/paper/figures/`, where the

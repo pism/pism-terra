@@ -14,6 +14,14 @@ PANDOC ?= pandoc
 LATEXMK ?= latexmk
 JUPYTEXT ?= jupytext
 
+# PISM's bibliography, fetched from GitHub at a pinned commit so every build
+# cites the same entries: the commit on aaschwanden/ismip7 of pism/pism that
+# last changed doc/ice-bib.bib (it adds the plume references to dev's). To move
+# to newer references, set this to a later commit that changed the file, pushed
+# to GitHub, and run `make clean`.
+PISM_BIB_COMMIT ?= cf758bb4b0b274c6be99207dd3c73d4ea640b8ad
+PISM_BIB_URL := https://raw.githubusercontent.com/pism/pism/$(PISM_BIB_COMMIT)/doc/ice-bib.bib
+
 # The case-study pages of the documentation, whose code makes the figures.
 PAGES := $(wildcard ../docs/source/paper/case_study_*.md)
 
@@ -21,11 +29,12 @@ SECTIONS := $(wildcard sections/*.md)
 FRAGMENTS := $(patsubst sections/%.md,build/%.tex,$(SECTIONS))
 
 # The Copernicus LaTeX package (copernicus.cls, copernicus.bst) is in
-# copernicus/; see BUILD.md. The bibliography is docs/source/refs.bib.
+# copernicus/; see BUILD.md. The bibliographies are docs/source/refs.bib
+# (pism-terra's) and build/ice-bib.bib (PISM's, fetched below).
 # The trailing colons keep TeX's default search paths.
 export TEXINPUTS := $(CURDIR)/copernicus:$(CURDIR):$(TEXINPUTS):
 export BSTINPUTS := $(CURDIR)/copernicus:$(BSTINPUTS):
-export BIBINPUTS := $(CURDIR)/../docs/source:$(BIBINPUTS):
+export BIBINPUTS := $(CURDIR)/../docs/source:$(CURDIR)/build:$(BIBINPUTS):
 
 .PHONY: all pdf tex figures watch clean
 
@@ -43,12 +52,15 @@ build/%.tex: sections/%.md filters/equations.lua | build
 	$(PANDOC) $< --from markdown --to latex --natbib --shift-heading-level-by=1 --wrap=preserve \
 		--lua-filter=filters/equations.lua -o $@
 
-build/main.pdf: main.tex $(FRAGMENTS) ../docs/source/refs.bib $(wildcard ../docs/source/paper/figures/*) | build
+build/main.pdf: main.tex $(FRAGMENTS) ../docs/source/refs.bib build/ice-bib.bib $(wildcard ../docs/source/paper/figures/*) | build
 	@test -f copernicus/copernicus.cls || { echo "copernicus/copernicus.cls is missing: see BUILD.md"; exit 1; }
 	$(LATEXMK) -pdf -interaction=nonstopmode -halt-on-error -outdir=build main.tex
 
 build:
 	mkdir -p build
+
+build/ice-bib.bib: | build
+	curl -fsSL $(PISM_BIB_URL) -o $@.tmp && mv $@.tmp $@
 
 # Runs every case-study page in a Jupyter kernel, in the page's directory, so
 # the figures land in ../docs/source/paper/figures/, where main.tex looks for

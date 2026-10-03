@@ -78,8 +78,8 @@ make
 open build/main.pdf
 ```
 
-`make` converts every `sections/*.md` into `build/*.tex` with pandoc and
-compiles `main.tex` with latexmk, running BibTeX and LaTeX as often as the
+`make` converts every `sections/*.md` into `build/*.tex` with pandoc, fetches
+PISM's bibliography (below) the first time, and compiles `main.tex` with latexmk, running BibTeX and LaTeX as often as the
 citations and cross-references need. While writing, `make watch` rebuilds on
 every change to a section, `main.tex` or the bibliography (needs `fswatch`,
 `brew install fswatch`). `make clean` removes `build/`.
@@ -89,8 +89,17 @@ every change to a section, `main.tex` or the bibliography (needs `fswatch`,
 - The prose is in `paper/sections/*.md`; the journal structure (title, authors,
   section headings, availability statements) is in `paper/main.tex`. A new
   section is a new Markdown file and an `\input{build/<name>}` in `main.tex`.
-- References go into `docs/source/refs.bib`, shared with the documentation. Cite
-  with `[@key]` (in parentheses) or `@key` (in the text).
+- The paper cites from two bibliographies:
+  - `docs/source/refs.bib`, pism-terra's, shared with the documentation. New
+    references go here.
+  - PISM's `doc/ice-bib.bib`, which `make` downloads from GitHub into
+    `paper/build/ice-bib.bib`, at the commit pinned by `PISM_BIB_COMMIT` in the
+    Makefile (now the commit of `aaschwanden/ismip7` that last changed it). Look
+    up its keys there; a reference missing from it can go into PISM's file (and
+    the pin moved to that commit once it is on GitHub) or into `refs.bib`.
+
+  Cite with `[@key]` (in parentheses) or `@key` (in the text). A key in both
+  files makes BibTeX warn and take the first, from `refs.bib`.
 - The conventions for headings, figures, equations and cross-references are in
   `paper/README.md`.
 - The case-study pages are part of the documentation too, under *Model
@@ -104,7 +113,8 @@ every change to a section, `main.tex` or the bibliography (needs `fswatch`,
 | `set PISM_TERRA_PAPER_DATA ...` from `make figures` | Step 2. |
 | `FileNotFoundError` from `make figures` | A file of the case study is missing from `$PISM_TERRA_PAPER_DATA`; compare with the table on its page. |
 | `File 'case_study_1_dh.png' not found` | Run `make figures` first (step 3). |
-| A citation shows as `(?)` | The key is not in `docs/source/refs.bib`, or is spelled differently. |
+| A citation shows as `(?)` | The key is in neither `docs/source/refs.bib` nor `paper/build/ice-bib.bib`, or is spelled differently. |
+| `curl: (6) Could not resolve host` or `(22) ... 404` | `make` needs the network the first time, to fetch PISM's bibliography; a 404 means `PISM_BIB_COMMIT` names a commit that is not on GitHub. |
 | A reference shows as `??` | The `\label` is missing or misspelled; `build/main.log` lists the undefined ones. |
 | `keyval Error: alt undefined` | The LaTeX installation predates the `alt` key pandoc writes for figures; update TeX Live or MacTeX. |
 | A section is missing from the PDF | Its `\input{build/<name>}` is missing from `main.tex`. |
