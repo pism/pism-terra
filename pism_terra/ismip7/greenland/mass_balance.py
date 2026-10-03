@@ -815,8 +815,48 @@ def compute_regions(
     lazy = [name for name in sums.data_vars if sums[name].chunks is not None]
     for name in lazy:
         (sums[name],) = compute(sums[name], desc=f"Integrating {name} over the basins")
+    return mass_balance_series(sums, variables=variables, reference_year=reference_year, splice=splice)
+
+
+def mass_balance_series(
+    sums: xr.Dataset,
+    *,
+    variables: Sequence[str] = DEFAULT_VARIABLES,
+    reference_year: str = DEFAULT_REFERENCE_YEAR,
+    splice: bool = True,
+) -> xr.Dataset:
+    """
+    Build the mass balance series from fluxes already summed over the basins.
+
+    The part of :func:`compute_regions` after the integration over the
+    basins, so that basin sums from elsewhere (the regional scalar files of
+    :mod:`pism_terra.postprocess_scalar`, say) give series built exactly like
+    those of a submission: the same units, the same sum and the same
+    accumulation from the reference year.
+
+    Parameters
+    ----------
+    sums : xarray.Dataset
+        Per-basin fluxes in units convertible to Gt/yr, on ``time`` and
+        ``region`` plus whatever else (``gcm_id``, ``ssp_id``), in memory.
+        Each record is taken as the mean over the interval to the next one.
+    variables : sequence of str, optional
+        The fluxes summed into ``mass_balance``, when all are present.
+    reference_year : str, optional
+        Year the cumulative mass balance is zeroed at.
+    splice : bool, optional
+        Prepend the historical run to each projection and drop it as a pathway
+        of its own (:func:`splice_historical`). False keeps the pathways as
+        they were run.
+
+    Returns
+    -------
+    xarray.Dataset
+        The fluxes in Gt/yr, ``mass_balance`` and ``cumulative_mass_balance``
+        (Gt, zero at ``reference_year``).
+    """
     regions = to_units(sums)
-    if splice:
+    if splice and "ssp_id" in regions.dims:
         regions = splice_historical(regions)
     present = [v for v in variables if v in regions]
     if len(present) < len(variables):
