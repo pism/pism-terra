@@ -181,7 +181,7 @@ model = "ismip7"
 'fracture_density.constant_healing' = "yes"
 'fracture_density.enabled' = "yes"
 'fracture_density.fracture_weighted_healing' = "yes"
-'fracture_density.include_grounded_ice' = "yes"
+'fracture_density.include_grounded_ice' = "no"
 'fracture_density.scheme_fd2d' = "yes"
 'fracture_density.write_fd_fields' = "yes"
 
