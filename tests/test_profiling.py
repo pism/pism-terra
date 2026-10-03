@@ -21,8 +21,10 @@ Tests for reading PISM ``-profile`` files.
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
+from pism_terra.profile_analysis import STAGE, fracture_steps
 from pism_terra.profiling import (
     STAGE_SUMMARY,
     event_summary,
@@ -164,3 +166,37 @@ def test_event_summary_rejects_an_unknown_stage(profile_file: Path) -> None:
     """
     with pytest.raises(ValueError, match="Main Stage"):
         event_summary(load_profile(profile_file), stage="nope")
+
+
+def test_fracture_steps_are_shares_of_the_fracture_density_event() -> None:
+    """
+    The fracture density sub-events are reduced over the ranks and related to their parent.
+    """
+    rows = [
+        {"run": "r", "stage": STAGE, "event": event, "rank": rank, "count": 10, "time": time}
+        for event, times in {
+            "fracture_density": (20.0, 10.0),
+            "fracture_density.update": (8.0, 4.0),
+            "fracture_density.strain_rates": (2.0, 2.0),
+        }.items()
+        for rank, time in enumerate(times)
+    ]
+    steps = fracture_steps(pd.DataFrame(rows)).set_index("event")
+    assert steps.index.tolist() == ["fracture_density.strain_rates", "fracture_density.update"]  # order of a step
+    update = steps.loc["fracture_density.update"]
+    assert update["step"] == "fracture density and age"
+    assert update["time_mean"] == 6.0
+    assert update["balance"] == 0.5
+    assert update["share_of_parent"] == pytest.approx(6.0 / 15.0)
+
+
+def test_fracture_steps_are_empty_without_fracture_events(profile_file: Path) -> None:
+    """
+    A run without the fracture density model has no fracture steps.
+
+    Parameters
+    ----------
+    profile_file : pathlib.Path
+        The sample profile.
+    """
+    assert fracture_steps(load_profile(profile_file)).empty
