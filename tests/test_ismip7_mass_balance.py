@@ -612,3 +612,26 @@ def test_basin_block_counts_missing_cells_as_zero_and_empty_basins_as_missing():
     out = mb.basin_block(block, cells, np.array([0, 2, 4, 4]), cell_area=10.0)
     assert out.shape == (1, 3) and out.dtype == np.float64
     np.testing.assert_array_equal(out, [[10.0, np.nan, np.nan]])
+
+
+def test_mass_balance_series_from_basin_sums_without_pathways():
+    """
+    Basin sums from elsewhere, without ``ssp_id``, go through the same accumulation.
+    """
+    time = pd.date_range("1915", periods=4, freq="YS")
+    sums = xr.Dataset(
+        {
+            # 1e12 kg a day is 365.25 Gt in pint's (Julian) year.
+            "smb": (("time", "region"), np.full((4, 1), 1e12), {"units": "kg day-1"}),
+            "flow": (("time", "region"), np.full((4, 1), -2.0), {"units": "Gt year-1"}),
+        },
+        coords={"time": time, "region": ["GIS_GIS"]},
+    )
+    regions = mb.mass_balance_series(sums, variables=["smb", "flow"], reference_year="1916")
+    np.testing.assert_allclose(regions["mass_balance"].values.ravel(), np.full(4, 365.25 - 2.0))
+    assert regions["mass_balance"].attrs["components"] == "smb + flow"
+    # Zero in 1916; each record is the mean over the following year.
+    days = np.diff(time).astype("timedelta64[D]").astype(float)
+    rate = regions["mass_balance"].values[0, 0]
+    expected = np.concatenate([[0.0], np.cumsum(rate * days / 365.25)])
+    np.testing.assert_allclose(regions["cumulative_mass_balance"].values.ravel(), expected - expected[1])

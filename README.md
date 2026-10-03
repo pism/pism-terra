@@ -14,7 +14,7 @@
 
 # pism-terra
 
-Simulate any glacier complex in the world based on their RGI7 ID or perform the ISMIP7 Greenland experiments made easy.
+Simulating any glacier complex in the world based on its RGI7 ID or performing the ISMIP7 Greenland experiments, on traditional High-Perfomance Computing systems or on the AWS cloud, made easy with `pism-terra`.
 
 ## Installation
 

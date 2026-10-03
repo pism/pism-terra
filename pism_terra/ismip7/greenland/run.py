@@ -34,7 +34,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.aws import local_to_s3
-from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.config import PASS_THROUGH_SECTIONS, JobConfig, load_config, load_uq
 from pism_terra.download import file_localizer
 from pism_terra.glacier.run import snapshot_project_file
 from pism_terra.inversion import forward_leg_from_inversion
@@ -174,14 +174,7 @@ def _base_run_dict(cfg) -> dict:
         ``[solver.forward]`` PETSc/blatter knobs.
     """
     run: dict = {}
-    for section in (
-        "geometry",
-        "calving",
-        "iceflow",
-        "reporting",
-        "input",
-        "time_stepping",
-    ):
+    for section in PASS_THROUGH_SECTIONS:
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
     run.update(cfg.bed_deformation.selected())

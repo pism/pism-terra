@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://www.python.org/dev/peps/pep-0440/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0]
 
 ### Added
 - ISMIP7 Greenland runs take `campaign.retreat_file = "none"` (or no `retreat_file`) to run without a prescribed front: staging fetches and checks no mask, and every leg leaves `geometry.front_retreat.prescribed.file` and `.periodic` off the PISM command line, which is how PISM turns the prescribed retreat off (it would try to open a file called `none`). Before, `"none"` was staged as a file name and the run could not start.
@@ -201,8 +201,6 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - New ice thickness dataset from Maffezzoli (in review).
-
-## [Unreleased]
 
 ### Changed
 

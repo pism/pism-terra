@@ -987,6 +987,20 @@ class JobConfig(BaseModelWithDot):
         return self.model_dump(exclude_none=True, exclude_unset=True, exclude_defaults=True)
 
 
+#: Sections of a :class:`PismConfig` that hold PISM flags as they are, in the
+#: order the runners apply them. Every runner builds its flags from these, so
+#: a new pass-through section is added here and in :class:`PismConfig` only.
+PASS_THROUGH_SECTIONS = (
+    "geometry",
+    "calving",
+    "fracture_density",
+    "iceflow",
+    "reporting",
+    "input",
+    "time_stepping",
+)
+
+
 class PismConfig(BaseModelWithDot):
     """
     Top-level configuration model for a PISM run.
@@ -1036,6 +1050,9 @@ class PismConfig(BaseModelWithDot):
         Bed deformation model selection and its option set.
     calving : dict of str to Any, optional
         Calving-related options to pass through. Defaults to ``{}``.
+    fracture_density : dict of str to Any, optional
+        Fracture-density options (``fracture_density.*``) to pass through.
+        Defaults to ``{}``.
     iceflow : dict of str to Any, optional
         Ice-flow-related options to pass through. Defaults to ``{}``.
     reporting : dict of str to Any, optional
@@ -1057,8 +1074,8 @@ class PismConfig(BaseModelWithDot):
     * Dotted option keys inside nested tables are accepted due to
       :class:`BaseModelWithDot` (e.g., inside ``[time]`` you may still use
       ``'time.start'``).
-    * The dictionary sections (``atmosphere``, ``geometry``, …, ``input``)
-      are intentionally permissive and are stored as-is to be forwarded to
+    * The dictionary sections (:data:`PASS_THROUGH_SECTIONS`, ``inverse``,
+      ``solver``) are intentionally permissive and are stored as-is to be forwarded to
       PISM; validation of their contents is out of scope for this model.
 
     Examples
@@ -1090,6 +1107,7 @@ class PismConfig(BaseModelWithDot):
     debris: DebrisConfig = Field(default_factory=lambda: _no_model(DebrisConfig))
     geometry: dict[str, Any] = {}
     calving: dict[str, Any] = {}
+    fracture_density: dict[str, Any] = {}
     iceflow: dict[str, Any] = {}
     reporting: dict[str, Any] = {}
     input: dict[str, Any] = {}
