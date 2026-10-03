@@ -70,6 +70,7 @@ dependencies:
   # for docs
   - furo
   - ipykernel
+  - jupytext  # runs the case-study pages of the paper (paper/Makefile: make figures)
   - myst-nb
   - numpydoc
   - pydata-sphinx-theme

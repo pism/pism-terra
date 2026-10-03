@@ -1,0 +1,66 @@
+% The pism-terra model description paper, on the Copernicus template.
+%
+% The text of each section is written in sections/<name>.md and converted by
+% the Makefile into build/<name>.tex, which this file inputs. Keep journal
+% structure here (title, authors, the Copernicus section commands, the
+% availability statements) and prose in the Markdown files.
+
+\documentclass[gmd, manuscript]{copernicus}
+
+\graphicspath{{figures/}{../docs/source/paper/figures/}}
+
+\begin{document}
+
+\title{pism-terra v1.0: automated simulations of any glacier and ice sheet with the Parallel Ice Sheet Model}
+
+\Author[1]{Andy}{Aschwanden}
+
+\affil[1]{Geophysical Institute, University of Alaska Fairbanks, Fairbanks, AK, USA}
+
+\correspondence{Andy Aschwanden (aaschwanden@alaska.edu)}
+
+\runningtitle{pism-terra v1.0}
+\runningauthor{Aschwanden et al.}
+
+\received{}
+\pubdiscuss{}
+\revised{}
+\accepted{}
+\published{}
+
+\firstpage{1}
+
+\maketitle
+
+\begin{abstract}
+\input{build/abstract}
+\end{abstract}
+
+\introduction
+\input{build/introduction}
+
+\section{Background}
+\input{build/background}
+
+\section{Case studies}
+\input{build/case_studies}
+
+\conclusions
+\input{build/conclusions}
+
+\codeavailability{TEXT}
+
+\dataavailability{TEXT}
+
+\authorcontribution{TEXT}
+
+\competinginterests{The authors declare that they have no conflict of interest.}
+
+\begin{acknowledgements}
+TEXT
+\end{acknowledgements}
+
+\bibliographystyle{copernicus}
+\bibliography{refs}
+
+\end{document}

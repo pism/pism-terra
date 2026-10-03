@@ -508,3 +508,17 @@ def test_job_config_walltime_rejects_malformed(walltime):
     """
     with pytest.raises(ValidationError, match="walltime must look like"):
         JobConfig(walltime=walltime)
+
+
+def test_gmd_case_study_1_config_selects_the_documented_models():
+    """
+    Keep the case-study config of the model description paper loadable and as documented.
+    """
+    cfg = load_config(Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "gmd_case_study_1_glacier.toml")
+
+    assert cfg.grid.resolution == "200m"
+    assert (cfg.time.time_start, cfg.time.time_end) == ("1986-01-01", "2025-01-01")
+    assert cfg.energy.selected()["energy.model"] == "enthalpy"
+    assert cfg.stress_balance.selected()["stress_balance.model"] == "blatter"
+    assert cfg.surface.selected()["surface.models"] == "pdd"
+    assert cfg.campaign.dh == "hugonnet"
