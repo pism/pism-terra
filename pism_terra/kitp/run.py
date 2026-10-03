@@ -34,7 +34,7 @@ import toml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
-from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.config import PASS_THROUGH_SECTIONS, JobConfig, load_config, load_uq
 from pism_terra.kitp.stage import stage
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
@@ -180,14 +180,7 @@ def run_kitp(
     state_path.mkdir(parents=True, exist_ok=True)
 
     run = {}
-    for section in (
-        "geometry",
-        "calving",
-        "iceflow",
-        "reporting",
-        "input",
-        "time_stepping",
-    ):
+    for section in PASS_THROUGH_SECTIONS:
         run.update(getattr(cfg, section))
     run.update(cfg.atmosphere.selected())
     run.update(cfg.ocean.selected())

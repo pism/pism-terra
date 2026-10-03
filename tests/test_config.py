@@ -40,6 +40,7 @@ import toml
 from pydantic import ValidationError
 
 from pism_terra.config import (  # noqa: F401  (ensure DistSpec is imported)
+    PASS_THROUGH_SECTIONS,
     CampaignConfig,
     DistSpec,
     JobConfig,
@@ -450,6 +451,36 @@ def test_declared_model_sections_are_untouched():
 
     assert cfg.bed_deformation.selected() == {"bed_deformation.model": "lc"}
     assert cfg.frontal_melt.selected()["frontal_melt.models"] == "routing"
+
+
+def test_fracture_density_options_reach_the_run(tmp_path):
+    """
+    Pass a ``[fracture_density]`` section through to the PISM flags of every runner.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland.run import _base_run_dict
+
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_c001.toml"
+    config = tmp_path / "with_fracture_density.toml"
+    config.write_text(
+        source.read_text(encoding="utf-8")
+        + "\n[fracture_density]\n\n'fracture_density.enabled' = \"yes\"\n'fracture_density.borstad_limit' = \"yes\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config)
+
+    expected = {"fracture_density.enabled": "yes", "fracture_density.borstad_limit": "yes"}
+    assert cfg.fracture_density == expected
+    assert "fracture_density" in PASS_THROUGH_SECTIONS
+    run = _base_run_dict(cfg)
+    assert {k: run[k] for k in expected} == expected
+    # A config without the section adds nothing.
+    assert load_config(source).fracture_density == {}
 
 
 @pytest.mark.parametrize("walltime", ["1:00:00", "12:00:00", "120:00:00"])

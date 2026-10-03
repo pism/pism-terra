@@ -36,7 +36,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pyfiglet import Figlet
 
 from pism_terra.aws import local_to_s3
-from pism_terra.config import JobConfig, load_config, load_uq
+from pism_terra.config import PASS_THROUGH_SECTIONS, JobConfig, load_config, load_uq
 from pism_terra.download import file_localizer
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.observations import DH_END, DH_START
@@ -651,14 +651,7 @@ def _render_inverse_run(
         cfg.select_models(normalize_row(uq))
 
     run = {}
-    for section in (
-        "geometry",
-        "calving",
-        "iceflow",
-        "reporting",
-        "input",
-        "time_stepping",
-    ):
+    for section in PASS_THROUGH_SECTIONS:
         run.update(getattr(cfg, section))
     run.update(cfg.stress_balance.selected())
     run.update(cfg.atmosphere.selected())
@@ -1019,15 +1012,7 @@ def _render_forward_run(
         cfg.select_models(normalize_row(uq))
 
     run = {}
-    for section in (
-        "geometry",
-        "calving",
-        "iceflow",
-        "reporting",
-        "input",
-        "inverse",
-        "time_stepping",
-    ):
+    for section in (*PASS_THROUGH_SECTIONS, "inverse"):
         run.update(getattr(cfg, section))
     run.update(cfg.stress_balance.selected())
     run.update(cfg.atmosphere.selected())
