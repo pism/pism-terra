@@ -48,6 +48,7 @@ from pism_terra.download import download_file
 from pism_terra.ismip7.greenland.forcing import (
     CALFIN_RESOLUTIONS,
     add_basins_to_ocean_files,
+    download_calfin,
     prepare_calfin,
     prepare_dh_observations,
     prepare_ismip7_forcing,
@@ -268,6 +269,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         - ``"forcing_files"`` : sequence of Path — climate/ocean forcing files.
         - ``"retreat_file"`` : Path — CALFIN front-retreat NetCDF on the setup's own grid.
         - ``"retreat_files"`` : dict — CALFIN front-retreat NetCDF per resolution (m).
+        - ``"calfin_fronts"`` : Path — the dated CALFIN calving fronts (lines shapefile).
     """
 
     parser = ArgumentParser()
@@ -503,6 +505,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     # --- CalFin glacier fronts ---
     retreat_files: dict[int, Path] = {}
+    calfin_fronts: Path | None = None
     if "calfin" in selected:
         logger.info("-" * 120)
         logger.info("Calfin Glacier Fronts Files")
@@ -514,6 +517,10 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 input_path, calfin_resolutions, x_bnds=x_bnds, y_bnds=y_bnds, force_overwrite=force_overwrite
             ).items()
         }
+        # The dated calving fronts, beside the polygons the masks come from,
+        # for drawing them (render_terrain_3d --outlines animates them).
+        calfin_fronts = download_calfin(output_path / Path("calfin"), "lines")
+        logger.info("CALFIN polygons and fronts: %s", calfin_fronts.parent.resolve())
 
     # Every shipped product was written into ``input/`` directly, so the
     # upload is a plain 1:1 sync — no excludes, no duplicated copy on disk.
@@ -539,6 +546,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         "forcing_files": forcing_files,
         "retreat_file": retreat_files.get(resolution),
         "retreat_files": retreat_files,
+        "calfin_fronts": calfin_fronts,
         "obs_file_1985": obs_files_1985.get("obs_file"),
         "obs_file_2007": obs_files_2007.get("obs_file"),
     }

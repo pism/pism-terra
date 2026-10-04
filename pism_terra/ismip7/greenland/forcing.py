@@ -1625,6 +1625,37 @@ def calfin_filename(resolution: int, freq: str = "MS") -> str:
     return f"pism_g{int(resolution)}m_frontretreat_calfin_1972_2019_{freq}.nc"
 
 
+#: NSIDC DOI of CALFIN (Cheng et al., 2021), the calving fronts of Greenland's
+#: outlet glaciers from 1972 to 2019, one dated feature per front.
+CALFIN_DOI = "10.5067/7FILV218JZA2"
+
+
+def download_calfin(result_dir: Path | str, product: str = "polygons") -> Path:
+    """
+    Download one of CALFIN's Greenland-wide shapefiles, unless it is already there.
+
+    Parameters
+    ----------
+    result_dir : pathlib.Path or str
+        Directory the shapefile goes to.
+    product : {"polygons", "lines"}, default "polygons"
+        ``polygons``: the area in front of each glacier, closed off with the
+        fjord walls (what the retreat masks are built from). ``lines``: the
+        calving fronts themselves, dated (``Date``) and numbered by glacier
+        (``GlacierID``), for drawing and animating the fronts.
+
+    Returns
+    -------
+    pathlib.Path
+        The ``.shp`` file.
+    """
+    shp = Path(result_dir) / f"termini_1972-2019_Greenland_{product}_v1.0.shp"
+    if not shp.exists():
+        files = download_earthaccess(doi=CALFIN_DOI, filter_str=f"Greenland_{product}", result_dir=result_dir)
+        shp = next(Path(f) for f in files if Path(f).suffix == ".shp")
+    return shp
+
+
 def prepare_calfin(
     output_path: Path | str,
     resolutions: int | Sequence[int],
@@ -1698,11 +1729,7 @@ def prepare_calfin(
 
         tmp_path = output_path.parent / Path("calfin")
 
-        # Download CALFIN data
-        retreat_files = download_earthaccess(
-            doi="10.5067/7FILV218JZA2", filter_str="Greenland_polygons", result_dir=tmp_path
-        )
-        retreat_file = next(f for f in retreat_files if f.suffix == ".shp")
+        retreat_file = download_calfin(tmp_path, "polygons")
 
         crs = "EPSG:3413"
 

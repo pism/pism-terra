@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pytest
 import shapely
+import xarray as xr
 
 # The renderer is a development tool: PyVista is in environment-dev.yml only,
 # so the test environment may not have it.
@@ -33,7 +35,10 @@ pytest.importorskip("pyvista")
 # pylint: disable=wrong-import-position
 from pism_terra.glacier.render_terrain_3d import (  # noqa: E402
     GridSampler,
+    current_outlines,
     drape_outlines,
+    frame_time,
+    load_outline_features,
     load_outlines,
     outline_cells,
 )
@@ -122,3 +127,96 @@ def test_outlines_are_draped_on_the_surface():
     assert mesh.n_lines == 2
     np.testing.assert_array_equal(cells, [3, 0, 1, 2, 2, 3, 4])
     np.testing.assert_allclose(mesh.points[:, 2], [0.0, 11.0, 12.5, 34.0, 23.0])
+
+
+def test_dated_fronts_load_as_lines_with_their_dates_and_glaciers(tmp_path):
+    """
+    Check that lines load as they are, each with its feature's date and glacier.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest per-test temporary directory.
+    """
+    x = 500_000.0 + 100.0 * np.arange(101)
+    y = 7_000_000.0 + 100.0 * np.arange(81)
+    fronts = gpd.GeoDataFrame(
+        {
+            "GlacierID": [1, 1, 2],
+            "Date": pd.to_datetime(["1980-07-01", "1990-07-01", "1985-07-01"]),
+        },
+        geometry=[
+            shapely.LineString([(x[10], y[10]), (x[10], y[50])]),
+            shapely.LineString([(x[20], y[10]), (x[20], y[50])]),
+            shapely.LineString([(x[60], y[10]), (x[90], y[10])]),
+        ],
+        crs=GRID_CRS,
+    ).to_crs("EPSG:4326")
+    path = tmp_path / "fronts.gpkg"
+    fronts.to_file(path, driver="GPKG")
+
+    features = load_outline_features(path, GRID_CRS, x, y, time="auto", group="auto")
+
+    assert (features["time_column"], features["group_column"]) == ("Date", "GlacierID")
+    assert len(features["lines"]) == 3  # the lines themselves, not their endpoints
+    np.testing.assert_array_equal(features["groups"], [1, 1, 2])
+    assert str(features["dates"][1])[:10] == "1990-07-01"
+    # Static outlines read no dates.
+    assert load_outline_features(path, GRID_CRS, x, y, time="none")["dates"] is None
+    assert len(load_outlines(path, GRID_CRS, x, y)) == 3
+
+
+def test_each_glacier_shows_its_latest_front_observed_by_then():
+    """
+    A glacier shows nothing before its first front and keeps its latest one after.
+    """
+    dates = np.array(["1980-07-01", "1990-07-01", "1990-07-01", "1985-07-01", "NaT"], dtype="datetime64[ns]")
+    groups = np.array([1, 1, 1, 2, 2])  # glacier 1's 1990 front comes in two parts
+
+    def at(day: str, **kwargs) -> list[bool]:
+        """
+        Select the fronts on screen on one day.
+
+        Parameters
+        ----------
+        day : str
+            ISO date.
+        **kwargs
+            Passed to :func:`current_outlines`.
+
+        Returns
+        -------
+        list of bool
+            The selection.
+        """
+        return current_outlines(dates, groups, np.datetime64(day, "ns"), **kwargs).tolist()
+
+    assert at("1975-01-01") == [False] * 5
+    assert at("1982-01-01") == [True, False, False, False, False]
+    assert at("1987-01-01") == [True, False, False, True, False]
+    assert at("2000-01-01") == [False, True, True, True, False]
+    # A front older than the maximum age is no longer drawn.
+    assert at("2000-01-01", max_age=np.timedelta64(3650, "D")) == [False, True, True, False, False]
+    # Without groups the whole file is one sequence.
+    assert current_outlines(dates, None, np.datetime64("1987-01-01", "ns")).tolist() == [
+        False,
+        False,
+        False,
+        True,
+        False,
+    ]
+
+
+def test_frame_time_reads_datetimes_and_cftime():
+    """
+    Model times become datetime64 whether decoded by numpy or cftime.
+    """
+    cftime = pytest.importorskip("cftime")
+    numpy_times = xr.Dataset(coords={"time": pd.to_datetime(["1985-06-16"])})
+    cf_times = xr.Dataset(coords={"time": [cftime.DatetimeNoLeap(1985, 6, 16)]})
+    plain = xr.Dataset(coords={"time": [3.5]})
+
+    assert frame_time(numpy_times, 0) == np.datetime64("1985-06-16", "ns")
+    assert frame_time(cf_times, 0) == np.datetime64("1985-06-16", "ns")
+    assert frame_time(plain, 0) is None
+    assert frame_time(xr.Dataset(), 0) is None
