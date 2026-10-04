@@ -90,8 +90,8 @@ version = "v3"
 [grid]
 
 'grid.Lbz' = 2000
-'grid.Lz' = 4000
-'grid.Mbz' = 51
+'grid.Lz' = 500
+'grid.Mbz' = 21
 'grid.Mz' = 101
 'grid.allow_extrapolation' = "yes"
 'grid.file' = "none"
@@ -116,8 +116,8 @@ model = 'blatter'
 
 [stress_balance.options.blatter]
 
-'stress_balance.blatter.Mz' = 10
-'stress_balance.blatter.coarsening_factor' = 3
+'stress_balance.blatter.Mz' = 17
+'stress_balance.blatter.coarsening_factor' = 4
 'stress_balance.blatter.use_eta_transform' = "yes"
 'stress_balance.calving_front_stress_bc' = "yes"
 'stress_balance.model' = "blatter"
