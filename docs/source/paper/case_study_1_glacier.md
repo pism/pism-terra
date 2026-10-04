@@ -41,7 +41,7 @@ forward from 1986 to 2025, and postprocesses the output:
 pism-glacier-run-inverse \
     RGI2000-v7.0-C-01-04374 \
     pism_terra/config/gmd_case_study_1_glacier.toml \
-    pism_terra/templates/ec2.j2
+    pism_terra/templates/debug.j2
 ```
 
 The script ends with the two postprocessing steps the figures need:
