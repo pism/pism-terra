@@ -998,6 +998,7 @@ PASS_THROUGH_SECTIONS = (
     "reporting",
     "input",
     "time_stepping",
+    "regional",
 )
 
 
@@ -1061,6 +1062,10 @@ class PismConfig(BaseModelWithDot):
         Input file options to pass through. Defaults to ``{}``.
     time_stepping : dict of str to Any, optional
         Time-stepping-related options to pass through. Defaults to ``{}``.
+    regional : dict of str to Any, optional
+        PISM's regional (outlet glacier) mode: the ``regional`` flag, which
+        turns it on whatever its value, and the ``regional.*`` options, passed
+        through. Defaults to ``{}`` (no regional mode).
     inverse : dict of str to Any, optional
         Inverse options to pass through. Defaults to ``{}``.
     solver : dict of str to Any, optional
@@ -1112,6 +1117,7 @@ class PismConfig(BaseModelWithDot):
     reporting: dict[str, Any] = {}
     input: dict[str, Any] = {}
     time_stepping: dict[str, Any] = {}
+    regional: dict[str, Any] = {}
     inverse: dict[str, Any] = {}
     solver: dict[str, Any] = {}
 

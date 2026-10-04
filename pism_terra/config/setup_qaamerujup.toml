@@ -1,0 +1,46 @@
+# Setup of the Qaamerujup regional domain (pism-qaamerujup-prepare).
+#
+# The grid, boot and observation files are written to <OUTPUT_PATH>/input and
+# uploaded next to the ISMIP7 Greenland inputs, s3://{bucket}/{prefix}/{version}/,
+# so a campaign with the same bucket, prefix and version (qaamerujup_century.toml)
+# stages them together with the Greenland-wide forcing.
+
+name = "qaamerujup"
+year = 1931
+bucket = "pism-cloud-data"
+prefix = "ismip7/greenland/input"
+version = "v3"
+# Raw inputs of the domain (DEMs and outlines), s3://{bucket}/{source_prefix}/.
+source_prefix = "qaamerujup"
+# ISMIP7 Greenland observations (bed, thickness, masks, velocity mosaic). Only
+# the window around the domain is read.
+obs_url = "s3://pism-cloud-data/obs/GreenlandObsISMIP7-v1.3.nc"
+
+[domain]
+
+# The model domain is the bounding box of this polygon, grown to a whole
+# number of cells at every resolution base_resolution * multipliers.
+file = "domain_qaamerujup.gpkg"
+# The domain file is labelled EPSG:4326 but its coordinates are EPSG:3413;
+# an outline whose coordinates cannot be longitudes and latitudes is read in crs.
+crs = "EPSG:3413"
+base_resolution = 32
+multipliers = [1, 2, 3, 4]
+# Margin (m) around the domain covered by the boot and observation files, so
+# PISM never extrapolates at the edges.
+margin = 1000
+
+[dem]
+
+# Reconstructed 1931 surface (10 m), used inside the buffered outline.
+reconstruction = "1931_DEMrek_TIN10_clip.tif"
+# ArcticDEM mosaic (32 m): the surface everywhere else, and the grid of the
+# boot and observation files.
+reference = "arctic-dem-qaamerujup_0.tif"
+# The 1931 glacier: its thickness is the 1931 surface minus the bed.
+outline = "1931-dem-outline.gpkg"
+# The outline grown by a margin: the 1931 surface is used inside it, and the
+# geometry is held to the boot file (ftt_mask = 1) outside it.
+buffered_outline = "1931-dem-buffered.gpkg"
+# Area turned into deep ocean (bed -2000 m, no ice).
+exclude = "qaamerujup-exclude.gpkg"

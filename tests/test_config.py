@@ -483,6 +483,39 @@ def test_fracture_density_options_reach_the_run(tmp_path):
     assert load_config(source).fracture_density == {}
 
 
+def test_regional_mode_reaches_the_run(tmp_path):
+    """
+    Pass a ``[regional]`` section, the bare ``-regional`` flag included, to the PISM flags.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland.run import _base_run_dict
+    from pism_terra.workflow import dict2str
+
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_c001.toml"
+    config = tmp_path / "regional.toml"
+    config.write_text(
+        source.read_text(encoding="utf-8")
+        + "\n[regional]\n\n'regional' = \"\"\n'regional.no_model_strip' = 1.5\n'regional.zero_gradient' = \"true\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config)
+
+    expected = {"regional": "", "regional.no_model_strip": 1.5, "regional.zero_gradient": "true"}
+    assert cfg.regional == expected
+    assert "regional" in PASS_THROUGH_SECTIONS
+    run = _base_run_dict(cfg)
+    assert {k: run[k] for k in expected} == expected
+    # PISM turns regional mode on by the bare flag.
+    flags = [line.strip() for line in dict2str(run).split("\\\n")]
+    assert "-regional" in flags
+    assert load_config(source).regional == {}
+
+
 @pytest.mark.parametrize("walltime", ["1:00:00", "12:00:00", "120:00:00"])
 def test_job_config_walltime_accepts_one_to_three_hour_digits(walltime):
     """
