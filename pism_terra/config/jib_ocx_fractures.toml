@@ -67,6 +67,15 @@ OCX = {climate = 1, ocean = 1}
 'input.regrid.file' =  "none"
 'input.regrid.vars' = "litho_temp,enthalpy,age,tillwat"
 
+[regional]
+
+# PISM's regional (outlet glacier) model: '-regional' turns it on whatever its
+# value. A strip of no_model_strip km along the edges is held at the boot state,
+# with zero-gradient boundary conditions on the surface (as in the pism-ragis runs).
+'regional' = ""
+'regional.no_model_strip' = 0.9
+'regional.zero_gradient' = "true"
+
 [reporting]
 
 'output.ISMIP' = "no"
