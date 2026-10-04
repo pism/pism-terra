@@ -122,6 +122,70 @@ def retreat_disabled(name: str | None) -> bool:
     return name is None or str(name).strip().lower() in {"", "none"}
 
 
+# Subdirectory of the inputs (locally and in the bucket) that holds the grid
+# files: the ice-sheet-wide grid and the regional ones.
+GRIDS_DIR = "grids"
+
+
+def select_grid_file(configured: str, input_path: Path, bucket: str, prefix: str) -> str:
+    """
+    Locate the grid file among the inputs.
+
+    Grid files live in the ``grids`` subdirectory of the inputs, and the
+    campaign names only the file. Inputs uploaded before that layout keep the
+    grid file beside the other inputs, which is still found.
+
+    Parameters
+    ----------
+    configured : str
+        ``campaign.grid_file`` as written in the config. A name that already
+        carries a directory is used as is.
+    input_path : pathlib.Path
+        Local staging directory (a file already there needs no bucket lookup).
+    bucket : str
+        Bucket the inputs are staged from.
+    prefix : str
+        Key prefix (with version) the inputs live under.
+
+    Returns
+    -------
+    str
+        The file to stage, relative to ``prefix``.
+    """
+    if Path(configured).parent != Path("."):
+        return configured
+    wanted = f"{GRIDS_DIR}/{configured}"
+
+    def present(name: str) -> bool:
+        """
+        Whether a file is staged already or in the bucket.
+
+        Parameters
+        ----------
+        name : str
+            File, relative to ``prefix``.
+
+        Returns
+        -------
+        bool
+            ``False`` also when the bucket cannot be asked.
+        """
+        if (input_path / Path(name)).exists():
+            return True
+        try:
+            return s3_key_exists(bucket, f"{prefix}/{name}")
+        except Exception:  # pylint: disable=broad-exception-caught
+            return False
+
+    if not present(wanted) and present(configured):
+        print(
+            f"Grid file: {wanted} is neither in {input_path} nor in s3://{bucket}/{prefix}/; "
+            f"using {configured} beside the other inputs (the layout before '{GRIDS_DIR}/')."
+        )
+        return configured
+    return wanted
+
+
 def select_retreat_file(
     configured: str, resolution: int | float | str | None, input_path: Path, bucket: str, prefix: str
 ) -> str:
@@ -499,7 +563,8 @@ def stage(
     hist_start = int(config["historical_start_year"])
     hist_end = int(config["historical_end_year"])
 
-    grid_file = input_path / Path(config["grid_file"])
+    grid_name = select_grid_file(config["grid_file"], input_path, bucket, prefix)
+    grid_file = input_path / Path(grid_name)
     boot_file = input_path / Path(config["boot_file"])
     heatflux_file = input_path / Path(config["heatflux_file"])
     regrid_file = input_path / Path(config["regrid_file"])
@@ -520,7 +585,7 @@ def stage(
     # running, plus assorted bookkeeping files). ``required_files`` pairs
     # the rel-key under ``prefix`` with its target local path.
     required_files: list[tuple[str, Path]] = [
-        (config["grid_file"], grid_file),
+        (grid_name, grid_file),
         (config["boot_file"], boot_file),
         (config["heatflux_file"], heatflux_file),
         (config["regrid_file"], regrid_file),

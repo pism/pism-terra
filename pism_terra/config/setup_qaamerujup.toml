@@ -1,7 +1,8 @@
 # Setup of the Qaamerujup regional domain (pism-qaamerujup-prepare).
 #
-# The grid, boot and observation files are written to <OUTPUT_PATH>/input and
-# uploaded next to the ISMIP7 Greenland inputs, s3://{bucket}/{prefix}/{version}/,
+# The grid (in grids/), boot and observation files are written to
+# <OUTPUT_PATH>/input and uploaded next to the ISMIP7 Greenland inputs,
+# s3://{bucket}/{prefix}/{version}/,
 # so a campaign with the same bucket, prefix and version (qaamerujup_century.toml)
 # stages them together with the Greenland-wide forcing.
 

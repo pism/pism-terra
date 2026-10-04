@@ -102,6 +102,7 @@ def download_from_s3(s3_uri: str, dest: str | Path) -> Path:
         Path to the downloaded file.
     """
     dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
 
     parsed_url = urlparse(s3_uri)
     bucket = parsed_url.netloc

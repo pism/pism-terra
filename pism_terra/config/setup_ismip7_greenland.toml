@@ -6,6 +6,36 @@ ice_sheet = "GrIS"
 
 [domain]
 
+# Bounds computed with ``pism_terra.domain.get_bounds`` from the 150 m grid of
+# GreenlandObsISMIP7-v1.3.nc (cell-edge extent x [-653000, 879700],
+# y [-3384500, -632600]): same centre, with width and height rounded up to a
+# multiple of 216 km (8 x 13 tiles), so that one domain serves many
+# resolutions. Every divisor of 216 km fits evenly, e.g. 150, 300, 450, 600,
+# 900, 1200, 1500, 1800, 2400, 3000, 3600, 4500, 4800, 6000, 9000, 18000 m.
+# Reproduce with:
+#   get_bounds(ds, base_resolution=150,
+#              multipliers=[1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 16, 18, 20, 24, 30, 32])
+crs = "EPSG:3413"
+resolution = "450m"
+x_bounds = [-750650.0, 977350.0]
+y_bounds = [-3412550.0, -604550.0]
+
+[regional_grids]
+
+# One grid file per glacier of ``outline_file`` (in pism_terra/data, or a path),
+# written to input/grids/pism_{NAME}_grid.nc, beside the ice-sheet-wide
+# pism_bedmachine_greenland_grid.nc (a campaign names the file only,
+# grid_file = "pism_{NAME}_grid.nc"; staging looks in grids/): the bounding box of the outline
+# plus ``buffer`` (m), snapped to the 150 m grid of GreenlandObsISMIP7-v1.3.nc
+# and grown about its centre with ``get_bounds`` to a multiple of 216 km, the
+# least common multiple of the resolutions base_resolution * multipliers. The
+# regional domains thus take the same resolutions as the ice-sheet-wide one.
+outline_file = "mouginot_glaciers_w_shelves.gpkg"
+name_column = "NAME"
+buffer = 3000.0
+base_resolution = 150
+multipliers = [1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 16, 18, 20, 24, 30, 32]
+
 # ``source`` maps each forcing to its source.coop subtree and the version
 # label of the merged output filename: {dataset = <subpath>, version = <int>}.
 # ``dataset`` is the directory subpath between the pathway slot and the
@@ -23,11 +53,6 @@ ice_sheet = "GrIS"
 # pathway, as may the ``[forcing]`` field lists (``fields = {climate = [...]}``).
 # (Sub-tables rather than one inline table per GCM: the ``toml`` 0.x parser
 # used by prepare.py cannot handle inline tables nested two levels deep.)
-
-crs = "EPSG:3413"
-resolution = "450m"
-x_bounds = [-750650.0, 977350.0]
-y_bounds = [-3412550.0, -604550.0]
 
 [gcms.CESM2-WACCM]
 

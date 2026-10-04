@@ -25,7 +25,7 @@ starting from its 1931 geometry. This module builds the three inputs that
 differ from the ice-sheet runs; the forcing, heat flux and regrid state are
 the Greenland-wide files, which PISM interpolates onto the domain.
 
-- **Grid** (``pism_qaamerujup_grid.nc``): the bounding box of the domain
+- **Grid** (``grids/pism_qaamerujup_grid.nc``): the bounding box of the domain
   polygon, grown to a whole number of cells at every resolution of the setup.
   Only the extent is stored; the run's ``grid.resolution`` sets the spacing.
 - **Boot file** (``boot_1931_qaamerujup.nc``), on the 32 m ArcticDEM grid: the
@@ -68,6 +68,7 @@ from pism_terra.ismip7.greenland.forcing import (
     inverse_observations,
     write_inverse_observations,
 )
+from pism_terra.ismip7.greenland.stage import GRIDS_DIR
 from pism_terra.log import setup_logging
 from pism_terra.prepare_select import add_include_argument, select_datasets
 from pism_terra.workflow import (
@@ -107,7 +108,8 @@ def product_names(config: dict) -> dict[str, str]:
     -------
     dict of str to str
         ``grid_file``, ``boot_file`` and ``obs_file``, as the campaign config
-        names them.
+        names them. The grid file is written to the ``grids`` subdirectory of
+        the inputs, where staging looks for it.
     """
     name, year = config["name"], config["year"]
     return {
@@ -519,7 +521,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {"config": config, "grid_file": None, "boot_file": None, "obs_file": None}
 
     if "grid" in selected:
-        grid_file = input_path / names["grid_file"]
+        grid_file = input_path / GRIDS_DIR / names["grid_file"]
+        grid_file.parent.mkdir(parents=True, exist_ok=True)
         grid = create_domain(x_bnds, y_bnds, crs=crs)
         grid.attrs.update({"domain": config["name"]})
         grid.to_netcdf(grid_file)
