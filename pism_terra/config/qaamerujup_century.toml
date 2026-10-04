@@ -306,7 +306,6 @@ model="lc"
 
 [solver.forward]
 
-bp_ksp_monitor = ""
 bp_ksp_rtol = 1e-3
 bp_ksp_type = "fgmres"
 bp_mg_coarse_ksp_max_it = 50
