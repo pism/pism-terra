@@ -195,6 +195,7 @@ model = "ismip7"
 'fracture_density.healing_threshold' = 2.0e-10
 'fracture_density.include_grounded_ice' = "yes"
 'fracture_density.initiation_threshold' = 7.0e4
+'fracture_density.lefm' = "yes"
 'fracture_density.scheme_fd2d' = "yes"
 'fracture_density.softening_lower_limit' = 1.0
 'fracture_density.write_fd_fields' = "yes"
