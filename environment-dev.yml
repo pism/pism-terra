@@ -104,5 +104,5 @@ dependencies:
   - isschecker
   - pip:
       - pytest-codeblocks>=0.18
-      # project colormaps ("cmg.speed", "cmg.akbathtopo", ...); not on PyPI or conda-forge
-      - git+https://github.com/pism/cmglaciology.git
+      # project colormaps ("cmg.speed", "cmg.akbathtopo", ...); on PyPI, not on conda-forge
+      - cmglaciology

@@ -31,7 +31,7 @@ dependencies = [
     "cftime",
     "cmap",
     "cmcrameri",
-    "cmglaciology @ git+https://github.com/pism/cmglaciology.git",
+    "cmglaciology",
     "cmweather",
     "dask[distributed,dataframe]",
     "dem_stitcher",
