@@ -14,8 +14,8 @@ samples = 10
 
 [fracture_density.initiation_threshold]
 
-loc = 70e3
-scale = 60e3
+loc = 75e3
+scale = 50e3
 distribution = "uniform"
 
 # [fracture_density.healing_threshold]
