@@ -67,7 +67,7 @@ version = "v3"
 # value. A strip of no_model_strip km along the edges is held at the boot state,
 # with zero-gradient boundary conditions on the surface (as in the pism-ragis runs).
 'regional' = ""
-'regional.no_model_strip' = 0.32
+'regional.no_model_strip' = 1.6
 'regional.zero_gradient' = "true"
 
 [reporting]
