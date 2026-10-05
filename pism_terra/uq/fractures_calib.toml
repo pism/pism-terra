@@ -1,28 +1,28 @@
 samples = 10
 
-[fracture_density.gamma]
+# [fracture_density.gamma]
 
-loc = 4.5e-02
-scale = 0.955
-distribution = "uniform"
+# loc = 4.5e-02
+# scale = 0.955
+# distribution = "uniform"
 
-[fracture_density.gamma_h]
+# [fracture_density.gamma_h]
 
-loc = 2e-02
-scale = 0.98
-distribution = "uniform"
+# loc = 2e-02
+# scale = 0.98
+# distribution = "uniform"
 
 [fracture_density.initiation_threshold]
 
-loc = 4e4
-scale = 1e5
+loc = 70e3
+scale = 60e3
 distribution = "uniform"
 
-[fracture_density.healing_threshold]
+# [fracture_density.healing_threshold]
 
-loc = 6e-11
-scale = 9e-10
-distribution = "uniform"
+# loc = 6e-11
+# scale = 9e-10
+# distribution = "uniform"
 
 [fracture_density.softening_lower_limit]
 
