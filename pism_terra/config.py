@@ -548,9 +548,9 @@ class UQConfig(BaseModel):
         Notes
         -----
         - If input contains a key ``"tree"``, that block is used as the source.
-        - If any keys appear already dotted (contain ``'.'``), they are copied
-          into ``tree`` if their values are ``dict``; otherwise nested flattening
-          via :meth:`_flatten_leaves` is applied.
+        - Keys that are already dotted (contain ``'.'``) are copied into ``tree``
+          if their values are ``dict``; the other tables are flattened via
+          :meth:`_flatten_leaves`. Both spellings may appear in one file.
 
         Examples
         --------
@@ -600,12 +600,18 @@ class UQConfig(BaseModel):
         raw.pop("mapping", None)
         raw.pop("derived", None)
 
-        # If keys are already dotted (['a.b.c']), keep only dict-valued items
-        if any(isinstance(k, str) and "." in k for k in raw):
-            entries = {k: v for k, v in raw.items() if isinstance(v, dict)}
-        else:
-            # Nested TOML tables -> flatten by finding leaves
-            entries = cls._flatten_leaves(raw)
+        # A file may mix both spellings: ['a.b.c'] arrives as one dotted key,
+        # [a.b.c] as nested tables. Dotted keys are kept as they are, so one
+        # without a distribution is reported below; nested tables are
+        # flattened by finding their leaves.
+        entries: dict[str, Any] = {}
+        for key, value in raw.items():
+            if not isinstance(value, dict):
+                continue
+            if "." in key or cls._is_leaf(value) or cls._is_derived(value):
+                entries[key] = value
+            else:
+                entries.update(cls._flatten_leaves(value, key))
 
         # An entry either draws from a distribution or follows another entry.
         both = sorted(k for k, v in entries.items() if cls._is_leaf(v) and cls._is_derived(v))

@@ -159,6 +159,46 @@ def test_iter_specs_matches_to_flat_keys():
     assert flat == iter_keys
 
 
+def test_dotted_and_nested_keys_may_be_mixed():
+    """
+    Accept a file that spells one entry ``['a.b.c']`` and another ``[a.b.c]``.
+
+    Notes
+    -----
+    The nested table used to be taken for an entry of its own, named after its
+    first component, and rejected for having no distribution.
+    """
+    raw = {
+        "samples": 1,
+        "method": "factorial",
+        "calving.thickness_calving.threshold": {"distribution": "choices", "choices": [100, 200]},
+        "fracture_density": {"softening_lower_limit": {"distribution": "choices", "choices": [0.5, 0.75, 1.0]}},
+    }
+    uq = UQConfig.model_validate(raw)
+    assert set(_specs_dict(uq)) == {
+        "calving.thickness_calving.threshold",
+        "fracture_density.softening_lower_limit",
+    }
+
+
+def test_dotted_key_without_distribution_fails():
+    """
+    Fail when a dotted entry declares neither a distribution nor a parent.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If the entry has neither ``distribution`` nor ``derived_from``.
+    """
+    raw = {
+        "calving.thickness_calving.threshold": {"choices": [100, 200]},
+        "fracture_density": {"softening_lower_limit": {"distribution": "choices", "choices": [0.5, 1.0]}},
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        UQConfig.model_validate(raw)
+    assert "calving.thickness_calving.threshold" in str(excinfo.value)
+
+
 def test_samples_must_be_positive():
     """
     Fail when `samples` ≤ 0.
