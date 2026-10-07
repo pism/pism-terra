@@ -21,9 +21,18 @@ they reach the end of their lives, leave the ice or stall. They are traced once,
 before rendering, so the frames can still be rendered in parallel.
 
 ``--outlines FILE`` drapes the outlines of a vector file (glacier outlines, say)
-over the terrain as lines, black by default. The file may be in any CRS: the
-outlines are reprojected to the grid's, which is read from the netCDF file's
-grid mapping (or given with ``--crs``), and only those in view are drawn.
+over the terrain as lines, black by default. Polygons are drawn by their
+boundaries, lines as they are. The file may be in any CRS: the outlines are
+reprojected to the grid's, which is read from the netCDF file's grid mapping
+(or given with ``--crs``), and only those in view are drawn.
+
+When the file has a date column (``--outline-time``, found automatically as
+``Date``, ``date``, ``time`` or ``datetime``), the outlines change with time:
+each frame draws, for every glacier (``--outline-group``, found automatically
+as ``GlacierID``, ``glacier_id``, ``rgi_id`` or ``RGIId``), the latest outline
+observed up to the frame's model time. The CALFIN calving fronts
+(``termini_1972-2019_Greenland_lines_v1.0.shp``, staged by
+``pism-ismip7-greenland-prepare --include calfin``) animate this way.
 
 Examples
 --------
@@ -32,6 +41,7 @@ Examples
     python render_terrain_3d.py spatial.nc --overlay-var debris_thickness --overlay-cmap batlow
     python render_terrain_3d.py spatial.nc --overlay-var dHdt --particles 3000
     python render_terrain_3d.py spatial.nc --outlines glacier_s4f_input/s4f_c.gpkg
+    python render_terrain_3d.py spatial.nc --outlines calfin/termini_1972-2019_Greenland_lines_v1.0.shp
     # then, e.g.:
     ffmpeg -framerate 15 -i frames/frame_%04d.png -pix_fmt yuv420p out.mp4
 """
@@ -53,6 +63,7 @@ import cmglaciology.cm  # noqa: F401  pylint: disable=unused-import
 import geopandas as gpd
 import matplotlib
 import numpy as np
+import pandas as pd
 import pyogrio
 import pyvista as pv
 
@@ -237,6 +248,26 @@ def parse_args() -> argparse.Namespace:
         "--outlines",
         default=None,
         help="Vector file (GeoPackage, shapefile, ...) whose outlines are drawn on the terrain; any CRS.",
+    )
+    p.add_argument(
+        "--outline-time",
+        default="auto",
+        help="Date column that makes the outlines change with time: each frame draws the latest outline of "
+        "every group observed up to its model time (default: auto, the first of "
+        f"{', '.join(TIME_COLUMNS)} present; 'none' draws all outlines in every frame).",
+    )
+    p.add_argument(
+        "--outline-group",
+        default="auto",
+        help="Column naming the feature a dated outline belongs to, e.g. a glacier, so that each keeps its "
+        f"latest outline (default: auto, the first of {', '.join(GROUP_COLUMNS)} present; 'none' treats the "
+        "file as one sequence).",
+    )
+    p.add_argument(
+        "--outline-max-age",
+        type=float,
+        default=None,
+        help="Days a dated outline stays on screen without a newer one (default: until the next one).",
     )
     p.add_argument("--outline-color", default="black", help="Outline color (default: black).")
     p.add_argument("--outline-width", type=float, default=2.0, help="Outline line width in pixels (default 2).")
@@ -823,16 +854,129 @@ def particle_trails(
     return poly
 
 
-def load_outlines(path: str | Path, crs: str, x: np.ndarray, y: np.ndarray) -> list[np.ndarray]:
+#: Columns tried, in order, for the date of an outline (``--outline-time auto``).
+TIME_COLUMNS = ("Date", "date", "time", "datetime")
+
+#: Columns tried, in order, for the feature a dated outline belongs to
+#: (``--outline-group auto``); CALFIN numbers its glaciers ``GlacierID``.
+GROUP_COLUMNS = ("GlacierID", "glacier_id", "rgi_id", "RGIId")
+
+
+def _pick_column(gdf: gpd.GeoDataFrame, choice: str | None, candidates: tuple[str, ...]) -> str | None:
     """
-    Read the outlines of a vector file that lie on the grid, as lines in its CRS.
+    Resolve a column option: ``"auto"`` takes the first candidate present, ``"none"`` none.
+
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        The features.
+    choice : str or None
+        Column name, ``"auto"``, ``"none"`` or ``None``.
+    candidates : tuple of str
+        Columns tried by ``"auto"``.
+
+    Returns
+    -------
+    str or None
+        The column, or ``None`` for none.
+
+    Raises
+    ------
+    SystemExit
+        If a named column is not in the file.
+    """
+    if choice is None or choice.lower() == "none":
+        return None
+    if choice == "auto":
+        return next((c for c in candidates if c in gdf.columns), None)
+    if choice not in gdf.columns:
+        raise SystemExit(f"Column {choice!r} not in the outlines (have: {sorted(gdf.columns.drop('geometry'))}).")
+    return choice
+
+
+def load_outline_features(
+    path: str | Path,
+    crs: str,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    time: str | None = None,
+    group: str | None = None,
+) -> dict:
+    """
+    Read the outlines of a vector file that lie on the grid, with their dates and groups.
 
     Only the features that touch the grid are read, so a file covering a whole
     region costs no more than the part in view. Polygons give their outer
-    boundaries and their holes (nunataks). The lines are cut at the edge of
-    the grid, thinned to the grid spacing, which is all the detail a surface on
-    that grid can show, and then given a vertex at least every grid spacing,
-    so that a line draped over the terrain follows it between its corners.
+    boundaries and their holes (nunataks); lines are taken as they are. The
+    lines are cut at the edge of the grid, thinned to the grid spacing, which
+    is all the detail a surface on that grid can show, and then given a vertex
+    at least every grid spacing, so that a line draped over the terrain
+    follows it between its corners.
+
+    Parameters
+    ----------
+    path : str or Path
+        Vector file readable by GeoPandas, in any CRS.
+    crs : str
+        CRS of the grid.
+    x, y : numpy.ndarray
+        Cell-center coordinates, evenly spaced, in either order.
+    time : str or None, optional
+        Date column (``"auto"`` tries :data:`TIME_COLUMNS`); ``None`` or
+        ``"none"`` reads no dates.
+    group : str or None, optional
+        Group column (``"auto"`` tries :data:`GROUP_COLUMNS`); used only with
+        dates.
+
+    Returns
+    -------
+    dict
+        ``lines``: one ``(n, 2)`` array of map coordinates ``(x, y)`` per
+        line, empty when no outline lies on the grid. ``dates``: the date of
+        each line's feature (``datetime64[ns]``), or ``None`` without a date
+        column. ``groups``: each line's group, or ``None``. ``time_column``
+        and ``group_column``: the columns used.
+    """
+    spacing = min(abs(float(x[1] - x[0])), abs(float(y[1] - y[0])))
+    # The extent of the cell centers: heights can be interpolated up to there.
+    extent = shapely.box(float(np.min(x)), float(np.min(y)), float(np.max(x)), float(np.max(y)))
+    file_crs = pyogrio.read_info(path)["crs"]
+    # The grid's box has curved edges in the file's CRS; give it enough vertices.
+    window = gpd.GeoSeries([shapely.segmentize(extent, spacing)], crs=crs).to_crs(file_crs)
+    outlines = gpd.read_file(path, bbox=tuple(window.total_bounds)).to_crs(crs)
+
+    geoms = outlines.geometry.values
+    polygonal = np.isin(shapely.get_type_id(geoms), (shapely.GeometryType.POLYGON, shapely.GeometryType.MULTIPOLYGON))
+    edges = np.where(polygonal, shapely.boundary(geoms), geoms)
+    lines = shapely.intersection(edges, extent)
+    lines = shapely.segmentize(shapely.simplify(lines, spacing / 2.0), spacing)
+    parts, feature = shapely.get_parts(lines, return_index=True)
+    # Cutting at the edge can leave points behind; only lines can be drawn.
+    keep = np.isin(shapely.get_type_id(parts), (shapely.GeometryType.LINESTRING, shapely.GeometryType.LINEARRING)) & (
+        shapely.get_num_coordinates(parts) > 1
+    )
+    parts, feature = parts[keep], feature[keep]
+
+    time_column = _pick_column(outlines, time, TIME_COLUMNS)
+    group_column = _pick_column(outlines, group, GROUP_COLUMNS) if time_column else None
+    dates = groups = None
+    if time_column is not None:
+        dates = pd.to_datetime(outlines[time_column], errors="coerce").to_numpy(dtype="datetime64[ns]")[feature]
+    if group_column is not None:
+        groups = outlines[group_column].to_numpy()[feature]
+    return {
+        "lines": [shapely.get_coordinates(part) for part in parts],
+        "dates": dates,
+        "groups": groups,
+        "time_column": time_column,
+        "group_column": group_column,
+    }
+
+
+def load_outlines(path: str | Path, crs: str, x: np.ndarray, y: np.ndarray) -> list[np.ndarray]:
+    """
+    Read the outlines of a vector file that lie on the grid, as lines in its CRS.
 
     Parameters
     ----------
@@ -846,24 +990,79 @@ def load_outlines(path: str | Path, crs: str, x: np.ndarray, y: np.ndarray) -> l
     Returns
     -------
     list of numpy.ndarray
-        One ``(n, 2)`` array of map coordinates ``(x, y)`` per line; empty when
-        no outline lies on the grid.
+        One ``(n, 2)`` array of map coordinates ``(x, y)`` per line (see
+        :func:`load_outline_features`); empty when no outline lies on the grid.
     """
-    spacing = min(abs(float(x[1] - x[0])), abs(float(y[1] - y[0])))
-    # The extent of the cell centers: heights can be interpolated up to there.
-    extent = shapely.box(float(np.min(x)), float(np.min(y)), float(np.max(x)), float(np.max(y)))
-    file_crs = pyogrio.read_info(path)["crs"]
-    # The grid's box has curved edges in the file's CRS; give it enough vertices.
-    window = gpd.GeoSeries([shapely.segmentize(extent, spacing)], crs=crs).to_crs(file_crs)
-    outlines = gpd.read_file(path, bbox=tuple(window.total_bounds)).to_crs(crs)
-    lines = shapely.intersection(shapely.boundary(outlines.geometry.values), extent)
-    lines = shapely.segmentize(shapely.simplify(lines, spacing / 2.0), spacing)
-    parts = shapely.get_parts(lines[~shapely.is_empty(lines)])
-    # Cutting at the edge can leave points behind; only lines can be drawn.
-    parts = parts[
-        np.isin(shapely.get_type_id(parts), (shapely.GeometryType.LINESTRING, shapely.GeometryType.LINEARRING))
-    ]
-    return [shapely.get_coordinates(part) for part in parts if shapely.get_num_coordinates(part) > 1]
+    return load_outline_features(path, crs, x, y)["lines"]
+
+
+def current_outlines(
+    dates: np.ndarray,
+    groups: np.ndarray | None,
+    when: np.datetime64,
+    max_age: np.timedelta64 | None = None,
+) -> np.ndarray:
+    """
+    Pick the outlines on screen at one time: per group, the latest observed by then.
+
+    Parameters
+    ----------
+    dates : numpy.ndarray
+        Date of each line (``datetime64``); lines without one are never drawn.
+    groups : numpy.ndarray or None
+        Group of each line; ``None`` makes all lines one group.
+    when : numpy.datetime64
+        The frame's time.
+    max_age : numpy.timedelta64 or None, optional
+        Drop an outline once it is older than this with no newer one.
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean mask over the lines: those of each group's latest date not
+        after ``when`` (every line of that date, if a front comes in parts).
+    """
+    seen = dates <= when
+    if max_age is not None:
+        seen &= dates > when - max_age
+    selected = np.zeros(len(dates), dtype=bool)
+    if not seen.any():
+        return selected
+    labels = np.zeros(len(dates), dtype=int) if groups is None else groups
+    frame = pd.DataFrame({"group": labels[seen], "date": dates[seen]})
+    latest = frame.groupby("group")["date"].transform("max")
+    selected[np.flatnonzero(seen)] = (frame["date"] == latest).to_numpy()
+    return selected
+
+
+def frame_time(ds: xr.Dataset, t: int) -> np.datetime64 | None:
+    """
+    The model time of a time step as ``datetime64``.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset providing the ``time`` coordinate.
+    t : int
+        Time-step index.
+
+    Returns
+    -------
+    numpy.datetime64 or None
+        The time, or ``None`` when there is no time coordinate or it is not a
+        date (a cftime date that numpy cannot hold, a plain number).
+    """
+    if "time" not in ds:
+        return None
+    val = ds["time"].values[t]
+    if isinstance(val, np.datetime64):
+        return val.astype("datetime64[ns]")
+    if hasattr(val, "isoformat"):  # cftime
+        try:
+            return np.datetime64(val.isoformat(), "ns")
+        except ValueError:
+            return None
+    return None
 
 
 def outline_cells(lines: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
@@ -1089,15 +1288,25 @@ def _render_frame(t: int) -> str:
             )
     outlines = cfg.get("outlines")
     if outlines is not None:
-        # Above the ice overlay and the particle trails.
-        draped = drape_outlines(outlines["xy"], outlines["cells"], z + 3.0 * cfg["z_offset"], w["sampler"])
-        pl.add_mesh(
-            draped,
-            color=cfg["outline_color"],
-            line_width=cfg["outline_width"],
-            lighting=False,
-            show_scalar_bar=False,
-        )
+        if outlines.get("dates") is not None:
+            # Dated outlines: each group's latest one observed by this frame's time.
+            keep = current_outlines(
+                outlines["dates"], outlines["groups"], cfg["frame_times"][t], outlines.get("max_age")
+            )
+            lines = [line for line, k in zip(outlines["lines"], keep) if k]
+            xy, cells = outline_cells(lines) if lines else (None, None)
+        else:
+            xy, cells = outlines["xy"], outlines["cells"]
+        if xy is not None:
+            # Above the ice overlay and the particle trails.
+            draped = drape_outlines(xy, cells, z + 3.0 * cfg["z_offset"], w["sampler"])
+            pl.add_mesh(
+                draped,
+                color=cfg["outline_color"],
+                line_width=cfg["outline_width"],
+                lighting=False,
+                show_scalar_bar=False,
+            )
     pl.add_text(
         time_label(ds, t),
         position="upper_left",
@@ -1249,16 +1458,50 @@ def main() -> None:
     camera = _compute_camera(xx, yy, np.nan_to_num(surf0, nan=float(np.nanmin(surf0))), args, window_size)
     particles = _trace(ds, steps, args) if args.particles > 0 else None
     outlines = None
+    frame_times: dict = {}
     if args.outlines:
         try:
             crs = dataset_crs(ds, args.crs)
         except ValueError as err:
             raise SystemExit(f"--outlines needs the CRS of the grid: {err}") from err
-        lines = load_outlines(Path(args.outlines).expanduser(), crs, ds["x"].values, ds["y"].values)
-        print(f"Drawing {len(lines)} outline(s) from {args.outlines}")
-        if lines:
-            xy, cells = outline_cells(lines)
-            outlines = {"xy": xy, "cells": cells}
+        features = load_outline_features(
+            Path(args.outlines).expanduser(),
+            crs,
+            ds["x"].values,
+            ds["y"].values,
+            time=args.outline_time,
+            group=args.outline_group,
+        )
+        lines = features["lines"]
+        if lines and features["dates"] is not None:
+            times = [frame_time(ds, t) for t in steps]
+            if any(when is None for when in times):
+                raise SystemExit(
+                    f"The outlines are dated ({features['time_column']}) but the file's time steps are not dates; "
+                    "pass --outline-time none to draw them all."
+                )
+            frame_times = dict(zip(steps, times))
+            dates = features["dates"]
+            observed = dates[~np.isnat(dates)]
+            n_groups = len(np.unique(features["groups"])) if features["groups"] is not None else 1
+            print(
+                f"Animating {len(lines)} outline(s) of {n_groups} group(s) ({features['group_column'] or 'one sequence'}) "
+                f"from {args.outlines}, dated {features['time_column']} "
+                f"{np.datetime_as_string(observed.min(), unit='D')} to {np.datetime_as_string(observed.max(), unit='D')}"
+            )
+            outlines = {
+                "lines": lines,
+                "dates": dates,
+                "groups": features["groups"],
+                "max_age": (
+                    np.timedelta64(int(args.outline_max_age * 86400), "s") if args.outline_max_age is not None else None
+                ),
+            }
+        else:
+            print(f"Drawing {len(lines)} outline(s) from {args.outlines}")
+            if lines:
+                xy, cells = outline_cells(lines)
+                outlines = {"xy": xy, "cells": cells}
     ds.close()  # each worker opens its own handle
 
     cfg = {
@@ -1290,6 +1533,7 @@ def main() -> None:
         "particle_width": args.particle_width,
         "particle_color": args.particle_color,
         "outlines": outlines,
+        "frame_times": frame_times,
         "outline_color": args.outline_color,
         "outline_width": args.outline_width,
     }

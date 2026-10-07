@@ -35,6 +35,7 @@ from pism_terra.config import CampaignConfig, load_config, version_tag
 from pism_terra.ismip7.greenland.stage import (
     explicit_forcing_version,
     resolve_forcing_name,
+    select_grid_file,
 )
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "pism_terra" / "config"
@@ -477,3 +478,149 @@ def test_outline_is_placed_beside_the_output(tmp_path):
     assert placed == [run_dir / "output" / "observations" / "mouginot_basins_w_shelves.gpkg"]
     assert placed[0].read_bytes() == b"outline"
     assert not place_outline({}, input_dir, run_dir)
+
+
+def _bucket(monkeypatch, keys):
+    """
+    Stand in for the bucket with a fixed set of keys.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Used to replace the bucket lookup.
+    keys : set of str
+        Keys the bucket holds.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland import stage as stage_module
+
+    monkeypatch.setattr(stage_module, "s3_key_exists", lambda bucket, key: key in keys)
+
+
+def test_grid_file_is_looked_up_in_grids(tmp_path, monkeypatch):
+    """
+    A campaign names the grid file only; it is staged from ``grids/``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to replace the bucket lookup.
+    """
+    _bucket(monkeypatch, {"in/v3/grids/pism_grid.nc", "in/v3/pism_grid.nc"})
+    assert select_grid_file("pism_grid.nc", tmp_path, "bucket", "in/v3") == "grids/pism_grid.nc"
+    # Nothing anywhere: still the new layout, so the failed download names it.
+    _bucket(monkeypatch, set())
+    assert select_grid_file("pism_grid.nc", tmp_path, "bucket", "in/v3") == "grids/pism_grid.nc"
+    # A name with a directory is taken as written.
+    assert select_grid_file("elsewhere/pism_grid.nc", tmp_path, "bucket", "in/v3") == "elsewhere/pism_grid.nc"
+
+
+def test_grid_file_beside_the_inputs_is_still_found(tmp_path, monkeypatch, capsys):
+    """
+    Find a grid file uploaded before ``grids/``, with a note.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to replace the bucket lookup.
+    capsys : pytest.CaptureFixture
+        Captures the note.
+    """
+    _bucket(monkeypatch, {"in/v2/pism_grid.nc"})
+    assert select_grid_file("pism_grid.nc", tmp_path, "bucket", "in/v2") == "pism_grid.nc"
+    assert "grids/pism_grid.nc" in capsys.readouterr().out
+
+    # A staged copy in grids/ wins over the bucket's old layout.
+    (tmp_path / "grids").mkdir()
+    (tmp_path / "grids" / "pism_grid.nc").touch()
+    assert select_grid_file("pism_grid.nc", tmp_path, "bucket", "in/v2") == "grids/pism_grid.nc"
+
+
+def test_grid_file_survives_an_unreachable_bucket(tmp_path, monkeypatch):
+    """
+    Without access to the bucket the new layout is assumed.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to make the bucket lookup fail.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland import stage as stage_module
+
+    def _fail(bucket, key):
+        """
+        Fail like a lookup without credentials.
+
+        Parameters
+        ----------
+        bucket : str
+            Bucket name.
+        key : str
+            Object key.
+        """
+        raise RuntimeError(f"no credentials for s3://{bucket}/{key}")
+
+    monkeypatch.setattr(stage_module, "s3_key_exists", _fail)
+    assert stage_module.select_grid_file("pism_grid.nc", tmp_path, "bucket", "in/v3") == "grids/pism_grid.nc"
+
+
+def test_stage_requests_the_grid_from_grids(tmp_path, monkeypatch):
+    """
+    Staging asks the bucket for ``grids/<grid_file>`` and puts it in ``input/grids``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Used to record the S3 keys instead of fetching them.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland import stage as stage_module
+
+    requested: dict[str, Path] = {}
+
+    def _record(uri, dest, **_kwargs):
+        """
+        Note the key instead of fetching it.
+
+        Parameters
+        ----------
+        uri : str
+            S3 URI requested.
+        dest : str or pathlib.Path
+            Where it would have been written.
+        **_kwargs : dict
+            Ignored.
+
+        Returns
+        -------
+        pathlib.Path
+            ``dest``.
+        """
+        requested[uri] = Path(dest)
+        return Path(dest)
+
+    monkeypatch.setattr(stage_module, "download_from_s3", _record)
+    monkeypatch.setattr(stage_module, "s3_key_exists", lambda bucket, key: "/grids/" in key)
+
+    cfg = load_config(CONFIG_DIR / "ismip7_greenland_c011.toml")
+    params = cfg.campaign.as_params()
+    try:
+        stage_module.stage(params, path=tmp_path, force_overwrite=False, data_path=None, include_projection=False)
+    except Exception:  # pylint: disable=broad-exception-caught
+        # The staged files are stubs, so validation downstream fails; the
+        # key list is already complete by then.
+        pass
+
+    grid_uris = [uri for uri in requested if uri.endswith(params["grid_file"])]
+    assert len(grid_uris) == 1
+    assert grid_uris[0].endswith(f"/{params['version']}/grids/{params['grid_file']}")
+    assert requested[grid_uris[0]] == tmp_path / "input" / "grids" / params["grid_file"]

@@ -159,6 +159,46 @@ def test_iter_specs_matches_to_flat_keys():
     assert flat == iter_keys
 
 
+def test_dotted_and_nested_keys_may_be_mixed():
+    """
+    Accept a file that spells one entry ``['a.b.c']`` and another ``[a.b.c]``.
+
+    Notes
+    -----
+    The nested table used to be taken for an entry of its own, named after its
+    first component, and rejected for having no distribution.
+    """
+    raw = {
+        "samples": 1,
+        "method": "factorial",
+        "calving.thickness_calving.threshold": {"distribution": "choices", "choices": [100, 200]},
+        "fracture_density": {"softening_lower_limit": {"distribution": "choices", "choices": [0.5, 0.75, 1.0]}},
+    }
+    uq = UQConfig.model_validate(raw)
+    assert set(_specs_dict(uq)) == {
+        "calving.thickness_calving.threshold",
+        "fracture_density.softening_lower_limit",
+    }
+
+
+def test_dotted_key_without_distribution_fails():
+    """
+    Fail when a dotted entry declares neither a distribution nor a parent.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If the entry has neither ``distribution`` nor ``derived_from``.
+    """
+    raw = {
+        "calving.thickness_calving.threshold": {"choices": [100, 200]},
+        "fracture_density": {"softening_lower_limit": {"distribution": "choices", "choices": [0.5, 1.0]}},
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        UQConfig.model_validate(raw)
+    assert "calving.thickness_calving.threshold" in str(excinfo.value)
+
+
 def test_samples_must_be_positive():
     """
     Fail when `samples` ≤ 0.
@@ -483,6 +523,39 @@ def test_fracture_density_options_reach_the_run(tmp_path):
     assert load_config(source).fracture_density == {}
 
 
+def test_regional_mode_reaches_the_run(tmp_path):
+    """
+    Pass a ``[regional]`` section, the bare ``-regional`` flag included, to the PISM flags.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland.run import _base_run_dict
+    from pism_terra.workflow import dict2str
+
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_c001.toml"
+    config = tmp_path / "regional.toml"
+    config.write_text(
+        source.read_text(encoding="utf-8")
+        + "\n[regional]\n\n'regional' = \"\"\n'regional.no_model_strip' = 1.5\n'regional.zero_gradient' = \"true\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config)
+
+    expected = {"regional": "", "regional.no_model_strip": 1.5, "regional.zero_gradient": "true"}
+    assert cfg.regional == expected
+    assert "regional" in PASS_THROUGH_SECTIONS
+    run = _base_run_dict(cfg)
+    assert {k: run[k] for k in expected} == expected
+    # PISM turns regional mode on by the bare flag.
+    flags = [line.strip() for line in dict2str(run).split("\\\n")]
+    assert "-regional" in flags
+    assert load_config(source).regional == {}
+
+
 @pytest.mark.parametrize("walltime", ["1:00:00", "12:00:00", "120:00:00"])
 def test_job_config_walltime_accepts_one_to_three_hour_digits(walltime):
     """
@@ -508,3 +581,17 @@ def test_job_config_walltime_rejects_malformed(walltime):
     """
     with pytest.raises(ValidationError, match="walltime must look like"):
         JobConfig(walltime=walltime)
+
+
+def test_gmd_case_study_1_config_selects_the_documented_models():
+    """
+    Keep the case-study config of the model description paper loadable and as documented.
+    """
+    cfg = load_config(Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "gmd_case_study_1_glacier.toml")
+
+    assert cfg.grid.resolution == "200m"
+    assert (cfg.time.time_start, cfg.time.time_end) == ("1986-01-01", "2025-01-01")
+    assert cfg.energy.selected()["energy.model"] == "enthalpy"
+    assert cfg.stress_balance.selected()["stress_balance.model"] == "blatter"
+    assert cfg.surface.selected()["surface.models"] == "pdd"
+    assert cfg.campaign.dh == "hugonnet"

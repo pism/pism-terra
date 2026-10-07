@@ -137,7 +137,8 @@ keeps their outputs apart.
 * - Command
   - Purpose
 * - `pism-ismip7-greenland-prepare`
-  - One-time prep for ISMIP7 Greenland inputs (BedMachine, observations).
+  - One-time prep for ISMIP7 Greenland inputs (BedMachine, observations,
+    forcing, and one regional grid per glacier in `input/grids/`).
 * - `pism-ismip7-greenland-add-basins`
   - Stamp the GrIS basin mask onto existing ocean forcing files without
     regenerating them.

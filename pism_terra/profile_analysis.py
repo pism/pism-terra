@@ -96,6 +96,18 @@ DEBRIS_EVENTS = {
     "debris.concentration": "concentration",
 }
 
+#: Sub-events of PISM's fracture density model inside the
+#: ``fracture_density`` event, with a short label, in the order of a step.
+FRACTURE_EVENTS = {
+    "fracture_density.bc_mask": "boundary mask",
+    "fracture_density.hardness": "vertically averaged hardness",
+    "fracture_density.ghosted_velocity": "ghosted velocity",
+    "fracture_density.strain_rates": "principal strain rates",
+    "fracture_density.stresses": "principal stresses",
+    "fracture_density.update": "fracture density and age",
+    "fracture_density.copy": "copy into state",
+}
+
 #: PETSc events of one Newton step of the Blatter solve, with a short label.
 BLATTER_PHASES = {
     "SNESFunctionEval": "residual",
@@ -302,6 +314,27 @@ def debris_steps(df: pd.DataFrame, stage: str = STAGE) -> pd.DataFrame:
         event. Empty for runs without the debris model.
     """
     return _event_table(df, DEBRIS_EVENTS, stage, "debris", "step")
+
+
+def fracture_steps(df: pd.DataFrame, stage: str = STAGE) -> pd.DataFrame:
+    """
+    The steps of the fracture density model, per run.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Table from :func:`pism_terra.profiling.load_profiles`.
+    stage : str, optional
+        Stage to read.
+
+    Returns
+    -------
+    pandas.DataFrame
+        As :func:`_event_table`, labels in ``step``, shares of the
+        ``fracture_density`` event. Empty for runs without the fracture
+        density model or from a PISM without its sub-events.
+    """
+    return _event_table(df, FRACTURE_EVENTS, stage, "fracture_density", "step")
 
 
 def blatter_phases(df: pd.DataFrame, stage: str = STAGE, blatter_event: str = BLATTER_EVENT) -> pd.DataFrame:
@@ -627,7 +660,8 @@ def plot_phases(
     Parameters
     ----------
     table : pandas.DataFrame
-        Output of :func:`blatter_phases`, :func:`blatter_kernels` or :func:`debris_steps`.
+        Output of :func:`blatter_phases`, :func:`blatter_kernels`, :func:`debris_steps` or
+        :func:`fracture_steps`.
     label_column : str
         ``"phase"``, ``"kernel"`` or ``"step"``.
     path : pathlib.Path
@@ -666,7 +700,7 @@ def plot_phases(
                 ax.text(x_hi, pos[yi], f"  {100 * share:.0f}%", va="center", fontsize=7.5, color=_INK)
     ax.set_yticks(y, labels)
     ax.invert_yaxis()
-    ax.set_xlabel(f"seconds per rank: mean, whiskers fastest to slowest rank; label = share of {parent}")
+    ax.set_xlabel(f"seconds per rank: mean, whiskers fastest to slowest rank\nlabel = share of {parent}")
     ax.set_xlim(0, table["time_max"].max() * 1.15)
     ax.grid(axis="y", visible=False)
     ax.set_title(title, loc="left", fontsize=10)
@@ -714,6 +748,51 @@ def plot_rank_balance(times: pd.DataFrame, path: Path, title: str = "Seconds per
     plt.close(fig)
 
 
+def _steps_table(
+    steps: pd.DataFrame | None, run: str, comp: pd.DataFrame, *, component: str, title: str, header: str
+) -> list[str]:
+    """
+    Markdown lines for one sub-model's steps in one run, none when it has none.
+
+    Parameters
+    ----------
+    steps : pandas.DataFrame or None
+        Output of :func:`debris_steps` or :func:`fracture_steps`.
+    run : str
+        Run label.
+    comp : pandas.DataFrame
+        The run's rows of :func:`component_breakdown`, indexed by component.
+    component : str
+        The sub-model's component label in ``comp``.
+    title : str
+        Name of the sub-model in the lead-in line.
+    header : str
+        Heading of the label column.
+
+    Returns
+    -------
+    list of str
+        Lead-in line and table, or an empty list.
+    """
+    if steps is None or steps.empty:
+        return []
+    steps = steps[steps["run"] == run]
+    if steps.empty:
+        return []
+    lines = [
+        "",
+        f"{title}: {steps['parent_mean'].iloc[0]:,.0f} s, {100 * comp.loc[component, 'share_mean']:.0f}% of the loop",
+        "",
+        f"| {header} | mean s | slowest s | fastest s | balance | share |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for _, r in steps.iterrows():
+        lines.append(
+            f"| {r.step} | {r.time_mean:,.1f} | {r.time_max:,.1f} | {r.time_min:,.1f} | {r.balance:.2f} | {100 * r.share_of_parent:.0f}% |"
+        )
+    return lines
+
+
 def write_summary(
     components: pd.DataFrame,
     phases: pd.DataFrame,
@@ -722,6 +801,7 @@ def write_summary(
     path: Path,
     *,
     debris: pd.DataFrame | None = None,
+    fracture: pd.DataFrame | None = None,
 ) -> str:
     """
     Write the headline numbers as Markdown and return the text.
@@ -740,6 +820,9 @@ def write_summary(
         Markdown file.
     debris : pandas.DataFrame or None, optional
         Output of :func:`debris_steps`; a table per run that has debris events.
+    fracture : pandas.DataFrame or None, optional
+        Output of :func:`fracture_steps`; a table per run that has fracture
+        density events.
 
     Returns
     -------
@@ -779,20 +862,10 @@ def write_summary(
             lines.append(
                 f"| {r.kernel} | {r.time_mean:,.0f} | {r.time_max:,.0f} | {r.time_min:,.0f} | {r.balance:.2f} | {100 * r.share_of_parent:.0f}% |"
             )
-        steps = debris[debris["run"] == run] if debris is not None and not debris.empty else None
-        if steps is not None and not steps.empty:
-            lines += [
-                "",
-                f"Debris transport: {steps['parent_mean'].iloc[0]:,.0f} s, "
-                f"{100 * comp.loc['debris', 'share_mean']:.0f}% of the loop",
-                "",
-                "| debris step | mean s | slowest s | fastest s | balance | share |",
-                "|---|---:|---:|---:|---:|---:|",
-            ]
-            for _, r in steps.iterrows():
-                lines.append(
-                    f"| {r.step} | {r.time_mean:,.1f} | {r.time_max:,.1f} | {r.time_min:,.1f} | {r.balance:.2f} | {100 * r.share_of_parent:.0f}% |"
-                )
+        lines += _steps_table(debris, run, comp, component="debris", title="Debris transport", header="debris step")
+        lines += _steps_table(
+            fracture, run, comp, component="fracture density", title="Fracture density", header="fracture density step"
+        )
         lines.append("")
     lines += [
         "Shares of the Blatter solve are mean over mean; the phases overlap (the line search evaluates the residual),",
@@ -834,6 +907,7 @@ def analyze(
     kernels = blatter_kernels(df, stage, blatter_event)
     counts = solver_counts(df, stage)
     debris = debris_steps(df, stage)
+    fracture = fracture_steps(df, stage)
     balance_events = [
         e for e in ("SNESJacobianEval", "SNESFunctionEval", "PCSetUp", "VecScatterEnd") if e in set(df["event"])
     ]
@@ -870,7 +944,18 @@ def analyze(
         plot_phases(
             debris, "step", written["debris_steps_png"], "Inside the debris transport model", parent="the debris model"
         )
-    print(write_summary(components, phases, kernels, counts, written["summary"], debris=debris))
+    if not fracture.empty:
+        written["fracture_steps"] = out / "fracture_steps.csv"
+        written["fracture_steps_png"] = out / "fracture_steps.png"
+        fracture.to_csv(written["fracture_steps"], index=False)
+        plot_phases(
+            fracture,
+            "step",
+            written["fracture_steps_png"],
+            "Inside the fracture density model",
+            parent="the fracture density model",
+        )
+    print(write_summary(components, phases, kernels, counts, written["summary"], debris=debris, fracture=fracture))
     for name, p in written.items():
         print(f"{name}: {p}")
     return written

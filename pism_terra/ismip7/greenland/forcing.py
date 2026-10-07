@@ -1154,6 +1154,134 @@ def prepare_dh_observations(
     return products
 
 
+def inverse_observations(
+    vx: xr.DataArray,
+    vy: xr.DataArray,
+    bed: xr.DataArray,
+    thickness: xr.DataArray,
+    ice_mask: xr.DataArray,
+    basins: xr.DataArray,
+) -> xr.Dataset:
+    """
+    Assemble the observation file of a PISM inversion from velocities and geometry.
+
+    All inputs share one grid. The velocities become ``u_observed`` and
+    ``v_observed`` (and their speed ``v``); grounded ice, by PISM's flotation
+    criterion (``src/util/Mask.hh``), sets where the till yield stress is
+    inverted for and where the misfit counts.
+
+    Parameters
+    ----------
+    vx, vy : xarray.DataArray
+        Observed velocity components (m/yr); NaN where unobserved.
+    bed : xarray.DataArray
+        Bed elevation (m).
+    thickness : xarray.DataArray
+        Ice thickness (m).
+    ice_mask : xarray.DataArray
+        True where the observations show ice.
+    basins : xarray.DataArray
+        Integer basin mask, stored as ``basins``.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``vx``, ``vy``, ``v``, ``u_observed``, ``v_observed``,
+        ``zeta_fixed_mask`` (1 = tauc fixed), ``vel_misfit_weight``
+        (1 = trust the observation), ``basins`` and ``tauc_prior``, with the
+        EPSG:3413 grid mapping ``mapping``.
+    """
+    rho_ice = 910.0  # constants.ice.density
+    rho_sea_water = 1028.0  # constants.sea_water.density
+    ice_free_thickness = 0.01  # geometry.ice_free_thickness_standard
+    sea_level = 0.0
+    alpha = 1.0 - rho_ice / rho_sea_water
+
+    # Grounded ice via PISM's flotation criterion (src/util/Mask.hh): ice is
+    # grounded where its base rests on the bed (not floating) and ice is present.
+    #   hgrounded = bed + thickness;  hfloating = sea_level + alpha * thickness
+    #   alpha = 1 - rho_ice / rho_sea_water;  floating if hfloating > hgrounded;
+    #   ice_free if thickness <= ice_free_thickness_standard.
+    grounded_ice = (bed + thickness >= sea_level + alpha * thickness) & (thickness > ice_free_thickness) & ice_mask
+
+    vel = xr.Dataset({"vx": vx, "vy": vy})
+    vel["v"] = ((vel["vx"].fillna(0) ** 2 + vel["vy"].fillna(0) ** 2) ** 0.5).astype("float32")
+    vel["u_observed"] = vel["vx"].fillna(0).astype("float32")
+    vel["v_observed"] = vel["vy"].fillna(0).astype("float32")
+    # zeta is FREE (0) where there is grounded ice and FIXED (1) elsewhere;
+    # the misfit weight is the inverse (1 = trust obs on grounded ice, 0 = ignore).
+    vel["zeta_fixed_mask"] = xr.where(grounded_ice, 0, 1).astype("int8")
+    vel["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "tauc_unchanging integer mask (1=fixed)"})
+    vel["vel_misfit_weight"] = xr.where(grounded_ice, 1, 0).astype("int8")
+    vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
+    vel["basins"] = basins
+    # Constant prior for the till yield stress used by the PISM inverse run.
+    vel["tauc_prior"] = xr.full_like(vel["v"], 1.4e5, dtype="float32")
+    vel["tauc_prior"].attrs.update({"units": "Pa", "long_name": "prior till yield stress (tauc)"})
+
+    vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
+    vel["x"].attrs.update(
+        {
+            "standard_name": "projection_x_coordinate",
+            "long_name": "x coordinate of projection",
+            "units": "m",
+            "axis": "X",
+        }
+    )
+    vel["y"].attrs.update(
+        {
+            "standard_name": "projection_y_coordinate",
+            "long_name": "y coordinate of projection",
+            "units": "m",
+            "axis": "Y",
+        }
+    )
+    vel["x"].encoding["_FillValue"] = None
+    vel["y"].encoding["_FillValue"] = None
+    for v in vel.data_vars:
+        vel[v].attrs.pop("coordinates", None)
+        vel[v].encoding.pop("coordinates", None)
+        vel[v].attrs.pop("grid_mapping", None)
+        for k in ("scale_factor", "add_offset", "AREA_OR_POINT"):
+            vel[v].attrs.pop(k, None)
+            vel[v].encoding.pop(k, None)
+    drop_geotransform_attr(vel)
+    vel = stamp_grid_mapping(vel, name="mapping")
+    return vel.drop_vars(["crs", "spatial_ref"], errors="ignore")
+
+
+def write_inverse_observations(vel: xr.Dataset, path: Path | str) -> Path:
+    """
+    Write an inversion observation file without fill values, compressed.
+
+    Parameters
+    ----------
+    vel : xarray.Dataset
+        Output of :func:`inverse_observations`.
+    path : pathlib.Path or str
+        File to write.
+
+    Returns
+    -------
+    pathlib.Path
+        ``path``.
+    """
+    path = Path(path)
+    vel_encoding: dict[str, dict[str, Any]] = {
+        var: {"_FillValue": None} for var in list(vel.data_vars) + list(vel.coords)
+    }
+    for var in vel.data_vars:
+        vel_encoding[var].update({"zlib": True, "complevel": 2})
+        # A per-variable encoding dict passed to ``to_netcdf`` replaces the
+        # variable's ``.encoding``, so the CF ``grid_mapping`` key set by
+        # stamp_grid_mapping would be dropped. Carry it through explicitly.
+        grid_mapping = vel[var].encoding.get("grid_mapping")
+        if grid_mapping:
+            vel_encoding[var]["grid_mapping"] = grid_mapping
+    vel.to_netcdf(path, encoding=vel_encoding, engine="h5netcdf")
+    return path
+
+
 def prepare_observations(
     url: Path | str,
     input_path: Path | str,
@@ -1203,8 +1331,6 @@ def prepare_observations(
 
     rho_ice = 910.0  # constants.ice.density
     rho_sea_water = 1028.0  # constants.sea_water.density
-    ice_free_thickness = 0.01  # geometry.ice_free_thickness_standard
-    sea_level = 0.0
     alpha = 1.0 - rho_ice / rho_sea_water
 
     # ``url`` may be a Path (when reading from a local mirror) or a string
@@ -1414,75 +1540,11 @@ def prepare_observations(
 
     # Integer GrIS basin mask (1..7, 0 outside) rasterized from the packaged
     # basin polygons onto the target grid.
-    basins = basin_mask(target_grid)
+    vel = inverse_observations(vel["vx"], vel["vy"], boot["bed"], boot["thickness"], ice_mask, basin_mask(target_grid))
 
-    # Grounded ice via PISM's flotation criterion (src/util/Mask.hh): ice is
-    # grounded where its base rests on the bed (not floating) and ice is present.
-    #   hgrounded = bed + thickness;  hfloating = sea_level + alpha * thickness
-    #   alpha = 1 - rho_ice / rho_sea_water;  floating if hfloating > hgrounded;
-    #   ice_free if thickness <= ice_free_thickness_standard.
-    # Uses the (regridded) boot geometry, which is on the same grid as ``vel``.
-    bed = boot["bed"]
-    thk = boot["thickness"]
-    grounded_ice = (bed + thk >= sea_level + alpha * thk) & (thk > ice_free_thickness) & ice_mask
-
-    vel["v"] = ((vel["vx"].fillna(0) ** 2 + vel["vy"].fillna(0) ** 2) ** 0.5).astype("float32")
-    vel["u_observed"] = vel["vx"].fillna(0).astype("float32")
-    vel["v_observed"] = vel["vy"].fillna(0).astype("float32")
-    # zeta is FREE (0) where there is grounded ice and FIXED (1) elsewhere;
-    # the misfit weight is the inverse (1 = trust obs on grounded ice, 0 = ignore).
-    vel["zeta_fixed_mask"] = xr.where(grounded_ice, 0, 1).astype("int8")
-    vel["zeta_fixed_mask"].attrs.update({"units": "1", "long_name": "tauc_unchanging integer mask (1=fixed)"})
-    vel["vel_misfit_weight"] = xr.where(grounded_ice, 1, 0).astype("int8")
-    vel["vel_misfit_weight"].attrs.update({"units": "1", "long_name": "misfit weight (1=trust obs, 0=ignore)"})
-    vel["basins"] = basins
-    # Constant prior for the till yield stress used by the PISM inverse run.
-    vel["tauc_prior"] = xr.full_like(vel["v"], 1.4e5, dtype="float32")
-    vel["tauc_prior"].attrs.update({"units": "Pa", "long_name": "prior till yield stress (tauc)"})
-
-    vel = vel.rio.write_crs("EPSG:3413", grid_mapping_name="mapping").rio.write_coordinate_system()
-    vel["x"].attrs.update(
-        {
-            "standard_name": "projection_x_coordinate",
-            "long_name": "x coordinate of projection",
-            "units": "m",
-            "axis": "X",
-        }
+    obs_file = write_inverse_observations(
+        vel, output_path / Path(f"obs_{dem_year}_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
     )
-    vel["y"].attrs.update(
-        {
-            "standard_name": "projection_y_coordinate",
-            "long_name": "y coordinate of projection",
-            "units": "m",
-            "axis": "Y",
-        }
-    )
-    vel["x"].encoding["_FillValue"] = None
-    vel["y"].encoding["_FillValue"] = None
-    for v in vel.data_vars:
-        vel[v].attrs.pop("coordinates", None)
-        vel[v].encoding.pop("coordinates", None)
-        vel[v].attrs.pop("grid_mapping", None)
-        for k in ("scale_factor", "add_offset", "AREA_OR_POINT"):
-            vel[v].attrs.pop(k, None)
-            vel[v].encoding.pop(k, None)
-    drop_geotransform_attr(vel)
-    vel = stamp_grid_mapping(vel, name="mapping")
-    vel = vel.drop_vars(["crs", "spatial_ref"], errors="ignore")
-
-    obs_file = output_path / Path(f"obs_{dem_year}_g{resolution}m_GreenlandObsISMIP7-v1.3.nc")
-    vel_encoding: dict[str, dict[str, Any]] = {
-        var: {"_FillValue": None} for var in list(vel.data_vars) + list(vel.coords)
-    }
-    for var in vel.data_vars:
-        vel_encoding[var].update(comp)
-        # A per-variable encoding dict passed to ``to_netcdf`` replaces the
-        # variable's ``.encoding``, so the CF ``grid_mapping`` key set by
-        # stamp_grid_mapping would be dropped. Carry it through explicitly.
-        grid_mapping = vel[var].encoding.get("grid_mapping")
-        if grid_mapping:
-            vel_encoding[var]["grid_mapping"] = grid_mapping
-    vel.to_netcdf(obs_file, encoding=vel_encoding, engine="h5netcdf")
 
     return {"boot_file": boot_file, "heatflux_file": geo_file, "obs_file": obs_file}
 
@@ -1563,6 +1625,37 @@ def calfin_filename(resolution: int, freq: str = "MS") -> str:
     return f"pism_g{int(resolution)}m_frontretreat_calfin_1972_2019_{freq}.nc"
 
 
+#: NSIDC DOI of CALFIN (Cheng et al., 2021), the calving fronts of Greenland's
+#: outlet glaciers from 1972 to 2019, one dated feature per front.
+CALFIN_DOI = "10.5067/7FILV218JZA2"
+
+
+def download_calfin(result_dir: Path | str, product: str = "polygons") -> Path:
+    """
+    Download one of CALFIN's Greenland-wide shapefiles, unless it is already there.
+
+    Parameters
+    ----------
+    result_dir : pathlib.Path or str
+        Directory the shapefile goes to.
+    product : {"polygons", "lines"}, default "polygons"
+        ``polygons``: the area in front of each glacier, closed off with the
+        fjord walls (what the retreat masks are built from). ``lines``: the
+        calving fronts themselves, dated (``Date``) and numbered by glacier
+        (``GlacierID``), for drawing and animating the fronts.
+
+    Returns
+    -------
+    pathlib.Path
+        The ``.shp`` file.
+    """
+    shp = Path(result_dir) / f"termini_1972-2019_Greenland_{product}_v1.0.shp"
+    if not shp.exists():
+        files = download_earthaccess(doi=CALFIN_DOI, filter_str=f"Greenland_{product}", result_dir=result_dir)
+        shp = next(Path(f) for f in files if Path(f).suffix == ".shp")
+    return shp
+
+
 def prepare_calfin(
     output_path: Path | str,
     resolutions: int | Sequence[int],
@@ -1636,11 +1729,7 @@ def prepare_calfin(
 
         tmp_path = output_path.parent / Path("calfin")
 
-        # Download CALFIN data
-        retreat_files = download_earthaccess(
-            doi="10.5067/7FILV218JZA2", filter_str="Greenland_polygons", result_dir=tmp_path
-        )
-        retreat_file = next(f for f in retreat_files if f.suffix == ".shp")
+        retreat_file = download_calfin(tmp_path, "polygons")
 
         crs = "EPSG:3413"
 

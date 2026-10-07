@@ -93,7 +93,7 @@ logger = logging.getLogger("pism_terra.ismip7.greenland.mass_balance" if __name_
 #: Fluxes summed into the mass balance: surface mass balance, basal mass
 #: balance of grounded ice and the flux across the grounding line, all per
 #: unit area in the submission files.
-DEFAULT_VARIABLES = ("acabf", "libmassbfgr", "ligroundf")
+DEFAULT_VARIABLES = ("acabf", "libmassbfgr", "ligroundf", "lithk", "orog")
 
 #: Where a submission tree sits below a run's ``output`` directory.
 DEFAULT_TREE = ("GrIS", "UAF", "PISM", "CORE")

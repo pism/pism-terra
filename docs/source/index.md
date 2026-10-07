@@ -92,6 +92,13 @@ s4f/inversion
 ```
 
 ```{toctree}
+:caption: Model description paper
+:hidden:
+
+paper/index
+```
+
+```{toctree}
 :caption: Resources
 :hidden:
 
