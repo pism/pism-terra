@@ -71,6 +71,7 @@ features/postprocessing
 
 greenland/inversion
 greenland/ismip7_submission
+greenland/paleo
 ```
 
 ```{toctree}

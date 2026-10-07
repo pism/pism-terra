@@ -280,6 +280,20 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     run
 ```
 
+## Greenland paleo
+
+```{eval-rst}
+.. currentmodule:: pism_terra.greenland.paleo
+
+.. autosummary::
+    :toctree: generated/
+
+    forcing
+    prepare
+    stage
+    run
+```
+
 ## KITP
 
 ```{eval-rst}

@@ -1,0 +1,42 @@
+# Setup of the Greenland paleo (glacial cycle) inputs, read by
+# pism-greenland-paleo-prepare. Same schema as setup_ismip7_greenland.toml: the
+# base climate is built by the ISMIP7 forcing machinery.
+
+ismip7_to_pism = {"tas" = "air_temp", "pr" = "precipitation", "tf" = "theta_ocean", "so" = "salinity_ocean", "geothermal_heat_flux1" = "bheatflx"}
+version = "v1"
+bucket = "pism-cloud-data"
+prefix = "paleo/greenland/input"
+ice_sheet = "GrIS"
+
+[paleo]
+
+# SeaRISE Greenland data set: GRIP temperature anomaly and SPECMAP sea level.
+searise_url = "https://zenodo.org/records/10179093/files/Greenland_5km_v1.1.nc"
+# First year of the scalar series (years before present are negative).
+start = -125000
+# Fraction of the air-temperature anomaly written to pism_ocean_dT.nc.
+ocean_delta_T_scale = 0.25
+
+[domain]
+
+# The ISMIP7 Greenland domain (see setup_ismip7_greenland.toml).
+crs = "EPSG:3413"
+resolution = "450m"
+x_bounds = [-750650.0, 977350.0]
+y_bounds = [-3412550.0, -604550.0]
+
+# The base climate is the multi-year monthly mean of the span below.
+
+[gcms.OCX]
+
+historical = {start = 1960, end = 1989}
+
+[gcms.OCX.source]
+
+climate = {dataset = "RACMO2.3p2-ERA/SDBN1-1000m", version = 1}
+ocean = {dataset = "EN4/ocean-1000m", version = 1}
+
+[forcing]
+
+climate = {fields = ["tas", "pr"]}
+ocean = {fields = ["tf", "so"]}

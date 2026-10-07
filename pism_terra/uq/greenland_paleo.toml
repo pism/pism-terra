@@ -1,0 +1,31 @@
+samples = 10
+
+['surface.pdd.factor_ice']
+
+loc = 0.006
+scale = 0.006
+distribution = "uniform"
+
+['surface.pdd.factor_snow']
+
+loc = 0.002
+scale = 0.004
+distribution = "uniform"
+
+['surface.pdd.refreeze']
+
+loc = 0.4
+scale = 0.2
+distribution = "uniform"
+
+['atmosphere.elevation_change.temperature_lapse_rate']
+
+loc = 5
+scale = 3
+distribution = "uniform"
+
+['calving.vonmises_calving.sigma_max']
+
+loc = 400000
+scale = 400000
+distribution = "uniform"

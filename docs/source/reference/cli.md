@@ -185,6 +185,25 @@ keeps their outputs apart.
     use (`pism_terra.ismip7.greenland.mass_balance`).
 ```
 
+## Greenland paleo
+
+```{list-table}
+:header-rows: 1
+:widths: 35 65
+
+* - Command
+  - Purpose
+* - `pism-greenland-paleo-prepare`
+  - One-time prep of the glacial-cycle forcing: the 1960-1989 OCX monthly
+    climatologies and the SeaRISE temperature and sea-level series.
+* - `pism-greenland-paleo-stage`
+  - Stage the paleo forcing and the ISMIP7 grid, boot, heat-flux and
+    initial-state files.
+* - `pism-greenland-paleo-run`
+  - Render a glacial-cycle run script, or an ensemble when given a UQ file.
+    See {doc}`../greenland/paleo`.
+```
+
 ## KITP
 
 ```{list-table}

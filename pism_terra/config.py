@@ -1005,6 +1005,9 @@ PASS_THROUGH_SECTIONS = (
     "input",
     "time_stepping",
     "regional",
+    "sea_level",
+    "age",
+    "isochrones",
 )
 
 
@@ -1072,6 +1075,15 @@ class PismConfig(BaseModelWithDot):
         PISM's regional (outlet glacier) mode: the ``regional`` flag, which
         turns it on whatever its value, and the ``regional.*`` options, passed
         through. Defaults to ``{}`` (no regional mode).
+    sea_level : dict of str to Any, optional
+        Sea-level options to pass through, e.g. ``sea_level.models`` and the
+        ``ocean.delta_sl.*`` options of its ``delta_sl`` modifier. Defaults to
+        ``{}`` (PISM's constant sea level).
+    age : dict of str to Any, optional
+        Age-of-ice options (``age.*``) to pass through. Defaults to ``{}``.
+    isochrones : dict of str to Any, optional
+        Isochrone-tracking options (``isochrones.*``) to pass through.
+        Defaults to ``{}``.
     inverse : dict of str to Any, optional
         Inverse options to pass through. Defaults to ``{}``.
     solver : dict of str to Any, optional
@@ -1124,6 +1136,9 @@ class PismConfig(BaseModelWithDot):
     input: dict[str, Any] = {}
     time_stepping: dict[str, Any] = {}
     regional: dict[str, Any] = {}
+    sea_level: dict[str, Any] = {}
+    age: dict[str, Any] = {}
+    isochrones: dict[str, Any] = {}
     inverse: dict[str, Any] = {}
     solver: dict[str, Any] = {}
 
@@ -1753,6 +1768,19 @@ class CampaignConfig(BaseModel):
         ``"no"`` (default) leaves the perimeter untouched.
     ocean_file : str or None
         Ocean forcing file name.
+    climate_file : str or None
+        Atmosphere forcing file name (the Greenland paleo runs name their
+        climatology here instead of deriving it from ``gcms``).
+    delta_T_file : str or None
+        Scalar air-temperature offset series (``delta_T``) file name.
+    delta_SL_file : str or None
+        Scalar sea-level offset series (``delta_SL``) file name.
+    ocean_delta_T_file : str or None
+        Scalar ocean temperature offset series (``delta_T``) file name.
+    shared_prefix : str or None
+        S3 key prefix, version included, of inputs a campaign borrows from
+        another one (the Greenland paleo runs take grid, boot, heat-flux and
+        initial-state files from the ISMIP7 inputs).
     obs_file : str or None
         Observations file name.
     pathway : str or None
@@ -1885,6 +1913,11 @@ class CampaignConfig(BaseModel):
     obs_file: str | None = Field(default=None)
     ocean_moat: str | None = Field(default="no")
     ocean_file: str | None = Field(default=None)
+    climate_file: str | None = Field(default=None)
+    delta_T_file: str | None = Field(default=None)
+    delta_SL_file: str | None = Field(default=None)
+    ocean_delta_T_file: str | None = Field(default=None)
+    shared_prefix: str | None = Field(default=None)
     pathway: str | None = Field(default=None)
     prefix: str | None = Field(default=None)
     project_directory: str | None = Field(default=None)

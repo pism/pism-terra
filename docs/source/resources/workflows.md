@@ -33,6 +33,11 @@ pism-glacier-prepare pism_terra/config/setup_s4f.toml glacier_input \
 drive the ISMIP7 community simulations. Inputs come from BedMachine and the
 GreenlandObsISMIP7 dataset.
 
+## Greenland paleo
+
+`pism-greenland-paleo-{prepare,stage,run}` drive glacial-cycle simulations on
+the ISMIP7 Greenland inputs; see {doc}`../greenland/paleo`.
+
 ## KITP
 
 `pism-kitp-{prepare,stage,run,run-ensemble,calibrate,analyze,adjust-timeseries}`
