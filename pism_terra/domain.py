@@ -83,10 +83,10 @@ def get_bounds(
     ds : xarray.Dataset
         The input dataset containing the x and y coordinates.
     base_resolution : int, optional
-        The base resolution in meters, by default 150.
+        The base resolution in meters, by default 50.
     multipliers : list or numpy.ndarray, optional
         A list or array of multipliers to compute the set of grid resolutions,
-        by default [1, 2, 4].
+        by default [1, 2, 4, 5, 10, 20].
 
     Returns
     -------
@@ -120,6 +120,54 @@ def get_bounds(
     return x_bnds, y_bnds
 
 
+def get_bounds_from_geometry(geom: gpd.GeoSeries, buffer_dist: float = 2000.0, dx: float = 1000.0):
+    """
+    Compute a ``dx``-aligned bounding box around a buffered geometry.
+
+    The geometry is buffered by ``buffer_dist`` (in the geometry's CRS units),
+    then its bounds are snapped inward to a multiple of ``dx``.
+
+    Parameters
+    ----------
+    geom : geopandas.GeoSeries
+        The geometry to buffer and bound, in a projected CRS.
+    buffer_dist : float, default ``2000.0``
+        Buffer distance applied to the geometry, in CRS units (typically meters).
+    dx : float, default ``1000.0``
+        Grid spacing used to snap the bounds. ``x_min``/``y_min`` are rounded up
+        and ``x_max``/``y_max`` are rounded down to the nearest multiple of ``dx``.
+
+    Returns
+    -------
+    tuple of list of float
+        ``([x_min, x_max], [y_min, y_max])`` aligned to ``dx``.
+    """
+    # Only the box of the buffer is wanted, and only the parts on the rim of
+    # the geometry can touch it, so only those are buffered. Buffering all of
+    # an aggregate outline -- thousands of parts, millions of vertices --
+    # takes minutes and gives the same box.
+    #
+    # A buffer's arcs are drawn as chords, so a part reaches a little less
+    # than ``buffer_dist`` past its own box; ``slack`` is a generous bound on
+    # that shortfall, which keeps every part that could still be outermost.
+    parts = geom.explode(index_parts=False)
+    box = parts.bounds
+    slack = 0.1 * buffer_dist
+    on_rim = (
+        (box.minx <= box.minx.min() + slack)
+        | (box.maxx >= box.maxx.max() - slack)
+        | (box.miny <= box.miny.min() + slack)
+        | (box.maxy >= box.maxy.max() - slack)
+    )
+    min_x, min_y, max_x, max_y = parts[on_rim].buffer(buffer_dist).total_bounds
+    x_min = np.ceil(min_x / dx) * dx
+    x_max = np.floor(max_x / dx) * dx
+    y_min = np.ceil(min_y / dx) * dx
+    y_max = np.floor(max_y / dx) * dx
+
+    return [x_min, x_max], [y_min, y_max]
+
+
 def create_grid(
     series: gpd.GeoSeries,
     ds: xr.Dataset,
@@ -138,12 +186,12 @@ def create_grid(
     ds : xarray.Dataset
         The dataset containing the x and y coordinates.
     buffer_distance : float, optional
-        The buffer_distance distance around the geometry, by default 500.
+        The buffer_distance distance around the geometry, by default 1000.0.
     base_resolution : int, optional
-        The base resolution in meters, by default 150.
+        The base resolution in meters, by default 50.
     multipliers : list or numpy.ndarray, optional
         A list or array of multipliers to compute the set of grid resolutions,
-        by default [1, 2, 4].
+        by default [1, 2, 4, 5, 8, 10, 20].
     crs : str, optional
         The coordinate reference system (CRS) for the domain, by default "EPSG:3413".
 
@@ -271,9 +319,7 @@ def create_domain(
                 data=0,
                 dims=[y_dim, x_dim],
                 coords={x_dim: coords[x_dim], y_dim: coords[y_dim]},
-                attrs={
-                    "dimensions": f"{x_dim} {y_dim}",
-                },
+                attrs={"dimensions": f"{x_dim} {y_dim}"},
             ),
             x_bnds_dim: xr.DataArray(
                 data=x_bounds,
@@ -288,8 +334,16 @@ def create_domain(
         },
         attrs={"Conventions": "CF-1.8"},
     ).rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim)
-    ds.rio.write_crs(crs, inplace=True).rio.write_coordinate_system(inplace=True)
+    # Use rioxarray's default grid-mapping variable name ("spatial_ref"). A
+    # non-default name here leaks downstream: derived datasets (e.g. the boot
+    # file) inherit this scalar coord, then add their own "spatial_ref" via
+    # write_crs, ending up with two grid-mapping variables. On write the stale
+    # one lands in the CF `coordinates` attr while `grid_mapping` points at the
+    # other, so on reload the CRS-bearing variable is not promoted to a coord
+    # and tools (rioxarray, QGIS) fail to detect the CRS.
+    ds = ds.rio.write_crs(crs).rio.write_coordinate_system()
+
     for var in list(ds.data_vars) + list(ds.coords):
-        ds[var].encoding["_FillValue"] = None
+        ds[var].encoding.update({"_FillValue": None})
 
     return ds

@@ -22,68 +22,14 @@ Test DEM functions.
 import geopandas as gpd
 import numpy as np
 import pytest
-import rasterio
 import xarray as xr
 from numpy.testing import assert_array_almost_equal
-from rasterio.io import MemoryFile
+from rasterio.io import DatasetReader, MemoryFile
 from shapely.geometry import box
 
-from pism_terra.glacier.dem import (
-    boot_file_from_rgi_id,
-    get_glacier_from_rgi_id,
-)
+from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.raster import raster_overlaps_glacier
-
-
-@pytest.mark.integration
-def test_boot_file_from_rgi_id(rgi, tmp_path):
-    """
-    Test ``boot_file_from_rgi_id`` for successful boot dataset creation.
-
-    This test verifies that a glacier "boot" dataset (surface, thickness, bed)
-    can be generated for a given RGI ID and RGI dataset. It checks that:
-
-    * the returned object is an :class:`xarray.Dataset`,
-    * expected core variables (``surface``, ``thickness``, ``bed``) are present, and
-    * the horizontal spacing of the x-coordinate matches the requested resolution.
-
-    Together, this implicitly exercises DEM stitching, reprojection, thickness
-    interpolation, and grid construction.
-
-    Parameters
-    ----------
-    rgi : geopandas.GeoDataFrame
-        Pre-loaded RGI dataset (typically provided by a pytest fixture) that
-        contains a feature with the test ``rgi_id``.
-    tmp_path : pathlib.Path
-        Pytest-provided temporary directory used to store intermediate and
-        output files during the test run.
-
-    Notes
-    -----
-    - This test is intended to run within a pytest test suite.
-    - The hard-coded RGI ID (``"RGI2000-v7.0-C-01-10853"``) must be present in
-      the ``rgi`` fixture for the test to be meaningful.
-    """
-    path = tmp_path / "test_boot_file_from_rgi_id"
-    path.mkdir(parents=True, exist_ok=True)
-
-    rgi_id = "RGI2000-v7.0-C-01-10853"
-    resolution = 100.0
-    ds = boot_file_from_rgi_id(
-        rgi_id,
-        rgi,
-        dem_dataset="glo_30",
-        ice_thickness_dataset="millan",
-        velocity_dataset="none",
-        resolution=resolution,
-        path=path,
-    )
-    assert isinstance(ds, xr.Dataset)
-    assert "surface" in ds
-    assert "thickness" in ds
-    assert "bed" in ds
-    assert abs(ds.x[0] - ds.x[1]) == resolution
+from pism_terra.vector import get_glacier_from_rgi_id
 
 
 def test_get_glacier_from_rgi_id(rgi: gpd.GeoDataFrame):
@@ -144,7 +90,7 @@ def test_raster_overlaps_true(in_memory_raster: MemoryFile):
         assert raster_overlaps_glacier(dataset, glacier)
 
 
-def test_raster_overlaps_true_da(dataset: rasterio.DatasetBase):
+def test_raster_overlaps_true_da(dataset: DatasetReader):
     """
     Test that `raster_overlaps_glacier` correctly detects an overlapping glacier.
 
@@ -154,7 +100,7 @@ def test_raster_overlaps_true_da(dataset: rasterio.DatasetBase):
 
     Parameters
     ----------
-    dataset : rasterio.DatasetBase
+    dataset : rasterio.io.DatasetReader
         A pytest fixture providing a 10x10 in-memory raster with CRS EPSG:32633
         and top-left corner at (0, 10), 1-meter resolution.
 
@@ -199,7 +145,7 @@ def test_raster_overlaps_false(in_memory_raster: MemoryFile):
         assert not raster_overlaps_glacier(dataset, glacier)
 
 
-def test_raster_overlaps_false_da(dataset: rasterio.DatasetBase):
+def test_raster_overlaps_false_da(dataset: DatasetReader):
     """
     Test that `raster_overlaps_glacier` correctly detects an overlapping glacier.
 
@@ -209,7 +155,7 @@ def test_raster_overlaps_false_da(dataset: rasterio.DatasetBase):
 
     Parameters
     ----------
-    dataset : rasterio.DatasetBase
+    dataset : rasterio.io.DatasetReader
         A pytest fixture providing a 10x10 in-memory raster with CRS EPSG:32633
         and top-left corner at (0, 10), 1-meter resolution.
 
@@ -223,3 +169,19 @@ def test_raster_overlaps_false_da(dataset: rasterio.DatasetBase):
     glacier = gpd.GeoSeries([glacier_poly], crs="EPSG:32633")
 
     assert not raster_overlaps_glacier(dataset, glacier)
+
+
+def test_boot_file_from_grid_rejects_empty_variables():
+    """An empty ``variables`` selection is rejected before any DEM work is done."""
+    with pytest.raises(ValueError, match="at least one data variable"):
+        boot_file_from_grid(
+            xr.Dataset(),
+            "RGI2000-v7.0-C-01-00000",
+            [],
+            dem_dataset="glo_30",
+            ice_thickness_dataset="maffezzoli",
+            bathymetry_dataset="none",
+            velocity_dataset="none",
+            forcing_mask="none",
+            variables=[],
+        )

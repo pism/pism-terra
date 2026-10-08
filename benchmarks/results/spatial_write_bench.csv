@@ -1,0 +1,4 @@
+method,wall_s,peak_rss_gb,out_gb,peak_scratch_gb,returncode,checksums_agree
+netcdf,17.6,4.94,0.8,0.0,0,True
+zarr,38.0,5.43,0.8,0.19,0,True
+shards,37.9,8.02,0.79,0.39,0,True

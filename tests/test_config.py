@@ -30,14 +30,22 @@ This suite checks:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
-from pydantic import ValidationError
 
 # Adjust this import path to match your project layout:
 # Adjust the import path to wherever your models live
+import toml
+from pydantic import ValidationError
+
 from pism_terra.config import (  # noqa: F401  (ensure DistSpec is imported)
+    PASS_THROUGH_SECTIONS,
+    CampaignConfig,
     DistSpec,
+    JobConfig,
     UQConfig,
+    load_config,
 )
 
 
@@ -149,6 +157,46 @@ def test_iter_specs_matches_to_flat_keys():
     flat = set(_specs_dict(uq).keys())
     iter_keys = {name for name, _ in uq.iter_specs()}
     assert flat == iter_keys
+
+
+def test_dotted_and_nested_keys_may_be_mixed():
+    """
+    Accept a file that spells one entry ``['a.b.c']`` and another ``[a.b.c]``.
+
+    Notes
+    -----
+    The nested table used to be taken for an entry of its own, named after its
+    first component, and rejected for having no distribution.
+    """
+    raw = {
+        "samples": 1,
+        "method": "factorial",
+        "calving.thickness_calving.threshold": {"distribution": "choices", "choices": [100, 200]},
+        "fracture_density": {"softening_lower_limit": {"distribution": "choices", "choices": [0.5, 0.75, 1.0]}},
+    }
+    uq = UQConfig.model_validate(raw)
+    assert set(_specs_dict(uq)) == {
+        "calving.thickness_calving.threshold",
+        "fracture_density.softening_lower_limit",
+    }
+
+
+def test_dotted_key_without_distribution_fails():
+    """
+    Fail when a dotted entry declares neither a distribution nor a parent.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If the entry has neither ``distribution`` nor ``derived_from``.
+    """
+    raw = {
+        "calving.thickness_calving.threshold": {"choices": [100, 200]},
+        "fracture_density": {"softening_lower_limit": {"distribution": "choices", "choices": [0.5, 1.0]}},
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        UQConfig.model_validate(raw)
+    assert "calving.thickness_calving.threshold" in str(excinfo.value)
 
 
 def test_samples_must_be_positive():
@@ -273,3 +321,277 @@ def test_truncnorm_with_lower_upper_ok():
     # If DistSpec preserves these keys, assert them; otherwise adjust the test.
     assert spec["lower"] == 8
     assert spec["upper"] == 12
+
+
+def test_choices_spec_ok():
+    """
+    Validate a categorical spec and its round-trip through `to_flat()`.
+
+    Notes
+    -----
+    The `choices` list (and an optional `weights` list) ride along in
+    `model_extra`, so they must survive `DistSpec.model_dump()`.
+    """
+    raw = {
+        "samples": 4,
+        "inverse.state_func": {"distribution": "choices", "choices": ["meansquare", "huber"]},
+        "calving.eigen_calving.K": {"distribution": "categorical", "choices": [1e15, 1e17], "weights": [3, 1]},
+    }
+    uq = UQConfig.model_validate(raw)
+    flat = _specs_dict(uq)
+    assert flat["inverse.state_func"]["distribution"] == "choices"
+    assert flat["inverse.state_func"]["choices"] == ["meansquare", "huber"]
+    assert flat["calving.eigen_calving.K"]["weights"] == [3, 1]
+
+
+def test_choices_requires_non_empty_list():
+    """
+    Fail when a categorical spec has a missing or empty `choices` list.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If `choices` is absent or empty.
+    """
+    variants: tuple[dict, ...] = ({}, {"choices": []})
+    for choices in variants:
+        raw = {"inverse.state_func": {"distribution": "choices", **choices}}
+        with pytest.raises(ValidationError) as excinfo:
+            UQConfig.model_validate(raw)
+        assert "choices" in str(excinfo.value)
+
+
+def test_choices_weights_must_match():
+    """
+    Fail when categorical `weights` do not line up with `choices`.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If `weights` has the wrong length, is negative, or sums to zero.
+    """
+    bad_weights = ([1.0], [1.0, -1.0], [0.0, 0.0])
+    for weights in bad_weights:
+        raw = {
+            "inverse.state_func": {
+                "distribution": "choices",
+                "choices": ["meansquare", "huber"],
+                "weights": weights,
+            }
+        }
+        with pytest.raises(ValidationError) as excinfo:
+            UQConfig.model_validate(raw)
+        assert "weights" in str(excinfo.value)
+
+
+def test_campaign_init_fields():
+    """Campaign init_start/init_end are parsed and exported by as_params()."""
+    config_file = (
+        Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_2007_historical_free.toml"
+    )
+    cfg = load_config(config_file)
+    assert cfg.campaign.init_start == "2006-01-01"
+    assert cfg.campaign.init_end == "2007-01-01"
+    params = cfg.campaign.as_params()
+    assert params["init_start"] == "2006-01-01"
+    assert params["init_end"] == "2007-01-01"
+
+
+def _campaign(name: str) -> CampaignConfig:
+    """
+    Validate just the ``[campaign]`` table of a packaged config.
+
+    The glacier configs do not satisfy the full ``PismConfig`` schema (they
+    predate the required ``bed_deformation`` section), so load the one section
+    under test rather than the whole file.
+
+    Parameters
+    ----------
+    name : str
+        File name under ``pism_terra/config``.
+
+    Returns
+    -------
+    CampaignConfig
+        The validated campaign section.
+    """
+    path = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / name
+    return CampaignConfig.model_validate(toml.loads(path.read_text("utf-8"))["campaign"])
+
+
+def test_campaign_project_directory():
+    """Campaign project_directory is parsed and exported by as_params()."""
+    s4f = _campaign("s4f_pytests.toml")
+    assert s4f.prefix == "glacier/input"
+    assert s4f.project_directory == "s4f"
+    assert s4f.as_params()["project_directory"] == "s4f"
+    # The outlines depend on the project's CRS overrides, so they are named for it.
+    assert s4f.rgi_complex_file == "s4f_c.gpkg"
+
+    assert _campaign("rgi_era5_frank.toml").project_directory == "rgi"
+
+    # Campaigns whose input tree is not split by project leave it unset, and
+    # as_params() drops empty fields, so stage's .get() falls back to None.
+    kitp = _campaign("kitp_greenland.toml")
+    assert kitp.project_directory is None
+    assert kitp.as_params().get("project_directory") is None
+
+
+def _config_without(section: str, tmp_path: Path) -> Path:
+    """
+    Copy a packaged config with one whole section removed.
+
+    Parameters
+    ----------
+    section : str
+        Section name, e.g. ``"bed_deformation"``.
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+
+    Returns
+    -------
+    pathlib.Path
+        The stripped config.
+    """
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "s4f_pytests.toml"
+    kept, dropping = [], False
+    for line in source.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            dropping = stripped.strip("[]'\"").split(".")[0] == section
+        if not dropping:
+            kept.append(line)
+    out = tmp_path / f"no_{section}.toml"
+    out.write_text("\n".join(kept), encoding="utf-8")
+    return out
+
+
+@pytest.mark.parametrize("section", ["bed_deformation", "frontal_melt"])
+def test_optional_model_sections_may_be_omitted(section, tmp_path):
+    """
+    Validate a config that omits an optional model section.
+
+    Parameters
+    ----------
+    section : str
+        Section name to remove before loading.
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    cfg = load_config(_config_without(section, tmp_path))
+
+    assert getattr(cfg, section).model == "none"
+    # An omitted section must contribute nothing to the PISM command line.
+    assert getattr(cfg, section).selected() == {}
+
+
+def test_declared_model_sections_are_untouched():
+    """Keep the options of a config that does declare the sections."""
+    cfg = load_config(Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_c001.toml")
+
+    assert cfg.bed_deformation.selected() == {"bed_deformation.model": "lc"}
+    assert cfg.frontal_melt.selected()["frontal_melt.models"] == "routing"
+
+
+def test_fracture_density_options_reach_the_run(tmp_path):
+    """
+    Pass a ``[fracture_density]`` section through to the PISM flags of every runner.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland.run import _base_run_dict
+
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_c001.toml"
+    config = tmp_path / "with_fracture_density.toml"
+    config.write_text(
+        source.read_text(encoding="utf-8")
+        + "\n[fracture_density]\n\n'fracture_density.enabled' = \"yes\"\n'fracture_density.borstad_limit' = \"yes\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config)
+
+    expected = {"fracture_density.enabled": "yes", "fracture_density.borstad_limit": "yes"}
+    assert cfg.fracture_density == expected
+    assert "fracture_density" in PASS_THROUGH_SECTIONS
+    run = _base_run_dict(cfg)
+    assert {k: run[k] for k in expected} == expected
+    # A config without the section adds nothing.
+    assert load_config(source).fracture_density == {}
+
+
+def test_regional_mode_reaches_the_run(tmp_path):
+    """
+    Pass a ``[regional]`` section, the bare ``-regional`` flag included, to the PISM flags.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    # pylint: disable=import-outside-toplevel
+    from pism_terra.ismip7.greenland.run import _base_run_dict
+    from pism_terra.workflow import dict2str
+
+    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "ismip7_greenland_c001.toml"
+    config = tmp_path / "regional.toml"
+    config.write_text(
+        source.read_text(encoding="utf-8")
+        + "\n[regional]\n\n'regional' = \"\"\n'regional.no_model_strip' = 1.5\n'regional.zero_gradient' = \"true\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config)
+
+    expected = {"regional": "", "regional.no_model_strip": 1.5, "regional.zero_gradient": "true"}
+    assert cfg.regional == expected
+    assert "regional" in PASS_THROUGH_SECTIONS
+    run = _base_run_dict(cfg)
+    assert {k: run[k] for k in expected} == expected
+    # PISM turns regional mode on by the bare flag.
+    flags = [line.strip() for line in dict2str(run).split("\\\n")]
+    assert "-regional" in flags
+    assert load_config(source).regional == {}
+
+
+@pytest.mark.parametrize("walltime", ["1:00:00", "12:00:00", "120:00:00"])
+def test_job_config_walltime_accepts_one_to_three_hour_digits(walltime):
+    """
+    Accept walltimes with one to three hour digits.
+
+    Parameters
+    ----------
+    walltime : str
+        Well-formed walltime string to validate.
+    """
+    assert JobConfig(walltime=walltime).walltime == walltime
+
+
+@pytest.mark.parametrize("walltime", ["1200:00:00", "12:00", "12-00:00:00", "12:0:00", "abc"])
+def test_job_config_walltime_rejects_malformed(walltime):
+    """
+    Reject walltimes that do not match H{1,3}:MM:SS.
+
+    Parameters
+    ----------
+    walltime : str
+        Malformed walltime string expected to fail validation.
+    """
+    with pytest.raises(ValidationError, match="walltime must look like"):
+        JobConfig(walltime=walltime)
+
+
+def test_gmd_case_study_1_config_selects_the_documented_models():
+    """
+    Keep the case-study config of the model description paper loadable and as documented.
+    """
+    cfg = load_config(Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "gmd_case_study_1_glacier.toml")
+
+    assert cfg.grid.resolution == "200m"
+    assert (cfg.time.time_start, cfg.time.time_end) == ("1986-01-01", "2025-01-01")
+    assert cfg.energy.selected()["energy.model"] == "enthalpy"
+    assert cfg.stress_balance.selected()["stress_balance.model"] == "blatter"
+    assert cfg.surface.selected()["surface.models"] == "pdd"
+    assert cfg.campaign.dh == "hugonnet"
