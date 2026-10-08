@@ -145,9 +145,11 @@ def main():
     # fetched once for the whole planning run rather than copied into the
     # output tree as well.
     rgi_local, _ = staged_rgi_outlines(config, staging_base)
+    print(f"Reading {rgi_local}")
     rgi = gpd.read_file(rgi_local)
 
     rgi_cloud = path / config["rgi_complex_file"].replace("gpkg", "fgb")
+    print(f"Writing {len(rgi)} complex outlines to {rgi_cloud}")
     rgi.to_file(rgi_cloud)
 
     all_nc_files: list[Path] = []
@@ -506,12 +508,14 @@ def s4f_glacier(
 
     # NOTE: gpd.read_file/to_file corrupts the heap on some envs and crashes the
     # next libgdal allocation (e.g. inside dem_stitcher). Use pyogrio directly.
+    print(f"Reading {rgi_complex_local}")
     rgi_complex = pyogrio.read_dataframe(rgi_complex_local, use_arrow=False)
     glacier = get_glacier_from_rgi_id(rgi_complex, rgi_id)
     if glacier.empty:
         raise ValueError(f"RGI ID not found: {rgi_id}")
 
     dst_crs = glacier["crs"].values[0]
+    print(f"Projecting the outline of {rgi_id} to {dst_crs}")
     glacier_projected = glacier.to_crs(dst_crs)
 
     # Write the complex ("-C") and member-glacier ("-G") outlines (mirrors stage.py).
@@ -519,15 +523,21 @@ def s4f_glacier(
     pyogrio.write_dataframe(glacier, glacier_complex_file)
 
     glacier_file = staging_path / f"rgi_{rgi_id}-G.gpkg"
+    print(f"Reading {rgi_glacier_local}")
     rgi_glacier = pyogrio.read_dataframe(rgi_glacier_local, use_arrow=False)
     glacier_ids = glaciers_in_complex(rgi_id, rgi_glacier)
     glaciers = rgi_glacier[rgi_glacier["rgi_id"].isin(glacier_ids)]
     if glaciers.empty:
         print(f"Warning: no glacier outlines found for complex {rgi_id}")
+    print(f"Writing {len(glaciers)} glacier outlines to {glacier_file}")
     pyogrio.write_dataframe(glaciers, glacier_file)
 
     x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=2_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
+    print(
+        f"Domain: {(x_bnds[1] - x_bnds[0]) / 1e3:.0f} x {(y_bnds[1] - y_bnds[0]) / 1e3:.0f} km "
+        f"at {resolution:g} m ({grid_ds.sizes['x']} x {grid_ds.sizes['y']} cells)"
+    )
 
     # Restricting the product list keeps unneeded full-grid fields (masks,
     # tillwat) from ever being built — the difference between fitting in

@@ -22,7 +22,6 @@ Create domains.
 
 import geopandas as gpd
 import numpy as np
-import shapely
 import xarray as xr
 
 
@@ -121,7 +120,7 @@ def get_bounds(
     return x_bnds, y_bnds
 
 
-def get_bounds_from_geometry(geom: shapely.geometry, buffer_dist: float = 2000.0, dx: float = 1000.0):
+def get_bounds_from_geometry(geom: gpd.GeoSeries, buffer_dist: float = 2000.0, dx: float = 1000.0):
     """
     Compute a ``dx``-aligned bounding box around a buffered geometry.
 
@@ -130,9 +129,8 @@ def get_bounds_from_geometry(geom: shapely.geometry, buffer_dist: float = 2000.0
 
     Parameters
     ----------
-    geom : shapely.geometry.base.BaseGeometry or geopandas.GeoSeries
-        Geometry (or GeoSeries) to buffer and bound. Must expose ``.buffer``
-        and a ``.bounds`` accessor with ``minx``/``maxx``/``miny``/``maxy``.
+    geom : geopandas.GeoSeries
+        The geometry to buffer and bound, in a projected CRS.
     buffer_dist : float, default ``2000.0``
         Buffer distance applied to the geometry, in CRS units (typically meters).
     dx : float, default ``1000.0``
@@ -144,11 +142,28 @@ def get_bounds_from_geometry(geom: shapely.geometry, buffer_dist: float = 2000.0
     tuple of list of float
         ``([x_min, x_max], [y_min, y_max])`` aligned to ``dx``.
     """
-    bounds = geom.buffer(buffer_dist).bounds
-    x_min = np.ceil((bounds.minx.item()) / dx) * dx
-    x_max = np.floor((bounds.maxx.item()) / dx) * dx
-    y_min = np.ceil((bounds.miny.item()) / dx) * dx
-    y_max = np.floor((bounds.maxy.item()) / dx) * dx
+    # Only the box of the buffer is wanted, and only the parts on the rim of
+    # the geometry can touch it, so only those are buffered. Buffering all of
+    # an aggregate outline -- thousands of parts, millions of vertices --
+    # takes minutes and gives the same box.
+    #
+    # A buffer's arcs are drawn as chords, so a part reaches a little less
+    # than ``buffer_dist`` past its own box; ``slack`` is a generous bound on
+    # that shortfall, which keeps every part that could still be outermost.
+    parts = geom.explode(index_parts=False)
+    box = parts.bounds
+    slack = 0.1 * buffer_dist
+    on_rim = (
+        (box.minx <= box.minx.min() + slack)
+        | (box.maxx >= box.maxx.max() - slack)
+        | (box.miny <= box.miny.min() + slack)
+        | (box.maxy >= box.maxy.max() - slack)
+    )
+    min_x, min_y, max_x, max_y = parts[on_rim].buffer(buffer_dist).total_bounds
+    x_min = np.ceil(min_x / dx) * dx
+    x_max = np.floor(max_x / dx) * dx
+    y_min = np.ceil(min_y / dx) * dx
+    y_max = np.floor(max_y / dx) * dx
 
     return [x_min, x_max], [y_min, y_max]
 
