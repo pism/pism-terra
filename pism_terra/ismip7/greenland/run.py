@@ -724,7 +724,8 @@ def _build_forward_legs(
         scalar_proj = None
         if run_projection:
             # Projection end comes from the config (time.end), which the counter
-            # resolver sets from the Core Experiment's proj_end_year (2100 or 2300).
+            # resolver sets to January 1 after the Core Experiment's proj_end_year
+            # (2100 or 2300), the last year of the forcing.
             state_proj, spatial_proj, scalar_proj, _ = _output_files(
                 proj_experiment, "2015-01-01", end, ismip7=proj_ismip7
             )

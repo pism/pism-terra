@@ -682,11 +682,14 @@ def test_forward_c009_ctrl(tmp_path):
     assert '-run_info.experiment "historical"' in hist
     assert "-surface.ismip7.file ctrl_climate.nc" not in hist
 
-    # Control leg: 2015..2300 on the ctrl forcing, submitted as experiment "ctrl".
+    # Control leg: 2015 through 2300 on the ctrl forcing, submitted as experiment "ctrl".
     hist_state = _search(r"-output\.file (\S+state_\S+_2015-01-01\.nc)", hist)
     assert f"-input.file {hist_state}" in proj
     assert "-time.start 2015-01-01" in proj
-    assert "-time.end 2300-01-01" in proj
+    # 2300 is the last year simulated, so the leg stops when 2301 starts and
+    # the submission is named for the years it covers.
+    assert "-time.end 2301-01-01" in proj
+    assert "_ctrl_C009_2015-2300.nc" in proj
     assert '-run_info.experiment "ctrl"' in proj
     assert "-surface.ismip7.file ctrl_climate.nc" in proj
     # The ISMIP7 product leg writes into the C009 submission tree.
@@ -1079,7 +1082,7 @@ def _ppe_config(tmp_path: Path, two_leg: bool) -> Path:
     raw["run_info"]["run_info.experiment"] = "ssp585"
     raw["campaign"]["pathway"] = "ssp585"
     raw["campaign"]["two_leg"] = two_leg
-    raw["time"]["time.end"] = "2300-01-01"
+    raw["time"]["time.end"] = "2301-01-01"
     path = tmp_path / f"ppe_{two_leg}.toml"
     path.write_text(toml.dumps(raw))
     return path
@@ -1106,12 +1109,12 @@ def test_two_leg_splits_a_counterless_run_at_2015(tmp_path: Path):
 
     assert "-time.start 1985-01-01" in hist and "-time.end 2015-01-01" in hist
     assert '-run_info.experiment "historical"' in hist
-    assert "-time.start 2015-01-01" in proj and "-time.end 2300-01-01" in proj
+    assert "-time.start 2015-01-01" in proj and "-time.end 2301-01-01" in proj
     assert '-run_info.experiment "ssp585"' in proj
 
     # Both legs are submission products for a PPE, named off the UQ draw.
     assert "_m004_CESM2-WACCM_f001_historical_P004_1985-2014.nc" in hist
-    assert "_m004_CESM2-WACCM_f001_ssp585_P004_2015-2299.nc" in proj
+    assert "_m004_CESM2-WACCM_f001_ssp585_P004_2015-2300.nc" in proj
 
 
 def test_without_two_leg_a_counterless_run_stays_single(tmp_path: Path):
@@ -1126,7 +1129,7 @@ def test_without_two_leg_a_counterless_run_stays_single(tmp_path: Path):
     script = _render_forward(tmp_path, _ppe_config(tmp_path, two_leg=False), sample="CESM2-WACCM_uq_3")
     legs = [leg for leg in _legs(script) if leg.split()[0] == "pism"]
     assert len(legs) == 2, "expected init and one forward leg"
-    assert "-time.end 2300-01-01" in legs[-1]
+    assert "-time.end 2301-01-01" in legs[-1]
     assert "-time.end 2015-01-01" not in legs[-1]
 
 
