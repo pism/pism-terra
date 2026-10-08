@@ -62,8 +62,9 @@ def test_config_expands_counter(counter):
     assert cfg.campaign.gcms == [spec.esm_id]
     assert cfg.campaign.climate_version == spec.climate_version
     assert cfg.campaign.ocean_version == spec.ocean_version
-    assert cfg.time.time_end == f"{spec.proj_end_year}-01-01"
-    # The staged projection forcing filename ends in the same year: an ssp370
+    # proj_end_year is the last year simulated: the run stops on January 1 after it.
+    assert cfg.time.time_end == f"{spec.proj_end_year + 1}-01-01"
+    # The staged projection forcing filename ends in that last year: an ssp370
     # counter must ask for the ..._2015_2100.nc files, whatever the config says.
     assert cfg.campaign.projection_end_year == str(spec.proj_end_year)
 
@@ -94,12 +95,12 @@ def test_forcing_filename_from_expanded_fields(counter):
 
 
 def test_ocx_counter():
-    """C011 (OCX) runs reanalysis forcing to 2025 with no projection staging."""
+    """C011 (OCX) runs reanalysis forcing through 2024 with no projection staging."""
     spec = CORE_EXPERIMENTS["C011"]
     assert spec.experiment_id == "OCX"
     assert spec.pathway == "historical"
     assert spec.esm_id == "OCX"
-    assert spec.proj_end_year == 2025
+    assert spec.proj_end_year == 2024
     assert spec.climate_version == "v1"
     assert spec.ocean_version == "v1"
     assert spec.has_projection_forcing is False

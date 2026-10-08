@@ -91,7 +91,9 @@ class CoreExperiment:  # pylint: disable=too-many-instance-attributes
     esm_id : str
         The Earth System Model (GCM), e.g. ``"CESM2-WACCM"`` or ``"MRI-ESM2-0"``.
     proj_end_year : int
-        Calendar year the projection leg ends (``2100`` or ``2300``).
+        Last calendar year of the run, inclusive (``2100`` or ``2300``): the
+        last year in the projection forcing filenames, with the run ending on
+        January 1 of the year after it.
     product_leg : str
         Which of the two forward legs is the ISMIP7 submission product, either
         ``"historical"`` or ``"projection"``. The other leg is written with flat
@@ -155,7 +157,7 @@ CORE_EXPERIMENTS: dict[str, CoreExperiment] = {
         "OCX",
         "historical",
         "OCX",
-        2025,
+        2024,
         "historical",
         "v1",
         "v1",

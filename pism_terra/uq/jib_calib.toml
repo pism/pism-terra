@@ -3,10 +3,15 @@ method = "factorial"
 
 ['calving.thickness_calving.threshold']
 
-choices = [100, 200]
+choices = [100, 150]
 distribution = "choices"
 
 ['fracture_density.softening_lower_limit']
 
-choices = [0.5, 0.75, 1.0]
+choices = [0.5, 0.75]
+distribution = "choices"
+
+['fracture_density.initiation_threshold']
+
+choices = [100e3, 125e3]
 distribution = "choices"

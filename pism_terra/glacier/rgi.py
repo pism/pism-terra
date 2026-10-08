@@ -28,12 +28,51 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+import shapely
 from shapely.geometry import MultiPolygon, Polygon
 from tqdm.auto import tqdm
 
 from pism_terra.download import download_archive, extract_archive
 
 logger = logging.getLogger(__name__)
+
+#: Attribute columns kept in the written GeoPackages, next to the geometry and
+#: the ``fid`` GDAL adds. The first six are RGI's (``crs`` is derived here);
+#: ``rgi_id_c`` and ``rgi_id_c_aggregate`` are the glacier-to-complex links that
+#: staging and the ice-thickness merge resolve membership with.
+RGI_COLUMNS = (
+    "rgi_id",
+    "o1region",
+    "o2region",
+    "utm_zone",
+    "area_km2",
+    "crs",
+    "rgi_id_c",
+    "rgi_id_c_aggregate",
+)
+
+
+def slim_outlines(rgi: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    Reduce outlines to the columns and coordinates that are used downstream.
+
+    The attributes are a rounding error next to the geometry, which is where
+    the size of the file is: RGI ships its outlines as 3-D polygons with every
+    Z set to zero, so a third of each vertex is padding. Dropping it is
+    lossless and is most of what there is to save.
+
+    Parameters
+    ----------
+    rgi : geopandas.GeoDataFrame
+        Outlines as assembled by :func:`prepare_rgi`.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        The :data:`RGI_COLUMNS` that are present, with 2-D geometry.
+    """
+    slim = rgi[[column for column in RGI_COLUMNS if column in rgi.columns] + [rgi.geometry.name]]
+    return slim.set_geometry(shapely.force_2d(slim.geometry.values), crs=rgi.crs)
 
 
 def get_rgi_url(url_template: str, region: str, outline_type: str = "C") -> str:
@@ -362,10 +401,10 @@ def prepare_rgi(
 
     complex_path = output_path / f"{name_prefix}_c.gpkg"
     logger.info("Saving complexes to %s", complex_path)
-    rgi_c.to_file(complex_path)
+    slim_outlines(rgi_c).to_file(complex_path)
     glaciers_path = output_path / f"{name_prefix}_g.gpkg"
     logger.info("Saving glaciers to %s", glaciers_path)
-    rgi_g.to_file(glaciers_path)
+    slim_outlines(rgi_g).to_file(glaciers_path)
 
     logger.info("RGI preparation complete: %d complexes, %d glaciers", len(rgi_c), len(rgi_g))
     return {"rgi_complexes": complex_path, "rgi_glaciers": glaciers_path}
