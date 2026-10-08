@@ -96,6 +96,37 @@ CARRA2_PROJ = (
 # chunk per tile and variable; ``-1`` = single chunk.
 CARRA2_ZARR_CHUNKS = {"time": -1, "y": 256, "x": 256}
 
+#: CDS name of CARRA2's snowfall: the solid part of ``total_precipitation``,
+#: published in the same monthly forecast-based product.
+CARRA2_SNOWFALL = "time_integral_of_total_solid_precipitation_flux"
+
+
+def has_variables(path: Path | str, names: Iterable[str]) -> bool:
+    """
+    Check whether a NetCDF file or Zarr store holds all of the named variables.
+
+    A cached product that predates a variable is otherwise taken for
+    complete: it opens, it passes the health check, and the new variable is
+    silently never built.
+
+    Parameters
+    ----------
+    path : pathlib.Path or str
+        NetCDF file or Zarr store.
+    names : iterable of str
+        Variables that have to be present.
+
+    Returns
+    -------
+    bool
+        ``False`` if any is missing or the dataset cannot be opened.
+    """
+    try:
+        with xr.open_dataset(path, decode_times=False) as ds:
+            return set(names) <= set(ds.variables)
+    except Exception:  # pylint: disable=broad-exception-caught
+        return False
+
 
 def _finalize_pism_crs(ds: xr.Dataset, crs_wkt: str) -> xr.Dataset:
     """
@@ -362,6 +393,8 @@ def prepare_carra2(
 
       - ``air_temp`` (K) from CARRA ``t2m``.
       - ``precipitation`` (kg m^-2 day^-1) from CARRA ``tp`` (converted).
+      - ``snowfall`` (kg m^-2 day^-1), the solid part of ``precipitation``, from
+        CARRA's time integral of the total solid precipitation flux.
       - ``surface_albedo`` (1) derived as ``1 - SW_net / SW_down`` from the surface
         shortwave radiation budget (NaN where ``SW_down == 0``).
 
@@ -435,6 +468,18 @@ def prepare_carra2(
         precipitation_dataset,
         precipitation_request,
         file_path=path / Path("pr.nc"),
+        max_workers=max_workers,
+        **kwargs,  # pass the full CARRA request dict
+    )
+
+    # Snowfall is the solid part of the precipitation above and comes from the
+    # same monthly forecast-based product. It is requested on its own so the
+    # precipitation already downloaded is reused rather than fetched again.
+    snowfall_request = {**precipitation_request, "variable": [CARRA2_SNOWFALL], "year": years}
+    snowfall_files = carra_download_request(
+        precipitation_dataset,
+        snowfall_request,
+        file_path=path / Path("snowfall.nc"),
         max_workers=max_workers,
         **kwargs,  # pass the full CARRA request dict
     )
@@ -564,9 +609,18 @@ def prepare_carra2(
                 f"radiation file {radiation_sorted[0]}: {list(_spatial)}"
             )
 
+    # Same caution for snowfall: take the name of the one field in the file.
+    snowfall_sorted = sorted(snowfall_files)
+    with xr.open_dataset(snowfall_sorted[0]) as _snow_ds:
+        _snow_fields = [n for n, da in _snow_ds.data_vars.items() if {"y", "x"}.issubset(da.dims)]
+    if len(_snow_fields) != 1:
+        raise ValueError(f"Expected exactly one variable in CARRA2 snowfall file {snowfall_sorted[0]}: {_snow_fields}")
+    snowfall_var = _snow_fields[0]
+
     logger.info(
-        "Downloaded %d precipitation files, %d temperature files, %d radiation files",
+        "Downloaded %d precipitation files, %d snowfall files, %d temperature files, %d radiation files",
         len(precipitation_files),
+        len(snowfall_files),
         len(temperature_files),
         len(radiation_files),
     )
@@ -583,9 +637,9 @@ def prepare_carra2(
     tas_sorted = sorted(temperature_files)
 
     batches = []
-    for yr, pr_f, tas_f, rad_f in zip(years, pr_sorted, tas_sorted, radiation_sorted):
+    for yr, pr_f, snow_f, tas_f, rad_f in zip(years, pr_sorted, snowfall_sorted, tas_sorted, radiation_sorted):
         batch_out = str((path / f"batch_{yr}.nc").resolve())
-        batches.append((yr, str(pr_f), str(tas_f), str(rad_f), batch_out))
+        batches.append((yr, str(pr_f), str(snow_f), str(tas_f), str(rad_f), batch_out))
 
     def _process_carra2_batch(args):
         """
@@ -594,15 +648,16 @@ def prepare_carra2(
         Parameters
         ----------
         args : tuple
-            A ``(yr, pr_f, tas_f, rad_f, batch_out)`` tuple with the year string,
-            precipitation file, temperature file, radiation file, and output path.
+            A ``(yr, pr_f, snow_f, tas_f, rad_f, batch_out)`` tuple with the year
+            string, precipitation file, snowfall file, temperature file, radiation
+            file, and output path.
 
         Returns
         -------
         str
             Path to the merged output file.
         """
-        yr, pr_f, tas_f, rad_f, batch_out = args
+        yr, pr_f, snow_f, tas_f, rad_f, batch_out = args
         tmp = path
         cdo_local = Cdo(tempdir=tmp)
 
@@ -613,6 +668,16 @@ def prepare_carra2(
             input=f"""-setattribute,precipitation@units="kg m^-2 day^-1" -chname,tp,precipitation """
             f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {pr_f}""",
             output=pr_fixed,
+            options="--reduce_dim -f nc4 -z zip_2",
+        )
+
+        # Snowfall: the same product as precipitation, so the same treatment.
+        snow_fixed = os.path.join(tmp, f"snowfall_{yr}.nc")
+        cdo_local.setgrid(
+            grid,
+            input=f"""-setattribute,snowfall@units="kg m^-2 day^-1" -chname,{snowfall_var},snowfall """
+            f"""-settbounds,1mon -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-15,00:00:00,1mon {snow_f}""",
+            output=snow_fixed,
             options="--reduce_dim -f nc4 -z zip_2",
         )
 
@@ -646,19 +711,37 @@ def prepare_carra2(
             options="--reduce_dim -f nc4 -z zip_2",
         )
 
-        # Merge pr + tas_mm + tas_mstd + radiation for this year
+        # Merge pr + snowfall + tas_mm + tas_mstd + radiation for this year
         cdo_local.merge(
-            input=f"{pr_fixed} {tas_mm} {tas_mstd} {rad_fixed}",
+            input=f"{pr_fixed} {snow_fixed} {tas_mm} {tas_mstd} {rad_fixed}",
             output=batch_out,
             options="-f nc4 -z zip_2",
         )
         # Clean up per-year intermediate files only (not the shared directory)
-        for f in (pr_fixed, tas_mm, tas_mstd, rad_fixed):
+        for f in (pr_fixed, snow_fixed, tas_mm, tas_mstd, rad_fixed):
             Path(f).unlink(missing_ok=True)
         return batch_out
 
-    # Only process batches that don't already exist (unless force_overwrite)
-    batches_to_run = [b for b in batches if (not check_xr_lazy(b[4])) or force_overwrite]
+    # Only process batches that don't already exist (unless force_overwrite).
+    # A batch written before snowfall was added exists and is valid, but has
+    # to be redone, and so has the store built from such batches.
+    def _is_current(product: Path | str) -> bool:
+        """
+        Check that a cached batch or store is valid and holds snowfall.
+
+        Parameters
+        ----------
+        product : pathlib.Path or str
+            A year batch or the Zarr store.
+
+        Returns
+        -------
+        bool
+            Whether it can be reused.
+        """
+        return check_xr_lazy(product) and has_variables(product, ["snowfall"])
+
+    batches_to_run = [b for b in batches if force_overwrite or not _is_current(b[-1])]
     if batches_to_run:
         logger.info(
             "CDO: processing %d year batches (setgrid + monmean/monstd)...",
@@ -675,10 +758,10 @@ def prepare_carra2(
     else:
         logger.info("CDO: all %d year batches already exist, skipping.", len(batches))
 
-    batch_files = sorted(b[4] for b in batches)
+    batch_files = sorted(b[-1] for b in batches)
 
     # --- Step 2: concatenate all year batches  ---
-    if (not check_xr_lazy(carra2_filename)) or force_overwrite:
+    if force_overwrite or not _is_current(carra2_filename):
         logger.info("Concatenating %d year batches...", len(batch_files))
         # Lazily, straight from the batches into the Zarr below. ``cdo
         # mergetime`` used to write the whole record (tens of GB) to a

@@ -32,6 +32,7 @@ import xarray as xr
 
 from pism_terra.glacier.climate import (
     CARRA2_CLIMATOLOGY_YEARS,
+    has_variables,
     open_carra2_zarr,
     prepare_carra2_monthly_mean,
     stamp_monthly_climatology_axis,
@@ -88,6 +89,7 @@ def carra2_store(path, first_year: int = 1986, last_year: int = 2026):
             "air_temp": (("time", "y", "x"), field(1.0)),
             "air_temp_sd": (("time", "y", "x"), field(0.01)),
             "precipitation": (("time", "y", "x"), field(0.1)),
+            "snowfall": (("time", "y", "x"), field(0.05)),
             "orography": (("y", "x"), np.arange(20.0).reshape(4, 5)),
             "time_bnds": (("time", "bnds"), np.zeros((len(time), 2))),
         },
@@ -295,3 +297,49 @@ def test_compressed_encoding_keeps_the_grid_mapping(tmp_path):
     with netCDF4.Dataset(safe) as nc:  # pylint: disable=no-member
         assert nc.variables["air_temp"].grid_mapping == "spatial_ref"
     assert xr.open_dataset(safe, decode_coords="all").rio.crs is not None
+
+
+def test_snowfall_is_carried_into_the_climatology(climatology):
+    """
+    Average snowfall like every other time-varying field of the store.
+
+    Nothing downstream of the store names its variables, so a field added to
+    the download reaches the climatology -- and the per-glacier files cut
+    from it -- without being listed anywhere.
+
+    Parameters
+    ----------
+    climatology : xarray.Dataset
+        Climatology built from the synthetic store.
+    """
+    offset = np.mean(np.array(list(CARRA2_CLIMATOLOGY_YEARS)) - 1986)
+    assert float(climatology["snowfall"].sel(time=7).mean()) == pytest.approx((7 * 100 + offset) * 0.05)
+    # Half the precipitation in the synthetic store, as it was put in.
+    ratio = climatology["snowfall"] / climatology["precipitation"]
+    assert float(ratio.min()) == pytest.approx(0.5) and float(ratio.max()) == pytest.approx(0.5)
+
+
+def test_a_cache_that_predates_snowfall_is_not_current(tmp_path):
+    """
+    Tell a store or batch written before a variable existed from a current one.
+
+    Both open and pass the health check, so without this the yearly batches
+    and the store of an existing staging tree would be reused as they are and
+    snowfall would never be built.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    store = carra2_store(tmp_path / "carra2.zarr", last_year=1988)
+    assert has_variables(store, ["snowfall"])
+    assert has_variables(store, ["precipitation", "snowfall", "air_temp"])
+    assert not has_variables(store, ["snowfall", "rainfall"])
+
+    batch = tmp_path / "batch_1986.nc"
+    xr.open_zarr(store).drop_vars("snowfall").load().to_netcdf(batch)
+    assert has_variables(batch, ["precipitation"])
+    assert not has_variables(batch, ["snowfall"])
+
+    assert not has_variables(tmp_path / "missing.nc", ["snowfall"])
