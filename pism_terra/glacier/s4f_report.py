@@ -24,7 +24,7 @@ import shutil
 import sys
 import time
 import traceback
-from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from argparse import SUPPRESS, ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -683,7 +683,14 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     )
     parser.add_argument("--rgi-glacier-file", default=None, help="Outline file the USGS tools match against.")
     parser.add_argument("--title", default="Snow4Flow report", help="Report title.")
-    parser.add_argument("--logo", default=str(LOGO), help="Logo image copied into the report (SVG or PNG).")
+    # The bundled logo is named relative to the package in the help rather
+    # than by wherever the package happens to be installed.
+    parser.add_argument(
+        "--logo",
+        default=SUPPRESS,
+        help="Logo image copied into the report (SVG or PNG). "
+        f"(default: {LOGO.relative_to(TEMPLATE_DIR.parents[2])})",
+    )
     parser.add_argument(
         "--skip", action="append", choices=[t["key"] for t in TOOLS], default=[], help="Tool to leave out; repeatable."
     )
@@ -746,7 +753,14 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
         ("reduction", args.reduction),
         ("command", " ".join(["pism-s4f-report"] + list(argv if argv is not None else sys.argv[1:]))),
     ]
-    pages = render(run_dir, output_path, results, title=args.title, logo=Path(args.logo).expanduser(), setup=setup)
+    pages = render(
+        run_dir,
+        output_path,
+        results,
+        title=args.title,
+        logo=Path(getattr(args, "logo", LOGO)).expanduser(),
+        setup=setup,
+    )
     logger.info("report written to %s", pages[0])
     return pages
 
