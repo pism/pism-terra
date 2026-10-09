@@ -38,6 +38,7 @@ NetCDF file into a ``<rgi_id>`` sub-directory.
 
 import logging
 import math
+import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -111,6 +112,8 @@ STAKE_MODEL_STYLE = {
     "db": {"color": "#CCBB44", "ls": "--"},
 }
 SPATIAL_PATTERN = "spatial_*.nc"
+#: The ``_<start>_<end>.nc`` every PISM-TERRA output file name ends in.
+SPAN_PATTERN = re.compile(r"_(\d{4})-(\d{2})-(\d{2})_(\d{4})-(\d{2})-(\d{2})\.nc$")
 TABLE_COLUMNS = [
     "glacier",
     "site",
@@ -165,6 +168,56 @@ def find_spatial_files(root: Path | str, pattern: str = SPATIAL_PATTERN) -> list
         for f in find_model_files(root, pattern)
         if "processed_spatial" not in f.parts and not f.name.endswith("_TM.nc")
     ]
+
+
+def first_measurement(tables: Iterable[pd.DataFrame | None]) -> pd.Timestamp | None:
+    """
+    Find the earliest date in the measurement tables.
+
+    Parameters
+    ----------
+    tables : iterable of pandas.DataFrame or None
+        Stake and sub-seasonal tables, with their dates parsed.
+
+    Returns
+    -------
+    pandas.Timestamp or None
+        The earliest date in any date column; None when there is none.
+    """
+    dates = [table.select_dtypes("datetime").stack() for table in tables if table is not None]
+    dates = [column for column in dates if len(column)]
+    return min(column.min() for column in dates) if dates else None
+
+
+def ends_before(file: Path, date: pd.Timestamp) -> bool:
+    """
+    Tell from its name whether a file ends before a date.
+
+    A run's init leg, and any other spin-up, covers model years that end
+    before the first measurement. Such a file has nothing to compare, so it
+    is recognised by the span in its name and never opened: it can be large,
+    and one that is unreadable should not stop the benchmark.
+
+    Parameters
+    ----------
+    file : Path
+        Output file named ``..._<start>_<end>.nc``.
+    date : pandas.Timestamp
+        Date the file has to reach.
+
+    Returns
+    -------
+    bool
+        True when the name carries a span that ends on or before *date*
+        (PISM's end is exclusive); False when it reaches past it or the name
+        carries no span.
+    """
+    match = SPAN_PATTERN.search(file.name)
+    if match is None:
+        return False
+    # Compared as numbers: year 1 is outside what a timestamp can hold.
+    end = tuple(int(part) for part in match.groups()[3:])
+    return end <= (date.year, date.month, date.day)
 
 
 def stake_points(sites: gpd.GeoDataFrame, tables: Iterable[pd.DataFrame | None]) -> gpd.GeoDataFrame:
@@ -1235,7 +1288,14 @@ def _sample_one_file(
         file is not monthly or no stake falls inside its grid.
     """
     label = run_label(file, run_dir)
-    with open_pism(file) as ds:
+    try:
+        ds = open_pism(file)
+    except (OSError, ValueError) as exc:
+        # One file that cannot be read -- truncated, or still being written --
+        # costs that run, not the benchmark of every other one.
+        logger.warning("%s: cannot be read (%s); skipping %s", label, exc, file)
+        return None
+    with ds:
         if not is_monthly(ds["time"].values):
             logger.info("%s: not monthly output; skipping", label)
             return None
@@ -1334,6 +1394,14 @@ def run_pipeline(
 
     files = find_spatial_files(run_dir) if run_dir is not None else []
     logger.info("%d spatial files under %s", len(files), run_dir)
+    first = first_measurement([*stakes.values(), *subseasonal.values()])
+    if first is not None:
+        early = [file for file in files if ends_before(file, first)]
+        if early:
+            logger.info(
+                "%d of them end before the first measurement (%s), e.g. init legs; left out", len(early), first.date()
+            )
+            files = [file for file in files if file not in early]
     tables: dict[str, list[pd.DataFrame]] = {glacier: [] for glacier in stakes}
     samples: dict[str, list[xr.Dataset]] = {glacier: [] for glacier in stakes}
     ice_free: dict[tuple[str, str], int] = {}
