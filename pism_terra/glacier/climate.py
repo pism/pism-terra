@@ -2201,6 +2201,12 @@ def carra2(
 
 GLOBAL_ERA5_DATASET = "reanalysis-era5-single-levels-monthly-means"
 
+#: Daily statistics CDS computes from hourly ERA5, the source of the daily
+#: means behind ``air_temp_sd``. The global product rather than ERA5-Land's:
+#: it is defined over water, and the spread of daily temperature within a
+#: month is a smooth field that loses little at 0.25 degrees.
+ERA5_DAILY_DATASET = "derived-era5-single-levels-daily-statistics"
+
 # Margin, in degrees, added on every side of an ERA5-Land request box. ERA5-Land
 # is a 0.1° grid, so 0.25° guarantees at least three grid points per axis even
 # for a domain smaller than one cell; PISM refuses to interpolate from a grid
@@ -2468,6 +2474,112 @@ def fill_from_global_era5(
     return ds, ds_geo
 
 
+def era5_air_temp_sd(
+    ds: xr.Dataset,
+    area: Sequence[float],
+    years: Sequence[int],
+    path: Path | str,
+    rgi_id: str,
+    pad: float = 1.0,
+    **kwargs,
+) -> xr.DataArray:
+    """
+    Monthly standard deviation of ERA5 daily-mean 2-m temperature.
+
+    The ERA5 counterpart of CARRA2's ``air_temp_sd``: the spread of the daily
+    means within each month, which is what PISM's temperature-index models
+    take as the day-to-day variability around the monthly mean. The monthly
+    means say nothing about it, so the daily means are downloaded -- one
+    request per year, computed by CDS from the hourly reanalysis.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Monthly ERA5 fields on ``latitude``/``longitude`` and ``valid_time``;
+        the result is put on this grid and these months.
+    area : sequence of float
+        Bounding box of ``ds`` as handed to :func:`download_request`.
+    years : sequence of int
+        Years to request.
+    path : str or pathlib.Path
+        Directory for the ``_tmp_5`` download cache.
+    rgi_id : str
+        Glacier identifier, used in the cache filename.
+    pad : float, default 1.0
+        Degrees of margin added to ``area``, so the 0.25 degree product has
+        data past every edge of ``ds`` (see :func:`pad_area`).
+    **kwargs
+        Forwarded to :func:`download_request`.
+
+    Returns
+    -------
+    xarray.DataArray
+        ``air_temp_sd`` in kelvin, on the grid and the ``valid_time`` of ``ds``.
+
+    Raises
+    ------
+    ValueError
+        If the download does not hold exactly one field, or lacks a month
+        that ``ds`` has.
+
+    Notes
+    -----
+    The standard deviation is the population one (``ddof=0``), as ``cdo
+    monstd`` gives for CARRA2.
+    """
+    lat_a, west, lat_b, east = pad_area(area, pad)
+    request = {
+        "product_type": "reanalysis",
+        "variable": ["2m_temperature"],
+        "year": [str(year) for year in years],
+        "month": [f"{month:02d}" for month in range(1, 13)],
+        "day": [f"{day:02d}" for day in range(1, 32)],
+        "daily_statistic": "daily_mean",
+        "time_zone": "utc+00:00",
+        "frequency": "1_hourly",
+        # CDS wants [North, West, South, East]; see ``download_request``.
+        "area": [max(lat_a, lat_b), west, min(lat_a, lat_b), east],
+    }
+    daily = download_request(
+        ERA5_DAILY_DATASET,
+        file_path=Path(path) / Path(f"era5_wgs84_{rgi_id}_tmp_5.nc"),
+        request_override=request,
+        **kwargs,
+    )
+    fields = [
+        str(name) for name, da in daily.data_vars.items() if {"valid_time", "latitude", "longitude"} <= set(da.dims)
+    ]
+    if len(fields) != 1:
+        raise ValueError(f"Expected exactly one daily field from {ERA5_DAILY_DATASET}, got {fields}")
+
+    monthly = daily[fields].resample(valid_time="MS").std()
+    monthly = (
+        monthly.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
+        .rio.write_crs("EPSG:4326")
+        .rio.reproject_match(ds, resampling=Resampling.bilinear)
+        .rename({"x": "longitude", "y": "latitude"})
+        # Same reason as in ``_patch_from_global``: re-attach the target's own
+        # coordinates so the merge aligns on them exactly.
+        .assign_coords(longitude=ds["longitude"], latitude=ds["latitude"])
+    )
+
+    # Match the months of ``ds`` by calendar month, whatever time of day
+    # either product stamps them with, and fail on a month that is missing
+    # rather than hand PISM a NaN standard deviation.
+    have = pd.DatetimeIndex(monthly["valid_time"].values).to_period("M")
+    want = pd.DatetimeIndex(ds["valid_time"].values).to_period("M")
+    missing = want.difference(have)
+    if len(missing):
+        raise ValueError(
+            f"{ERA5_DAILY_DATASET}: no daily temperature for {len(missing)} of {len(want)} months "
+            f"(first: {missing[0]}, last: {missing[-1]})"
+        )
+    sd = monthly[fields[0]].isel(valid_time=have.get_indexer(want)).assign_coords(valid_time=ds["valid_time"])
+    sd = sd.astype("float32").rename("air_temp_sd")
+    sd.attrs = {"units": "kelvin", "long_name": "standard deviation of 2-m air temperature"}
+    return sd
+
+
 def ensure_no_missing(ds: xr.Dataset, context: str = "") -> xr.Dataset:
     """
     Guarantee that a gridded dataset carries no missing values.
@@ -2571,6 +2683,8 @@ def era5(
     -----
     - Output variables:
       - ``air_temp`` (K) from ERA5 ``t2m``.
+      - ``air_temp_sd`` (K), the standard deviation of the daily means within
+        each month, from ERA5's daily statistics (see :func:`era5_air_temp_sd`).
       - ``precipitation`` (kg m^-2 day^-1) from ERA5 ``tp`` (converted).
       - ``surface`` (m) derived from ERA5 ``z`` / 9.80665 (geopotential → meters).
     - ``time_bounds`` are added for CF-style climatological metadata.
@@ -2629,6 +2743,7 @@ def era5(
     lat_attrs = ds["latitude"].attrs
 
     ds, ds_geo_ = fill_from_global_era5(ds, ds_geo_, area, years, path, rgi_id, **kwargs)
+    ds["air_temp_sd"] = era5_air_temp_sd(ds, area, years, path, rgi_id, **kwargs)
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
     ds = ensure_no_missing(ds, "the merged ERA5 fields")
@@ -2645,7 +2760,7 @@ def era5(
     ds["longitude"].attrs = lon_attrs
     ds["latitude"].attrs = lat_attrs
     ds.rio.write_crs("EPSG:4326", inplace=True)
-    for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
+    for name in ("latitude", "longitude", "surface", "precipitation", "air_temp", "air_temp_sd"):
         if name in ds:
             ds[name].encoding.update({"_FillValue": None})
 
