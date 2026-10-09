@@ -147,6 +147,8 @@ model = "pdd"
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
 'surface.pdd.refreeze_ice_melt' = "no"
+'surface.pdd.std_dev.file' = "none"
+'surface.pdd.std_dev.periodic' = "yes"
 
 [surface.options.pdd_forcing]
 
@@ -241,6 +243,9 @@ model = "given"
 
 [atmosphere.options.given]
 
+'atmosphere.elevation_change.file' = "none"
+'atmosphere.elevation_change.periodic' = "yes"
+'atmosphere.elevation_change.temperature_lapse_rate' = 0.0
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = "yes"
 'atmosphere.models' = "given"
