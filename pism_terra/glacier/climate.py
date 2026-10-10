@@ -1739,7 +1739,9 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
     months of the *nearest* available source year are copied and re-stamped
     with the target year. Ties are broken toward the earlier year (e.g.
     2004 → 2003). Bounds for each monthly timestamp are written as
-    ``[t, next-month-start)`` so PISM can interpret the data as monthly means.
+    ``[month-start, next-month-start)`` of the month the stamp lies in, so PISM
+    can interpret the data as monthly means. CARRA2 is stamped mid-month (the
+    15th); the bounds are those of the calendar month all the same.
 
     Parameters
     ----------
@@ -1795,6 +1797,26 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
             return t.replace(year=new_year)
         return np.datetime64(pd.Timestamp(t).replace(year=new_year))
 
+    def _month_start(t):
+        """
+        Return the first instant of the calendar month ``t`` lies in.
+
+        Parameters
+        ----------
+        t : object
+            Scalar time value (cftime datetime, pandas Timestamp, or
+            ``numpy.datetime64``).
+
+        Returns
+        -------
+        object
+            Midnight on the first day of that month, preserving the input
+            dtype family.
+        """
+        if isinstance(t, np.datetime64) or not hasattr(t, "month"):
+            return np.datetime64(pd.Timestamp(t).normalize().replace(day=1))
+        return t.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
     def _next_month(t):
         """
         Return the first instant of the calendar month following ``t``.
@@ -1808,17 +1830,18 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
         Returns
         -------
         object
-            ``t`` advanced to the first day of the next month, preserving the
+            Midnight on the first day of the next month, preserving the
             input dtype family.
         """
-        if isinstance(t, np.datetime64) or not hasattr(t, "month"):
-            ts = pd.Timestamp(t)
+        start = _month_start(t)
+        if isinstance(start, np.datetime64):
+            ts = pd.Timestamp(start)
             if ts.month == 12:
                 return np.datetime64(ts.replace(year=ts.year + 1, month=1))
             return np.datetime64(ts.replace(month=ts.month + 1))
-        if t.month == 12:
-            return t.replace(year=t.year + 1, month=1)
-        return t.replace(month=t.month + 1)
+        if start.month == 12:
+            return start.replace(year=start.year + 1, month=1)
+        return start.replace(month=start.month + 1)
 
     ds = ds.drop_vars("time_bnds", errors="ignore")
     src_times = ds["time"].values
@@ -1844,8 +1867,11 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
     if "orography" in merged and "time" in merged["orography"].dims:
         merged["orography"] = merged["orography"].isel(time=0, drop=True)
 
+    # The bounds are those of the calendar month, whatever day of it the stamp
+    # is on: pairing a mid-month stamp with the same day of the next month
+    # would move every monthly mean half a month late.
     times = merged["time"].values
-    bounds = np.stack([times, np.array([_next_month(t) for t in times])], axis=1)
+    bounds = np.stack([np.array([_month_start(t) for t in times]), np.array([_next_month(t) for t in times])], axis=1)
     merged["time_bnds"] = xr.DataArray(bounds, dims=["time", "nv"], coords={"time": merged["time"]})
     # CF time-axis identity so ncview/PISM recognise the time coordinate. (The
     # time dimension must also be written unlimited — see the to_netcdf calls.)

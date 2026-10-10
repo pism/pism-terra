@@ -24,6 +24,7 @@ the store"), and the written file carries a time axis and a grid mapping PISM
 can actually read.
 """
 
+import cftime
 import netCDF4
 import numpy as np
 import pandas as pd
@@ -32,6 +33,7 @@ import xarray as xr
 
 from pism_terra.glacier.climate import (
     CARRA2_CLIMATOLOGY_YEARS,
+    _carra2_fill_years_and_bounds,
     has_variables,
     open_carra2_zarr,
     prepare_carra2_monthly_mean,
@@ -343,3 +345,40 @@ def test_a_cache_that_predates_snowfall_is_not_current(tmp_path):
     assert not has_variables(batch, ["snowfall"])
 
     assert not has_variables(tmp_path / "missing.nc", ["snowfall"])
+
+
+@pytest.mark.parametrize("calendar", ["numpy", "cftime"])
+def test_carra2_bounds_are_those_of_the_calendar_month(calendar: str):
+    """
+    Give a mid-month stamp the bounds of its month, and keep every step.
+
+    CARRA2 is stamped on the 15th. Pairing each stamp with the same day of
+    the following month gave January the bounds 15 January to 15 February,
+    which applies every monthly mean half a month late.
+
+    Parameters
+    ----------
+    calendar : str
+        Whether the stamps are ``numpy.datetime64`` or cftime objects.
+    """
+    stamps = [pd.Timestamp(year=2024, month=month, day=15) for month in range(1, 13)]
+    if calendar == "cftime":
+        time = [cftime.DatetimeGregorian(stamp.year, stamp.month, stamp.day) for stamp in stamps]
+    else:
+        time = stamps
+    ds = xr.Dataset(
+        {"air_temp": (("time", "y", "x"), np.zeros((12, 2, 2)))}, coords={"time": time, "y": [0, 1], "x": [0, 1]}
+    )
+
+    out = _carra2_fill_years_and_bounds(ds, [2024, 2025])
+
+    assert out.sizes["time"] == 24
+    bounds = out["time_bnds"].values
+    as_dates = [[(value.year, value.month, value.day) for value in map(pd.Timestamp, map(str, row))] for row in bounds]
+    assert as_dates[0] == [(2024, 1, 1), (2024, 2, 1)]
+    assert as_dates[1] == [(2024, 2, 1), (2024, 3, 1)]  # a leap February
+    assert as_dates[11] == [(2024, 12, 1), (2025, 1, 1)]
+    assert as_dates[-1] == [(2025, 12, 1), (2026, 1, 1)]
+    # The months tile the two years, and each stamp lies inside its own bounds.
+    assert all(as_dates[i][1] == as_dates[i + 1][0] for i in range(23))
+    assert out["time"].attrs["bounds"] == "time_bnds"
