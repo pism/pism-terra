@@ -43,25 +43,16 @@ project subtree, over the box of that region's outlines and for
 {py:data}`~pism_terra.glacier.climate.ERA5_STORE_YEARS` (1986–2025). See
 {py:func}`~pism_terra.glacier.climate.prepare_era5`.
 
-A region that names a `crs` in `[regions]` is stored in it, on a 5 km grid; one
-that does not stays on ERA5-Land's latitude/longitude grid. ERA5 is requested
-over the box of the glaciers plus one degree. A projected store is a rectangle
-in its own CRS and wider than that box at its corners -- Alaska's reach past
-180° E -- so the cells there, away from every glacier, take the value of the
-nearest cell with data:
-
-```toml
-[regions]
-1 = {name = "alaska", crs = "EPSG:5936"}   # era5_01_alaska.zarr in EPSG:5936
-6 = {name = "iceland"}                      # era5_06_iceland.zarr in EPSG:4326
-```
+A store stays on ERA5-Land's own latitude/longitude grid, whatever CRS the
+region is modelled in, and is bounded by the box of the region's glaciers plus
+one degree. Nothing is resampled; PISM regrids the forcing onto the model grid,
+as it does for CARRA2.
 
 Staging with `climate = "era5"` looks for a store that covers the glacier's grid
-and the years of the run and crops it
-({py:func}`~pism_terra.glacier.climate.era5_from_store`): to `era5_<rgi_id>.nc`
-in the store's CRS, or to `era5_wgs84_<rgi_id>.nc` in latitude/longitude. PISM
-interpolates either onto the model grid. When no store covers the glacier, or
-one lacks a year, the forcing is downloaded from CDS for that glacier as before.
+and the years of the run and crops it to `era5_wgs84_<rgi_id>.nc`
+({py:func}`~pism_terra.glacier.climate.era5_from_store`), the same file the
+per-glacier download writes. When no store covers the glacier, or one lacks a
+year, the forcing is downloaded from CDS for that glacier as before.
 
 ## CARRA2 caching
 

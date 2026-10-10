@@ -502,12 +502,11 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
                     )
 
     if "era5" in selected:
-        # One store per region of the setup file, over the box of that
-        # region's outlines. A region with a ``crs`` is written in it, so the
-        # store depends on the project and lives under its directory; one
-        # without stays in latitude/longitude. Staging cuts each glacier out
-        # of its region's store (``climate.era5``) instead of asking CDS for
-        # the same years once per glacier.
+        # One store per region of the setup file, on ERA5's own
+        # latitude/longitude grid and bounded by the box of that region's
+        # outlines. Staging cuts each glacier out of its region's store
+        # (``climate.era5``) instead of asking CDS for the same years once per
+        # glacier, and PISM regrids the forcing onto the model grid.
         assert complexes is not None  # loaded above (need_outlines)
         project_climate_path = ensure_dir(paths["project_climate"])
         era5_staging = ensure_dir(paths["staging_era5"])
@@ -517,13 +516,11 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
             if members.empty:
                 logger.warning("No outlines in region %s; skipping its ERA5 store", region["region"])
                 continue
-            region_crs = region.get("crs")
             prepare_era5(
                 region["region"],
                 members.total_bounds,
                 project_climate_path / f"era5_{region['region']}.zarr",
                 ensure_dir(era5_staging / region["region"]),
-                crs=region_crs if isinstance(region_crs, str) and region_crs else None,
                 force_overwrite=force_overwrite,
             )
 

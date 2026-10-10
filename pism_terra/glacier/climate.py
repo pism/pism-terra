@@ -51,7 +51,6 @@ from cdo import Cdo
 from dask.diagnostics import ProgressBar
 from pyproj import Transformer
 from rasterio.enums import Resampling
-from scipy.ndimage import distance_transform_edt
 from scipy.spatial import cKDTree
 from tqdm.auto import tqdm
 
@@ -2244,11 +2243,6 @@ ERA5_LAND_PAD = 0.25
 #: Years the regional ERA5 stores cover.
 ERA5_STORE_YEARS = range(1986, 2026)
 
-#: Grid spacing, in metres, of an ERA5 store written in a region's projected
-#: CRS. ERA5-Land is 0.1 degrees, about 11 km north-south and 5 km east-west
-#: at 62 N.
-ERA5_STORE_RESOLUTION = 5_000.0
-
 #: Margin, in degrees, of an ERA5 store around the box of a region's glaciers.
 #: A glacier's model domain reaches a few km past its outline, and staging
 #: takes two more cells on every side.
@@ -2749,8 +2743,6 @@ def prepare_era5(
     bounds: Sequence[float],
     output_zarr: Path | str,
     path: Path | str,
-    crs: str | None = None,
-    resolution: float = ERA5_STORE_RESOLUTION,
     years: Iterable[int] = ERA5_STORE_YEARS,
     force_overwrite: bool = False,
     **kwargs,
@@ -2762,10 +2754,10 @@ def prepare_era5(
     the whole region at once, so staging a glacier only has to cut its box
     out (:func:`era5_from_store`).
 
-    With a ``crs`` the fields are resampled onto a regular grid in that CRS,
-    which is the one the region's glaciers are modelled in. Without one they
-    stay on ERA5-Land's own latitude/longitude grid, and PISM regrids them as
-    it does the per-glacier files.
+    The fields stay on ERA5-Land's own latitude/longitude grid, bounded by
+    the box of the region's glaciers plus :data:`ERA5_STORE_PAD`. Nothing is
+    resampled here: PISM regrids the forcing onto the model grid, as it does
+    for CARRA2.
 
     Parameters
     ----------
@@ -2777,10 +2769,6 @@ def prepare_era5(
         Store to write, conventionally ``era5_<region>.zarr``.
     path : str or pathlib.Path
         Working directory for the CDS downloads, which are cached per year.
-    crs : str or None, optional
-        CRS to write the store in; ``None`` keeps latitude/longitude.
-    resolution : float, optional
-        Grid spacing in metres of a store written in ``crs``.
     years : iterable of int, optional
         Years to cover; :data:`ERA5_STORE_YEARS` by default.
     force_overwrite : bool, default False
@@ -2792,60 +2780,27 @@ def prepare_era5(
     -------
     pathlib.Path
         The store written.
-
-    Notes
-    -----
-    ERA5 is requested over the box of the glaciers plus
-    :data:`ERA5_STORE_PAD`. A projected store is a rectangle in its own CRS,
-    which is wider than that box at its corners; the cells there are away
-    from every glacier and take the value of the nearest cell that has data.
     """
     output_zarr = Path(output_zarr)
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     years = list(years)
 
-    if output_zarr.exists() and not force_overwrite and has_variables(output_zarr, ERA5_VARIABLES):
+    # A store in any other layout -- an earlier version wrote them in the
+    # region's projected CRS -- is not what staging reads, and is rebuilt.
+    if (
+        output_zarr.exists()
+        and not force_overwrite
+        and has_variables(output_zarr, [*ERA5_VARIABLES, "latitude", "longitude"])
+    ):
         logger.info("Using cached ERA5 store %s", output_zarr)
         return output_zarr
 
     west, south, east, north = (float(value) for value in bounds)
-    # ERA5 is requested over the glaciers' box and a margin, never over the
-    # whole rectangle a projected store spans: the corners of that rectangle
-    # can lie across the antimeridian (Alaska's do), far from any glacier.
     area = pad_area([south, west, north, east], pad=ERA5_STORE_PAD)
 
     logger.info("ERA5 %s: %d-%d over [S, W, N, E] = %s", region, years[0], years[-1], [round(v, 2) for v in area])
     ds = era5_fields(area, years, path, region, **kwargs)
-
-    comment = ""
-    if crs:
-        # The rectangle in the region's CRS that holds the glaciers, four
-        # cells larger on every side and aligned to the grid spacing.
-        to_crs = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        x_min, y_min, x_max, y_max = to_crs.transform_bounds(west, south, east, north, densify_pts=51)
-        x_bnds = [(np.floor(x_min / resolution) - 4) * resolution, (np.ceil(x_max / resolution) + 4) * resolution]
-        y_bnds = [(np.floor(y_min / resolution) - 4) * resolution, (np.ceil(y_max / resolution) + 4) * resolution]
-        target_grid = create_domain(x_bnds, y_bnds, resolution=resolution, crs=crs)
-        ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude").rio.write_crs("EPSG:4326")
-        ds = ds.rio.reproject_match(target_grid, resampling=Resampling.bilinear)
-        ds, n_filled = _fill_outside_source(ds)
-        if n_filled:
-            share = 100.0 * n_filled / (ds.sizes["y"] * ds.sizes["x"])
-            logger.info(
-                "ERA5 %s: %d cells (%.0f%%) lie outside the requested box; filled from the nearest",
-                region,
-                n_filled,
-                share,
-            )
-            comment = (
-                f"{n_filled} cells ({share:.0f}%) lie outside the box ERA5 was requested for, away from the "
-                "region's glaciers, and hold the value of the nearest cell inside it."
-            )
-        ds = _finalize_pism_crs(ds, target_grid.rio.crs.to_wkt())
-        spatial = ("y", "x")
-    else:
-        spatial = ("latitude", "longitude")
 
     for name in ERA5_VARIABLES:
         ds[name] = ds[name].astype("float32")
@@ -2856,11 +2811,9 @@ def prepare_era5(
         f"{ERA5_DAILY_DATASET}",
         "years": f"{years[0]}-{years[-1]}",
     }
-    if comment:
-        ds.attrs["comment"] = comment
     for name in ds.variables:
         ds[name].encoding = {}
-    ds = ds.chunk({"time": 120, spatial[0]: 256, spatial[1]: 256})
+    ds = ds.chunk({"time": 120, "latitude": 256, "longitude": 256})
 
     logger.info("Writing ERA5 store %s", output_zarr)
     if output_zarr.exists():
@@ -2868,36 +2821,6 @@ def prepare_era5(
     output_zarr.parent.mkdir(parents=True, exist_ok=True)
     ds.to_zarr(output_zarr, mode="w", consolidated=True)
     return output_zarr
-
-
-def _fill_outside_source(ds: xr.Dataset) -> tuple[xr.Dataset, int]:
-    """
-    Fill the cells a resampled dataset has no source data for from the nearest one that has.
-
-    The source has no missing values, so what is missing after resampling is
-    the same set of cells in every field and every month: those outside the
-    source's extent. One lookup of the nearest valid cell serves them all.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Resampled fields on ``(y, x)``, some with further leading dimensions.
-
-    Returns
-    -------
-    tuple of (xarray.Dataset, int)
-        The dataset without missing values, and the number of cells filled.
-    """
-    names = [str(name) for name, da in ds.data_vars.items() if da.dims[-2:] == ("y", "x")]
-    outside = np.zeros((ds.sizes["y"], ds.sizes["x"]), dtype=bool)
-    for name in names:
-        outside |= ds[name].isnull().any([dim for dim in ds[name].dims if dim not in ("y", "x")]).values
-    if not outside.any():
-        return ds, 0
-    rows, columns = distance_transform_edt(outside, return_distances=False, return_indices=True)
-    for name in names:
-        ds[name] = ds[name].copy(data=ds[name].values[..., rows, columns])
-    return ds, int(outside.sum())
 
 
 def open_era5_store(uri: Path | str) -> xr.Dataset:
@@ -2912,12 +2835,18 @@ def open_era5_store(uri: Path | str) -> xr.Dataset:
     Returns
     -------
     xarray.Dataset
-        The store, lazily loaded, on ``y``/``x`` or ``latitude``/``longitude``.
+        The store, lazily loaded, on ``latitude``/``longitude`` in EPSG:4326.
+
+    Raises
+    ------
+    ValueError
+        If the store is not on a latitude/longitude grid.
     """
     storage_options = {"anon": True} if str(uri).startswith("s3://") else None
     ds = xr.open_zarr(str(uri), consolidated=True, storage_options=storage_options, chunks={})
-    x_dim, y_dim = ("x", "y") if "x" in ds.dims else ("longitude", "latitude")
-    return ds.rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim)
+    if not {"latitude", "longitude"} <= set(ds.dims):
+        raise ValueError(f"{uri} is not on a latitude/longitude grid: {dict(ds.sizes)}")
+    return ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude").rio.write_crs("EPSG:4326")
 
 
 def _list_era5_stores(bucket: str, prefix: str, project_directory: str | None = None) -> list[str]:
@@ -3002,12 +2931,16 @@ def find_era5_store(
     region = re.search(r"-[CG]-(\d{2})-", rgi_id)
     own = f"era5_{region.group(1)}_" if region else None
     uris = _list_era5_stores(bucket, prefix, project_directory)
+    to_lonlat = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
+    west, south, east, north = to_lonlat.transform_bounds(*bounds, densify_pts=21)
     for uri in sorted(uris, key=lambda u: (own is None or own not in u, u)):
-        store = open_era5_store(uri)
-        to_store = Transformer.from_crs(dst_crs, store.rio.crs, always_xy=True)
-        x_min, y_min, x_max, y_max = to_store.transform_bounds(*bounds, densify_pts=21)
-        x, y = store[store.rio.x_dim].values, store[store.rio.y_dim].values
-        if not (x.min() <= x_min and x_max <= x.max() and y.min() <= y_min and y_max <= y.max()):
+        try:
+            store = open_era5_store(uri)
+        except ValueError as exc:
+            print(f"Skipping {uri}: {exc}")
+            continue
+        lon, lat = store["longitude"].values, store["latitude"].values
+        if not (lon.min() <= west and east <= lon.max() and lat.min() <= south and north <= lat.max()):
             continue
         missing = sorted(years - {int(year) for year in store["time.year"].values})
         if missing:
@@ -3030,9 +2963,9 @@ def era5_from_store(
     Cut a glacier's ERA5 forcing out of a regional store.
 
     The store is cropped to the glacier's box and to the requested years and
-    written as it is: a store in a projected CRS gives ``era5_<rgi_id>.nc`` in
-    that CRS, one in latitude/longitude gives ``era5_wgs84_<rgi_id>.nc`` like
-    the per-glacier download. PISM interpolates either onto the model grid.
+    written as it is, on latitude/longitude, to ``era5_wgs84_<rgi_id>.nc`` --
+    the file the per-glacier download writes. PISM regrids it onto the model
+    grid.
 
     Parameters
     ----------
@@ -3056,9 +2989,7 @@ def era5_from_store(
     """
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    x_dim, y_dim = store.rio.x_dim, store.rio.y_dim
-    projected = x_dim == "x"
-    out_file = path / Path(f"era5_{rgi_id}.nc" if projected else f"era5_wgs84_{rgi_id}.nc")
+    out_file = path / Path(f"era5_wgs84_{rgi_id}.nc")
     if (
         out_file.exists()
         and not force_overwrite
@@ -3069,18 +3000,17 @@ def era5_from_store(
         return out_file
 
     bounds, dst_crs = _target_bounds(target_grid)
-    crs_wkt = store.rio.crs.to_wkt()
-    to_store = Transformer.from_crs(dst_crs, store.rio.crs, always_xy=True)
-    x_min, y_min, x_max, y_max = to_store.transform_bounds(*bounds, densify_pts=21)
-    x, y = store[x_dim].values, store[y_dim].values
+    to_lonlat = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
+    west, south, east, north = to_lonlat.transform_bounds(*bounds, densify_pts=21)
+    lon, lat = store["longitude"].values, store["latitude"].values
     # Two cells past the box on every side, so PISM has data to interpolate
     # from at the edge of the model domain.
-    pad_x, pad_y = 2 * abs(float(x[1] - x[0])), 2 * abs(float(y[1] - y[0]))
+    pad_lon, pad_lat = 2 * abs(float(lon[1] - lon[0])), 2 * abs(float(lat[1] - lat[0]))
     years = set(years)
     ds = store.isel(
         {
-            x_dim: np.flatnonzero((x >= x_min - pad_x) & (x <= x_max + pad_x)),
-            y_dim: np.flatnonzero((y >= y_min - pad_y) & (y <= y_max + pad_y)),
+            "longitude": np.flatnonzero((lon >= west - pad_lon) & (lon <= east + pad_lon)),
+            "latitude": np.flatnonzero((lat >= south - pad_lat) & (lat <= north + pad_lat)),
             "time": np.flatnonzero(np.isin(store["time.year"].values, list(years))),
         }
     )[list(ERA5_VARIABLES)].load()
@@ -3090,16 +3020,12 @@ def era5_from_store(
     for name in ds.variables:
         ds[name].encoding = {}
     ds["time"].encoding.update({"units": "hours since 1980-01-01 00:00:00", "calendar": "standard"})
-    if projected:
-        ds = _finalize_pism_crs(ds, crs_wkt)
-        ds["time"].attrs.update({"standard_name": "time", "long_name": "time", "axis": "T"})
-    else:
-        ds = ds.drop_vars("spatial_ref", errors="ignore").rio.write_crs("EPSG:4326")
-    for name in (y_dim, x_dim, *ERA5_VARIABLES):
+    ds = ds.drop_vars("spatial_ref", errors="ignore").rio.write_crs("EPSG:4326")
+    for name in ("latitude", "longitude", *ERA5_VARIABLES):
         ds[name].encoding.update({"_FillValue": None})
 
     out_file.unlink(missing_ok=True)
-    ds.to_netcdf(out_file, unlimited_dims=["time"] if projected else None)
+    ds.to_netcdf(out_file)
     print(f"Wrote {out_file}")
     return out_file
 

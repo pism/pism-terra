@@ -448,7 +448,9 @@ def test_both_outline_files_get_an_rgi_id_index(monkeypatch: pytest.MonkeyPatch,
 
 def test_era5_builds_one_store_per_region(monkeypatch, tmp_path, setup_file):
     """
-    Hand each region of the setup file, with its CRS and the box of its outlines, to ``prepare_era5``.
+    Hand each region of the setup file, with the box of its outlines, to ``prepare_era5``.
+
+    The store stays on ERA5's own grid, so the region's CRS is not passed on.
 
     Parameters
     ----------
@@ -512,8 +514,8 @@ def test_era5_builds_one_store_per_region(monkeypatch, tmp_path, setup_file):
     paths = prepare_paths(out_path, "s4f")
     assert [call["region"] for call in calls] == ["01_alaska", "03_arctic_canada_north"]
     alaska, canada = calls[0], calls[1]
-    assert alaska["bounds"] == [-150.0, 60.0, -145.0, 63.0] and alaska["crs"] == "EPSG:5936"
-    assert canada["bounds"] == [-80.0, 78.0, -75.0, 80.0] and canada["crs"] == "EPSG:3413"
-    # The store depends on the project's CRS, so it lives under the project.
+    assert alaska["bounds"] == [-150.0, 60.0, -145.0, 63.0] and "crs" not in alaska
+    assert canada["bounds"] == [-80.0, 78.0, -75.0, 80.0] and "crs" not in canada
+    # Its box is that of the project's outlines, so it lives under the project.
     assert alaska["store"] == paths["project_climate"] / "era5_01_alaska.zarr"
     assert alaska["path"] == paths["staging_era5"] / "01_alaska" and alaska["path"].is_dir()
