@@ -327,6 +327,7 @@ def test_dataset_list_is_the_execution_order():
         "heatflux_lucazeau",
         "snap",
         "carra2",
+        "era5",
     ]
 
 
@@ -443,3 +444,76 @@ def test_both_outline_files_get_an_rgi_id_index(monkeypatch: pytest.MonkeyPatch,
     prepare(["--include", "rgi", str(setup_file), str(out_path)])
 
     assert sorted(p.name for p in indexed) == ["s4f_c.gpkg", "s4f_g.gpkg"]
+
+
+def test_era5_builds_one_store_per_region(monkeypatch, tmp_path, setup_file):
+    """
+    Hand each region of the setup file, with its CRS and the box of its outlines, to ``prepare_era5``.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to replace the CDS-bound store builder.
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    setup_file : pathlib.Path
+        Minimal setup TOML from the fixture.
+    """
+    import geopandas as gpd  # pylint: disable=import-outside-toplevel
+    from shapely.geometry import box  # pylint: disable=import-outside-toplevel
+
+    out_path = tmp_path / "out"
+    rgi_path = prepare_paths(out_path, "s4f")["rgi"]
+    rgi_path.mkdir(parents=True)
+    complexes = gpd.GeoDataFrame(
+        {
+            "rgi_id": ["RGI2000-v7.0-C-01-00001", "RGI2000-v7.0-C-01-00002", "RGI2000-v7.0-C-03-00001", "S4F_AK"],
+            # An aggregate has no region of its own and must not widen any box.
+            "o1region": ["01", "01", "03", None],
+        },
+        geometry=[box(-150, 61, -149, 62), box(-146, 60, -145, 63), box(-80, 78, -75, 80), box(-170, 50, -60, 85)],
+        crs="EPSG:4326",
+    )
+    complexes.to_file(rgi_path / "s4f_c.gpkg", driver="GPKG")
+    complexes.iloc[:1].to_file(rgi_path / "s4f_g.gpkg", driver="GPKG")
+    calls: list[dict] = []
+
+    def fake_prepare_era5(region, bounds, output_zarr, path, **kwargs):
+        """
+        Record the request instead of downloading anything.
+
+        Parameters
+        ----------
+        region : str
+            Region label.
+        bounds : sequence of float
+            Box of the region's outlines.
+        output_zarr : pathlib.Path
+            Store to write.
+        path : pathlib.Path
+            Working directory.
+        **kwargs
+            Everything else the real function takes.
+
+        Returns
+        -------
+        pathlib.Path
+            The store path.
+        """
+        calls.append(
+            {"region": region, "bounds": [float(b) for b in bounds], "store": output_zarr, "path": path, **kwargs}
+        )
+        return output_zarr
+
+    monkeypatch.setattr(prepare_mod, "prepare_era5", fake_prepare_era5)
+
+    prepare(["--include", "era5", str(setup_file), str(out_path)])
+
+    paths = prepare_paths(out_path, "s4f")
+    assert [call["region"] for call in calls] == ["01_alaska", "03_arctic_canada_north"]
+    alaska, canada = calls[0], calls[1]
+    assert alaska["bounds"] == [-150.0, 60.0, -145.0, 63.0] and alaska["crs"] == "EPSG:5936"
+    assert canada["bounds"] == [-80.0, 78.0, -75.0, 80.0] and canada["crs"] == "EPSG:3413"
+    # The store depends on the project's CRS, so it lives under the project.
+    assert alaska["store"] == paths["project_climate"] / "era5_01_alaska.zarr"
+    assert alaska["path"] == paths["staging_era5"] / "01_alaska" and alaska["path"].is_dir()

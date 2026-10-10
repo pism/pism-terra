@@ -296,6 +296,44 @@ def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
+def add_monthly_time_bounds(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Add time bounds to monthly means stamped on the first of each month.
+
+    Each step runs from its own stamp to the first of the following month,
+    so a stamp of 2024-12-01 gets the bounds ``[2024-12-01, 2025-01-01]``.
+    Unlike :func:`add_time_bounds`, which pairs each stamp with the next one
+    and has to give up the last step, every step is kept.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with a ``time`` coordinate of first-of-month stamps.
+
+    Returns
+    -------
+    xr.Dataset
+        The dataset with a ``time_bounds`` variable of shape ``(time, 2)``
+        and the ``bounds`` attribute set on ``time``.
+
+    Raises
+    ------
+    ValueError
+        If a stamp is not the first of a month at midnight: the end of its
+        interval would not be the first of the next month.
+    """
+    start = ds["time"].values.astype("datetime64[ns]")
+    months = start.astype("datetime64[M]")
+    off = start[start != months.astype("datetime64[ns]")]
+    if len(off):
+        raise ValueError(f"expected first-of-month time stamps, got {off[0]} (and {len(off) - 1} more)")
+    end = (months + 1).astype("datetime64[ns]")
+    ds = ds.copy()
+    ds["time_bounds"] = (("time", "nv"), np.stack([start, end], axis=1))
+    ds["time"].attrs["bounds"] = "time_bounds"
+    return ds
+
+
 def apply_perimeter_band(
     da: xr.DataArray, bounds: list[float] | None = None, width: float = 1000.0, value: float = -1000.0
 ) -> xr.DataArray:

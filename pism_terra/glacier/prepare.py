@@ -67,6 +67,7 @@ from pism_terra.glacier.climate import (
     prepare_carra2,
     prepare_carra2_for_group,
     prepare_carra2_monthly_mean,
+    prepare_era5,
     prepare_snap,
 )
 from pism_terra.glacier.ice_thickness import (
@@ -97,6 +98,7 @@ PREPARE_DATASETS = [
     "heatflux_lucazeau",
     "snap",
     "carra2",
+    "era5",
 ]
 
 
@@ -160,6 +162,7 @@ def prepare_paths(output_path: Path | str, project_directory: str) -> dict[str, 
         "staging_heatflux": staging_path / "heatflux",
         "staging_snap": staging_path / "snap",
         "staging_carra2": staging_path / "carra2",
+        "staging_era5": staging_path / "era5",
     }
 
 
@@ -344,9 +347,9 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
             logger.info("Indexed rgi_id in %s: %s", rgi_file, index_geopackage(rgi_file))
 
     # Load the RGI outlines once if any consumer needs them.
-    need_outlines = bool({"ice_thickness_frank", "ice_thickness_maffezzoli", "dh_hugonnet"} & set(selected)) or (
-        "carra2" in selected and bool(glacier_groups)
-    )
+    need_outlines = bool(
+        {"ice_thickness_frank", "ice_thickness_maffezzoli", "dh_hugonnet", "era5"} & set(selected)
+    ) or ("carra2" in selected and bool(glacier_groups))
     complexes = gpd.read_file(rgi_files["rgi_complexes"]) if need_outlines else None
     glaciers = gpd.read_file(rgi_files["rgi_glaciers"]) if need_outlines else None
 
@@ -497,6 +500,32 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
                         output_file=group_out,
                         force_overwrite=force_overwrite,
                     )
+
+    if "era5" in selected:
+        # One store per region of the setup file, over the box of that
+        # region's outlines. A region with a ``crs`` is written in it, so the
+        # store depends on the project and lives under its directory; one
+        # without stays in latitude/longitude. Staging cuts each glacier out
+        # of its region's store (``climate.era5``) instead of asking CDS for
+        # the same years once per glacier.
+        assert complexes is not None  # loaded above (need_outlines)
+        project_climate_path = ensure_dir(paths["project_climate"])
+        era5_staging = ensure_dir(paths["staging_era5"])
+        outlines = complexes.to_crs("EPSG:4326")
+        for code, region in regions.iterrows():
+            members = outlines.loc[outlines["o1region"] == str(code).zfill(2)]
+            if members.empty:
+                logger.warning("No outlines in region %s; skipping its ERA5 store", region["region"])
+                continue
+            region_crs = region.get("crs")
+            prepare_era5(
+                region["region"],
+                members.total_bounds,
+                project_climate_path / f"era5_{region['region']}.zarr",
+                ensure_dir(era5_staging / region["region"]),
+                crs=region_crs if isinstance(region_crs, str) and region_crs else None,
+                force_overwrite=force_overwrite,
+            )
 
     return rgi_files
 

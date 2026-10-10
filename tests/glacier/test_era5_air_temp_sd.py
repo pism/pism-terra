@@ -309,8 +309,10 @@ def test_era5_writes_air_temp_sd(cds: FakeCDS, tmp_path: Path):
     with xr.open_dataset(out) as ds:
         assert {"air_temp", "air_temp_sd", "precipitation", "surface"} <= set(ds.data_vars)
         assert ds["air_temp_sd"].dims == ds["air_temp"].dims
-        # ``add_time_bounds`` drops the last step, for want of the bound after it.
-        assert ds.sizes["time"] == 23
+        # Every month of both years: the last one ends on the first of the next.
+        assert ds.sizes["time"] == 24
+        assert pd.Timestamp(ds["time_bounds"].values[-1, 0]) == pd.Timestamp("1991-12-01")
+        assert pd.Timestamp(ds["time_bounds"].values[-1, 1]) == pd.Timestamp("1992-01-01")
         assert ds["air_temp_sd"].attrs["units"] == "kelvin"
         assert not bool(ds["air_temp_sd"].isnull().any())
         january = pd.date_range("1990-01-01", "1990-01-31", freq="D")
