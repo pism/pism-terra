@@ -264,3 +264,130 @@ def test_a_delivered_zip_is_finished_without_a_new_request(tmp_path):
     assert files == [nc_path]
     with xr.open_dataset(nc_path) as merged:
         assert {"ssrd", "ssr"} <= set(merged.data_vars)
+
+
+class _FlakyCDS:
+    """
+    Stand in for the CDS client: deliver each year as a small file, except the ones set to fail.
+
+    Parameters
+    ----------
+    failing : set of str
+        Years whose job fails, as MARS fails one now and then.
+    """
+
+    def __init__(self, failing: set[str]):
+        """
+        Set up the stand-in.
+
+        Parameters
+        ----------
+        failing : set of str
+            Years whose job fails.
+        """
+        self.failing = failing
+        self.asked: list[str] = []
+
+    def submit(self, dataset, request):  # pylint: disable=unused-argument
+        """
+        Accept a request for one year and return its job.
+
+        Parameters
+        ----------
+        dataset : str
+            CDS dataset name.
+        request : dict
+            The request, with a one-element ``year``.
+
+        Returns
+        -------
+        object
+            A job whose results are a NetCDF file, or an error.
+        """
+        (year,) = request["year"]
+        self.asked.append(year)
+        failing = year in self.failing
+
+        class _Results:
+            """The delivered file of one job."""
+
+            content_type = "application/x-netcdf"
+
+            def download(self, target):
+                """
+                Write the year's twelve monthly fields.
+
+                Parameters
+                ----------
+                target : str
+                    Path to write.
+                """
+                time = np.array([f"{year}-{month:02d}-01" for month in range(1, 13)], dtype="datetime64[ns]")
+                xr.Dataset(
+                    {"t2m": (("valid_time", "latitude", "longitude"), np.full((12, 2, 2), float(year)))},
+                    coords={"valid_time": time, "latitude": [60.0, 60.1], "longitude": [-150.0, -149.9]},
+                ).to_netcdf(target)
+
+        class _Job:
+            """One submitted request."""
+
+            request_id = f"job-{year}"
+            status = "failed" if failing else "successful"
+
+            def get_results(self):
+                """
+                Return the results, or raise as a failed MARS job does.
+
+                Returns
+                -------
+                _Results
+                    The delivered file.
+                """
+                if failing:
+                    raise RuntimeError("400 Client Error: Bad Request\nThe job failed with: MarsRuntimeError")
+                return _Results()
+
+        return _Job()
+
+
+def test_a_failed_year_is_an_error_and_only_that_year_is_asked_for_again(tmp_path, monkeypatch):
+    """
+    Refuse a partial download, keep the years that arrived, and retry only the one that failed.
+
+    A year that failed used to be left out of the merged result, which was
+    then cached under the key of the whole request: the gap was silent, and
+    no later run asked CDS for the missing year again.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture replacing the CDS client.
+    """
+    cds = _FlakyCDS(failing={"1987"})
+    monkeypatch.setattr(dl, "_DatastoresClient", lambda **kwargs: cds)
+    merged = tmp_path / "era5_tmp_1.nc"
+    request = {
+        "dataset": "reanalysis-era5-land-monthly-means",
+        "area": [60.0, -150.0, 60.1, -149.9],
+        "year": [1986, 1987, 1988],
+        "variable": ["2m_temperature"],
+        "file_path": merged,
+    }
+
+    with pytest.raises(RuntimeError, match="1 of 3 years failed to download: 1987") as error:
+        dl.download_request(**request)
+    # The first line of the reason is quoted; a MARS error runs to pages.
+    assert "400 Client Error: Bad Request" in str(error.value)
+    assert "MarsRuntimeError" not in str(error.value)
+    # Nothing incomplete was cached as the answer to the whole request.
+    assert not merged.exists()
+
+    cds.failing = set()
+    cds.asked.clear()
+    ds = dl.download_request(**request)
+
+    assert cds.asked == ["1987"]
+    assert sorted({int(year) for year in ds["valid_time.year"].values}) == [1986, 1987, 1988]
+    assert float(ds["t2m"].sel(valid_time="1987-06-01").mean()) == 1987.0

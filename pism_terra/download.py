@@ -638,8 +638,16 @@ def _cds_download_years(
     Returns
     -------
     list of Path
-        Per-year cache paths (in submission order). Failed years are logged
-        and omitted.
+        Per-year cache paths (in submission order), one for every year.
+
+    Raises
+    ------
+    RuntimeError
+        If the request of any year failed. It is raised once every other
+        year has been downloaded and cached, so running again asks only for
+        the years that failed. A partial result is never returned: callers
+        merge or pair what they get, and a missing year would end up as a
+        silent gap, or as every later year under the wrong dates.
     """
     # Phase 1: submit (or reuse cached) — sequential, no waiting
     pending: list[tuple[str, Path, _DatastoresRemote]] = []  # (year, nc_path, remote)
@@ -676,6 +684,7 @@ def _cds_download_years(
     # Phase 2: wait + download in parallel. Periodically poll job status
     # so something prints even when CDS is slow.
     downloaded: list[Path] = list(cached)
+    failed: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_cds_finish_year, remote, yr, dest, nc_path): yr for yr, nc_path, remote in pending}
         pbar = tqdm(total=len(futures), desc=desc, unit="yr")
@@ -691,6 +700,7 @@ def _cds_download_years(
                 except Exception as exc:
                     pbar.set_postfix_str(f"{yr} failed")
                     tqdm.write(f"Failed to download year {yr}: {exc}")
+                    failed[str(yr)] = str(exc)
                 pbar.update(1)
             # Heartbeat: every ~60 s with no completions, print job statuses
             if not done and verbose:
@@ -708,6 +718,17 @@ def _cds_download_years(
                     summary = ", ".join(f"{yr}={s}" for yr, s in sorted(statuses.items()))
                     tqdm.write(f"[CDS heartbeat] {summary}")
         pbar.close()
+
+    # Every year has been tried by now, and the ones that arrived are on disk.
+    if failed:
+        years_failed = sorted(failed)
+        first_reason = failed[years_failed[0]].strip().splitlines()[0][:200]
+        raise RuntimeError(
+            f"{dataset}: {len(failed)} of {len(years)} years failed to download: {', '.join(years_failed)}. "
+            f"First reason: {first_reason} "
+            "See the 'Failed to download year' lines above for the rest. The other years are cached, so running "
+            "this again requests only the ones that failed."
+        )
     return downloaded
 
 
@@ -936,9 +957,10 @@ def download_request(
 
         ds = xr.merge(dss, join="outer", compat="no_conflicts").drop_vars(["number", "expver"], errors="ignore")
 
-        # ``_cds_download_years`` logs a failed year and carries on, so every
-        # year failing leaves ``dss`` empty — and ``xr.merge([])`` is a valid,
-        # empty Dataset, not an error. Writing that out would cache a file
+        # ``_cds_download_years`` raises when a year fails; this guards the
+        # case that is left, a download that returns nothing at all. An empty
+        # ``dss`` does not fail on its own — ``xr.merge([])`` is a valid,
+        # empty Dataset. Writing that out would cache a file
         # that opens cleanly and passes the request-key check, poisoning every
         # later run with a dataset that has no coordinates at all.
         if not ds.data_vars:
