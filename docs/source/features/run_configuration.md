@@ -63,6 +63,11 @@ Without `init_start`/`init_end` the run bootstraps directly, exactly as before.
 The mechanism mirrors the ISMIP7 Greenland runner, which uses the same two
 campaign keys.
 
+`--init-start` and `--init-end` override the two keys from the command line, in
+the glacier and the ISMIP7 run generators alike, the way `--start` and `--end`
+override `[time]`. Either may be given alone, the other then coming from the
+config; given both, they add an init leg to a config that has none.
+
 ## Regridding from a spin-up state
 
 A run can start from the state of an earlier run at any resolution: it keeps

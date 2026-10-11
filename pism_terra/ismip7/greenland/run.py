@@ -193,6 +193,42 @@ def _base_run_dict(cfg) -> dict:
     return run
 
 
+def _init_span(cfg, config_cli: dict | None) -> tuple[str | None, str | None]:
+    """
+    Resolve the bounds of the init leg: command line first, then the config.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded config, whose ``[campaign]`` section may carry ``init_start``
+        and ``init_end``.
+    config_cli : dict or None
+        Command-line overrides; ``init_start``/``init_end`` win over the config.
+
+    Returns
+    -------
+    tuple of (str or None, str or None)
+        ``(init_start, init_end)``; ``None`` where neither source sets one.
+
+    Raises
+    ------
+    SystemExit
+        If the command line gives one bound and nothing supplies the other:
+        the init leg would silently not be rendered.
+    """
+    config_cli = config_cli or {}
+    init_start = config_cli.get("init_start") or cfg.campaign.init_start
+    init_end = config_cli.get("init_end") or cfg.campaign.init_end
+    given = [name for name in ("init_start", "init_end") if config_cli.get(name)]
+    if given and not (init_start and init_end):
+        missing = "init_end" if init_start else "init_start"
+        raise SystemExit(
+            f"--{given[0].replace('_', '-')} needs --{missing.replace('_', '-')} as well "
+            f"(or [campaign] {missing} in the config): an init leg has both a start and an end."
+        )
+    return init_start, init_end
+
+
 def _build_init_leg(
     cfg,
     *,
@@ -1046,9 +1082,9 @@ def _render_forward_run(
     # init_start/init_end, render the short bootstrap leg first (mirroring
     # the inverse workflow's leg 1, minus the inversion) and restart the
     # forward leg(s) from its state instead of bootstrapping them directly.
-    # Without the campaign fields the forward leg bootstraps as before.
-    init_start = cfg.campaign.init_start
-    init_end = cfg.campaign.init_end
+    # Without the campaign fields (or --init-start/--init-end) the forward leg
+    # bootstraps as before.
+    init_start, init_end = _init_span(cfg, config_cli)
     run_init_str = ""
     if init_start and init_end:
         name_options_init = f"id_{sample}" if sample is not None else name_options
@@ -1233,16 +1269,16 @@ def _render_inverse_run(
     outline_file = str(Path(outline_file).resolve()) if (outline_file is not None) else "none"
     cfg = load_config(config_file)
 
-    init_start = cfg.campaign.init_start
-    init_end = cfg.campaign.init_end
+    config_cli = config_cli or {}
+    init_start, init_end = _init_span(cfg, config_cli)
     if not init_start or not init_end:
         raise SystemExit(
             "run-inverse requires [campaign] init_start and init_end (e.g. "
             'init_start = "2006-01-01", init_end = "2007-01-01") to bound the '
-            "init/prior leg; add them to the campaign section of the config TOML."
+            "init/prior leg; add them to the campaign section of the config TOML, "
+            "or pass --init-start and --init-end."
         )
 
-    config_cli = config_cli or {}
     resolution = config_cli.get("resolution")
     if resolution:
         resolution = re.sub(r"\s+", "", resolution)
@@ -1549,6 +1585,18 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     parser.add_argument("--start", type=_nullable_string, default=None, help="Override the time.start selection.")
     parser.add_argument("--end", type=_nullable_string, default=None, help="Override the time.end selection.")
     parser.add_argument(
+        "--init-start",
+        type=_nullable_string,
+        default=None,
+        help="Override campaign.init_start, the start of the init leg.",
+    )
+    parser.add_argument(
+        "--init-end",
+        type=_nullable_string,
+        default=None,
+        help="Override campaign.init_end, the end of the init leg.",
+    )
+    parser.add_argument(
         "--posterior-file",
         type=_nullable_string,
         default=None,
@@ -1796,6 +1844,8 @@ def _run(*, kind: str) -> None:
         "stress_balance": options.stress_balance,
         "start": options.start,
         "end": options.end,
+        "init_start": options.init_start,
+        "init_end": options.init_end,
     }
 
     for run_index, (idx, row) in enumerate(rows_df.iterrows()):

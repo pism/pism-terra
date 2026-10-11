@@ -351,6 +351,42 @@ def _postprocess_commands(
     return "\n".join(commands)
 
 
+def _init_span(cfg, config_cli: dict | None) -> tuple[str | None, str | None]:
+    """
+    Resolve the bounds of the init leg: command line first, then the config.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded config, whose ``[campaign]`` section may carry ``init_start``
+        and ``init_end``.
+    config_cli : dict or None
+        Command-line overrides; ``init_start``/``init_end`` win over the config.
+
+    Returns
+    -------
+    tuple of (str or None, str or None)
+        ``(init_start, init_end)``; ``None`` where neither source sets one.
+
+    Raises
+    ------
+    SystemExit
+        If the command line gives one bound and nothing supplies the other:
+        the init leg would silently not be rendered.
+    """
+    config_cli = config_cli or {}
+    init_start = config_cli.get("init_start") or cfg.campaign.init_start
+    init_end = config_cli.get("init_end") or cfg.campaign.init_end
+    given = [name for name in ("init_start", "init_end") if config_cli.get(name)]
+    if given and not (init_start and init_end):
+        missing = "init_end" if init_start else "init_start"
+        raise SystemExit(
+            f"--{given[0].replace('_', '-')} needs --{missing.replace('_', '-')} as well "
+            f"(or [campaign] {missing} in the config): an init leg has both a start and an end."
+        )
+    return init_start, init_end
+
+
 def _build_init_leg(
     cfg,
     run: Mapping[str, object],
@@ -604,17 +640,16 @@ def _render_inverse_run(
     # The inverse chain is init -> pismi -> main run: pismi inverts on the
     # init leg's state file, so the init bounds are required here (unlike the
     # forward chain, where the init leg is optional).
-    init_start = cfg.campaign.init_start
-    init_end = cfg.campaign.init_end
+    config_cli = config_cli or {}
+    init_start, init_end = _init_span(cfg, config_cli)
     if not init_start or not init_end:
         raise SystemExit(
             "run-inverse requires [campaign] init_start and init_end (e.g. "
             'init_start = "0001-01-01", init_end = "0021-01-01") to bound the '
             "init/prior leg the inversion restarts from; add them to the "
-            "campaign section of the config TOML."
+            "campaign section of the config TOML, or pass --init-start and --init-end."
         )
 
-    config_cli = config_cli or {}
     resolution = config_cli.get("resolution")
     if resolution:
         resolution = re.sub(r"\s+", "", resolution)
@@ -1100,13 +1135,13 @@ def _render_forward_run(
     )
     add_profile_option(run, cfg.campaign.profile)
 
-    # Optional init leg: when the campaign config carries init_start/init_end,
-    # render a short bootstrap run first and restart the main leg from its
-    # state instead of bootstrapping directly. ``campaign.init_climate`` swaps
-    # the forcing for that leg only — typically a climatology, which PISM
-    # cycles. Without the campaign fields the main leg bootstraps as before.
-    init_start = cfg.campaign.init_start
-    init_end = cfg.campaign.init_end
+    # Optional init leg: when the campaign config carries init_start/init_end
+    # (or --init-start/--init-end give them), render a short bootstrap run
+    # first and restart the main leg from its state instead of bootstrapping
+    # directly. ``campaign.init_climate`` swaps the forcing for that leg only
+    # — typically a climatology, which PISM cycles. Without the bounds the
+    # main leg bootstraps as before.
+    init_start, init_end = _init_span(cfg, config_cli)
     run_init_str = ""
     if init_start and init_end:
         run_init_str, state_init, _ = _build_init_leg(
@@ -1270,6 +1305,18 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     )
     parser.add_argument("--start", type=_nullable_string, default=None, help="Override the time.start selection.")
     parser.add_argument("--end", type=_nullable_string, default=None, help="Override the time.end selection.")
+    parser.add_argument(
+        "--init-start",
+        type=_nullable_string,
+        default=None,
+        help="Override campaign.init_start, the start of the init leg.",
+    )
+    parser.add_argument(
+        "--init-end",
+        type=_nullable_string,
+        default=None,
+        help="Override campaign.init_end, the end of the init leg.",
+    )
     parser.add_argument(
         "--posterior-file",
         type=_nullable_string,
@@ -1501,6 +1548,8 @@ def _run(*, kind: str) -> None:
         "stress_balance": options.stress_balance,
         "start": start_cli,
         "end": end_cli,
+        "init_start": options.init_start,
+        "init_end": options.init_end,
         # Bypasses the uq-override filter on purpose: ``input.regrid.*`` need
         # not be declared in the config's ['input'] table.
         "regrid_file": regrid_file,

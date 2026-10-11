@@ -47,7 +47,7 @@ INIT_CLIMATE_FILE = "/in/carra2_monthly_mean_RGI.nc"
 BOOT_FILE = "/in/boot.nc"
 
 
-def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE) -> str:
+def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE, **overrides) -> str:
     """
     Render one forward run script and return its text.
 
@@ -59,6 +59,8 @@ def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE) -> str:
         Config TOML to render from.
     init_climate_file : str or None, optional
         Forcing staged for the init leg.
+    **overrides
+        Command-line overrides, e.g. ``init_start="0001-01-01"``.
 
     Returns
     -------
@@ -71,7 +73,7 @@ def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE) -> str:
         TEMPLATE,
         None,
         path=tmp_path,
-        config_cli={"resolution": "1000m"},
+        config_cli={"resolution": "1000m", **overrides},
         uq={
             "input.file": BOOT_FILE,
             "grid.file": "/in/grid.nc",
@@ -349,3 +351,57 @@ def test_the_run_toml_is_no_longer_written(tmp_path):
     # that legitimately appears in the script; only the legacy TOML-reading
     # command must be gone.
     assert "pism-glacier-postprocess " not in script
+
+
+def test_the_command_line_moves_the_init_leg(tmp_path):
+    """
+    Let ``--init-start`` and ``--init-end`` replace the config's init span.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    init, main = legs(render(tmp_path, init_start="0005-01-01", init_end="0105-01-01"))
+
+    assert "-time.start 0005-01-01" in init and "-time.end 0105-01-01" in init
+    # The init products are named for the span that was run, and the main leg restarts from them.
+    tag = f"g1000m_{RGI_ID}_id_0_0005-01-01_0105-01-01"
+    assert f"state_{tag}.nc" in init and "-input.file" in main and f"state_{tag}.nc" in main
+    # The main leg keeps the config's own span.
+    assert f"-time.start {MAIN_START}" in main and f"-time.end {MAIN_END}" in main
+
+
+def test_one_bound_from_the_command_line_keeps_the_other_from_the_config(tmp_path):
+    """
+    Override one end of the init span and take the other from ``[campaign]``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    init, _ = legs(render(tmp_path, init_end="0777-01-01"))
+
+    assert f"-time.start {INIT_START}" in init and "-time.end 0777-01-01" in init
+
+
+def test_the_command_line_adds_an_init_leg_to_a_config_without_one(tmp_path, no_init_config):
+    """
+    Render an init leg from the command line alone, and refuse half a span.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    no_init_config : pathlib.Path
+        The config with its init keys removed.
+    """
+    script = render(tmp_path / "both", config=no_init_config, init_start="0001-01-01", init_end="0011-01-01")
+    init, main = legs(script)
+    assert "-time.start 0001-01-01" in init and "-time.end 0011-01-01" in init
+    assert "-input.bootstrap yes" in init and "-input.bootstrap yes" not in main
+
+    # One bound with nothing to pair it with would silently render no init leg.
+    with pytest.raises(SystemExit, match="--init-start needs --init-end"):
+        render(tmp_path / "half", config=no_init_config, init_start="0001-01-01")
