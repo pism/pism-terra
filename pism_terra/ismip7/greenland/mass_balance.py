@@ -75,6 +75,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from pism_terra.ismip7.postprocess_flux import submission_crs
 from pism_terra.log import setup_logging
+from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.plotting import rc_params
 from pism_terra.postprocess_scalar import basin_masks
 from pism_terra.processing import (
@@ -1409,11 +1410,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Plot a regional_mass_balance.nc from an earlier run instead of recomputing.",
     )
-    parser.add_argument(
-        "--n-workers",
-        type=int,
+    add_ntasks_argument(
+        parser,
         default=None,
-        help="Start a local Dask cluster with this many workers; the default runs on the threaded scheduler.",
+        help_text="Start a local Dask cluster with this many workers; the default runs on the threaded scheduler.",
+        dest="n_workers",
+        deprecated=("--n-workers",),
     )
     parser.add_argument("OUTPUT_PATH", nargs=1, help="Directory for the figure and the regional series.")
     args = parser.parse_args(list(argv) if argv is not None else None)

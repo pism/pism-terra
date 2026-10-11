@@ -41,6 +41,7 @@ import pandas as pd
 import xarray as xr
 from threadpoolctl import threadpool_limits
 
+from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.processing import preprocess_netcdf
 
 logger = logging.getLogger(__name__)
@@ -577,7 +578,9 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         "--freq", choices=sorted(FREQUENCIES), default="yearly", help="Average the series to this frequency first."
     )
     parser.add_argument("--n-resamples", type=int, default=DEFAULT_N_RESAMPLES, help="Bootstrap resamples per instant.")
-    parser.add_argument("--n-jobs", type=int, default=None, help="Worker processes; default all CPUs.")
+    add_ntasks_argument(
+        parser, default=None, help_text="Worker processes; default all CPUs.", dest="n_jobs", deprecated=("--n-jobs",)
+    )
     parser.add_argument("--seed", type=int, default=0, help="Bootstrap seed.")
     args = parser.parse_args(list(argv) if argv is not None else None)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")

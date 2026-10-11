@@ -86,6 +86,7 @@ from pism_terra.glacier.usgs import (
 )
 from pism_terra.kitp.analyze import rc_params
 from pism_terra.log import setup_logging
+from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.workflow import dataset_crs, drop_grid_mapping
 
 logger = logging.getLogger("pism_terra.glacier.usgs_benchmark_stakes")
@@ -1526,11 +1527,12 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         default="nearest",
         help="Sample the nearest cell, or interpolate bilinearly from the four neighbours.",
     )
-    parser.add_argument(
-        "--n-jobs",
-        type=int,
+    add_ntasks_argument(
+        parser,
         default=4,
-        help="Worker processes for sampling the spatial files; 1 runs serially.",
+        help_text="Worker processes for sampling the spatial files; 1 runs serially.",
+        dest="n_jobs",
+        deprecated=("--n-jobs",),
     )
     parser.add_argument(
         "--plot-start",

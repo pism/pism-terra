@@ -180,7 +180,7 @@ def test_file_cli_finds_uq_csv_above_the_files(project: Path) -> None:
     assert (
         sensitivity.cli(
             [str(f) for f in files]
-            + ["--output-path", str(out), "--n-resamples", "5", "--n-jobs", "1", "--freq", "none"]
+            + ["--output-path", str(out), "--n-resamples", "5", "--ntasks", "1", "--freq", "none"]
         )
         == 0
     )
