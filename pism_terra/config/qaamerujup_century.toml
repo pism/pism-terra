@@ -148,7 +148,7 @@ model = 'blatter'
 
 [surface]
 
-model = "ismip7"
+model = "ismip7_forcing"
 
 [surface.options.ismip7]
 
