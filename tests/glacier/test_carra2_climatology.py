@@ -34,6 +34,7 @@ import xarray as xr
 from pism_terra.glacier.climate import (
     CARRA2_CLIMATOLOGY_YEARS,
     _carra2_fill_years_and_bounds,
+    files_by_year,
     has_variables,
     open_carra2_zarr,
     prepare_carra2_monthly_mean,
@@ -382,3 +383,29 @@ def test_carra2_bounds_are_those_of_the_calendar_month(calendar: str):
     # The months tile the two years, and each stamp lies inside its own bounds.
     assert all(as_dates[i][1] == as_dates[i + 1][0] for i in range(23))
     assert out["time"].attrs["bounds"] == "time_bnds"
+
+
+def test_yearly_downloads_are_paired_by_year_not_by_position(tmp_path):
+    """
+    Refuse to go on when a year failed to download, and never shift the others.
+
+    CDS failed two of forty yearly temperature requests in one run. The files
+    that did arrive, taken in order, would have put 1988's temperature under
+    1987 and so on down the line, each restamped with the wrong year.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    years = [1986, 1987, 1988, 1989]
+    complete = [tmp_path / f"_cds_carra_2m_temperature_abc123_{year}.nc" for year in years]
+
+    by_year = files_by_year(reversed(complete), years, "2 m temperature")
+    assert [by_year[year].name for year in years] == [file.name for file in complete]
+
+    arrived = [file for file in complete if "_1987" not in file.name]
+    with pytest.raises(RuntimeError, match="2 m temperature: no download for 1987"):
+        files_by_year(arrived, years, "2 m temperature")
+    # A file of a year that was not asked for is ignored rather than paired with anything.
+    assert list(files_by_year(complete, [1988], "2 m temperature")) == [1988]

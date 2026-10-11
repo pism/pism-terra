@@ -355,6 +355,46 @@ def prepare_glaciermip4(
     return files
 
 
+def files_by_year(files: Iterable[Path | str], years: Iterable[int], what: str) -> dict[int, Path]:
+    """
+    Key yearly CDS downloads by their year, and insist that every year is there.
+
+    A year whose request failed is left out of what the download returns.
+    Pairing the products of a year by position would then put one year's
+    temperature with another year's precipitation, under the wrong dates and
+    with nothing to show for it; so the files are paired by the year in their
+    name, and a missing year stops the run.
+
+    Parameters
+    ----------
+    files : iterable of pathlib.Path or str
+        Per-year downloads, named ``..._<year>.<suffix>``.
+    years : iterable of int
+        Years that have to be present.
+    what : str
+        Name of the product, for the error message.
+
+    Returns
+    -------
+    dict of int to pathlib.Path
+        The file of each requested year.
+
+    Raises
+    ------
+    RuntimeError
+        If the download of any requested year is missing.
+    """
+    found = {int(Path(file).stem.rsplit("_", 1)[-1]): Path(file) for file in files}
+    missing = [int(year) for year in years if int(year) not in found]
+    if missing:
+        raise RuntimeError(
+            f"CARRA2 {what}: no download for {', '.join(map(str, missing))}. See the 'Failed to download year' "
+            "lines above for the reason. The years already downloaded are cached, so running this again "
+            "requests only the missing ones."
+        )
+    return {int(year): found[int(year)] for year in years}
+
+
 def prepare_carra2(
     path: str | Path,
     years: list[int] | Iterable[int] = range(1986, 2026),
@@ -408,6 +448,7 @@ def prepare_carra2(
     print("-" * 120)
 
     path = Path(path)
+    years = [int(year) for year in years]
 
     carra2_filename = path / "carra2.zarr"
 
@@ -633,13 +674,20 @@ def prepare_carra2(
 
     # --- Step 1: per-year batches (setgrid, settaxis, monmean/monstd) ---
 
-    pr_sorted = sorted(precipitation_files)
-    tas_sorted = sorted(temperature_files)
+    # Paired by year, not by position: a year CDS failed to deliver is missing
+    # from its list, and every later year would otherwise slide onto the wrong
+    # partner and be stamped with the wrong dates.
+    pr_by_year = files_by_year(precipitation_files, years, "precipitation")
+    snow_by_year = files_by_year(snowfall_files, years, "snowfall")
+    tas_by_year = files_by_year(temperature_files, years, "2 m temperature")
+    rad_by_year = files_by_year(radiation_files, years, "radiation")
 
     batches = []
-    for yr, pr_f, snow_f, tas_f, rad_f in zip(years, pr_sorted, snowfall_sorted, tas_sorted, radiation_sorted):
+    for yr in years:
         batch_out = str((path / f"batch_{yr}.nc").resolve())
-        batches.append((yr, str(pr_f), str(snow_f), str(tas_f), str(rad_f), batch_out))
+        batches.append(
+            (yr, str(pr_by_year[yr]), str(snow_by_year[yr]), str(tas_by_year[yr]), str(rad_by_year[yr]), batch_out)
+        )
 
     def _process_carra2_batch(args):
         """
