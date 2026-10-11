@@ -53,11 +53,16 @@ logger = logging.getLogger("pism_terra.glacier.usgs")
 
 DEFAULT_DATA_DIR = "~/base/pism-terra/usgs_benchmark"
 
-# The release covers Alaska, Washington and Montana only, so two RGI o1
-# regions are enough to place every glacier in it. The project GeoPackages
-# (``s4f_g.gpkg`` etc.) are study-area subsets and miss most of these
-# glaciers, hence the full regional outlines by default.
-RGI_REGIONS = ("01_alaska", "02_western_canada_usa")
+# Glaciers of the release that are left out of the benchmarks: South Cascade
+# (Washington) and Sperry (Montana) lie in RGI region 2, which Snow4Flow does
+# not model, so there is never a run to compare them with.
+SKIPPED_GLACIERS = ("SouthCascade", "Sperry")
+
+# Every other glacier of the release is in Alaska, so one RGI o1 region is
+# enough to place them. The project GeoPackages (``s4f_g.gpkg`` etc.) are
+# study-area subsets and miss most of these glaciers, hence the full regional
+# outlines by default.
+RGI_REGIONS = ("01_alaska",)
 # NSIDC keeps the complex and glacier products in sibling directories; the
 # template ``prepare_rgi_region`` defaults to only knows the complex one.
 RGI_URL_TEMPLATE = (
@@ -106,7 +111,7 @@ SKILL_COLUMNS = ["variable", "season", "source", "n", "r", "mae", "bias"]
 # --- The release ---------------------------------------------------------------
 
 
-def load_sites(sites_dir: Path | str) -> gpd.GeoDataFrame:
+def load_sites(sites_dir: Path | str, skip: Iterable[str] = ()) -> gpd.GeoDataFrame:
     """
     Read the glaciological measurement sites as points.
 
@@ -117,6 +122,9 @@ def load_sites(sites_dir: Path | str) -> gpd.GeoDataFrame:
     ----------
     sites_dir : Path or str
         Directory holding ``Glacier_Mass_Balance_Data_Sites.csv``.
+    skip : iterable of str, optional
+        Glaciers to leave out, by the release's name for them. The benchmark
+        tools pass :data:`SKIPPED_GLACIERS`; by default every glacier is kept.
 
     Returns
     -------
@@ -131,6 +139,7 @@ def load_sites(sites_dir: Path | str) -> gpd.GeoDataFrame:
     df = pd.read_csv(csv)
     df = df[df["Type"].str.strip().str.lower() == "glaciological"].copy()
     df["Glacier"] = df["Glacier"].str.strip()
+    df = df[~df["Glacier"].isin(list(skip))]
     df["site_name"] = df["site_name"].astype(str).str.strip()
     return gpd.GeoDataFrame(
         df, geometry=gpd.points_from_xy(df["longitude"], df["latitude"]), crs="EPSG:4326"

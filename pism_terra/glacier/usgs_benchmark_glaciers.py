@@ -59,6 +59,7 @@ from pism_terra.glacier.usgs import (
     RHO_WATER,
     SEASON_DATE_COLUMNS,
     SKILL_COLUMNS,
+    SKIPPED_GLACIERS,
     SPECIFIC_LABEL,
     SPECIFIC_UNITS,
     apply_plot_years,
@@ -885,7 +886,7 @@ def run_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     paths = download_usgs_benchmark(data_dir, force_overwrite=force_overwrite)
-    sites = load_sites(paths["sites"])
+    sites = load_sites(paths["sites"], skip=SKIPPED_GLACIERS)
     rgi = load_rgi_glaciers(data_dir, rgi_file=rgi_file, force_overwrite=force_overwrite)
     matches = match_rgi_ids(sites, rgi)
 
