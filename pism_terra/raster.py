@@ -327,7 +327,7 @@ def add_monthly_time_bounds(ds: xr.Dataset) -> xr.Dataset:
     off = start[start != months.astype("datetime64[ns]")]
     if len(off):
         raise ValueError(f"expected first-of-month time stamps, got {off[0]} (and {len(off) - 1} more)")
-    end = (months + 1).astype("datetime64[ns]")
+    end = (months + np.timedelta64(1, "M")).astype("datetime64[ns]")
     ds = ds.copy()
     ds["time_bounds"] = (("time", "nv"), np.stack([start, end], axis=1))
     ds["time"].attrs["bounds"] = "time_bounds"
