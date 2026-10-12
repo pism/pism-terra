@@ -291,6 +291,33 @@ def test_swapping_the_surface_model_keeps_the_staged_files(tmp_path):
     assert "-surface.debm_simple.std_dev.file none" not in init
 
 
+def test_a_file_only_the_init_surface_model_reads_is_staged(tmp_path):
+    """
+    Fill in the force-to-thickness file when only the init leg has forcing.
+
+    The staged files are filtered against the main leg's options. With a main
+    leg on ``pdd`` and an init leg on ``pdd,forcing`` that dropped the boot
+    file, and the init leg ran with ``-surface.force_to_thickness.file none``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    config = Path("pism_terra/config/s4f_historical_baseline_carra2_pdd.toml")
+    cfg = load_config(config)
+    assert "surface.force_to_thickness.file" not in cfg.surface.selected()
+    init_model = cfg.campaign.init_surface_model
+    assert init_model is not None
+    assert "surface.force_to_thickness.file" in cfg.surface.options[init_model]
+
+    init, main = legs(render(tmp_path, config=config))
+
+    assert f"-surface.force_to_thickness.file {BOOT_FILE}" in init
+    assert "-surface.force_to_thickness.file none" not in init
+    assert "-surface.force_to_thickness" not in main
+
+
 def test_an_unknown_init_surface_model_is_rejected(tmp_path):
     """
     Name the available surface models rather than failing inside PISM.

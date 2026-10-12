@@ -394,6 +394,27 @@ def _init_span(cfg, config_cli: dict | None) -> tuple[str | None, str | None]:
     return init_start, init_end
 
 
+def _init_surface_keys(cfg) -> set[str]:
+    """
+    List the options of the init leg's own surface model.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded configuration.
+
+    Returns
+    -------
+    set of str
+        The dotted PISM flags of ``[surface.options.<init_surface_model>]``;
+        empty when ``campaign.init_surface_model`` is unset or names no table.
+    """
+    init_surface_model = cfg.campaign.init_surface_model
+    if not init_surface_model:
+        return set()
+    return set(cfg.surface.options.get(init_surface_model) or ())
+
+
 def _build_init_leg(
     cfg,
     run: Mapping[str, object],
@@ -405,6 +426,7 @@ def _build_init_leg(
     name_options: str,
     init_climate_file: str | Path | None,
     init_surface_model: str | None = None,
+    overrides: Mapping[str, object] | None = None,
     state_path: Path,
     scalar_path: Path,
     spatial_path: Path,
@@ -444,6 +466,12 @@ def _build_init_leg(
         Key of ``cfg.surface.options`` selecting a surface model for this leg
         only, from ``campaign.init_surface_model``. When ``None`` the init leg
         keeps the main leg's surface model.
+    overrides : Mapping[str, object] or None, optional
+        The staged files and UQ samples (dotted PISM flags) the main leg was
+        built with, before they were filtered against its options. Those that
+        name an option of the init surface model are applied to it, so a file
+        only that model reads (``surface.force_to_thickness.file`` when the
+        main leg runs without forcing) is still filled in.
     state_path, scalar_path, spatial_path : pathlib.Path
         Output directories.
     pism_config_cdl : str or pathlib.Path or None
@@ -479,9 +507,19 @@ def _build_init_leg(
         # forcing files to unset.
         for option in cfg.surface.selected():
             run_init.pop(option, None)
-        for option, value in cfg.surface.options[init_surface_model].items():
+        init_surface = dict(cfg.surface.options[init_surface_model])
+        for option, value in init_surface.items():
             placeholder = isinstance(value, str) and value.strip().lower() == "none"
-            run_init[option] = run[option] if placeholder and option in run else value
+            if placeholder and option in run:
+                init_surface[option] = run[option]
+        # The main leg's overrides were filtered against the main leg's
+        # options, which dropped every one that only this model knows. Apply
+        # them here: without this the init leg ran with
+        # ``surface.force_to_thickness.file none`` whenever the main leg had
+        # no forcing, and with the config's value of any sampled parameter.
+        init_overrides, _ = filter_overrides_by_config(dict(overrides or {}), init_surface.keys())
+        init_surface.update(init_overrides)
+        run_init.update(init_surface)
 
     if init_climate_file is not None:
         # Only re-point the options the main leg actually carries: which of
@@ -784,7 +822,8 @@ def _render_inverse_run(
     all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
     run_overrides, _ = filter_overrides_by_config(all_overrides, run.keys())
     inv_overrides, _ = filter_overrides_by_config(all_overrides, inv.keys())
-    skipped = [k for k in all_overrides if k not in run and k not in inv]
+    init_surface_keys = _init_surface_keys(cfg)
+    skipped = [k for k in all_overrides if k not in run and k not in inv and k not in init_surface_keys]
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to both runtime dicts (these should be dotted PISM flags)
@@ -826,6 +865,7 @@ def _render_inverse_run(
         name_options=name_options,
         init_climate_file=init_climate_file,
         init_surface_model=cfg.campaign.init_surface_model,
+        overrides=all_overrides,
         state_path=state_path,
         scalar_path=scalar_path,
         spatial_path=spatial_path,
@@ -1119,8 +1159,11 @@ def _render_forward_run(
 
     # Remove 'sample' from flag overrides; drop any key not in the config-derived
     # run dict (e.g., surface.debm_simple.std_dev.file when surface.model == "pdd").
-    overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
-    overrides, skipped = filter_overrides_by_config(overrides, run.keys())
+    all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
+    overrides, skipped = filter_overrides_by_config(all_overrides, run.keys())
+    # Options only the init leg's surface model knows are applied there.
+    init_surface_keys = _init_surface_keys(cfg)
+    skipped = [k for k in skipped if k not in init_surface_keys]
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
@@ -1163,6 +1206,7 @@ def _render_forward_run(
             name_options=name_options,
             init_climate_file=init_climate_file,
             init_surface_model=cfg.campaign.init_surface_model,
+            overrides=all_overrides,
             state_path=state_path,
             scalar_path=scalar_path,
             spatial_path=spatial_path,
