@@ -595,3 +595,38 @@ def test_gmd_case_study_1_config_selects_the_documented_models():
     assert cfg.stress_balance.selected()["stress_balance.model"] == "blatter"
     assert cfg.surface.selected()["surface.models"] == "pdd"
     assert cfg.campaign.dh == "hugonnet"
+
+
+def test_an_unknown_campaign_key_is_an_error():
+    """
+    Refuse a ``[campaign]`` key that is not a field instead of ignoring it.
+
+    ``init_forcing`` was written for ``init_climate`` in ten configs. The key
+    was dropped without a word, so their init legs ran on the transient
+    forcing where a monthly climatology had been asked for.
+    """
+    with pytest.raises(ValidationError, match="init_forcing"):
+        CampaignConfig.model_validate({"climate": "carra2", "init_forcing": "carra2-monthly-mean"})
+
+    campaign = CampaignConfig.model_validate({"climate": "carra2", "init_climate": "carra2-monthly-mean"})
+    assert campaign.as_params()["init_climate"] == "carra2-monthly-mean"
+
+
+def test_no_packaged_config_carries_an_unknown_campaign_key():
+    """
+    Every config that ships with the package names only campaign keys the code reads.
+    """
+    config_dir = Path(__file__).resolve().parents[1] / "pism_terra" / "config"
+    checked = 0
+    for path in sorted(config_dir.glob("*.toml")):
+        if path.name.startswith((".", "#")) or not path.is_file():  # an editor's lock or autosave file
+            continue
+        campaign = toml.loads(path.read_text("utf-8")).get("campaign")
+        if campaign is None:  # a setup file, or a fragment without the section
+            continue
+        unknown = sorted(set(campaign) - set(CampaignConfig.model_fields))
+        assert not unknown, f"{path.name}: {unknown}"
+        checked += 1
+    assert checked > 50
+    # The config the monthly-mean spin-up was reported missing from.
+    assert _campaign("s4f_historical_baseline_carra2_pdd.toml").init_climate == "carra2-monthly-mean"

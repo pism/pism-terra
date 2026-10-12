@@ -1867,6 +1867,11 @@ class CampaignConfig(BaseModel):
         over ``climate_version`` / ``ocean_version``.
     """
 
+    # A key that is not a field is a mistake, not an extension: ``init_forcing``
+    # for ``init_climate`` was ignored in ten configs for two weeks, and their
+    # init legs ran on the wrong forcing without a word.
+    model_config = ConfigDict(extra="forbid")
+
     bathymetry: str | None = Field(default=None)
     bucket: str | None = Field(default=None)
     climate: str | None = Field(default=None)
