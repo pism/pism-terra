@@ -75,9 +75,9 @@ import matplotlib.pyplot as plt
 
 import cmglaciology  # registers the "cmg.*" colormaps
 
-frank_ds = xr.open_dataset("frank/RGI2000-v7.0-C-01-04374/input/bootfile_RGI2000-v7.0-C-01-04374.nc")
+frank_ds = xr.open_dataset("frank/RGI2000-v7.0-C-01-04374/input/bootfile_forcing_mask_all_RGI2000-v7.0-C-01-04374.nc")
 frank_thickness = frank_ds.thickness.where(frank_ds.thickness > 0)
-maffezzoli_ds = xr.open_dataset("maffezzoli/RGI2000-v7.0-C-01-04374/input/bootfile_RGI2000-v7.0-C-01-04374.nc")
+maffezzoli_ds = xr.open_dataset("maffezzoli/RGI2000-v7.0-C-01-04374/input/bootfile_forcing_mask_all_RGI2000-v7.0-C-01-04374.nc")
 maffezzoli_thickness = maffezzoli_ds.thickness.where(maffezzoli_ds.thickness > 0)
 
 diff_thickness = frank_thickness - maffezzoli_thickness
