@@ -1027,6 +1027,71 @@ def open_carra2_zarr(uri: Path | str) -> xr.Dataset:
     return ds
 
 
+def monthly_climatology(ds: xr.Dataset, years: Iterable[int], source: str) -> xr.Dataset:
+    """
+    Average a monthly series by calendar month over a reference period.
+
+    The averaging behind :func:`prepare_carra2_monthly_mean` and
+    :func:`prepare_era5_monthly_mean`. Every time-dependent variable is
+    averaged; a time-invariant one (the surface elevation) would be averaged
+    into a no-op and is carried through as it is, so the climatology keeps a
+    2-D surface.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Monthly series with a datetime ``time`` axis.
+    years : iterable of int
+        Reference period to average over.
+    source : str
+        What ``ds`` is, for the log and the error messages.
+
+    Returns
+    -------
+    xarray.Dataset
+        The twelve calendar months as float32, with ``time`` running
+        ``1``-``12``.
+
+    Raises
+    ------
+    ValueError
+        If ``ds`` has no time steps in the period, or if a calendar month of
+        the period is missing entirely.
+    """
+    years = sorted({int(y) for y in years})
+    # Bounds describe the source months; they mean nothing once averaged.
+    ds = ds.drop_vars(["time_bnds", "time_bounds"], errors="ignore")
+
+    sub = ds.sel(time=ds["time.year"].isin(years))
+    if sub.sizes.get("time", 0) == 0:
+        src_years = sorted({int(y) for y in ds["time.year"].values})
+        raise ValueError(
+            f"{source} has no time steps in {years[0]}-{years[-1]}; it covers {src_years[0]}-{src_years[-1]}"
+        )
+
+    static_names = [n for n in sub.data_vars if "time" not in sub[n].dims]
+    varying_names = [n for n in sub.data_vars if "time" in sub[n].dims]
+
+    logger.info(
+        "Averaging %d time steps of the %s (%d-%d) by calendar month: %s",
+        sub.sizes["time"],
+        source,
+        years[0],
+        years[-1],
+        ", ".join(sorted(str(name) for name in varying_names)),
+    )
+    clim = sub[varying_names].groupby("time.month").mean("time", keep_attrs=True)
+    if clim.sizes["month"] != 12:
+        present = [int(m) for m in clim["month"].values]
+        raise ValueError(f"Expected 12 calendar months in the climatology, got {len(present)}: {present}")
+
+    clim = clim.rename({"month": "time"})
+    clim["time"].attrs = {"long_name": "calendar month"}
+    for name in static_names:
+        clim[name] = sub[name]
+    return clim.astype("float32")
+
+
 def prepare_carra2_monthly_mean(
     carra2_zarr: Path | str,
     output_zarr: Path | str,
@@ -1085,40 +1150,7 @@ def prepare_carra2_monthly_mean(
     years = sorted({int(y) for y in years})
     ds = open_carra2_zarr(carra2_zarr)
     crs_wkt = ds.rio.crs.to_wkt()
-    # Bounds describe the source months; they mean nothing once averaged.
-    ds = ds.drop_vars(["time_bnds", "time_bounds"], errors="ignore")
-
-    sub = ds.sel(time=ds["time.year"].isin(years))
-    if sub.sizes.get("time", 0) == 0:
-        src_years = sorted({int(y) for y in ds["time.year"].values})
-        raise ValueError(
-            f"CARRA2 store at {carra2_zarr} has no time steps in {years[0]}-{years[-1]}; "
-            f"it covers {src_years[0]}-{src_years[-1]}"
-        )
-
-    # Time-invariant fields (orography) would be averaged into a no-op; carry
-    # them through as they are so the climatology keeps a 2-D surface.
-    static_names = [n for n in sub.data_vars if "time" not in sub[n].dims]
-    varying_names = [n for n in sub.data_vars if "time" in sub[n].dims]
-
-    logger.info(
-        "Averaging %d CARRA2 time steps (%d-%d) by calendar month: %s",
-        sub.sizes["time"],
-        years[0],
-        years[-1],
-        ", ".join(sorted(varying_names)),
-    )
-    clim = sub[varying_names].groupby("time.month").mean("time", keep_attrs=True)
-    if clim.sizes["month"] != 12:
-        present = [int(m) for m in clim["month"].values]
-        raise ValueError(f"Expected 12 calendar months in the climatology, got {len(present)}: {present}")
-
-    clim = clim.rename({"month": "time"})
-    clim["time"].attrs = {"long_name": "calendar month"}
-    for name in static_names:
-        clim[name] = sub[name]
-
-    clim = clim.astype("float32")
+    clim = monthly_climatology(ds, years, f"CARRA2 store at {carra2_zarr}")
     clim.attrs.update(
         {
             "Conventions": "CF-1.8",
@@ -2299,6 +2331,12 @@ ERA5_STORE_PAD = 1.0
 #: Fields of an ERA5 store, and of the forcing file cut from it.
 ERA5_VARIABLES = ("air_temp", "air_temp_sd", "precipitation", "surface")
 
+#: Reference period of the ERA5 monthly climatology, the same as CARRA2's.
+ERA5_CLIMATOLOGY_YEARS = CARRA2_CLIMATOLOGY_YEARS
+
+#: Stem of the regional climatology stores, ``era5_monthly_mean_<region>.zarr``.
+ERA5_CLIMATOLOGY_STEM = "era5_monthly_mean"
+
 
 def pad_area(area: Sequence[float], pad: float = 1.0) -> list[float]:
     """
@@ -2886,6 +2924,78 @@ def prepare_era5(
     return output_zarr
 
 
+def prepare_era5_monthly_mean(
+    era5_zarr: Path | str,
+    output_zarr: Path | str,
+    years: Iterable[int] = ERA5_CLIMATOLOGY_YEARS,
+    force_overwrite: bool = False,
+) -> Path:
+    """
+    Average a regional ERA5 store by calendar month into a 12-step climatology.
+
+    The ERA5 counterpart of :func:`prepare_carra2_monthly_mean`: one field per
+    calendar month over a fixed reference period, a periodic forcing PISM can
+    cycle for a spin-up. ``air_temp_sd`` is averaged like every other field,
+    so it stays the typical within-month spread of the daily means. The
+    surface elevation is carried through untouched.
+
+    The climatology stays on the store's latitude/longitude grid and its
+    ``time`` coordinate is the calendar month, ``1``-``12``; the periodic axis
+    is stamped when a glacier's file is written (:func:`era5_monthly_mean`).
+
+    Parameters
+    ----------
+    era5_zarr : str or pathlib.Path
+        Local path or ``s3://`` URI of a store written by :func:`prepare_era5`.
+    output_zarr : str or pathlib.Path
+        Store to write, conventionally ``era5_monthly_mean_<region>.zarr``.
+    years : iterable of int, optional
+        Reference period; :data:`ERA5_CLIMATOLOGY_YEARS` (1990-2019) by default.
+    force_overwrite : bool, default False
+        Rebuild the store even when a complete one exists.
+
+    Returns
+    -------
+    pathlib.Path
+        The store written.
+
+    Raises
+    ------
+    ValueError
+        If the source store has no time steps in the period, or if a calendar
+        month of the period is missing entirely.
+    """
+    output_zarr = Path(output_zarr)
+    if (
+        output_zarr.exists()
+        and not force_overwrite
+        and has_variables(output_zarr, [*ERA5_VARIABLES, "latitude", "longitude"])
+    ):
+        logger.info("Using cached ERA5 monthly climatology %s", output_zarr)
+        return output_zarr
+
+    years = sorted({int(y) for y in years})
+    ds = open_era5_store(era5_zarr)
+    clim = monthly_climatology(ds[list(ERA5_VARIABLES)], years, f"ERA5 store at {era5_zarr}")
+    clim.attrs = {
+        "Conventions": "CF-1.8",
+        "title": "ERA5 monthly mean climatology",
+        "climatology_period": f"{years[0]}-{years[-1]}",
+        "source": str(era5_zarr),
+    }
+    for name in clim.variables:
+        clim[name].encoding = {}
+    clim = clim.chunk({"time": -1, "latitude": 256, "longitude": 256})
+
+    logger.info("Writing ERA5 monthly climatology to %s", output_zarr)
+    if output_zarr.exists():
+        shutil.rmtree(output_zarr)
+    output_zarr.parent.mkdir(parents=True, exist_ok=True)
+    clim.to_zarr(output_zarr, mode="w", consolidated=True)
+    ds.close()
+    return output_zarr
+
+
 def open_era5_store(uri: Path | str) -> xr.Dataset:
     """
     Open an ERA5 store with its spatial dimensions set.
@@ -2931,6 +3041,34 @@ def _list_era5_stores(bucket: str, prefix: str, project_directory: str | None = 
         ``s3://`` URIs of ``climate/era5_*.zarr``, sorted.
     """
     pattern = f"{bucket}/{project_prefix(prefix, project_directory)}/climate/era5_*.zarr"
+    # ``era5_monthly_mean_<region>.zarr`` matches the pattern too; those hold
+    # twelve calendar months, not years of forcing.
+    return sorted(
+        f"s3://{key}"
+        for key in s3fs.S3FileSystem(anon=True).glob(pattern)
+        if not Path(key).name.startswith(f"{ERA5_CLIMATOLOGY_STEM}_")
+    )
+
+
+def _list_era5_climatology_stores(bucket: str, prefix: str, project_directory: str | None = None) -> list[str]:
+    """
+    List the ERA5 monthly climatology stores a project has on S3.
+
+    Parameters
+    ----------
+    bucket : str
+        Bucket holding the prepared inputs.
+    prefix : str
+        Shared key prefix, e.g. ``"glacier/input"``.
+    project_directory : str or None, optional
+        Project subdirectory, e.g. ``"s4f"``.
+
+    Returns
+    -------
+    list of str
+        ``s3://`` URIs of ``climate/era5_monthly_mean_*.zarr``, sorted.
+    """
+    pattern = f"{bucket}/{project_prefix(prefix, project_directory)}/climate/{ERA5_CLIMATOLOGY_STEM}_*.zarr"
     return sorted(f"s3://{key}" for key in s3fs.S3FileSystem(anon=True).glob(pattern))
 
 
@@ -2955,6 +3093,104 @@ def _target_bounds(target_grid: xr.Dataset) -> tuple[tuple[float, float, float, 
         float(target_grid.y_bnds.values[-1][-1]),
     )
     return bounds, target_grid[target_grid.rio.grid_mapping].attrs["crs_wkt"]
+
+
+def _lonlat_box(target_grid: xr.Dataset) -> tuple[float, float, float, float]:
+    """
+    Compute the geographic box of a target grid.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        Grid with ``x_bnds``/``y_bnds`` and a grid mapping.
+
+    Returns
+    -------
+    tuple of float
+        ``(west, south, east, north)`` in degrees.
+    """
+    bounds, dst_crs = _target_bounds(target_grid)
+    to_lonlat = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
+    return to_lonlat.transform_bounds(*bounds, densify_pts=21)
+
+
+def _own_region_stem(stem: str, rgi_id: str) -> str | None:
+    """
+    Name the start of the store of a glacier's own RGI region.
+
+    Parameters
+    ----------
+    stem : str
+        Stem of the stores, ``"era5"`` or :data:`ERA5_CLIMATOLOGY_STEM`.
+    rgi_id : str
+        Glacier identifier.
+
+    Returns
+    -------
+    str or None
+        E.g. ``"era5_01_"``; None when ``rgi_id`` names no region.
+    """
+    region = re.search(r"-[CG]-(\d{2})-", rgi_id)
+    return f"{stem}_{region.group(1)}_" if region else None
+
+
+def _stores_covering(uris: Iterable[str], target_grid: xr.Dataset, own: str | None = None):
+    """
+    Open the ERA5 stores whose cell centres enclose a glacier's grid.
+
+    Parameters
+    ----------
+    uris : iterable of str
+        Stores to try.
+    target_grid : xarray.Dataset
+        The glacier's grid.
+    own : str or None, optional
+        Start of the name of the glacier's own regional store, tried first.
+
+    Yields
+    ------
+    tuple of (str, xarray.Dataset)
+        URI and opened store of each one that covers the grid.
+    """
+    west, south, east, north = _lonlat_box(target_grid)
+    for uri in sorted(uris, key=lambda u: (own is None or own not in u, u)):
+        try:
+            store = open_era5_store(uri)
+        except ValueError as exc:
+            print(f"Skipping {uri}: {exc}")
+            continue
+        lon, lat = store["longitude"].values, store["latitude"].values
+        if lon.min() <= west and east <= lon.max() and lat.min() <= south and north <= lat.max():
+            yield uri, store
+
+
+def _crop_to_grid(store: xr.Dataset, target_grid: xr.Dataset) -> xr.Dataset:
+    """
+    Crop an ERA5 store to a glacier's box.
+
+    Parameters
+    ----------
+    store : xarray.Dataset
+        Store on ``latitude``/``longitude``.
+    target_grid : xarray.Dataset
+        The glacier's grid.
+
+    Returns
+    -------
+    xarray.Dataset
+        The store's own cells within the box and two cells past it on every
+        side, so PISM has data to interpolate from at the edge of the model
+        domain.
+    """
+    west, south, east, north = _lonlat_box(target_grid)
+    lon, lat = store["longitude"].values, store["latitude"].values
+    pad_lon, pad_lat = 2 * abs(float(lon[1] - lon[0])), 2 * abs(float(lat[1] - lat[0]))
+    return store.isel(
+        {
+            "longitude": np.flatnonzero((lon >= west - pad_lon) & (lon <= east + pad_lon)),
+            "latitude": np.flatnonzero((lat >= south - pad_lat) & (lat <= north + pad_lat)),
+        }
+    )
 
 
 def find_era5_store(
@@ -2989,27 +3225,53 @@ def find_era5_store(
         The first store whose cell centres enclose the grid and that holds
         every year; None when there is none.
     """
-    bounds, dst_crs = _target_bounds(target_grid)
     years = set(years)
-    region = re.search(r"-[CG]-(\d{2})-", rgi_id)
-    own = f"era5_{region.group(1)}_" if region else None
     uris = _list_era5_stores(bucket, prefix, project_directory)
-    to_lonlat = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
-    west, south, east, north = to_lonlat.transform_bounds(*bounds, densify_pts=21)
-    for uri in sorted(uris, key=lambda u: (own is None or own not in u, u)):
-        try:
-            store = open_era5_store(uri)
-        except ValueError as exc:
-            print(f"Skipping {uri}: {exc}")
-            continue
-        lon, lat = store["longitude"].values, store["latitude"].values
-        if not (lon.min() <= west and east <= lon.max() and lat.min() <= south and north <= lat.max()):
-            continue
+    for uri, store in _stores_covering(uris, target_grid, _own_region_stem("era5", rgi_id)):
         missing = sorted(years - {int(year) for year in store["time.year"].values})
         if missing:
             print(f"{uri} covers the glacier but not {missing[0]}-{missing[-1]}")
             continue
         print(f"Using ERA5 store {uri}")
+        return store
+    return None
+
+
+def find_era5_climatology_store(
+    target_grid: xr.Dataset,
+    bucket: str,
+    prefix: str,
+    project_directory: str | None = None,
+    rgi_id: str = "",
+) -> xr.Dataset | None:
+    """
+    Find the regional ERA5 monthly climatology that covers a glacier's grid.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        The glacier's grid.
+    bucket : str
+        Bucket holding the prepared inputs.
+    prefix : str
+        Shared key prefix, e.g. ``"glacier/input"``.
+    project_directory : str or None, optional
+        Project subdirectory, e.g. ``"s4f"``.
+    rgi_id : str, optional
+        Glacier identifier; the store of its own RGI region is tried first.
+
+    Returns
+    -------
+    xarray.Dataset or None
+        The first store written by :func:`prepare_era5_monthly_mean` whose
+        cell centres enclose the grid; None when there is none.
+    """
+    uris = _list_era5_climatology_stores(bucket, prefix, project_directory)
+    for uri, store in _stores_covering(uris, target_grid, _own_region_stem(ERA5_CLIMATOLOGY_STEM, rgi_id)):
+        if store.sizes.get("time") != 12:
+            print(f"Skipping {uri}: {store.sizes.get('time')} time steps, not the 12 calendar months")
+            continue
+        print(f"Using ERA5 monthly climatology {uri}")
         return store
     return None
 
@@ -3062,21 +3324,9 @@ def era5_from_store(
         print(f"Using cached {out_file}")
         return out_file
 
-    bounds, dst_crs = _target_bounds(target_grid)
-    to_lonlat = Transformer.from_crs(dst_crs, "EPSG:4326", always_xy=True)
-    west, south, east, north = to_lonlat.transform_bounds(*bounds, densify_pts=21)
-    lon, lat = store["longitude"].values, store["latitude"].values
-    # Two cells past the box on every side, so PISM has data to interpolate
-    # from at the edge of the model domain.
-    pad_lon, pad_lat = 2 * abs(float(lon[1] - lon[0])), 2 * abs(float(lat[1] - lat[0]))
     years = set(years)
-    ds = store.isel(
-        {
-            "longitude": np.flatnonzero((lon >= west - pad_lon) & (lon <= east + pad_lon)),
-            "latitude": np.flatnonzero((lat >= south - pad_lat) & (lat <= north + pad_lat)),
-            "time": np.flatnonzero(np.isin(store["time.year"].values, list(years))),
-        }
-    )[list(ERA5_VARIABLES)].load()
+    ds = _crop_to_grid(store, target_grid)
+    ds = ds.isel(time=np.flatnonzero(np.isin(store["time.year"].values, list(years))))[list(ERA5_VARIABLES)].load()
 
     ds = add_monthly_time_bounds(ds)
 
@@ -3249,7 +3499,7 @@ def era5_mean(
         intend to query ERA5-Land or other products.
     path : str or pathlib.Path, default ``"."``
         Output directory or filename base. The function writes a file named
-        ``era5_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
+        ``era5_mean_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
         otherwise the provided filename is used.
     **kwargs
         Additional keyword arguments forwarded to :func:`download_request`
@@ -3298,7 +3548,9 @@ def era5_mean(
 
     years = range(1990, 2020)
 
-    era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
+    # Its own name: ``era5_wgs84_<rgi_id>.nc`` is the transient forcing, which
+    # a run that used both would otherwise find replaced by this one.
+    era5_filename = path / Path(f"era5_mean_{rgi_id}.nc")
 
     bounds = [
         target_grid.x_bnds.values[0][0],
@@ -3437,169 +3689,111 @@ def jif_cosipy(url: str, download_path: Path | str, path: Path | str) -> None:
 def era5_monthly_mean(
     target_grid: xr.Dataset,
     rgi_id: str,
-    years: list[int] | Iterable[int] = range(1978, 2026),
+    years: list[int] | Iterable[int] = ERA5_CLIMATOLOGY_YEARS,
     dataset: str = "reanalysis-era5-land-monthly-means",
     path: Path | str = ".",
     **kwargs,
 ) -> Path:
     """
-    Download monthly ERA5 reanalysis over a glacier bounding box and write a NetCDF.
+    Write the ERA5 monthly climatology for one glacier's grid.
+
+    The ERA5 counterpart of :func:`carra2_monthly_mean`: twelve fields, one
+    per calendar month of :data:`ERA5_CLIMATOLOGY_YEARS`, on the periodic time
+    axis PISM cycles for the length of the run. The file is
+    ``era5_monthly_mean_<rgi_id>.nc``, on ERA5's latitude/longitude grid like
+    the transient forcing; PISM regrids it onto the model grid.
+
+    Two sources are tried, cheapest first. When ``bucket`` is passed and a
+    regional climatology written by :func:`prepare_era5_monthly_mean` covers
+    the glacier, its box is cut out of it and nothing is requested from CDS.
+    Otherwise the reference period is downloaded for the glacier's box
+    (:func:`era5_fields`) and averaged here, which is slow: the daily means
+    behind ``air_temp_sd`` take one request per year.
 
     Parameters
     ----------
     target_grid : xarray.Dataset
-        Target grid dataset providing the destination CRS (via ``spatial_ref``)
-        and extent. Used to derive the geographic bounding box for the ERA5
-        request.
+        Grid providing the destination CRS (via its grid mapping) and extent.
     rgi_id : str
-        Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
-        output filename.
-    years : list of int or Iterable of int, default ``range(1978, 2026)``
-        Years to request from ERA5.
+        Glacier identifier, used in the output filename and to try the
+        climatology of the glacier's own RGI region first.
+    years : list of int or Iterable of int, optional
+        Accepted and ignored: the reference period is fixed, so the
+        climatology does not depend on the span of the run. Present so the
+        climate builders share a signature.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
-        CDS dataset name for monthly single-level means (ERA5). Adjust if you
-        intend to query ERA5-Land or other products.
+        CDS dataset of the monthly means, used when no regional climatology
+        covers the glacier.
     path : str or pathlib.Path, default ``"."``
-        Output directory or filename base. The function writes a file named
-        ``era5_wgs84_<rgi_id>.nc`` inside ``path`` if ``path`` is a directory;
-        otherwise the provided filename is used.
+        Output directory. Receives ``era5_monthly_mean_<rgi_id>.nc``.
     **kwargs
-        Additional keyword arguments forwarded to :func:`download_request`
-        (e.g., alternate ``variable`` sequences, custom authentication/session
-        options, or client settings). These are passed unchanged to the CDS
-        retrieval helper.
+        ``bucket``, ``prefix`` and ``project_directory`` locate the regional
+        climatologies; ``force_overwrite`` rewrites an existing file. All of
+        them are forwarded to :func:`download_request` when CDS is asked.
 
     Returns
     -------
     pathlib.Path
-        Absolute path to the written NetCDF file.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the provided RGI path is missing.
-    ValueError
-        If the glacier ID cannot be found or the geometry is invalid.
-    Exception
-        Any errors propagated from the CDS request, reprojection, or I/O.
-
-    See Also
-    --------
-    download_request
-        Helper that performs the CDS API query and returns an xarray object.
-    geopandas.read_file
-        Load the RGI vector layer from disk.
-    xarray.Dataset.rio.write_crs
-        Record CRS on xarray objects via rioxarray.
+        Path to the written NetCDF.
 
     Notes
     -----
-    - Output variables:
-      - ``air_temp`` (K) from ERA5 ``t2m``.
-      - ``precipitation`` (kg m^-2 day^-1) from ERA5 ``tp`` (converted).
-      - ``surface`` (m) derived from ERA5 ``z`` / 9.80665 (geopotential → meters).
-    - ``time_bounds`` are added for CF-style climatological metadata.
-    - If missing values are detected in the regional subset, the function
-      patches them from the global reanalysis (same period).
+    Output variables are those of :func:`era5`: ``air_temp`` and
+    ``air_temp_sd`` (K), ``precipitation`` (kg m^-2 day^-1) and the
+    time-invariant ``surface`` (m).
     """
+    _ = years
+
     path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
 
     print("")
-    print("Generate historical climate")
+    print("Generate monthly climate climatology")
     print("-" * 120)
 
-    era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
+    out_file = path / f"{ERA5_CLIMATOLOGY_STEM}_{rgi_id}.nc"
+    if (
+        out_file.exists()
+        and not kwargs.get("force_overwrite", False)
+        and has_variables(out_file, ERA5_VARIABLES)
+        and check_xr_lazy(out_file)
+    ):
+        print(f"Using cached {out_file}")
+        return out_file
 
-    _ = years
-    years = [1978]
-
-    bounds = [
-        target_grid.x_bnds.values[0][0],
-        target_grid.y_bnds.values[0][0],
-        target_grid.x_bnds.values[-1][-1],
-        target_grid.y_bnds.values[-1][-1],
-    ]
-    mapping_var = target_grid.rio.grid_mapping
-    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
-    t = Transformer.from_crs(dst_crs, "EPSG:4326")
-    area = pad_area(t.transform_bounds(*bounds), pad=ERA5_LAND_PAD)
-
-    print(f"Bounding box {area}")
-
-    era5_files = []
-    era5_filename_1 = path / Path(f"era5_wgs84_{rgi_id}_tmp_1.nc")
-    era5_files.append(era5_filename_1)
-    ds = download_request(dataset, area, years, file_path=era5_filename_1, **kwargs)
-
-    era5_filename_2 = path / Path(f"era5_wgs84_{rgi_id}_tmp_2.nc")
-    era5_files.append(era5_filename_2)
-    ds_geo = (
-        download_request(
-            dataset,
-            area,
-            [2013],
-            variable=["geopotential"],
-            file_path=era5_filename_2,
-            **kwargs,
+    store = None
+    bucket = kwargs.get("bucket")
+    if bucket is not None:
+        store = find_era5_climatology_store(
+            target_grid, bucket, kwargs.get("prefix") or "", kwargs.get("project_directory"), rgi_id=rgi_id
         )
-        .squeeze("time", drop=True)
-        .drop_vars("time", errors="ignore")
-    )
-    ds_geo_ = (
-        ds_geo.rio.write_crs("EPSG:4326")
-        .rio.reproject_match(ds, resampling=Resampling.bilinear)
-        .rename({"x": "longitude", "y": "latitude"})
-    )
+    if store is not None:
+        ds = _crop_to_grid(store, target_grid)[list(ERA5_VARIABLES)].load()
+    else:
+        period = list(ERA5_CLIMATOLOGY_YEARS)
+        print(
+            f"No regional ERA5 climatology covers this glacier; downloading {period[0]}-{period[-1]} from CDS "
+            "instead. This is slow: the daily means take one request per year."
+        )
+        bounds, dst_crs = _target_bounds(target_grid)
+        t = Transformer.from_crs(dst_crs, "EPSG:4326")
+        area = pad_area(t.transform_bounds(*bounds), pad=ERA5_LAND_PAD)
+        print(f"Bounding box {area}")
+        series = era5_fields(area, period, path, rgi_id, dataset=dataset, **kwargs)
+        ds = monthly_climatology(series[list(ERA5_VARIABLES)], period, "ERA5 download").load()
 
-    lon_attrs = ds["longitude"].attrs
-    lat_attrs = ds["latitude"].attrs
+    ds = stamp_monthly_climatology_axis(ds)
+    ds.attrs["Conventions"] = "CF-1.8"
+    for name in ds.variables:
+        ds[name].encoding = {}
+    ds = ds.drop_vars("spatial_ref", errors="ignore").rio.write_crs("EPSG:4326")
+    for name in ("latitude", "longitude", *ERA5_VARIABLES):
+        ds[name].encoding.update({"_FillValue": None})
 
-    ds, ds_geo_ = fill_from_global_era5(ds, ds_geo_, area, years, path, rgi_id, **kwargs)
-
-    ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
-    ds = ensure_no_missing(ds, "the merged ERA5 fields")
-    # Time-mean snapshot, but preserve a length-1 ``time`` dim anchored at the
-    # midpoint of the source range. ERA5 monthly stamps are first-of-month, so
-    # the climatology covers ``[min(src), max(src) + 1 month)``.
-    ds = ds.rename({"valid_time": "time"})
-
-    ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
-    ds["surface"] /= 9.80665
-    ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
-    ds["precipitation"] *= 1000
-    ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
-    ds["air_temp"].attrs.update({"units": "kelvin"})
-    ds["longitude"].attrs = lon_attrs
-    ds["latitude"].attrs = lat_attrs
-
-    ds = ds.drop_vars("time_bnds", errors="ignore")
-
-    month_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    bounds_start = np.cumsum([0] + month_lengths[:-1]).astype("float64")
-    bounds_end = np.cumsum(month_lengths).astype("float64")
-    time_mid = (bounds_start + bounds_end) / 2.0
-
-    time_bounds = np.column_stack([bounds_start, bounds_end])
-
-    ds = ds.assign_coords(time=("time", time_mid))
-    ds["time"].attrs.update(
-        {
-            "standard_name": "time",
-            "units": "days since 0001-01-01",
-            "calendar": "365_day",
-            "bounds": "time_bounds",
-        }
-    )
-    ds["time_bounds"] = (("time", "nv"), time_bounds)
-
-    ds.rio.write_crs("EPSG:4326", inplace=True)
-    for name in ("latitude", "longitude", "surface", "precipitation", "air_temp"):
-        if name in ds:
-            ds[name].encoding.update({"_FillValue": None})
-
-    ds.to_netcdf(era5_filename)
-
-    return era5_filename
+    out_file.unlink(missing_ok=True)
+    ds.to_netcdf(out_file)
+    print(f"Wrote {out_file}")
+    return out_file
 
 
 def prepare_snap(

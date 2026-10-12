@@ -507,11 +507,43 @@ def test_era5_builds_one_store_per_region(monkeypatch, tmp_path, setup_file):
         )
         return output_zarr
 
+    climatologies: list[tuple[Path, Path]] = []
+
+    def fake_prepare_era5_monthly_mean(era5_zarr, output_zarr, **kwargs):  # pylint: disable=unused-argument
+        """
+        Record the request instead of averaging a store.
+
+        Parameters
+        ----------
+        era5_zarr : pathlib.Path
+            Store to average.
+        output_zarr : pathlib.Path
+            Climatology to write.
+        **kwargs
+            Everything else the real function takes.
+
+        Returns
+        -------
+        pathlib.Path
+            The climatology path.
+        """
+        climatologies.append((era5_zarr, output_zarr))
+        return output_zarr
+
     monkeypatch.setattr(prepare_mod, "prepare_era5", fake_prepare_era5)
+    monkeypatch.setattr(prepare_mod, "prepare_era5_monthly_mean", fake_prepare_era5_monthly_mean)
 
     prepare(["--include", "era5", str(setup_file), str(out_path)])
 
     paths = prepare_paths(out_path, "s4f")
+    # Each region's store is averaged into a climatology next to it.
+    assert climatologies == [
+        (
+            paths["project_climate"] / f"era5_{region}.zarr",
+            paths["project_climate"] / f"era5_monthly_mean_{region}.zarr",
+        )
+        for region in ("01_alaska", "03_arctic_canada_north")
+    ]
     assert [call["region"] for call in calls] == ["01_alaska", "03_arctic_canada_north"]
     alaska, canada = calls[0], calls[1]
     assert alaska["bounds"] == [-150.0, 60.0, -145.0, 63.0] and "crs" not in alaska

@@ -63,11 +63,13 @@ from pism_terra.download import (
     extract_archive,
 )
 from pism_terra.glacier.climate import (
+    ERA5_CLIMATOLOGY_STEM,
     convert_many_tifs_concurrent,
     prepare_carra2,
     prepare_carra2_for_group,
     prepare_carra2_monthly_mean,
     prepare_era5,
+    prepare_era5_monthly_mean,
     prepare_snap,
 )
 from pism_terra.glacier.ice_thickness import (
@@ -516,11 +518,19 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
             if members.empty:
                 logger.warning("No outlines in region %s; skipping its ERA5 store", region["region"])
                 continue
-            prepare_era5(
+            era5_store = prepare_era5(
                 region["region"],
                 members.total_bounds,
                 project_climate_path / f"era5_{region['region']}.zarr",
                 ensure_dir(era5_staging / region["region"]),
+                force_overwrite=force_overwrite,
+            )
+            # Twelve-step monthly climatology over a fixed reference period,
+            # on the same grid as the store it is averaged from;
+            # ``climate.era5_monthly_mean`` cuts each glacier out of it.
+            prepare_era5_monthly_mean(
+                era5_store,
+                project_climate_path / f"{ERA5_CLIMATOLOGY_STEM}_{region['region']}.zarr",
                 force_overwrite=force_overwrite,
             )
 
