@@ -405,3 +405,24 @@ def test_the_command_line_adds_an_init_leg_to_a_config_without_one(tmp_path, no_
     # One bound with nothing to pair it with would silently render no init leg.
     with pytest.raises(SystemExit, match="--init-start needs --init-end"):
         render(tmp_path / "half", config=no_init_config, init_start="0001-01-01")
+
+
+def test_the_init_leg_runs_on_a_365_day_calendar_from_year_one(tmp_path):
+    """
+    Give the init leg the time axis of the climatology it cycles, and leave the main leg's alone.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    init, main = legs(render(tmp_path))
+
+    assert "-time.calendar 365_day" in init
+    assert "-time.reference_date 0001-01-01" in init
+    assert f"-time.start {INIT_START}" in init
+    # The main leg keeps what the config's [time] section says.
+    calendar, reference_date = _CFG.time.as_params()["time.calendar"], _CFG.time.as_params()["time.reference_date"]
+    assert (calendar, reference_date) != ("365_day", "0001-01-01")
+    assert f"-time.calendar {calendar}" in main and f"-time.reference_date {reference_date}" in main
+    assert "365_day" not in main

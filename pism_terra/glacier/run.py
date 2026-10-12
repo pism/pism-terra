@@ -351,6 +351,13 @@ def _postprocess_commands(
     return "\n".join(commands)
 
 
+#: Time axis of the init leg. It is a spin-up in model years (0001, 0002, ...)
+#: on a forcing that is cycled, normally a monthly climatology written on a
+#: 365-day axis counted from year 1; the leg uses that same calendar and
+#: reference date whatever the main leg's ``[time]`` section says.
+INIT_TIME_OPTIONS = {"time.calendar": "365_day", "time.reference_date": "0001-01-01"}
+
+
 def _init_span(cfg, config_cli: dict | None) -> tuple[str | None, str | None]:
     """
     Resolve the bounds of the init leg: command line first, then the config.
@@ -410,7 +417,9 @@ def _build_init_leg(
     letting the geometry and thermal state settle before the run of interest.
     ``campaign.init_climate`` optionally swaps the forcing for this leg only —
     typically a monthly climatology, which PISM cycles, so the spin-up is not
-    tied to a particular stretch of the historical record.
+    tied to a particular stretch of the historical record. The leg runs on a
+    365-day calendar counted from year 1 (:data:`INIT_TIME_OPTIONS`), the time
+    axis such a climatology is written on; the main leg keeps the config's.
 
     Parameters
     ----------
@@ -456,7 +465,7 @@ def _build_init_leg(
     run_init = dict(run)
     run_init.pop("time.start", None)
     run_init.pop("time.end", None)
-    run_init.update({"time.start": init_start, "time.end": init_end})
+    run_init.update({"time.start": init_start, "time.end": init_end, **INIT_TIME_OPTIONS})
 
     if init_surface_model is not None:
         if init_surface_model not in cfg.surface.options:
@@ -1567,7 +1576,7 @@ def _run(*, kind: str) -> None:
             {
                 "input.file": row["boot_file"],
                 "grid.file": row["grid_file"],
-                "atmosphere.elevation_change.file": row["boot_file"],
+                "atmosphere.elevation_change.file": row["climate_file"],
                 "atmosphere.given.file": row["climate_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
                 "surface.debm_simple.albedo_input.file": row["climate_file"],
