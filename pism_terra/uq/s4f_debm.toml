@@ -1,4 +1,10 @@
-samples = 150
+samples = 12
+
+['atmosphere.elevation_change.temperature_lapse_rate']
+
+loc = 5.0
+scale = 2.0
+distribution = "uniform"
 
 ['surface.debm_simple.c1']
 
