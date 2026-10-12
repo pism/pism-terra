@@ -180,9 +180,6 @@ model = "pdd"
 'surface.debm_simple.refreeze_ice_melt' = "no"
 'surface.debm_simple.std_dev.file' = "none"
 'surface.debm_simple.std_dev.periodic' = "yes"
-'surface.force_to_thickness.alpha' = 0.95
-'surface.force_to_thickness.file' = "none"
-'surface.force_to_thickness.ice_free_alpha_factor' = 10
 'surface.models' = "debm_simple"
 
 [surface.options.debm_simple_forcing]
@@ -222,9 +219,6 @@ model = "pdd"
 'surface.debm_simple.refreeze_ice_melt' = "no"
 'surface.debm_simple.std_dev.file' = "none"
 'surface.debm_simple.std_dev.periodic' = "yes"
-'surface.force_to_thickness.alpha' = 0.95
-'surface.force_to_thickness.file' = "none"
-'surface.force_to_thickness.ice_free_alpha_factor' = 10
 'surface.models' = "debm_enhanced"
 
 [surface.options.debm_enhanced_forcing]
