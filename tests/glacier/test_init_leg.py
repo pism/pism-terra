@@ -318,6 +318,48 @@ def test_a_file_only_the_init_surface_model_reads_is_staged(tmp_path):
     assert "-surface.force_to_thickness" not in main
 
 
+def test_the_init_leg_can_write_spatial_fields_less_often(tmp_path):
+    """
+    Set ``output.spatial.times`` of the init leg alone from ``campaign.init_spatial_times``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    main_times = _CFG.reporting["output.spatial.times"]
+    assert main_times != 10
+    config = tmp_path / "sparse_init.toml"
+    config.write_text(
+        CONFIG.read_text(encoding="utf-8").replace("[campaign]\n", "[campaign]\ninit_spatial_times = 10\n", 1),
+        encoding="utf-8",
+    )
+    assert load_config(config).campaign.init_spatial_times == 10
+
+    init, main = legs(render(tmp_path, config=config))
+
+    assert "-output.spatial.times 10 " in init
+    assert f"-output.spatial.times {main_times} " in main
+
+
+def test_without_init_spatial_times_both_legs_write_alike(tmp_path):
+    """
+    Keep the config's ``output.spatial.times`` in the init leg when the key is unset.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    assert _CFG.campaign.init_spatial_times is None
+    main_times = _CFG.reporting["output.spatial.times"]
+
+    init, main = legs(render(tmp_path))
+
+    assert f"-output.spatial.times {main_times} " in init
+    assert f"-output.spatial.times {main_times} " in main
+
+
 def test_an_unknown_init_surface_model_is_rejected(tmp_path):
     """
     Name the available surface models rather than failing inside PISM.

@@ -314,6 +314,10 @@ def _build_init_leg(
     init_overrides, _ = filter_overrides_by_config(dict(overrides), run_init.keys())
     run_init.update(init_overrides)
 
+    # A spin-up rarely needs the fields as often as the run of interest.
+    if cfg.campaign.init_spatial_times is not None:
+        run_init["output.spatial.times"] = cfg.campaign.init_spatial_times
+
     init_tag = f"g{resolution}_{name_options_init}_{init_start}_{init_end}"
     state_init = state_path / Path(f"state_{init_tag}.nc")
     run_init.update(

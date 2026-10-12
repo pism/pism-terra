@@ -474,6 +474,31 @@ def test_forward_init_leg_single_pathway(tmp_path):
     assert "-time.end 2015-01-01" in fwd
 
 
+def test_forward_init_leg_spatial_times(tmp_path):
+    """
+    ``campaign.init_spatial_times`` sets ``output.spatial.times`` on the init leg only.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    text = FREE_HY.read_text().replace(
+        'init_start = "2006-01-01"',
+        'init_spatial_times = 10\ninit_start = "2006-01-01"',
+        1,
+    )
+    cfg = tmp_path / "free_init_spatial_times.toml"
+    cfg.write_text(text)
+    main_times = _search(r"-output\.spatial\.times (\S+)", _legs(_render_forward(tmp_path / "plain", FREE_HY))[0])
+    assert main_times != "10"
+
+    init, fwd = _legs(_render_forward(tmp_path, cfg))
+
+    assert "-output.spatial.times 10 " in init
+    assert f"-output.spatial.times {main_times} " in fwd
+
+
 def test_forward_init_leg_surface_model(tmp_path):
     """
     ``campaign.init_surface_model`` swaps the surface model on the init leg only.

@@ -1805,6 +1805,11 @@ class CampaignConfig(BaseModel):
         the spin-up run a different surface scheme — typically one adding
         ``forcing`` to hold the geometry — before the run of interest continues
         with ``[surface] model``. When unset the init leg keeps that model.
+    init_spatial_times : int, float, str, or None
+        ``output.spatial.times`` of the init leg only, e.g. ``10`` for every
+        ten model years or ``"yearly"``. A spin-up does not need the monthly
+        fields the run of interest writes. When unset the init leg keeps the
+        config's ``output.spatial.times``.
     init_start : str or None
         Start of the inverse-workflow init (prior) leg as ``YYYY-MM-DD``
         (e.g. ``"2006-01-01"``); required by
@@ -1903,6 +1908,7 @@ class CampaignConfig(BaseModel):
     rgi_glacier_file: str | None = Field(default=None)
     init_climate: str | None = Field(default=None)
     init_surface_model: str | None = Field(default=None)
+    init_spatial_times: int | float | str | None = Field(default=None)
     init_start: str | None = Field(default=None)
     init_end: str | None = Field(default=None)
     historical_start_year: str | float | None = Field(default=None)

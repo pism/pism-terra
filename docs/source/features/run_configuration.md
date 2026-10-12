@@ -32,6 +32,7 @@ its `[campaign]` section:
 climate = "carra2"
 init_climate = "carra2-monthly-mean"
 init_surface_model = "debm_enhanced_forcing"
+init_spatial_times = 10
 init_start = "0001-01-01"
 init_end = "0051-01-01"
 ```
@@ -58,6 +59,12 @@ values of `"none"` are the placeholders staging fills in, so a file the main leg
 already resolved is carried over rather than reset; everything else comes from
 the named table. An unknown name fails at render time, listing what the config
 offers.
+
+`init_spatial_times` sets `output.spatial.times` of the init leg alone, so a
+spin-up need not write the monthly fields the run of interest does. It takes
+what PISM takes: a number is an interval in model years (`10` is every ten
+years), or a keyword such as `"yearly"`. Omit it and the init leg writes as
+often as the main leg.
 
 Without `init_start`/`init_end` the run bootstraps directly, exactly as before.
 The mechanism mirrors the ISMIP7 Greenland runner, which uses the same two

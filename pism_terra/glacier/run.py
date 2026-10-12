@@ -442,11 +442,13 @@ def _build_init_leg(
     tied to a particular stretch of the historical record. The leg runs on a
     365-day calendar counted from year 1 (:data:`INIT_TIME_OPTIONS`), the time
     axis such a climatology is written on; the main leg keeps the config's.
+    ``campaign.init_spatial_times`` sets this leg's ``output.spatial.times``.
 
     Parameters
     ----------
     cfg : PismConfig
-        Loaded configuration; only used for option validation context.
+        Loaded configuration: the surface option tables and the
+        ``[campaign]`` keys of the init leg.
     run : Mapping[str, object]
         The fully assembled main-leg option dict. Copied, then re-timed and
         re-pointed at the init outputs; nothing is mutated in place.
@@ -520,6 +522,10 @@ def _build_init_leg(
         init_overrides, _ = filter_overrides_by_config(dict(overrides or {}), init_surface.keys())
         init_surface.update(init_overrides)
         run_init.update(init_surface)
+
+    # A spin-up rarely needs the fields as often as the run of interest.
+    if cfg.campaign.init_spatial_times is not None:
+        run_init["output.spatial.times"] = cfg.campaign.init_spatial_times
 
     if init_climate_file is not None:
         # Only re-point the options the main leg actually carries: which of
