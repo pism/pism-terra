@@ -238,7 +238,8 @@ def test_a_delivered_zip_is_finished_without_a_new_request(tmp_path):
     dataset, request, year = "reanalysis-test", {"variable": ["ssrd", "ssr"]}, "1986"
     nc_path = dl._cds_year_cache_path(dataset, request, year, tmp_path)  # pylint: disable=protected-access
     parts = [_part(tmp_path, "data_0.nc", "ssrd", 0.0), _part(tmp_path, "data_1.nc", "ssr", 1e-6)]
-    with zipfile.ZipFile(tmp_path / f"_cds_{year}.zip", "w") as zf:
+    archive = dl._cds_year_zip_path(nc_path)  # pylint: disable=protected-access
+    with zipfile.ZipFile(archive, "w") as zf:
         for p in parts:
             zf.write(p, p.name)
 
@@ -264,6 +265,8 @@ def test_a_delivered_zip_is_finished_without_a_new_request(tmp_path):
     assert files == [nc_path]
     with xr.open_dataset(nc_path) as merged:
         assert {"ssrd", "ssr"} <= set(merged.data_vars)
+    # Once the year's file exists, the archive and its unpacked parts are gone.
+    assert not archive.exists() and not archive.with_suffix("").exists()
 
 
 class _FlakyCDS:
@@ -391,3 +394,58 @@ def test_a_failed_year_is_an_error_and_only_that_year_is_asked_for_again(tmp_pat
     assert cds.asked == ["1987"]
     assert sorted({int(year) for year in ds["valid_time.year"].values}) == [1986, 1987, 1988]
     assert float(ds["t2m"].sel(valid_time="1987-06-01").mean()) == 1987.0
+
+
+def test_an_archive_left_by_another_request_is_not_used(tmp_path):
+    """
+    Ask CDS for a year even when a different request's archive for that year lies in the directory.
+
+    The archives were named for the year alone. Preparing the ERA5 forcing
+    makes four requests in one directory, and the daily means of every year
+    were "finished" from the archives the monthly means had left there:
+    monthly ``t2m`` and ``tp`` where daily ``t2m`` was asked for.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    year = "1986"
+    monthly = ("reanalysis-era5-single-levels-monthly-means", {"variable": ["2m_temperature", "total_precipitation"]})
+    daily = ("derived-era5-single-levels-daily-statistics", {"variable": ["2m_temperature"]})
+    parts = [_part(tmp_path, "data_0.nc", "t2m", 0.0), _part(tmp_path, "data_1.nc", "tp", 1e-6)]
+    # What the monthly request leaves when its merge has not finished, and what
+    # older versions left behind after every delivery.
+    theirs = dl._cds_year_zip_path(
+        dl._cds_year_cache_path(*monthly, year, tmp_path)
+    )  # pylint: disable=protected-access
+    for leftover in (theirs, tmp_path / f"_cds_{year}.zip"):
+        with zipfile.ZipFile(leftover, "w") as zf:
+            for p in parts:
+                zf.write(p, p.name)
+    mine = dl._cds_year_cache_path(*daily, year, tmp_path)  # pylint: disable=protected-access
+    assert dl._cds_year_zip_path(mine) != theirs  # pylint: disable=protected-access
+
+    class Asked(Exception):
+        """Raised when the client is asked for the year, which is what should happen."""
+
+    class Client:
+        """A client that records being asked."""
+
+        def submit(self, dataset, request):
+            """
+            Stop the test at the request.
+
+            Parameters
+            ----------
+            dataset : str
+                Requested dataset.
+            request : dict
+                The request.
+            """
+            raise Asked(dataset, request["year"])
+
+    with pytest.raises(Asked) as asked:
+        dl._cds_download_years(Client(), *daily, [year], tmp_path, verbose=False)  # pylint: disable=protected-access
+    assert asked.value.args == (daily[0], [year])
+    assert not mine.exists()

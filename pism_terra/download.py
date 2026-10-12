@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tarfile
 import tempfile
 import time
@@ -521,6 +522,29 @@ def _merge_year_parts(matching: Sequence[Path | str], nc_path: Path) -> Path:
     return nc_path
 
 
+def _cds_year_zip_path(nc_path: Path) -> Path:
+    """
+    Name the archive CDS may deliver for one year of one request.
+
+    The name is that of the year's cache file, so it carries the dataset, the
+    variables and the request digest. An archive named for the year alone is
+    picked up by every other request made in the same directory: the daily
+    means of a year were once "finished" from the archive of that year's
+    monthly means.
+
+    Parameters
+    ----------
+    nc_path : Path
+        Cache path of the year, from :func:`_cds_year_cache_path`.
+
+    Returns
+    -------
+    Path
+        ``nc_path`` with a ``.zip`` suffix.
+    """
+    return nc_path.with_suffix(".zip")
+
+
 def _cds_extract_year(zip_path: Path, year: str, dest: Path, nc_path: Path) -> Path:
     """
     Extract a downloaded CDS ZIP for one year and merge its parts.
@@ -546,12 +570,19 @@ def _cds_extract_year(zip_path: Path, year: str, dest: Path, nc_path: Path) -> P
     FileNotFoundError
         If the archive holds no file with the expected suffix.
     """
-    extracted = extract_archive(zip_path, extract_to=dest / f"_cds_{year}", force_overwrite=True, verbose=False)
+    # Unpacked next to the archive, under the same request-specific name.
+    parts_dir = zip_path.with_suffix("")
+    extracted = extract_archive(zip_path, extract_to=parts_dir, force_overwrite=True, verbose=False)
     want_suffix = nc_path.suffix.lower()
     matching = sorted(p for p in extracted if str(p).lower().endswith(want_suffix))
     if not matching:
-        raise FileNotFoundError(f"No '{want_suffix}' files found in archive for year {year}")
-    return _merge_year_parts(matching, nc_path)
+        raise FileNotFoundError(f"No '{want_suffix}' files found in archive for year {year} ({dest})")
+    merged = _merge_year_parts(matching, nc_path)
+    # The archive is kept only to finish a merge that failed; once the year's
+    # file exists it and its parts are just a second and third copy.
+    shutil.rmtree(parts_dir, ignore_errors=True)
+    zip_path.unlink(missing_ok=True)
+    return merged
 
 
 def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: Path) -> Path:
@@ -579,7 +610,7 @@ def _cds_finish_year(remote: _DatastoresRemote, year: str, dest: Path, nc_path: 
     results = remote.get_results()  # blocks until the job is finished
 
     if results.content_type == "application/zip":
-        dl_path = dest / f"_cds_{year}.zip"
+        dl_path = _cds_year_zip_path(nc_path)
     else:
         dl_path = nc_path
 
@@ -661,8 +692,9 @@ def _cds_download_years(
             continue
         # A ZIP that CDS already delivered but whose parts failed to merge
         # (the request itself took the better part of an hour) is finished
-        # here rather than requested again.
-        zip_path = dest / f"_cds_{yr}.zip"
+        # here rather than requested again. Only this request's own archive:
+        # see ``_cds_year_zip_path``.
+        zip_path = _cds_year_zip_path(nc_path)
         if zip_path.exists() and not force_overwrite:
             try:
                 cached.append(_cds_extract_year(zip_path, yr, dest, nc_path))

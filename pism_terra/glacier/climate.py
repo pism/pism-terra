@@ -2445,6 +2445,11 @@ def _patch_from_global(ds: xr.Dataset, ds_global: xr.Dataset) -> xr.Dataset:
     xarray.Dataset
         ``ds`` with NaNs filled wherever ``ds_global`` provides data, and a
         per-variable report of how many cells were filled.
+
+    Raises
+    ------
+    ValueError
+        If the two datasets share no variable.
     """
     ds_global_ = (
         ds_global.rio.write_crs("EPSG:4326")
@@ -2455,7 +2460,17 @@ def _patch_from_global(ds: xr.Dataset, ds_global: xr.Dataset) -> xr.Dataset:
         # equality and a 1-ulp drift would silently drop cells.
         .assign_coords(longitude=ds["longitude"], latitude=ds["latitude"])
     )
-    for name in sorted(set(map(str, ds.data_vars)) & set(map(str, ds_global_.data_vars))):
+    shared = sorted(set(map(str, ds.data_vars)) & set(map(str, ds_global_.data_vars)))
+    if not shared:
+        # Nothing to patch with is not "nothing to patch": the holes would be
+        # left for ``ensure_no_missing`` to fill from the nearest neighbour,
+        # silently. It means the global download is not what was asked for.
+        raise ValueError(
+            f"The global ERA5 download holds {sorted(map(str, ds_global_.data_vars))}, none of the fields to "
+            f"patch ({sorted(map(str, ds.data_vars))}). Its cached files are not what was requested; delete them "
+            "and run again."
+        )
+    for name in shared:
         n_before = int(ds[name].isnull().sum().item())
         if not n_before:
             continue

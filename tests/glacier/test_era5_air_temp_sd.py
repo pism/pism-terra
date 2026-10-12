@@ -318,3 +318,26 @@ def test_era5_writes_air_temp_sd(cds: FakeCDS, tmp_path: Path):
         january = pd.date_range("1990-01-01", "1990-01-31", freq="D")
         assert np.allclose(ds["air_temp_sd"].isel(time=0).values, np.std(daily_temperature(january)), rtol=1e-5)
     assert [dataset for dataset, _ in cds.requests].count(climate.ERA5_DAILY_DATASET) == 1
+
+
+def test_a_global_patch_with_the_wrong_fields_is_an_error():
+    """
+    Refuse to patch from a download that holds none of the fields that need it.
+
+    A cached global geopotential that in fact held temperature and
+    precipitation patched nothing, without a word, and the holes over water
+    were then filled from the nearest land cell.
+    """
+    lat, lon = _grid(AREA, 0.1)
+    surface = np.full((len(lat), len(lon)), 1000.0)
+    surface[0, 0] = np.nan
+    coords = {"latitude": lat, "longitude": lon}
+    ds_geo = _georeferenced(xr.Dataset({"z": (("latitude", "longitude"), surface)}, coords=coords))
+    wrong = monthly_fields().isel(valid_time=0, drop=True)
+
+    with pytest.raises(ValueError, match="none of the fields to patch"):
+        climate._patch_from_global(ds_geo, wrong)  # pylint: disable=protected-access
+
+    right = _georeferenced(xr.Dataset({"z": (("latitude", "longitude"), np.zeros_like(surface))}, coords=coords))
+    patched = climate._patch_from_global(ds_geo, right)  # pylint: disable=protected-access
+    assert float(patched["z"][0, 0]) == 0.0 and not bool(patched["z"].isnull().any())
