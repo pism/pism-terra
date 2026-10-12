@@ -248,7 +248,7 @@ model = "given"
 'atmosphere.elevation_change.temperature_lapse_rate' = 0.0
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = "yes"
-'atmosphere.models' = "given"
+'atmosphere.models' = "given,elevation_change"
 
 [ocean]
 
