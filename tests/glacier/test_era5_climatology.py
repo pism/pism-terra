@@ -227,9 +227,12 @@ def test_the_climatology_does_not_replace_the_transient_forcing(stores: tuple[Pa
         assert ds.sizes["time"] == 12
 
 
-def test_without_a_climatology_the_reference_period_is_downloaded(cds: FakeCDS, tmp_path: Path, monkeypatch):
+def test_without_a_climatology_nothing_is_downloaded(cds: FakeCDS, tmp_path: Path, monkeypatch):
     """
-    Fall back on CDS, for the reference period, when no regional climatology covers the glacier.
+    Refuse, naming the prepare step, when no regional climatology covers the glacier.
+
+    The reference period is thirty years of daily means, one CDS request of
+    hours each; a run must not queue that for one glacier by accident.
 
     Parameters
     ----------
@@ -238,19 +241,17 @@ def test_without_a_climatology_the_reference_period_is_downloaded(cds: FakeCDS, 
     tmp_path : pathlib.Path
         Pytest temporary directory.
     monkeypatch : pytest.MonkeyPatch
-        Pytest fixture replacing the S3 listing and shortening the period.
+        Pytest fixture replacing the S3 listing.
     """
     monkeypatch.setattr(climate, "_list_era5_climatology_stores", lambda bucket, prefix, project_directory=None: [])
-    monkeypatch.setattr(climate, "ERA5_CLIMATOLOGY_YEARS", YEARS)
 
-    out = climate.era5_monthly_mean(glacier_grid(), GLACIER, years=[2000], path=tmp_path, bucket="b", prefix="p")
+    with pytest.raises(FileNotFoundError, match="pism-glacier-prepare --include era5"):
+        climate.era5_monthly_mean(glacier_grid(), GLACIER, years=[2000], path=tmp_path, bucket="b", prefix="p")
+    with pytest.raises(FileNotFoundError, match="no bucket given"):
+        climate.era5_monthly_mean(glacier_grid(), GLACIER, years=[2000], path=tmp_path)
 
-    assert cds.requests
-    assert out.name == f"era5_monthly_mean_{GLACIER}.nc"
-    with xr.open_dataset(out, decode_times=False) as ds:
-        assert ds.sizes["time"] == 12 and ds["time"].attrs["calendar"] == "365_day"
-        assert np.allclose(ds["air_temp_sd"].isel(time=0), january_spread(), rtol=1e-5)
-        assert ds["surface"].dims == ("latitude", "longitude")
+    assert not cds.requests
+    assert not list(tmp_path.glob("*.nc"))
 
 
 def test_climatologies_are_not_listed_as_forcing_stores(monkeypatch):
