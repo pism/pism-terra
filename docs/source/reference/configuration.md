@@ -42,7 +42,7 @@ without generating duplicate stubs.
 Look under `pism_terra/config/` for ready-made TOMLs covering common
 scenarios:
 
-- `rgi_init_maffezzoli.toml` — RGI v7 initialisation with Maffezzoli thickness.
+- `docs_rgi_init_maffezzoli.toml` — RGI v7 initialisation with Maffezzoli thickness.
 - `kitp_greenland.toml` — KITP 1200 m Greenland.
 - `setup_kitp_greenland.toml` — KITP shared-input prep.
 - `era5_*.toml` — ERA5 forcing examples.

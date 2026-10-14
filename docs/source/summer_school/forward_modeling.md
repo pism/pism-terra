@@ -39,7 +39,7 @@ Stage `RGI2000-v7.0-C-01-04374` with the Frank ice thickness
 pism-glacier-stage \
     --output-path frank \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5-mean_frank.toml
+    pism_terra/config/docs_rgi_era5-mean_frank.toml
 ```
 
 and with the Maffezzoli ice thickness
@@ -48,7 +48,7 @@ and with the Maffezzoli ice thickness
 pism-glacier-stage \
     --output-path maffezzoli \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5-mean_maffezzoli.toml
+    pism_terra/config/docs_rgi_era5-mean_maffezzoli.toml
 ```
 
 and with the Millan ice thickness
@@ -57,7 +57,7 @@ and with the Millan ice thickness
 pism-glacier-stage \
     --output-path millan \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5-mean_millan.toml
+    pism_terra/config/docs_rgi_era5-mean_millan.toml
 ```
 
 ## Compare input ice thicknesses
@@ -130,7 +130,7 @@ Generate the run scripts for your local machine using the `debug.j2` template, f
 pism-glacier-run-forward \
     --output-path frank \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5-mean_frank.toml \
+    pism_terra/config/docs_rgi_era5-mean_frank.toml \
     pism_terra/templates/debug.j2
 ```
 
@@ -140,7 +140,7 @@ and then for the Maffezzoli dataset:
 pism-glacier-run-forward \
     --output-path maffezzoli \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5-mean_maffezzoli.toml \
+    pism_terra/config/docs_rgi_era5-mean_maffezzoli.toml \
     pism_terra/templates/debug.j2
 ```
 

@@ -34,7 +34,7 @@ result.
 
 ## Running the sweep
 
-`pism_terra/uq/gris_inverse_penalty.toml` walks η over nine decades:
+`pism_terra/uq/docs_gris_inverse_penalty.toml` walks η over nine decades:
 
 ```toml
 samples = 9
@@ -52,7 +52,7 @@ pism-ismip7-greenland-run-inverse --resolution 1500m \
     --data-path ismip7_input --output-path greenland_lcurve \
     pism_terra/config/ismip7_greenland_2007_inv_calib.toml \
     pism_terra/templates/debug.j2 \
-    pism_terra/uq/gris_inverse_penalty.toml
+    pism_terra/uq/docs_gris_inverse_penalty.toml
 ```
 
 That writes one `output/inverse/inv_*.nc` per member.

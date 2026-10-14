@@ -2,7 +2,7 @@
 
 Runs are described entirely by two artefacts:
 
-1. A **TOML config** (e.g. `pism_terra/config/rgi_init_maffezzoli.toml`),
+1. A **TOML config** (e.g. `pism_terra/config/docs_rgi_init_maffezzoli.toml`),
    validated by the Pydantic models in {py:mod}`pism_terra.config`.
 2. A **Jinja2 template** (e.g. `pism_terra/templates/debug.j2`) that the run
    generator renders into a shell script.

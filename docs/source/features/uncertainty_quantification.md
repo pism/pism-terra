@@ -101,12 +101,11 @@ calls once the posterior (if any) has been folded in.
 ## Generating an ensemble
 
 ```bash
-pism-glacier-run-ensemble \
+pism-glacier-run-forward \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_g.gpkg \
-    pism_terra/config/rgi_init_maffezzoli.toml \
+    pism_terra/config/docs_rgi_init_maffezzoli.toml \
     pism_terra/templates/debug.j2 \
-    pism_terra/uq/debm.toml
+    pism_terra/uq/pdd.toml
 ```
 
 This produces one run script per ensemble member.

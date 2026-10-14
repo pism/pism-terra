@@ -31,7 +31,7 @@ Stage `RGI2000-v7.0-C-01-04374` with the Frank ice thickness
 pism-glacier-stage \
     --output-path frank_inverse \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_inverse_gpbld_frank.toml
+    pism_terra/config/docs_rgi_inverse_gpbld_frank.toml
 ```
 
 and with the Maffezzoli ice thickness
@@ -40,7 +40,7 @@ and with the Maffezzoli ice thickness
 pism-glacier-stage \
     --output-path maffezzoli_inverse \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_inverse_gpbld_maffezzoli.toml
+    pism_terra/config/docs_rgi_inverse_gpbld_maffezzoli.toml
 ```
 
 and with the Millan ice thickness
@@ -49,7 +49,7 @@ and with the Millan ice thickness
 pism-glacier-stage \
     --output-path millan_inverse \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_inverse_gpbld_millan.toml
+    pism_terra/config/docs_rgi_inverse_gpbld_millan.toml
 ```
 
 ## Running the inverse model
@@ -84,7 +84,7 @@ Prepare the run script for the Frank dataset
 pism-glacier-run-inverse \
     --output-path frank_inverse \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_inverse_gpbld_frank.toml \
+    pism_terra/config/docs_rgi_inverse_gpbld_frank.toml \
     pism_terra/templates/debug.j2
 ```
 
@@ -94,7 +94,7 @@ and then for the Maffezzoli dataset:
 pism-glacier-run-inverse \
     --output-path maffezzoli_inverse \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_inverse_gpbld_maffezzoli.toml \
+    pism_terra/config/docs_rgi_inverse_gpbld_maffezzoli.toml \
     pism_terra/templates/debug.j2
 ```
 
@@ -104,7 +104,7 @@ and finally for the Millan dataset:
 pism-glacier-run-inverse \
     --output-path millan_inverse \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_inverse_gpbld_millan.toml \
+    pism_terra/config/docs_rgi_inverse_gpbld_millan.toml \
     pism_terra/templates/debug.j2
 ```
 
