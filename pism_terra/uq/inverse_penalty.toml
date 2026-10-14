@@ -1,0 +1,12 @@
+samples = 1
+method = "factorial"
+
+['inverse.tikhonov.penalty_weight']
+
+choices = [1e-1, 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7]
+distribution = "choices"
+
+['inverse.design.variable']
+
+choices = ['tauc', 'hardav', 'tauc_hardav', 'hardav_tauc']
+distribution = "choices"

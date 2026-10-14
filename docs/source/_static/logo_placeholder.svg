@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" role="img" aria-label="pism-terra (placeholder logo)">
+  <title>pism-terra</title>
+  <defs>
+    <linearGradient id="pt-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1f6feb"/>
+      <stop offset="100%" stop-color="#2da44e"/>
+    </linearGradient>
+  </defs>
+  <!-- Mountain glyph (placeholder for the eventual mark). -->
+  <g transform="translate(8 14)">
+    <polygon points="0,52 22,8 36,30 50,18 64,52" fill="url(#pt-grad)" stroke="#0d1117" stroke-width="2" stroke-linejoin="round"/>
+    <polygon points="22,8 28,18 22,28 16,18" fill="#ffffff" opacity="0.85"/>
+  </g>
+  <!-- Wordmark. -->
+  <g transform="translate(86 0)" font-family="'Helvetica Neue', Arial, sans-serif" font-weight="700" fill="#0d1117">
+    <text x="0" y="48" font-size="32">pism-terra</text>
+    <text x="2" y="68" font-size="12" font-weight="500" fill="#57606a" letter-spacing="0.5">PLACEHOLDER LOGO</text>
+  </g>
+</svg>
