@@ -59,7 +59,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add sandbox tag
-        uses: akhilerm/tag-push-action@v2.2.0
+        uses: akhilerm/tag-push-action@v2.3.0
         with:
           src: ${{ needs.call-docker-ghcr-workflow.outputs.image_uri }}
           dst: ${{ needs.call-docker-ghcr-workflow.outputs.image_repository }}:sandbox
