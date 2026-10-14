@@ -62,8 +62,11 @@ _JINJA = Environment(undefined=StrictUndefined, autoescape=False)
 
 # Dotted PISM flags that name the climate forcing file. The init leg swaps
 # them to ``campaign.init_climate``'s file so a run can spin up on a
-# climatology and then continue on the transient forcing.
+# climatology and then continue on the transient forcing. The lapse-rate
+# correction (``atmosphere.elevation_change.file``) reads the surface of the
+# forcing it corrects, so it follows ``atmosphere.given.file``.
 CLIMATE_FILE_OPTIONS = (
+    "atmosphere.elevation_change.file",
     "atmosphere.given.file",
     "surface.debm_simple.albedo_input.file",
     "surface.debm_simple.std_dev.file",

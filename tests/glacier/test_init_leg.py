@@ -47,7 +47,7 @@ INIT_CLIMATE_FILE = "/in/carra2_monthly_mean_RGI.nc"
 BOOT_FILE = "/in/boot.nc"
 
 
-def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE, **overrides) -> str:
+def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE, uq_extra=None, **overrides) -> str:
     """
     Render one forward run script and return its text.
 
@@ -59,6 +59,8 @@ def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE, **overr
         Config TOML to render from.
     init_climate_file : str or None, optional
         Forcing staged for the init leg.
+    uq_extra : dict or None, optional
+        Staged files on top of the ones every render passes.
     **overrides
         Command-line overrides, e.g. ``init_start="0001-01-01"``.
 
@@ -81,6 +83,7 @@ def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE, **overr
             "surface.debm_simple.std_dev.file": CLIMATE_FILE,
             "surface.debm_simple.albedo_input.file": CLIMATE_FILE,
             "surface.force_to_thickness.file": BOOT_FILE,
+            **(uq_extra or {}),
         },
         sample=0,
         init_climate_file=init_climate_file,
@@ -358,6 +361,30 @@ def test_without_init_spatial_times_both_legs_write_alike(tmp_path):
 
     assert f"-output.spatial.times {main_times} " in init
     assert f"-output.spatial.times {main_times} " in main
+
+
+def test_the_lapse_rate_correction_reads_the_init_climate(tmp_path):
+    """
+    Point ``atmosphere.elevation_change.file`` at the climate each leg runs on.
+
+    The correction reads the surface of the forcing it corrects. The init leg
+    used to keep the transient forcing there while ``atmosphere.given.file``
+    read the climatology.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    config = Path("tests/config/test_init_surface_model.toml")
+    assert "elevation_change" in load_config(config).atmosphere.selected()["atmosphere.models"]
+
+    init, main = legs(render(tmp_path, config=config, uq_extra={"atmosphere.elevation_change.file": CLIMATE_FILE}))
+
+    assert f"-atmosphere.elevation_change.file {INIT_CLIMATE_FILE}" in init
+    assert f"-atmosphere.given.file {INIT_CLIMATE_FILE}" in init
+    assert f"-atmosphere.elevation_change.file {CLIMATE_FILE}" in main
+    assert f"-atmosphere.given.file {CLIMATE_FILE}" in main
 
 
 def test_an_unknown_init_surface_model_is_rejected(tmp_path):

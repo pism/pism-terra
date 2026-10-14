@@ -45,8 +45,9 @@ so they never collide with the main leg's.
 
 `init_climate` is optional and applies to the init leg alone: it names a second
 {data}`pism_terra.glacier.stage.CLIMATE` key, staged alongside the main forcing
-and substituted into `atmosphere.given.file`, `surface.debm_simple.std_dev.file`,
-`surface.debm_simple.albedo_input.file` and `surface.pdd.std_dev.file`. A
+and substituted into `atmosphere.given.file`, `atmosphere.elevation_change.file`,
+`surface.debm_simple.std_dev.file`, `surface.debm_simple.albedo_input.file` and
+`surface.pdd.std_dev.file`. A
 monthly climatology is the usual choice: PISM cycles it, so the spin-up is not
 pinned to a particular stretch of the historical record and its length is free.
 Omit `init_climate` to spin up on the same forcing as the main leg.
