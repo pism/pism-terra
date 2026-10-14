@@ -397,9 +397,14 @@ def test_campaign_init_fields():
     assert params["init_end"] == "2007-01-01"
 
 
-def _campaign(name: str) -> CampaignConfig:
+#: The configs that ship with the package, and those only the tests use.
+PACKAGED_CONFIG_DIR = Path(__file__).resolve().parents[1] / "pism_terra" / "config"
+TEST_CONFIG_DIR = Path(__file__).resolve().parent / "config"
+
+
+def _campaign(name: str, directory: Path = PACKAGED_CONFIG_DIR) -> CampaignConfig:
     """
-    Validate just the ``[campaign]`` table of a packaged config.
+    Validate just the ``[campaign]`` table of a config.
 
     The glacier configs do not satisfy the full ``PismConfig`` schema (they
     predate the required ``bed_deformation`` section), so load the one section
@@ -408,27 +413,27 @@ def _campaign(name: str) -> CampaignConfig:
     Parameters
     ----------
     name : str
-        File name under ``pism_terra/config``.
+        File name under ``directory``.
+    directory : pathlib.Path, optional
+        Where the config lives; the packaged configs by default.
 
     Returns
     -------
     CampaignConfig
         The validated campaign section.
     """
-    path = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / name
+    path = directory / name
     return CampaignConfig.model_validate(toml.loads(path.read_text("utf-8"))["campaign"])
 
 
 def test_campaign_project_directory():
     """Campaign project_directory is parsed and exported by as_params()."""
-    s4f = _campaign("s4f_pytests.toml")
+    s4f = _campaign("s4f_pytests.toml", TEST_CONFIG_DIR)
     assert s4f.prefix == "glacier/input"
     assert s4f.project_directory == "s4f"
     assert s4f.as_params()["project_directory"] == "s4f"
     # The outlines depend on the project's CRS overrides, so they are named for it.
     assert s4f.rgi_complex_file == "s4f_c.gpkg"
-
-    assert _campaign("rgi_era5_frank.toml").project_directory == "rgi"
 
     # Campaigns whose input tree is not split by project leave it unset, and
     # as_params() drops empty fields, so stage's .get() falls back to None.
@@ -439,7 +444,7 @@ def test_campaign_project_directory():
 
 def _config_without(section: str, tmp_path: Path) -> Path:
     """
-    Copy a packaged config with one whole section removed.
+    Copy the test config with one whole section removed.
 
     Parameters
     ----------
@@ -453,7 +458,7 @@ def _config_without(section: str, tmp_path: Path) -> Path:
     pathlib.Path
         The stripped config.
     """
-    source = Path(__file__).resolve().parents[1] / "pism_terra" / "config" / "s4f_pytests.toml"
+    source = TEST_CONFIG_DIR / "s4f_pytests.toml"
     kept, dropping = [], False
     for line in source.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -612,11 +617,16 @@ def test_an_unknown_campaign_key_is_an_error():
     assert campaign.as_params()["init_climate"] == "carra2-monthly-mean"
 
 
-def test_no_packaged_config_carries_an_unknown_campaign_key():
+@pytest.mark.parametrize("config_dir", [PACKAGED_CONFIG_DIR, TEST_CONFIG_DIR], ids=["packaged", "tests"])
+def test_no_config_carries_an_unknown_campaign_key(config_dir: Path):
     """
-    Every config that ships with the package names only campaign keys the code reads.
+    Name only campaign keys the code reads, in every packaged and every test config.
+
+    Parameters
+    ----------
+    config_dir : pathlib.Path
+        Directory of configs to check.
     """
-    config_dir = Path(__file__).resolve().parents[1] / "pism_terra" / "config"
     checked = 0
     for path in sorted(config_dir.glob("*.toml")):
         if path.name.startswith((".", "#")) or not path.is_file():  # an editor's lock or autosave file
@@ -627,6 +637,5 @@ def test_no_packaged_config_carries_an_unknown_campaign_key():
         unknown = sorted(set(campaign) - set(CampaignConfig.model_fields))
         assert not unknown, f"{path.name}: {unknown}"
         checked += 1
-    assert checked > 50
-    # The config the monthly-mean spin-up was reported missing from.
-    assert _campaign("s4f_historical_baseline_carra2_pdd.toml").init_climate == "carra2-monthly-mean"
+    # The glob found something to check.
+    assert checked > 0

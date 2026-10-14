@@ -30,7 +30,7 @@ import pytest
 from pism_terra.config import load_config
 from pism_terra.glacier.run import _render_forward_run
 
-CONFIG = Path("pism_terra/config/s4f_pytests.toml")
+CONFIG = Path("tests/config/s4f_pytests.toml")
 TEMPLATE = Path("pism_terra/templates/debug.j2")
 RGI_ID = "RGI2000-v7.0-C-01-04374"
 
@@ -304,7 +304,7 @@ def test_a_file_only_the_init_surface_model_reads_is_staged(tmp_path):
     tmp_path : pathlib.Path
         Pytest-provided scratch directory.
     """
-    config = Path("pism_terra/config/s4f_historical_baseline_carra2_pdd.toml")
+    config = Path("tests/config/test_init_surface_model.toml")
     cfg = load_config(config)
     assert "surface.force_to_thickness.file" not in cfg.surface.selected()
     init_model = cfg.campaign.init_surface_model
