@@ -38,9 +38,10 @@ comparable with the RACMO/MAR means over the same years.
 
 Staging crops the glacier's box out of it and writes
 `carra2_monthly_mean_<rgi_id>.nc` or `era5_monthly_mean_<rgi_id>.nc`, next to
-and never in place of the transient forcing. When no regional ERA5 climatology
-covers the glacier, the reference period is downloaded from CDS for that
-glacier and averaged, which takes one request per year for the daily means.
+and never in place of the transient forcing. There is no per-glacier download
+of the ERA5 climatology: the reference period is thirty years of daily means,
+one CDS request of several hours each. Staging a glacier that no regional
+climatology covers fails and names the prepare step that builds it.
 
 `air_temp_sd` is averaged like every other field, so it stays the typical
 *within-month* temperature variability — what PISM's positive-degree-day scheme

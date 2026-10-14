@@ -3703,12 +3703,12 @@ def era5_monthly_mean(
     ``era5_monthly_mean_<rgi_id>.nc``, on ERA5's latitude/longitude grid like
     the transient forcing; PISM regrids it onto the model grid.
 
-    Two sources are tried, cheapest first. When ``bucket`` is passed and a
-    regional climatology written by :func:`prepare_era5_monthly_mean` covers
-    the glacier, its box is cut out of it and nothing is requested from CDS.
-    Otherwise the reference period is downloaded for the glacier's box
-    (:func:`era5_fields`) and averaged here, which is slow: the daily means
-    behind ``air_temp_sd`` take one request per year.
+    The box is cut out of the regional climatology
+    :func:`prepare_era5_monthly_mean` wrote, found through ``bucket``.
+    There is no download for one glacier: the reference period is thirty
+    years of daily means, one CDS request of hours each, which no run should
+    queue by accident. Without a climatology that covers the glacier this
+    fails and names the prepare step that builds it.
 
     Parameters
     ----------
@@ -3722,19 +3722,23 @@ def era5_monthly_mean(
         climatology does not depend on the span of the run. Present so the
         climate builders share a signature.
     dataset : str, default ``"reanalysis-era5-land-monthly-means"``
-        CDS dataset of the monthly means, used when no regional climatology
-        covers the glacier.
+        Accepted and ignored; present so the ERA5 builders share a signature.
     path : str or pathlib.Path, default ``"."``
         Output directory. Receives ``era5_monthly_mean_<rgi_id>.nc``.
     **kwargs
         ``bucket``, ``prefix`` and ``project_directory`` locate the regional
-        climatologies; ``force_overwrite`` rewrites an existing file. All of
-        them are forwarded to :func:`download_request` when CDS is asked.
+        climatologies; ``force_overwrite`` rewrites an existing file.
 
     Returns
     -------
     pathlib.Path
         Path to the written NetCDF.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no regional climatology covers the glacier, or ``bucket`` is not
+        given.
 
     Notes
     -----
@@ -3761,26 +3765,22 @@ def era5_monthly_mean(
         print(f"Using cached {out_file}")
         return out_file
 
+    _ = dataset
     store = None
     bucket = kwargs.get("bucket")
+    prefix, project_directory = kwargs.get("prefix") or "", kwargs.get("project_directory")
     if bucket is not None:
-        store = find_era5_climatology_store(
-            target_grid, bucket, kwargs.get("prefix") or "", kwargs.get("project_directory"), rgi_id=rgi_id
-        )
-    if store is not None:
-        ds = _crop_to_grid(store, target_grid)[list(ERA5_VARIABLES)].load()
-    else:
+        store = find_era5_climatology_store(target_grid, bucket, prefix, project_directory, rgi_id=rgi_id)
+    if store is None:
+        where = f"s3://{bucket}/{project_prefix(prefix, project_directory)}/climate/" if bucket else "no bucket given"
         period = list(ERA5_CLIMATOLOGY_YEARS)
-        print(
-            f"No regional ERA5 climatology covers this glacier; downloading {period[0]}-{period[-1]} from CDS "
-            "instead. This is slow: the daily means take one request per year."
+        raise FileNotFoundError(
+            f"No regional ERA5 monthly climatology ({ERA5_CLIMATOLOGY_STEM}_<region>.zarr) covers glacier {rgi_id} "
+            f"({where}). Build it with `pism-glacier-prepare --include era5 <setup file> <output path>` and upload "
+            f"it; it is averaged from the regional ERA5 store over {period[0]}-{period[-1]}. It is not downloaded "
+            "per glacier: that would be one CDS request of several hours for each of those years."
         )
-        bounds, dst_crs = _target_bounds(target_grid)
-        t = Transformer.from_crs(dst_crs, "EPSG:4326")
-        area = pad_area(t.transform_bounds(*bounds), pad=ERA5_LAND_PAD)
-        print(f"Bounding box {area}")
-        series = era5_fields(area, period, path, rgi_id, dataset=dataset, **kwargs)
-        ds = monthly_climatology(series[list(ERA5_VARIABLES)], period, "ERA5 download").load()
+    ds = _crop_to_grid(store, target_grid)[list(ERA5_VARIABLES)].load()
 
     ds = stamp_monthly_climatology_axis(ds)
     ds.attrs["Conventions"] = "CF-1.8"
