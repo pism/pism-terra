@@ -25,6 +25,7 @@ import pandas as pd
 
 from pism_terra.glacier.importance_sampling import load_uq_parameters, setup_logging
 from pism_terra.glacier.usgs import find_model_files, rgi_output_dir
+from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.sensitivity import (
     DEFAULT_N_RESAMPLES,
     DEFAULT_TARGET,
@@ -184,7 +185,9 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         "--freq", choices=sorted(FREQUENCIES), default="yearly", help="Average the series to this frequency first."
     )
     parser.add_argument("--n-resamples", type=int, default=DEFAULT_N_RESAMPLES, help="Bootstrap resamples per instant.")
-    parser.add_argument("--n-jobs", type=int, default=None, help="Worker processes; default all CPUs.")
+    add_ntasks_argument(
+        parser, default=None, help_text="Worker processes; default all CPUs.", dest="n_jobs", deprecated=("--n-jobs",)
+    )
     parser.add_argument("--seed", type=int, default=0, help="Bootstrap seed.")
     parser.add_argument(
         "--min-members", type=int, default=8, help="Skip complexes with fewer processed members than this."

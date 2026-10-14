@@ -273,3 +273,36 @@ def test_plot_window_reaches_the_pipeline(tmp_path, monkeypatch):
     seen.clear()
     ub.main(["--output-path", str(tmp_path)])
     assert seen["plot_years"] == (None, None)
+
+
+def test_skipped_glaciers_do_not_reach_the_benchmark(tmp_path, usgs_release, usgs_rgi, monkeypatch, scalar_file):
+    """
+    Leave a skipped glacier out of the match table and the output, not just unmatched.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    usgs_release : dict of str to Path
+        The synthetic release directories.
+    usgs_rgi : geopandas.GeoDataFrame
+        The two synthetic outlines.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to replace the downloads and the skip list.
+    scalar_file : callable
+        Writes a synthetic per-glacier scalar file.
+    """
+    monkeypatch.setattr(ub, "download_usgs_benchmark", lambda data_dir, force_overwrite=False: usgs_release)
+    monkeypatch.setattr(ub, "SKIPPED_GLACIERS", ("Bar", "Baz"))
+    rgi_file = tmp_path / "rgi.gpkg"
+    usgs_rgi.to_file(rgi_file, driver="GPKG")
+    run_dir = tmp_path / "runs" / "RGI2000-v7.0-C-01-00001" / "output" / "processed_scalar"
+    run_dir.mkdir(parents=True)
+    scalar_file(run_dir / "scalar_G_g500m_RGI2000-v7.0-C-01-00001_id_0_2000-01-01_2003-01-01.nc")
+    output_dir = tmp_path / "out"
+
+    argv = [str(tmp_path / "runs"), "--data-path", str(tmp_path), "--output-path", str(output_dir)]
+    assert ub.cli([*argv, "--rgi-glacier-file", str(rgi_file)]) == 0
+
+    matches = pd.read_csv(output_dir / "usgs_benchmark_rgi_match.csv")
+    assert matches["glacier"].tolist() == ["Foo"]

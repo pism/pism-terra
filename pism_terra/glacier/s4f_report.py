@@ -43,6 +43,7 @@ from pism_terra.glacier import (
 from pism_terra.glacier.usgs import DEFAULT_DATA_DIR as DEFAULT_USGS_DATA_DIR
 from pism_terra.glacier.usgs import plot_year
 from pism_terra.likelihood import REDUCTIONS
+from pism_terra.ntasks_option import add_ntasks_argument
 
 logger = logging.getLogger(__name__)
 
@@ -712,7 +713,13 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     parser.add_argument(
         "--no-bootstrap", action="store_true", default=False, help="Importance sampling: skip the RMSE ranking."
     )
-    parser.add_argument("--n-jobs", type=int, default=1, help="USGS tools and sensitivity indices: worker processes.")
+    add_ntasks_argument(
+        parser,
+        default=1,
+        help_text="USGS tools and sensitivity indices: worker processes.",
+        dest="n_jobs",
+        deprecated=("--n-jobs",),
+    )
     parser.add_argument(
         "--target", default=sensitivity_indices.DEFAULT_TARGET, help="Sensitivity indices: variable to analyze."
     )

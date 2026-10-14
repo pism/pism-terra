@@ -696,7 +696,12 @@ def process_file_spatial(
         for var in extra.data_vars:
             sub[var] = extra[var]
         sub.attrs["basin"] = str(name)
-        sub = sub.rio.write_crs(crs)
+        # ``dst_crs``, not the optional ``crs`` override: with no override
+        # that is ``None`` and rioxarray looks for a CRS the subset already
+        # carries, which masking strips from every float field. An integer
+        # field used to carry it through; PISM writing ``mask`` as a float
+        # left none.
+        sub = sub.rio.write_crs(dst_crs)
         path = outdir / f"spatial_{name}_{stem}.nc"
         path.unlink(missing_ok=True)
         subs.append((path, sub))

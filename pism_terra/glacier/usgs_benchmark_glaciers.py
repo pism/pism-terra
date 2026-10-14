@@ -59,6 +59,7 @@ from pism_terra.glacier.usgs import (
     RHO_WATER,
     SEASON_DATE_COLUMNS,
     SKILL_COLUMNS,
+    SKIPPED_GLACIERS,
     SPECIFIC_LABEL,
     SPECIFIC_UNITS,
     apply_plot_years,
@@ -85,6 +86,7 @@ from pism_terra.glacier.usgs import (
 )
 from pism_terra.kitp.analyze import REGION_DIM, rc_params, with_region_labels
 from pism_terra.log import setup_logging
+from pism_terra.ntasks_option import add_ntasks_argument
 
 logger = logging.getLogger("pism_terra.glacier.usgs_benchmark_glaciers")
 
@@ -884,7 +886,7 @@ def run_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     paths = download_usgs_benchmark(data_dir, force_overwrite=force_overwrite)
-    sites = load_sites(paths["sites"])
+    sites = load_sites(paths["sites"], skip=SKIPPED_GLACIERS)
     rgi = load_rgi_glaciers(data_dir, rgi_file=rgi_file, force_overwrite=force_overwrite)
     matches = match_rgi_ids(sites, rgi)
 
@@ -1045,11 +1047,12 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         default=None,
         help="Constant one-sigma uncertainty (m w.e.) to draw as error bars when the CSVs carry none.",
     )
-    parser.add_argument(
-        "--n-jobs",
-        type=int,
+    add_ntasks_argument(
+        parser,
         default=4,
-        help="Worker processes for reading the model files; 1 runs serially.",
+        help_text="Worker processes for reading the model files; 1 runs serially.",
+        dest="n_jobs",
+        deprecated=("--n-jobs",),
     )
     parser.add_argument(
         "--plot-start",

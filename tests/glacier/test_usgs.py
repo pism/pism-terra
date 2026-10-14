@@ -238,3 +238,27 @@ def test_apply_plot_years_leaves_an_absent_end_alone():
     left, right = ax.get_xlim()
     assert left == 1986.0 and right == 2010.0
     plt.close("all")
+
+
+def test_sites_of_skipped_glaciers_are_left_out(usgs_release):
+    """
+    Drop the named glaciers and keep the rest; by default keep all.
+
+    Parameters
+    ----------
+    usgs_release : dict of str to Path
+        The synthetic release directories.
+    """
+    assert usgs.load_sites(usgs_release["sites"], skip=["Bar"])["Glacier"].tolist() == ["Foo", "Foo", "Foo", "Baz"]
+    assert len(usgs.load_sites(usgs_release["sites"])) == 5
+
+
+def test_the_benchmarks_skip_the_glaciers_snow4flow_does_not_model():
+    """
+    Leave South Cascade and Sperry out, and with them RGI region 2.
+
+    Both lie outside the Snow4Flow regions, so no run ever covers them; the
+    other glaciers of the release are all in Alaska.
+    """
+    assert usgs.SKIPPED_GLACIERS == ("SouthCascade", "Sperry")
+    assert usgs.RGI_REGIONS == ("01_alaska",)

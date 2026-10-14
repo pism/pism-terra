@@ -341,7 +341,13 @@ def test_cli_end_to_end(tmp_path, stake_release, usgs_rgi, monkeypatch):
     processed = runs / "RGI2000-v7.0-C-01-00001" / "output" / "processed_spatial"
     processed.mkdir(parents=True)
     spatial_file(processed / "spatial_g100m_RGI2000-v7.0-C-01-00001_id_0_2000-01-01_2002-01-01_TM.nc")
-    assert len(ubs.find_spatial_files(runs)) == 3
+    # An init leg is told from the span in its name and never opened, so one
+    # that cannot be read does no harm. A leg of the measured years that cannot
+    # be read costs that run only.
+    (spatial / "spatial_g100m_RGI2000-v7.0-C-01-00001_id_0_0001-01-01_0501-01-01.nc").write_bytes(b"not netCDF")
+    truncated = spatial_file(spatial / "spatial_g100m_RGI2000-v7.0-C-01-00001_id_0_uq_2_2000-01-01_2002-01-01.nc")
+    truncated.write_bytes(truncated.read_bytes()[: truncated.stat().st_size // 2])
+    assert len(ubs.find_spatial_files(runs)) == 5
     output_dir = tmp_path / "out"
 
     argv = [
@@ -358,7 +364,7 @@ def test_cli_end_to_end(tmp_path, stake_release, usgs_rgi, monkeypatch):
     matches = pd.read_csv(output_dir / "usgs_benchmark_stakes_rgi_match.csv").set_index("glacier")
     assert matches.loc["Foo", "rgi_id"] == GLACIER_A
     assert matches.loc["Foo", "n_stakes"] == 2 and matches.loc["Foo", "n_sampled"] == 2
-    assert matches.loc["Foo", "n_runs"] == 2  # the annual file is skipped
+    assert matches.loc["Foo", "n_runs"] == 2  # the annual, init and unreadable files are skipped
     glacier_dir = output_dir / GLACIER_A
     stem = f"usgs_benchmark_stakes_Foo_{GLACIER_A}"
     assert matches.loc["Foo", "figure"] == str(glacier_dir / f"{stem}.png")
@@ -468,3 +474,45 @@ def test_plot_window_reaches_the_pipeline(tmp_path, monkeypatch):
     seen.clear()
     ubs.main(["--output-path", str(tmp_path)])
     assert seen["plot_years"] == (None, None)
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("spatial_g200m_RGI2000-v7.0-C-01-03383_id_0_uq_0_0001-01-01_0501-01-01.nc", True),  # init leg
+        ("spatial_g200m_RGI2000-v7.0-C-01-03383_id_0_uq_0_1900-01-01_1966-04-15.nc", True),  # ends on the day
+        ("spatial_g200m_RGI2000-v7.0-C-01-03383_id_0_uq_0_1900-01-01_1966-04-16.nc", False),
+        ("spatial_g200m_RGI2000-v7.0-C-01-03383_id_0_uq_0_1986-01-01_2025-01-01.nc", False),  # main leg
+        ("spatial_without_dates.nc", False),  # no span to judge by: kept, and opened
+    ],
+)
+def test_a_leg_that_ends_before_the_measurements_is_told_by_its_name(name: str, expected: bool):
+    """
+    The span in the file name decides, with PISM's exclusive end.
+
+    Parameters
+    ----------
+    name : str
+        File name.
+    expected : bool
+        Whether the file ends before the first measurement.
+    """
+    assert ubs.ends_before(Path("spatial") / name, pd.Timestamp("1966-04-15")) is expected
+
+
+def test_first_measurement_is_the_earliest_date_in_any_table():
+    """
+    Every date column of every table counts, and missing tables and dates do not.
+    """
+    stakes = pd.DataFrame(
+        {
+            "site": ["A", "B"],
+            "spring_date": pd.to_datetime(["1967-05-01", "1966-04-15"]),
+            "fall_date": pd.to_datetime(["1967-09-01", None]),
+        }
+    )
+    sub = pd.DataFrame({"Date1": pd.to_datetime(["1970-06-01"]), "Date2": pd.to_datetime(["1970-07-01"])})
+
+    assert ubs.first_measurement([stakes, None, sub]) == pd.Timestamp("1966-04-15")
+    assert ubs.first_measurement([None]) is None
+    assert ubs.first_measurement([pd.DataFrame({"site": ["A"]})]) is None

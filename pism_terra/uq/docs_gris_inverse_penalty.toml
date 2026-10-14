@@ -1,0 +1,9 @@
+# Used by the documentation: docs/source/greenland/inversion.md.
+# Keep it in step with that page; tests/test_docs_configs.py checks that it exists.
+
+samples = 9
+
+['inverse.tikhonov.penalty_weight']
+
+choices = [1e-1, 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7]
+distribution = "choices"

@@ -73,6 +73,7 @@ from pism_terra.download import carra_download_request
 from pism_terra.glacier.climate import CARRA2_PROJ
 from pism_terra.glacier.rgi import prepare_rgi_region
 from pism_terra.log import setup_logging
+from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.vector import get_glacier_from_rgi_id
 
 logger = logging.getLogger(__name__)
@@ -832,7 +833,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--start", type=int, default=FIRST_YEAR, help="First year.")
     parser.add_argument("--end", type=int, default=LAST_YEAR, help="Last year (inclusive).")
     parser.add_argument("--margin-km", type=float, default=DEFAULT_MARGIN_KM, help="Margin around the outline.")
-    parser.add_argument("--max-workers", type=int, default=4, help="Concurrent CDS requests.")
+    add_ntasks_argument(
+        parser, default=4, help_text="Concurrent CDS requests.", dest="max_workers", deprecated=("--max-workers",)
+    )
     parser.add_argument("--force-overwrite", action="store_true", help="Re-download and rewrite.")
     parser.add_argument("RGI_ID", help="RGI7 id, e.g. RGI2000-v7.0-C-01-12784.")
     args = parser.parse_args(list(argv) if argv is not None else None)

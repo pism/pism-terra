@@ -29,6 +29,7 @@ from typing import Sequence
 import xarray as xr
 from tqdm.auto import tqdm
 
+from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.workflow import check_dataset_lazy
 
 
@@ -150,11 +151,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = "Recursively validate NetCDF files under a directory."
-    parser.add_argument(
-        "--workers",
-        help="Number of parallel worker threads.",
-        type=int,
+    add_ntasks_argument(
+        parser,
         default=8,
+        help_text="Number of parallel worker threads.",
+        dest="workers",
+        deprecated=("--workers",),
     )
     parser.add_argument(
         "--pattern",

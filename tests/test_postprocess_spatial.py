@@ -524,3 +524,51 @@ def test_process_file_spatial_follows_the_input_conventions(tmp_path, basins, ou
         assert np.isnan(out["thk"].values).any() and np.isnan(out["ice_mass"].values).any()
     finally:
         out.close()
+
+
+@pytest.mark.parametrize("mask_dtype", ["int8", "float32"])
+def test_process_file_spatial_keeps_the_crs_of_a_pism_file(tmp_path, basins, outlinefile, mask_dtype):
+    """
+    A file georeferenced the way PISM writes it is processed whatever the type of ``mask``.
+
+    PISM names its grid mapping ``mapping`` and points every field at it; it
+    has no rioxarray ``spatial_ref``. Masking a float field to a basin drops
+    that pointer, so the basin files used to find their CRS only through a
+    field that is not masked -- an integer one. When PISM wrote ``mask`` as a
+    float there was none left and the run failed with ``MissingCRS``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest per-test temporary directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file_spatial``.
+    mask_dtype : str
+        Type ``mask`` is stored as.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+    from pyproj import CRS as ProjCRS  # pylint: disable=import-outside-toplevel
+
+    ds = synthetic_greenland(basins, n_time=2)
+    crs = ProjCRS(ds.rio.crs)
+    ds = ds.drop_vars("spatial_ref")
+    ds["mask"] = ds["mask"].astype(mask_dtype)
+    ds["mapping"] = xr.DataArray(np.int32(0), attrs={**crs.to_cf(), "spatial_ref": crs.to_wkt()})
+    for name in ("thk", "ice_mass", "mask"):
+        ds[name].encoding.pop("grid_mapping", None)
+        ds[name].attrs["grid_mapping"] = "mapping"
+    infile = tmp_path / "spatial_pism.nc"
+    ds.to_netcdf(infile, engine="h5netcdf")
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        written = process_file_spatial(infile, tmp_path / "out", outlinefile, client)
+
+    assert len(written) == len(basins)
+    out = xr.open_dataset(written[0], decode_times=False, decode_timedelta=False, decode_coords="all")
+    try:
+        assert out.rio.crs == crs
+        assert out["mask"].dtype == np.dtype(mask_dtype)
+    finally:
+        out.close()

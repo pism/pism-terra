@@ -18,7 +18,7 @@ velocities, then projects everything onto the run's target grid.
 ```bash
 pism-glacier-stage \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5_maffezzoli_1year.toml
+    pism_terra/config/docs_rgi_era5_maffezzoli_1year.toml
 ```
 
 You'll get a `<RGI_ID>/input/` directory with one NetCDF per input.
@@ -26,13 +26,13 @@ You'll get a `<RGI_ID>/input/` directory with one NetCDF per input.
 ## 3. Generate the run script
 
 ```bash
-pism-glacier-run-forwad \
+pism-glacier-run-forward \
     RGI2000-v7.0-C-01-04374 \
-    pism_terra/config/rgi_era5_maffezzoli_1year.toml \
+    pism_terra/config/docs_rgi_era5_maffezzoli_1year.toml \
     pism_terra/templates/debug.j2
 ```
 
-This produces a shell script under `<RGI_ID>/run/` that you can launch
+This produces a shell script under `<RGI_ID>/run_scripts/` that you can launch
 directly (debug template) or submit to a scheduler (Slurm / PBS templates).
 
 ## 4. Post-process

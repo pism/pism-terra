@@ -30,7 +30,7 @@ import pytest
 from pism_terra.config import load_config
 from pism_terra.glacier.run import _render_forward_run
 
-CONFIG = Path("pism_terra/config/s4f_pytests.toml")
+CONFIG = Path("tests/config/s4f_pytests.toml")
 TEMPLATE = Path("pism_terra/templates/debug.j2")
 RGI_ID = "RGI2000-v7.0-C-01-04374"
 
@@ -47,7 +47,7 @@ INIT_CLIMATE_FILE = "/in/carra2_monthly_mean_RGI.nc"
 BOOT_FILE = "/in/boot.nc"
 
 
-def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE) -> str:
+def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE, **overrides) -> str:
     """
     Render one forward run script and return its text.
 
@@ -59,6 +59,8 @@ def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE) -> str:
         Config TOML to render from.
     init_climate_file : str or None, optional
         Forcing staged for the init leg.
+    **overrides
+        Command-line overrides, e.g. ``init_start="0001-01-01"``.
 
     Returns
     -------
@@ -71,7 +73,7 @@ def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE) -> str:
         TEMPLATE,
         None,
         path=tmp_path,
-        config_cli={"resolution": "1000m"},
+        config_cli={"resolution": "1000m", **overrides},
         uq={
             "input.file": BOOT_FILE,
             "grid.file": "/in/grid.nc",
@@ -289,6 +291,75 @@ def test_swapping_the_surface_model_keeps_the_staged_files(tmp_path):
     assert "-surface.debm_simple.std_dev.file none" not in init
 
 
+def test_a_file_only_the_init_surface_model_reads_is_staged(tmp_path):
+    """
+    Fill in the force-to-thickness file when only the init leg has forcing.
+
+    The staged files are filtered against the main leg's options. With a main
+    leg on ``pdd`` and an init leg on ``pdd,forcing`` that dropped the boot
+    file, and the init leg ran with ``-surface.force_to_thickness.file none``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    config = Path("tests/config/test_init_surface_model.toml")
+    cfg = load_config(config)
+    assert "surface.force_to_thickness.file" not in cfg.surface.selected()
+    init_model = cfg.campaign.init_surface_model
+    assert init_model is not None
+    assert "surface.force_to_thickness.file" in cfg.surface.options[init_model]
+
+    init, main = legs(render(tmp_path, config=config))
+
+    assert f"-surface.force_to_thickness.file {BOOT_FILE}" in init
+    assert "-surface.force_to_thickness.file none" not in init
+    assert "-surface.force_to_thickness" not in main
+
+
+def test_the_init_leg_can_write_spatial_fields_less_often(tmp_path):
+    """
+    Set ``output.spatial.times`` of the init leg alone from ``campaign.init_spatial_times``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    main_times = _CFG.reporting["output.spatial.times"]
+    assert main_times != 10
+    config = tmp_path / "sparse_init.toml"
+    config.write_text(
+        CONFIG.read_text(encoding="utf-8").replace("[campaign]\n", "[campaign]\ninit_spatial_times = 10\n", 1),
+        encoding="utf-8",
+    )
+    assert load_config(config).campaign.init_spatial_times == 10
+
+    init, main = legs(render(tmp_path, config=config))
+
+    assert "-output.spatial.times 10 " in init
+    assert f"-output.spatial.times {main_times} " in main
+
+
+def test_without_init_spatial_times_both_legs_write_alike(tmp_path):
+    """
+    Keep the config's ``output.spatial.times`` in the init leg when the key is unset.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    assert _CFG.campaign.init_spatial_times is None
+    main_times = _CFG.reporting["output.spatial.times"]
+
+    init, main = legs(render(tmp_path))
+
+    assert f"-output.spatial.times {main_times} " in init
+    assert f"-output.spatial.times {main_times} " in main
+
+
 def test_an_unknown_init_surface_model_is_rejected(tmp_path):
     """
     Name the available surface models rather than failing inside PISM.
@@ -349,3 +420,78 @@ def test_the_run_toml_is_no_longer_written(tmp_path):
     # that legitimately appears in the script; only the legacy TOML-reading
     # command must be gone.
     assert "pism-glacier-postprocess " not in script
+
+
+def test_the_command_line_moves_the_init_leg(tmp_path):
+    """
+    Let ``--init-start`` and ``--init-end`` replace the config's init span.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    init, main = legs(render(tmp_path, init_start="0005-01-01", init_end="0105-01-01"))
+
+    assert "-time.start 0005-01-01" in init and "-time.end 0105-01-01" in init
+    # The init products are named for the span that was run, and the main leg restarts from them.
+    tag = f"g1000m_{RGI_ID}_id_0_0005-01-01_0105-01-01"
+    assert f"state_{tag}.nc" in init and "-input.file" in main and f"state_{tag}.nc" in main
+    # The main leg keeps the config's own span.
+    assert f"-time.start {MAIN_START}" in main and f"-time.end {MAIN_END}" in main
+
+
+def test_one_bound_from_the_command_line_keeps_the_other_from_the_config(tmp_path):
+    """
+    Override one end of the init span and take the other from ``[campaign]``.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    init, _ = legs(render(tmp_path, init_end="0777-01-01"))
+
+    assert f"-time.start {INIT_START}" in init and "-time.end 0777-01-01" in init
+
+
+def test_the_command_line_adds_an_init_leg_to_a_config_without_one(tmp_path, no_init_config):
+    """
+    Render an init leg from the command line alone, and refuse half a span.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    no_init_config : pathlib.Path
+        The config with its init keys removed.
+    """
+    script = render(tmp_path / "both", config=no_init_config, init_start="0001-01-01", init_end="0011-01-01")
+    init, main = legs(script)
+    assert "-time.start 0001-01-01" in init and "-time.end 0011-01-01" in init
+    assert "-input.bootstrap yes" in init and "-input.bootstrap yes" not in main
+
+    # One bound with nothing to pair it with would silently render no init leg.
+    with pytest.raises(SystemExit, match="--init-start needs --init-end"):
+        render(tmp_path / "half", config=no_init_config, init_start="0001-01-01")
+
+
+def test_the_init_leg_runs_on_a_365_day_calendar_from_year_one(tmp_path):
+    """
+    Give the init leg the time axis of the climatology it cycles, and leave the main leg's alone.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    init, main = legs(render(tmp_path))
+
+    assert "-time.calendar 365_day" in init
+    assert "-time.reference_date 0001-01-01" in init
+    assert f"-time.start {INIT_START}" in init
+    # The main leg keeps what the config's [time] section says.
+    calendar, reference_date = _CFG.time.as_params()["time.calendar"], _CFG.time.as_params()["time.reference_date"]
+    assert (calendar, reference_date) != ("365_day", "0001-01-01")
+    assert f"-time.calendar {calendar}" in main and f"-time.reference_date {reference_date}" in main
+    assert "365_day" not in main

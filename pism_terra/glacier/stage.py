@@ -28,7 +28,7 @@ from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import cf_xarray
 import geopandas as gpd
@@ -80,6 +80,69 @@ CLIMATE: Mapping[str, Callable] = {
     "era5-monthly-mean": era5_monthly_mean,
     "snap-monthly-mean": snap,
 }
+
+
+ForcingMask = Literal["none", "glacier", "all"]
+
+#: Values ``campaign.forcing_mask`` takes. Unset is the same as ``"none"``.
+FORCING_MASKS: tuple[ForcingMask, ...] = ("none", "glacier", "all")
+
+
+def resolve_forcing_mask(forcing_mask: str | None) -> ForcingMask:
+    """
+    Check a campaign's forcing mask and fill in the default.
+
+    Parameters
+    ----------
+    forcing_mask : {"none", "glacier", "all"} or None
+        The campaign's forcing mask. ``None`` or empty (unset) is ``"none"``.
+
+    Returns
+    -------
+    {"none", "glacier", "all"}
+        The mask.
+
+    Raises
+    ------
+    ValueError
+        If ``forcing_mask`` is not one of :data:`FORCING_MASKS`. A misspelt
+        mask would otherwise be staged as an all-zero one under its own name.
+    """
+    wanted = forcing_mask or "none"
+    for mask in FORCING_MASKS:
+        if mask == wanted:
+            return mask
+    raise ValueError(f"campaign.forcing_mask = {forcing_mask!r} is not one of {', '.join(FORCING_MASKS)}")
+
+
+def boot_file_name(rgi_id: str, forcing_mask: str | None) -> str:
+    """
+    Name the boot file of a glacier for one forcing mask.
+
+    The boot file carries ``ftt_mask``, which differs with
+    ``campaign.forcing_mask``. Campaigns that share an input directory but
+    not a mask used to write the same ``bootfile_<rgi_id>.nc`` in turn, so
+    the run scripts of one pointed at the mask of whichever was staged last.
+    The mask is part of the name, so each keeps its own file.
+
+    Parameters
+    ----------
+    rgi_id : str
+        Glacier identifier, e.g. ``"RGI2000-v7.0-C-01-14094"``.
+    forcing_mask : {"none", "glacier", "all"} or None
+        The campaign's forcing mask. ``None`` (unset) is ``"none"``.
+
+    Returns
+    -------
+    str
+        ``bootfile_forcing_mask_<mask>_<rgi_id>.nc``.
+
+    Raises
+    ------
+    ValueError
+        If ``forcing_mask`` is not one of :data:`FORCING_MASKS`.
+    """
+    return f"bootfile_forcing_mask_{resolve_forcing_mask(forcing_mask)}_{rgi_id}.nc"
 
 
 def staged_rgi_outlines(config: Mapping, cache_path: Path | str) -> tuple[Path, Path]:
@@ -268,12 +331,17 @@ def stage_glacier(
             DEM source passed to :func:`boot_file_from_grid`.
         - ``"climate"`` : str
             Key in :data:`CLIMATE` (e.g., ``"pmip4"``) selecting the climate builder.
+
+        ``"forcing_mask"`` (``"none"``, ``"glacier"`` or ``"all"``; unset is
+        ``"none"``) sets ``ftt_mask`` in the boot file and is part of the
+        boot file's name, see :func:`boot_file_name`.
     rgi_id : str
         Glacier identifier (e.g., ``"RGI2000-v7.0-C-06-00014"``).
     path : str or pathlib.Path, default ``"input_files"``
         Final output directory. Created if missing. Holds the artifacts that
-        downstream tooling consumes: glacier outline GPKG, boot NetCDF,
-        grid NetCDF, and climate forcing NetCDF.
+        downstream tooling consumes: glacier outline GPKG, boot NetCDF
+        (one per forcing mask staged there), grid NetCDF, and climate
+        forcing NetCDF.
     staging_path : str or pathlib.Path or None, optional
         Working directory for intermediate files (RGI table cache, DEM tifs,
         ice-thickness/velocity intermediates, ERA5/PMIP4 raw downloads,
@@ -309,7 +377,8 @@ def stage_glacier(
     FileNotFoundError
         If an RGI path is provided and does not exist.
     ValueError
-        If ``rgi_id`` is not found in the RGI layer or geometry/CRS is invalid.
+        If ``rgi_id`` is not found in the RGI layer, geometry/CRS is invalid,
+        or ``"forcing_mask"`` is not one of :data:`FORCING_MASKS`.
     Exception
         Propagated errors from DEM/thickness preparation, reprojection, or I/O.
 
@@ -373,8 +442,11 @@ def stage_glacier(
     x_bnds, y_bnds = get_bounds_from_geometry(glacier_projected.geometry, buffer_dist=5_000.0, dx=1_000.0)
     grid_ds = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
 
-    # Output filenames
-    boot_file = path / f"bootfile_{rgi_id}.nc"
+    # Output filenames. The boot file is the one input that depends on the
+    # forcing mask, so it is named after it; the mask is checked here, before
+    # any of the DEM work.
+    forcing_mask = resolve_forcing_mask(config.get("forcing_mask"))
+    boot_file = path / boot_file_name(rgi_id, forcing_mask)
     grid_file = path / f"grid_{rgi_id}.nc"
     obs_file = path / f"obs_{rgi_id}.nc"
     bheatflux_file = path / f"bheatflux_{rgi_id}.nc"
@@ -388,7 +460,7 @@ def stage_glacier(
         ice_thickness_dataset=config["ice_thickness"],
         velocity_dataset=config["velocity"],
         bathymetry_dataset=config["bathymetry"],
-        forcing_mask=config["forcing_mask"],
+        forcing_mask=forcing_mask,
         ocean_moat=config.get("ocean_moat", "no"),
         path=staging_path,
         force_overwrite=force_overwrite,

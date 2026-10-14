@@ -74,6 +74,7 @@ import xarray as xr
 from matplotlib.colors import LightSource, ListedColormap, LogNorm, Normalize
 from scipy.ndimage import map_coordinates
 
+from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.workflow import dataset_crs
 
 
@@ -312,15 +313,15 @@ def parse_args() -> argparse.Namespace:
         default="ssaa",
         help="Anti-aliasing: ssaa (best/slowest) ... fxaa/none (fastest). Big speed lever.",
     )
-    p.add_argument(
-        "-j",
-        "--jobs",
-        type=int,
+    add_ntasks_argument(
+        p,
         default=1,
-        help=(
+        help_text=(
             "Parallel rendering processes (default: 1). Speeds up headless software "
             "rendering (Linux/OSMesa) but is slower on macOS where the GPU serializes."
         ),
+        dest="jobs",
+        deprecated=("-j", "--jobs"),
     )
     return p.parse_args()
 

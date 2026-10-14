@@ -474,6 +474,31 @@ def test_forward_init_leg_single_pathway(tmp_path):
     assert "-time.end 2015-01-01" in fwd
 
 
+def test_forward_init_leg_spatial_times(tmp_path):
+    """
+    ``campaign.init_spatial_times`` sets ``output.spatial.times`` on the init leg only.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    text = FREE_HY.read_text().replace(
+        'init_start = "2006-01-01"',
+        'init_spatial_times = 10\ninit_start = "2006-01-01"',
+        1,
+    )
+    cfg = tmp_path / "free_init_spatial_times.toml"
+    cfg.write_text(text)
+    main_times = _search(r"-output\.spatial\.times (\S+)", _legs(_render_forward(tmp_path / "plain", FREE_HY))[0])
+    assert main_times != "10"
+
+    init, fwd = _legs(_render_forward(tmp_path, cfg))
+
+    assert "-output.spatial.times 10 " in init
+    assert f"-output.spatial.times {main_times} " in fwd
+
+
 def test_forward_init_leg_surface_model(tmp_path):
     """
     ``campaign.init_surface_model`` swaps the surface model on the init leg only.
@@ -1639,3 +1664,45 @@ def test_ec2_template_launches_the_writer_and_splits_the_scalars(tmp_path):
     assert not any("pism_ismip7_writer" in line for line in legs if "-time.end 1985-01-01" in line), "not the init leg"
     assert "postprocess_ismip7_scalar.sh" in text
     assert text.index("postprocess_ismip7_scalar.sh") < text.index("ismip7-compliance-checker")
+
+
+def test_the_command_line_moves_the_ismip7_init_leg(tmp_path: Path):
+    """
+    ``--init-start`` and ``--init-end`` replace the config's init span in a forward run.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    script = _render_forward(
+        tmp_path, C009, sample="CESM2-WACCM", config_cli={"init_start": "1975-01-01", "init_end": "1985-01-01"}
+    )
+    init = _legs(script)[0]
+
+    assert "-time.start 1975-01-01" in init and "-time.end 1985-01-01" in init
+    assert "_1975-01-01_1985-01-01.nc" in init
+    # The config's own init start (1980) is not used anywhere.
+    assert "1980-01-01" not in script
+
+
+def test_the_command_line_supplies_the_init_span_an_inversion_needs(tmp_path: Path):
+    """
+    An inverse run whose config has no init span takes it from the command line.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg_file = tmp_path / "no_init.toml"
+    cfg_file.write_text(
+        "\n".join(line for line in FREE_HY.read_text().splitlines() if not line.startswith(("init_start", "init_end")))
+    )
+
+    script = _render_inverse(tmp_path, cfg_file, config_cli={"init_start": "2005-01-01", "init_end": "2006-01-01"})
+
+    init = _legs(script)[0]
+    assert "-time.start 2005-01-01" in init and "-time.end 2006-01-01" in init
+    with pytest.raises(SystemExit, match="--init-end needs --init-start"):
+        _render_inverse(tmp_path / "half", cfg_file, config_cli={"init_end": "2006-01-01"})

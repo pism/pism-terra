@@ -351,6 +351,70 @@ def _postprocess_commands(
     return "\n".join(commands)
 
 
+#: Time axis of the init leg. It is a spin-up in model years (0001, 0002, ...)
+#: on a forcing that is cycled, normally a monthly climatology written on a
+#: 365-day axis counted from year 1; the leg uses that same calendar and
+#: reference date whatever the main leg's ``[time]`` section says.
+INIT_TIME_OPTIONS = {"time.calendar": "365_day", "time.reference_date": "0001-01-01"}
+
+
+def _init_span(cfg, config_cli: dict | None) -> tuple[str | None, str | None]:
+    """
+    Resolve the bounds of the init leg: command line first, then the config.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded config, whose ``[campaign]`` section may carry ``init_start``
+        and ``init_end``.
+    config_cli : dict or None
+        Command-line overrides; ``init_start``/``init_end`` win over the config.
+
+    Returns
+    -------
+    tuple of (str or None, str or None)
+        ``(init_start, init_end)``; ``None`` where neither source sets one.
+
+    Raises
+    ------
+    SystemExit
+        If the command line gives one bound and nothing supplies the other:
+        the init leg would silently not be rendered.
+    """
+    config_cli = config_cli or {}
+    init_start = config_cli.get("init_start") or cfg.campaign.init_start
+    init_end = config_cli.get("init_end") or cfg.campaign.init_end
+    given = [name for name in ("init_start", "init_end") if config_cli.get(name)]
+    if given and not (init_start and init_end):
+        missing = "init_end" if init_start else "init_start"
+        raise SystemExit(
+            f"--{given[0].replace('_', '-')} needs --{missing.replace('_', '-')} as well "
+            f"(or [campaign] {missing} in the config): an init leg has both a start and an end."
+        )
+    return init_start, init_end
+
+
+def _init_surface_keys(cfg) -> set[str]:
+    """
+    List the options of the init leg's own surface model.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded configuration.
+
+    Returns
+    -------
+    set of str
+        The dotted PISM flags of ``[surface.options.<init_surface_model>]``;
+        empty when ``campaign.init_surface_model`` is unset or names no table.
+    """
+    init_surface_model = cfg.campaign.init_surface_model
+    if not init_surface_model:
+        return set()
+    return set(cfg.surface.options.get(init_surface_model) or ())
+
+
 def _build_init_leg(
     cfg,
     run: Mapping[str, object],
@@ -362,6 +426,7 @@ def _build_init_leg(
     name_options: str,
     init_climate_file: str | Path | None,
     init_surface_model: str | None = None,
+    overrides: Mapping[str, object] | None = None,
     state_path: Path,
     scalar_path: Path,
     spatial_path: Path,
@@ -374,12 +439,16 @@ def _build_init_leg(
     letting the geometry and thermal state settle before the run of interest.
     ``campaign.init_climate`` optionally swaps the forcing for this leg only —
     typically a monthly climatology, which PISM cycles, so the spin-up is not
-    tied to a particular stretch of the historical record.
+    tied to a particular stretch of the historical record. The leg runs on a
+    365-day calendar counted from year 1 (:data:`INIT_TIME_OPTIONS`), the time
+    axis such a climatology is written on; the main leg keeps the config's.
+    ``campaign.init_spatial_times`` sets this leg's ``output.spatial.times``.
 
     Parameters
     ----------
     cfg : PismConfig
-        Loaded configuration; only used for option validation context.
+        Loaded configuration: the surface option tables and the
+        ``[campaign]`` keys of the init leg.
     run : Mapping[str, object]
         The fully assembled main-leg option dict. Copied, then re-timed and
         re-pointed at the init outputs; nothing is mutated in place.
@@ -399,6 +468,12 @@ def _build_init_leg(
         Key of ``cfg.surface.options`` selecting a surface model for this leg
         only, from ``campaign.init_surface_model``. When ``None`` the init leg
         keeps the main leg's surface model.
+    overrides : Mapping[str, object] or None, optional
+        The staged files and UQ samples (dotted PISM flags) the main leg was
+        built with, before they were filtered against its options. Those that
+        name an option of the init surface model are applied to it, so a file
+        only that model reads (``surface.force_to_thickness.file`` when the
+        main leg runs without forcing) is still filled in.
     state_path, scalar_path, spatial_path : pathlib.Path
         Output directories.
     pism_config_cdl : str or pathlib.Path or None
@@ -420,7 +495,7 @@ def _build_init_leg(
     run_init = dict(run)
     run_init.pop("time.start", None)
     run_init.pop("time.end", None)
-    run_init.update({"time.start": init_start, "time.end": init_end})
+    run_init.update({"time.start": init_start, "time.end": init_end, **INIT_TIME_OPTIONS})
 
     if init_surface_model is not None:
         if init_surface_model not in cfg.surface.options:
@@ -434,9 +509,23 @@ def _build_init_leg(
         # forcing files to unset.
         for option in cfg.surface.selected():
             run_init.pop(option, None)
-        for option, value in cfg.surface.options[init_surface_model].items():
+        init_surface = dict(cfg.surface.options[init_surface_model])
+        for option, value in init_surface.items():
             placeholder = isinstance(value, str) and value.strip().lower() == "none"
-            run_init[option] = run[option] if placeholder and option in run else value
+            if placeholder and option in run:
+                init_surface[option] = run[option]
+        # The main leg's overrides were filtered against the main leg's
+        # options, which dropped every one that only this model knows. Apply
+        # them here: without this the init leg ran with
+        # ``surface.force_to_thickness.file none`` whenever the main leg had
+        # no forcing, and with the config's value of any sampled parameter.
+        init_overrides, _ = filter_overrides_by_config(dict(overrides or {}), init_surface.keys())
+        init_surface.update(init_overrides)
+        run_init.update(init_surface)
+
+    # A spin-up rarely needs the fields as often as the run of interest.
+    if cfg.campaign.init_spatial_times is not None:
+        run_init["output.spatial.times"] = cfg.campaign.init_spatial_times
 
     if init_climate_file is not None:
         # Only re-point the options the main leg actually carries: which of
@@ -604,17 +693,16 @@ def _render_inverse_run(
     # The inverse chain is init -> pismi -> main run: pismi inverts on the
     # init leg's state file, so the init bounds are required here (unlike the
     # forward chain, where the init leg is optional).
-    init_start = cfg.campaign.init_start
-    init_end = cfg.campaign.init_end
+    config_cli = config_cli or {}
+    init_start, init_end = _init_span(cfg, config_cli)
     if not init_start or not init_end:
         raise SystemExit(
             "run-inverse requires [campaign] init_start and init_end (e.g. "
             'init_start = "0001-01-01", init_end = "0021-01-01") to bound the '
             "init/prior leg the inversion restarts from; add them to the "
-            "campaign section of the config TOML."
+            "campaign section of the config TOML, or pass --init-start and --init-end."
         )
 
-    config_cli = config_cli or {}
     resolution = config_cli.get("resolution")
     if resolution:
         resolution = re.sub(r"\s+", "", resolution)
@@ -740,7 +828,8 @@ def _render_inverse_run(
     all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
     run_overrides, _ = filter_overrides_by_config(all_overrides, run.keys())
     inv_overrides, _ = filter_overrides_by_config(all_overrides, inv.keys())
-    skipped = [k for k in all_overrides if k not in run and k not in inv]
+    init_surface_keys = _init_surface_keys(cfg)
+    skipped = [k for k in all_overrides if k not in run and k not in inv and k not in init_surface_keys]
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to both runtime dicts (these should be dotted PISM flags)
@@ -782,6 +871,7 @@ def _render_inverse_run(
         name_options=name_options,
         init_climate_file=init_climate_file,
         init_surface_model=cfg.campaign.init_surface_model,
+        overrides=all_overrides,
         state_path=state_path,
         scalar_path=scalar_path,
         spatial_path=spatial_path,
@@ -1075,8 +1165,11 @@ def _render_forward_run(
 
     # Remove 'sample' from flag overrides; drop any key not in the config-derived
     # run dict (e.g., surface.debm_simple.std_dev.file when surface.model == "pdd").
-    overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
-    overrides, skipped = filter_overrides_by_config(overrides, run.keys())
+    all_overrides = {k: v for k, v in uq_clean.items() if k != "sample"}
+    overrides, skipped = filter_overrides_by_config(all_overrides, run.keys())
+    # Options only the init leg's surface model knows are applied there.
+    init_surface_keys = _init_surface_keys(cfg)
+    skipped = [k for k in skipped if k not in init_surface_keys]
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
@@ -1100,13 +1193,13 @@ def _render_forward_run(
     )
     add_profile_option(run, cfg.campaign.profile)
 
-    # Optional init leg: when the campaign config carries init_start/init_end,
-    # render a short bootstrap run first and restart the main leg from its
-    # state instead of bootstrapping directly. ``campaign.init_climate`` swaps
-    # the forcing for that leg only — typically a climatology, which PISM
-    # cycles. Without the campaign fields the main leg bootstraps as before.
-    init_start = cfg.campaign.init_start
-    init_end = cfg.campaign.init_end
+    # Optional init leg: when the campaign config carries init_start/init_end
+    # (or --init-start/--init-end give them), render a short bootstrap run
+    # first and restart the main leg from its state instead of bootstrapping
+    # directly. ``campaign.init_climate`` swaps the forcing for that leg only
+    # — typically a climatology, which PISM cycles. Without the bounds the
+    # main leg bootstraps as before.
+    init_start, init_end = _init_span(cfg, config_cli)
     run_init_str = ""
     if init_start and init_end:
         run_init_str, state_init, _ = _build_init_leg(
@@ -1119,6 +1212,7 @@ def _render_forward_run(
             name_options=name_options,
             init_climate_file=init_climate_file,
             init_surface_model=cfg.campaign.init_surface_model,
+            overrides=all_overrides,
             state_path=state_path,
             scalar_path=scalar_path,
             spatial_path=spatial_path,
@@ -1270,6 +1364,18 @@ def _build_cli_parser(description: str, *, supports_execute: bool) -> ArgumentPa
     )
     parser.add_argument("--start", type=_nullable_string, default=None, help="Override the time.start selection.")
     parser.add_argument("--end", type=_nullable_string, default=None, help="Override the time.end selection.")
+    parser.add_argument(
+        "--init-start",
+        type=_nullable_string,
+        default=None,
+        help="Override campaign.init_start, the start of the init leg.",
+    )
+    parser.add_argument(
+        "--init-end",
+        type=_nullable_string,
+        default=None,
+        help="Override campaign.init_end, the end of the init leg.",
+    )
     parser.add_argument(
         "--posterior-file",
         type=_nullable_string,
@@ -1501,6 +1607,8 @@ def _run(*, kind: str) -> None:
         "stress_balance": options.stress_balance,
         "start": start_cli,
         "end": end_cli,
+        "init_start": options.init_start,
+        "init_end": options.init_end,
         # Bypasses the uq-override filter on purpose: ``input.regrid.*`` need
         # not be declared in the config's ['input'] table.
         "regrid_file": regrid_file,
@@ -1518,7 +1626,7 @@ def _run(*, kind: str) -> None:
             {
                 "input.file": row["boot_file"],
                 "grid.file": row["grid_file"],
-                "atmosphere.elevation_change.file": row["boot_file"],
+                "atmosphere.elevation_change.file": row["climate_file"],
                 "atmosphere.given.file": row["climate_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
                 "surface.debm_simple.albedo_input.file": row["climate_file"],

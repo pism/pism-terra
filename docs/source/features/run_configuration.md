@@ -2,7 +2,7 @@
 
 Runs are described entirely by two artefacts:
 
-1. A **TOML config** (e.g. `pism_terra/config/rgi_init_maffezzoli.toml`),
+1. A **TOML config** (e.g. `pism_terra/config/docs_rgi_init_maffezzoli.toml`),
    validated by the Pydantic models in {py:mod}`pism_terra.config`.
 2. A **Jinja2 template** (e.g. `pism_terra/templates/debug.j2`) that the run
    generator renders into a shell script.
@@ -32,6 +32,7 @@ its `[campaign]` section:
 climate = "carra2"
 init_climate = "carra2-monthly-mean"
 init_surface_model = "debm_enhanced_forcing"
+init_spatial_times = 10
 init_start = "0001-01-01"
 init_end = "0051-01-01"
 ```
@@ -59,9 +60,20 @@ already resolved is carried over rather than reset; everything else comes from
 the named table. An unknown name fails at render time, listing what the config
 offers.
 
+`init_spatial_times` sets `output.spatial.times` of the init leg alone, so a
+spin-up need not write the monthly fields the run of interest does. It takes
+what PISM takes: a number is an interval in model years (`10` is every ten
+years), or a keyword such as `"yearly"`. Omit it and the init leg writes as
+often as the main leg.
+
 Without `init_start`/`init_end` the run bootstraps directly, exactly as before.
 The mechanism mirrors the ISMIP7 Greenland runner, which uses the same two
 campaign keys.
+
+`--init-start` and `--init-end` override the two keys from the command line, in
+the glacier and the ISMIP7 run generators alike, the way `--start` and `--end`
+override `[time]`. Either may be given alone, the other then coming from the
+config; given both, they add an init leg to a config that has none.
 
 ## Regridding from a spin-up state
 

@@ -24,6 +24,7 @@ the store"), and the written file carries a time axis and a grid mapping PISM
 can actually read.
 """
 
+import cftime
 import netCDF4
 import numpy as np
 import pandas as pd
@@ -32,6 +33,9 @@ import xarray as xr
 
 from pism_terra.glacier.climate import (
     CARRA2_CLIMATOLOGY_YEARS,
+    _carra2_fill_years_and_bounds,
+    files_by_year,
+    has_variables,
     open_carra2_zarr,
     prepare_carra2_monthly_mean,
     stamp_monthly_climatology_axis,
@@ -88,6 +92,7 @@ def carra2_store(path, first_year: int = 1986, last_year: int = 2026):
             "air_temp": (("time", "y", "x"), field(1.0)),
             "air_temp_sd": (("time", "y", "x"), field(0.01)),
             "precipitation": (("time", "y", "x"), field(0.1)),
+            "snowfall": (("time", "y", "x"), field(0.05)),
             "orography": (("y", "x"), np.arange(20.0).reshape(4, 5)),
             "time_bnds": (("time", "bnds"), np.zeros((len(time), 2))),
         },
@@ -295,3 +300,112 @@ def test_compressed_encoding_keeps_the_grid_mapping(tmp_path):
     with netCDF4.Dataset(safe) as nc:  # pylint: disable=no-member
         assert nc.variables["air_temp"].grid_mapping == "spatial_ref"
     assert xr.open_dataset(safe, decode_coords="all").rio.crs is not None
+
+
+def test_snowfall_is_carried_into_the_climatology(climatology):
+    """
+    Average snowfall like every other time-varying field of the store.
+
+    Nothing downstream of the store names its variables, so a field added to
+    the download reaches the climatology -- and the per-glacier files cut
+    from it -- without being listed anywhere.
+
+    Parameters
+    ----------
+    climatology : xarray.Dataset
+        Climatology built from the synthetic store.
+    """
+    offset = np.mean(np.array(list(CARRA2_CLIMATOLOGY_YEARS)) - 1986)
+    assert float(climatology["snowfall"].sel(time=7).mean()) == pytest.approx((7 * 100 + offset) * 0.05)
+    # Half the precipitation in the synthetic store, as it was put in.
+    ratio = climatology["snowfall"] / climatology["precipitation"]
+    assert float(ratio.min()) == pytest.approx(0.5) and float(ratio.max()) == pytest.approx(0.5)
+
+
+def test_a_cache_that_predates_snowfall_is_not_current(tmp_path):
+    """
+    Tell a store or batch written before a variable existed from a current one.
+
+    Both open and pass the health check, so without this the yearly batches
+    and the store of an existing staging tree would be reused as they are and
+    snowfall would never be built.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    store = carra2_store(tmp_path / "carra2.zarr", last_year=1988)
+    assert has_variables(store, ["snowfall"])
+    assert has_variables(store, ["precipitation", "snowfall", "air_temp"])
+    assert not has_variables(store, ["snowfall", "rainfall"])
+
+    batch = tmp_path / "batch_1986.nc"
+    xr.open_zarr(store).drop_vars("snowfall").load().to_netcdf(batch)
+    assert has_variables(batch, ["precipitation"])
+    assert not has_variables(batch, ["snowfall"])
+
+    assert not has_variables(tmp_path / "missing.nc", ["snowfall"])
+
+
+@pytest.mark.parametrize("calendar", ["numpy", "cftime"])
+def test_carra2_bounds_are_those_of_the_calendar_month(calendar: str):
+    """
+    Give a mid-month stamp the bounds of its month, and keep every step.
+
+    CARRA2 is stamped on the 15th. Pairing each stamp with the same day of
+    the following month gave January the bounds 15 January to 15 February,
+    which applies every monthly mean half a month late.
+
+    Parameters
+    ----------
+    calendar : str
+        Whether the stamps are ``numpy.datetime64`` or cftime objects.
+    """
+    stamps = [pd.Timestamp(year=2024, month=month, day=15) for month in range(1, 13)]
+    if calendar == "cftime":
+        time = [cftime.DatetimeGregorian(stamp.year, stamp.month, stamp.day) for stamp in stamps]
+    else:
+        time = stamps
+    ds = xr.Dataset(
+        {"air_temp": (("time", "y", "x"), np.zeros((12, 2, 2)))}, coords={"time": time, "y": [0, 1], "x": [0, 1]}
+    )
+
+    out = _carra2_fill_years_and_bounds(ds, [2024, 2025])
+
+    assert out.sizes["time"] == 24
+    bounds = out["time_bnds"].values
+    as_dates = [[(value.year, value.month, value.day) for value in map(pd.Timestamp, map(str, row))] for row in bounds]
+    assert as_dates[0] == [(2024, 1, 1), (2024, 2, 1)]
+    assert as_dates[1] == [(2024, 2, 1), (2024, 3, 1)]  # a leap February
+    assert as_dates[11] == [(2024, 12, 1), (2025, 1, 1)]
+    assert as_dates[-1] == [(2025, 12, 1), (2026, 1, 1)]
+    # The months tile the two years, and each stamp lies inside its own bounds.
+    assert all(as_dates[i][1] == as_dates[i + 1][0] for i in range(23))
+    assert out["time"].attrs["bounds"] == "time_bnds"
+
+
+def test_yearly_downloads_are_paired_by_year_not_by_position(tmp_path):
+    """
+    Refuse to go on when a year failed to download, and never shift the others.
+
+    CDS failed two of forty yearly temperature requests in one run. The files
+    that did arrive, taken in order, would have put 1988's temperature under
+    1987 and so on down the line, each restamped with the wrong year.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    years = [1986, 1987, 1988, 1989]
+    complete = [tmp_path / f"_cds_carra_2m_temperature_abc123_{year}.nc" for year in years]
+
+    by_year = files_by_year(reversed(complete), years, "2 m temperature")
+    assert [by_year[year].name for year in years] == [file.name for file in complete]
+
+    arrived = [file for file in complete if "_1987" not in file.name]
+    with pytest.raises(RuntimeError, match="2 m temperature: no download for 1987"):
+        files_by_year(arrived, years, "2 m temperature")
+    # A file of a year that was not asked for is ignored rather than paired with anything.
+    assert list(files_by_year(complete, [1988], "2 m temperature")) == [1988]

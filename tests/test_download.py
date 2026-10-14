@@ -238,7 +238,8 @@ def test_a_delivered_zip_is_finished_without_a_new_request(tmp_path):
     dataset, request, year = "reanalysis-test", {"variable": ["ssrd", "ssr"]}, "1986"
     nc_path = dl._cds_year_cache_path(dataset, request, year, tmp_path)  # pylint: disable=protected-access
     parts = [_part(tmp_path, "data_0.nc", "ssrd", 0.0), _part(tmp_path, "data_1.nc", "ssr", 1e-6)]
-    with zipfile.ZipFile(tmp_path / f"_cds_{year}.zip", "w") as zf:
+    archive = dl._cds_year_zip_path(nc_path)  # pylint: disable=protected-access
+    with zipfile.ZipFile(archive, "w") as zf:
         for p in parts:
             zf.write(p, p.name)
 
@@ -264,3 +265,187 @@ def test_a_delivered_zip_is_finished_without_a_new_request(tmp_path):
     assert files == [nc_path]
     with xr.open_dataset(nc_path) as merged:
         assert {"ssrd", "ssr"} <= set(merged.data_vars)
+    # Once the year's file exists, the archive and its unpacked parts are gone.
+    assert not archive.exists() and not archive.with_suffix("").exists()
+
+
+class _FlakyCDS:
+    """
+    Stand in for the CDS client: deliver each year as a small file, except the ones set to fail.
+
+    Parameters
+    ----------
+    failing : set of str
+        Years whose job fails, as MARS fails one now and then.
+    """
+
+    def __init__(self, failing: set[str]):
+        """
+        Set up the stand-in.
+
+        Parameters
+        ----------
+        failing : set of str
+            Years whose job fails.
+        """
+        self.failing = failing
+        self.asked: list[str] = []
+
+    def submit(self, dataset, request):  # pylint: disable=unused-argument
+        """
+        Accept a request for one year and return its job.
+
+        Parameters
+        ----------
+        dataset : str
+            CDS dataset name.
+        request : dict
+            The request, with a one-element ``year``.
+
+        Returns
+        -------
+        object
+            A job whose results are a NetCDF file, or an error.
+        """
+        (year,) = request["year"]
+        self.asked.append(year)
+        failing = year in self.failing
+
+        class _Results:
+            """The delivered file of one job."""
+
+            content_type = "application/x-netcdf"
+
+            def download(self, target):
+                """
+                Write the year's twelve monthly fields.
+
+                Parameters
+                ----------
+                target : str
+                    Path to write.
+                """
+                time = np.array([f"{year}-{month:02d}-01" for month in range(1, 13)], dtype="datetime64[ns]")
+                xr.Dataset(
+                    {"t2m": (("valid_time", "latitude", "longitude"), np.full((12, 2, 2), float(year)))},
+                    coords={"valid_time": time, "latitude": [60.0, 60.1], "longitude": [-150.0, -149.9]},
+                ).to_netcdf(target)
+
+        class _Job:
+            """One submitted request."""
+
+            request_id = f"job-{year}"
+            status = "failed" if failing else "successful"
+
+            def get_results(self):
+                """
+                Return the results, or raise as a failed MARS job does.
+
+                Returns
+                -------
+                _Results
+                    The delivered file.
+                """
+                if failing:
+                    raise RuntimeError("400 Client Error: Bad Request\nThe job failed with: MarsRuntimeError")
+                return _Results()
+
+        return _Job()
+
+
+def test_a_failed_year_is_an_error_and_only_that_year_is_asked_for_again(tmp_path, monkeypatch):
+    """
+    Refuse a partial download, keep the years that arrived, and retry only the one that failed.
+
+    A year that failed used to be left out of the merged result, which was
+    then cached under the key of the whole request: the gap was silent, and
+    no later run asked CDS for the missing year again.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture replacing the CDS client.
+    """
+    cds = _FlakyCDS(failing={"1987"})
+    monkeypatch.setattr(dl, "_DatastoresClient", lambda **kwargs: cds)
+    merged = tmp_path / "era5_tmp_1.nc"
+    request = {
+        "dataset": "reanalysis-era5-land-monthly-means",
+        "area": [60.0, -150.0, 60.1, -149.9],
+        "year": [1986, 1987, 1988],
+        "variable": ["2m_temperature"],
+        "file_path": merged,
+    }
+
+    with pytest.raises(RuntimeError, match="1 of 3 years failed to download: 1987") as error:
+        dl.download_request(**request)
+    # The first line of the reason is quoted; a MARS error runs to pages.
+    assert "400 Client Error: Bad Request" in str(error.value)
+    assert "MarsRuntimeError" not in str(error.value)
+    # Nothing incomplete was cached as the answer to the whole request.
+    assert not merged.exists()
+
+    cds.failing = set()
+    cds.asked.clear()
+    ds = dl.download_request(**request)
+
+    assert cds.asked == ["1987"]
+    assert sorted({int(year) for year in ds["valid_time.year"].values}) == [1986, 1987, 1988]
+    assert float(ds["t2m"].sel(valid_time="1987-06-01").mean()) == 1987.0
+
+
+def test_an_archive_left_by_another_request_is_not_used(tmp_path):
+    """
+    Ask CDS for a year even when a different request's archive for that year lies in the directory.
+
+    The archives were named for the year alone. Preparing the ERA5 forcing
+    makes four requests in one directory, and the daily means of every year
+    were "finished" from the archives the monthly means had left there:
+    monthly ``t2m`` and ``tp`` where daily ``t2m`` was asked for.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    year = "1986"
+    monthly = ("reanalysis-era5-single-levels-monthly-means", {"variable": ["2m_temperature", "total_precipitation"]})
+    daily = ("derived-era5-single-levels-daily-statistics", {"variable": ["2m_temperature"]})
+    parts = [_part(tmp_path, "data_0.nc", "t2m", 0.0), _part(tmp_path, "data_1.nc", "tp", 1e-6)]
+    # What the monthly request leaves when its merge has not finished, and what
+    # older versions left behind after every delivery.
+    theirs = dl._cds_year_zip_path(
+        dl._cds_year_cache_path(*monthly, year, tmp_path)
+    )  # pylint: disable=protected-access
+    for leftover in (theirs, tmp_path / f"_cds_{year}.zip"):
+        with zipfile.ZipFile(leftover, "w") as zf:
+            for p in parts:
+                zf.write(p, p.name)
+    mine = dl._cds_year_cache_path(*daily, year, tmp_path)  # pylint: disable=protected-access
+    assert dl._cds_year_zip_path(mine) != theirs  # pylint: disable=protected-access
+
+    class Asked(Exception):
+        """Raised when the client is asked for the year, which is what should happen."""
+
+    class Client:
+        """A client that records being asked."""
+
+        def submit(self, dataset, request):
+            """
+            Stop the test at the request.
+
+            Parameters
+            ----------
+            dataset : str
+                Requested dataset.
+            request : dict
+                The request.
+            """
+            raise Asked(dataset, request["year"])
+
+    with pytest.raises(Asked) as asked:
+        dl._cds_download_years(Client(), *daily, [year], tmp_path, verbose=False)  # pylint: disable=protected-access
+    assert asked.value.args == (daily[0], [year])
+    assert not mine.exists()
