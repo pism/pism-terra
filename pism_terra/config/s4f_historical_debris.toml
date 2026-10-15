@@ -28,7 +28,7 @@ velocity = "its_live"
 
 [time]
 
-'time.calendar' =  "standard"
+'time.calendar' =  "proleptic_gregorian"
 'time.end' =  "2025-01-01"
 'time.reference_date' = "1980-01-01"
 'time.start' = "1986-01-01"
