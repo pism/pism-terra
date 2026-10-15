@@ -39,7 +39,9 @@ from pism_terra.domain import create_domain
 from pism_terra.glacier.s4f import (
     PLANNING_PRODUCTS,
     SNOWFALL_YEARS,
+    VELOCITY_VARIABLES,
     mean_annual_snowfall,
+    write_planning_readme,
     write_snowfall_cogs,
 )
 
@@ -170,3 +172,29 @@ def test_a_complex_outside_carra2_is_skipped(tmp_path: Path):
 
     assert not write_snowfall_cogs({}, "RGI_FAR", grid, tmp_path, store=store)
     assert not list(tmp_path.glob("*.tif"))
+
+
+def test_the_readme_names_what_planning_writes(tmp_path: Path):
+    """
+    Fill in the README from the campaign, naming the files as planning writes them.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    config = {"dem": "glo_90", "ice_thickness": "maffezzoli", "velocity": "its_live", "bathymetry": "gebco"}
+
+    readme = write_planning_readme(config, tmp_path / "README.md", outlines="s4f_c.fgb")
+
+    text = readme.read_text(encoding="utf-8")
+    assert "$" not in text
+    for name in (
+        "<RGI_ID>_surface.tif",
+        "<RGI_ID>_dh.tif",
+        "<RGI_ID>_carra2_snowfall_1990_2019.tif",
+        *(f"<RGI_ID>_its_live_{var}.tif" for var in VELOCITY_VARIABLES),
+    ):
+        assert f"`{name}`" in text, name
+    assert "DEM `glo_90`" in text and "`maffezzoli`" in text and "`s4f_c.fgb`" in text
+    assert "100 m cells" in text

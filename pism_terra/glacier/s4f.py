@@ -27,7 +27,10 @@ import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
+from importlib import metadata, resources
 from pathlib import Path
+from string import Template
 from typing import Callable
 
 import cf_xarray
@@ -58,6 +61,7 @@ from pism_terra.glacier.observations import (
     glacier_velocities_from_grid,
 )
 from pism_terra.glacier.stage import staged_rgi_outlines
+from pism_terra.progress import compute as compute_with_progress
 from pism_terra.raster import apply_perimeter_band, write_cog
 from pism_terra.vector import (
     get_glacier_from_rgi_id,
@@ -165,6 +169,8 @@ def main():
     rgi_cloud = path / config["rgi_complex_file"].replace("gpkg", "fgb")
     print(f"Writing {len(rgi)} complex outlines to {rgi_cloud}")
     rgi.to_file(rgi_cloud)
+    readme = write_planning_readme(config, path / "README.md", outlines=rgi_cloud.name)
+    print(f"Wrote {readme}")
 
     all_nc_files: list[Path] = []
 
@@ -206,6 +212,60 @@ def main():
     print("Now run")
     print(f"""aws s3 sync {glacier_path} s3://{bucket}/{planning_prefix}/{rgi_id} --exclude "staging/*" """)
     print(f"aws s3 cp {rgi_cloud} s3://{bucket}/{planning_prefix}/{rgi_cloud.name}")
+    print(f"aws s3 cp {readme} s3://{bucket}/{planning_prefix}/{readme.name}")
+
+
+def write_planning_readme(
+    config: Mapping,
+    path: str | Path,
+    outlines: str = "s4f_c.fgb",
+    resolution: float = 100.0,
+) -> Path:
+    """
+    Write the README that describes the planning products.
+
+    The text is ``pism_terra/data/s4f_planning_README.md`` with the campaign's
+    sources (DEM, ice thickness, velocity, ...), the grid resolution and the
+    snowfall years filled in, so it names what this run wrote.
+
+    Parameters
+    ----------
+    config : Mapping
+        Campaign configuration.
+    path : str or pathlib.Path
+        File to write, conventionally ``README.md`` beside the glacier folders.
+    outlines : str, optional
+        Name of the outline file written beside it.
+    resolution : float, optional
+        Planning grid resolution in metres.
+
+    Returns
+    -------
+    pathlib.Path
+        The README written.
+    """
+    try:
+        version = metadata.version("pism-terra")
+    except metadata.PackageNotFoundError:
+        version = "unknown version"
+    years = sorted(SNOWFALL_YEARS)
+    template = Template((resources.files("pism_terra") / "data" / "s4f_planning_README.md").read_text("utf-8"))
+    text = template.substitute(
+        version=version,
+        generated=date.today().isoformat(),
+        outlines=outlines,
+        resolution=f"{resolution:g}",
+        dem=config.get("dem") or "none",
+        ice_thickness=config.get("ice_thickness") or "none",
+        bathymetry=config.get("bathymetry") or "none",
+        velocity=config.get("velocity") or "none",
+        forcing_mask=config.get("forcing_mask") or "none",
+        snowfall_first=years[0],
+        snowfall_last=years[-1],
+    )
+    path = Path(path)
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def cog_profile(da: xr.DataArray) -> dict:
@@ -522,7 +582,9 @@ def write_snowfall_cogs(
     # variable as a coordinate that rioxarray would try to reproject.
     snowfall = snowfall.drop_vars([c for c in snowfall.coords if c not in ("time", "x", "y")])
 
-    mean = mean_annual_snowfall(snowfall, years).load()
+    (mean,) = compute_with_progress(
+        mean_annual_snowfall(snowfall, years), desc=f"Reading CARRA2 snowfall {years[0]}-{years[-1]}"
+    )
     mean = mean.rio.write_crs(src_crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
     da = mean.rio.reproject_match(grid_ds, resampling=Resampling.bilinear).astype("float32")
     da.attrs = mean.attrs
