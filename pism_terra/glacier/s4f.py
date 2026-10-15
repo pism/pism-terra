@@ -25,7 +25,7 @@ Methods to assist with Snow4Flow Mission Planning.
 
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
@@ -38,12 +38,19 @@ import pyogrio
 import rioxarray
 import xarray as xr
 from pyfiglet import Figlet
+from pyproj import Transformer
+from rasterio.enums import Resampling
 from shapely.geometry import Point, Polygon, box
 
 from pism_terra.aws import local_to_s3
 from pism_terra.config import load_config
 from pism_terra.domain import create_domain, get_bounds_from_geometry
-from pism_terra.glacier.climate import era5, snap
+from pism_terra.glacier.climate import (
+    CARRA2_CLIMATOLOGY_YEARS,
+    era5,
+    open_carra2_zarr,
+    snap,
+)
 from pism_terra.glacier.dem import boot_file_from_grid
 from pism_terra.glacier.observations import (
     dh_from_tif,
@@ -65,7 +72,14 @@ xr.set_options(keep_attrs=True)
 CLIMATE: Mapping[str, Callable] = {"era5": era5, "snap": snap}
 
 #: Planning products that are not boot variables; ``variables`` may name them.
-PLANNING_PRODUCTS = ("surface_clipped", "dh", "velocity")
+PLANNING_PRODUCTS = ("surface_clipped", "dh", "velocity", "snowfall")
+
+#: Years the CARRA2 snowfall is averaged over: those of the CARRA2 monthly
+#: climatology, 1990-2019.
+SNOWFALL_YEARS = CARRA2_CLIMATOLOGY_YEARS
+
+#: Density of water, turning kg m^-2 of snowfall into metres water equivalent.
+WATER_DENSITY = 1000.0
 
 #: Observed velocity fields shipped as COGs by :func:`write_velocity_cogs`.
 VELOCITY_VARIABLES = ("v", "vx", "vy", "vx_error", "vy_error")
@@ -107,8 +121,8 @@ def main():
     )
     parser.add_argument(
         "--variables",
-        help="Comma-separated products to write (boot variable names plus 'surface_clipped', 'dh' and "
-        "'velocity'); default: all. On aggregate-sized domains restrict to e.g. "
+        help="Comma-separated products to write (boot variable names plus 'surface_clipped', 'dh', "
+        "'velocity' and 'snowfall'); default: all. On aggregate-sized domains restrict to e.g. "
         "'bed,surface,surface_clipped,dh' to keep peak memory down.",
         type=str,
         default=None,
@@ -387,6 +401,140 @@ def write_velocity_cogs(
     return written
 
 
+def mean_annual_snowfall(snowfall: xr.DataArray, years: Iterable[int] = SNOWFALL_YEARS) -> xr.DataArray:
+    """
+    Average the annual total snowfall over a span of years.
+
+    CARRA2's monthly snowfall is a daily rate, the month's mean, in
+    kg m^-2 day^-1. Each month is weighted by its own number of days
+    (leap-year Februaries included), summed to an annual total, and the
+    totals are averaged over ``years`` and turned into metres of water
+    equivalent.
+
+    Parameters
+    ----------
+    snowfall : xarray.DataArray
+        Monthly snowfall in kg m^-2 day^-1 on a datetime ``time`` axis.
+    years : iterable of int, optional
+        Years to average over; :data:`SNOWFALL_YEARS` (1990-2019) by default.
+
+    Returns
+    -------
+    xarray.DataArray
+        Mean annual snowfall in m water equivalent per year, without a
+        ``time`` axis.
+
+    Raises
+    ------
+    ValueError
+        If a year of ``years`` does not have all twelve months, which would
+        make its total too small.
+    """
+    years = sorted({int(year) for year in years})
+    sub = snowfall.sel(time=snowfall["time.year"].isin(years))
+    months = sub["time.year"].to_series().value_counts()
+    incomplete = [year for year in years if months.get(year, 0) != 12]
+    if incomplete:
+        raise ValueError(
+            f"Snowfall needs all twelve months of every year of {years[0]}-{years[-1]}; "
+            f"incomplete: {', '.join(f'{year} ({months.get(year, 0)})' for year in incomplete)}"
+        )
+    annual = (sub * sub["time"].dt.days_in_month).groupby("time.year").sum("time")
+    mean = (annual.mean("year") / WATER_DENSITY).astype("float32")
+    mean.name = "snowfall"
+    mean.attrs = {
+        "long_name": f"mean annual snowfall {years[0]}-{years[-1]}",
+        "units": "m yr-1",
+        "comment": "water equivalent",
+    }
+    return mean
+
+
+def write_snowfall_cogs(
+    config: dict,
+    rgi_id: str,
+    grid_ds: xr.Dataset,
+    path: Path,
+    store: str | Path | None = None,
+) -> dict[str, Path]:
+    """
+    Write a COG of the mean annual CARRA2 snowfall, 1990-2019, for one complex.
+
+    The snowfall is cut out of the CARRA2 store around the planning grid,
+    averaged with :func:`mean_annual_snowfall` on CARRA2's 2.5 km grid, and
+    interpolated (bilinear) onto the planning grid, whose whole domain it
+    covers. It is written as ``{rgi_id}_carra2_snowfall_1990_2019.tif`` in
+    m water equivalent per year. A complex outside CARRA2's domain is skipped
+    with a warning.
+
+    Parameters
+    ----------
+    config : dict
+        Campaign configuration; ``"bucket"`` and ``"prefix"`` locate the
+        CARRA2 store when ``store`` is not given.
+    rgi_id : str
+        Glacier complex identifier.
+    grid_ds : xarray.Dataset
+        Planning grid (with a projected CRS) the field is interpolated onto.
+    path : pathlib.Path
+        Output directory for the COG.
+    store : str or pathlib.Path or None, optional
+        CARRA2 Zarr store; ``s3://<bucket>/<prefix>/climate/carra2.zarr`` by
+        default.
+
+    Returns
+    -------
+    dict[str, pathlib.Path]
+        Mapping from ``f"{rgi_id}_carra2_snowfall_<first>_<last>"`` to the
+        written COG; empty when CARRA2 does not cover the complex.
+    """
+    print("")
+    print("Generate Snowfall")
+    print("-" * 120)
+    years = sorted(SNOWFALL_YEARS)
+    if store is None:
+        store = f"s3://{config['bucket']}/{config['prefix'].strip('/')}/climate/carra2.zarr"
+    print(f"Mean annual snowfall {years[0]}-{years[-1]} from {store}")
+    ds = open_carra2_zarr(store)
+    src_crs = ds.rio.crs
+
+    # The planning grid's box in CARRA2's projection, with two cells to spare
+    # on every side so the bilinear interpolation has neighbours at the edge.
+    bounds = (
+        float(grid_ds.x_bnds.values[0][0]),
+        float(grid_ds.y_bnds.values[0][0]),
+        float(grid_ds.x_bnds.values[-1][-1]),
+        float(grid_ds.y_bnds.values[-1][-1]),
+    )
+    minx, miny, maxx, maxy = Transformer.from_crs(grid_ds.rio.crs, src_crs, always_xy=True).transform_bounds(
+        *bounds, densify_pts=21
+    )
+    pad_x, pad_y = 2 * abs(float(ds.x[1] - ds.x[0])), 2 * abs(float(ds.y[1] - ds.y[0]))
+    x, y = ds["x"].values, ds["y"].values
+    snowfall = ds["snowfall"].isel(
+        x=np.flatnonzero((x >= minx - pad_x) & (x <= maxx + pad_x)),
+        y=np.flatnonzero((y >= miny - pad_y) & (y <= maxy + pad_y)),
+    )
+    if snowfall.sizes["x"] < 2 or snowfall.sizes["y"] < 2:
+        print(f"Warning: CARRA2 does not cover {rgi_id}; skipping")
+        return {}
+    # Only the dimension coordinates: CARRA2's store carries a grid-mapping
+    # variable as a coordinate that rioxarray would try to reproject.
+    snowfall = snowfall.drop_vars([c for c in snowfall.coords if c not in ("time", "x", "y")])
+
+    mean = mean_annual_snowfall(snowfall, years).load()
+    mean = mean.rio.write_crs(src_crs).rio.set_spatial_dims(x_dim="x", y_dim="y")
+    da = mean.rio.reproject_match(grid_ds, resampling=Resampling.bilinear).astype("float32")
+    da.attrs = mean.attrs
+    da = da.rio.write_nodata(np.nan)
+
+    m_id = f"{rgi_id}_carra2_snowfall_{years[0]}_{years[-1]}"
+    cog_path = Path(path) / f"{m_id}.tif"
+    write_cog(da, cog_path, **cog_profile(da))
+    print(cog_path)
+    return {m_id: cog_path}
+
+
 def s4f_glacier(
     config: dict,
     rgi_id: str,
@@ -411,7 +559,9 @@ def s4f_glacier(
         and — when the campaign sets ``dh`` — COGs of the observed 2000-2020
         elevation change and its error (see :func:`write_dh_cogs`), and —
         when it sets ``velocity`` — COGs of the observed speed, velocity
-        components and their errors (see :func:`write_velocity_cogs`),
+        components and their errors (see :func:`write_velocity_cogs`), and a
+        COG of the mean annual CARRA2 snowfall 1990-2019 in m water
+        equivalent (see :func:`write_snowfall_cogs`),
     and (5) returns a mapping of variable identifiers to written file paths.
 
     Parameters
@@ -449,7 +599,7 @@ def s4f_glacier(
         ``staging_path``.
     variables : list of str or None, optional
         Products to write (boot variable names plus ``"surface_clipped"``,
-        ``"dh"`` and ``"velocity"``). ``None`` (default) writes everything. On very large
+        ``"dh"``, ``"velocity"`` and ``"snowfall"``). ``None`` (default) writes everything. On very large
         domains (an S4F aggregate at 100 m) restricting to e.g.
         ``["bed", "surface", "surface_clipped", "dh"]`` skips the mask and
         till fields entirely, cutting peak memory by several full-grid
@@ -634,6 +784,8 @@ def s4f_glacier(
                 force_overwrite=force_overwrite,
             )
         )
+    if variables is None or "snowfall" in variables:
+        boot_files.update(write_snowfall_cogs(config, rgi_id, grid_ds, path))
     return boot_files
 
 
