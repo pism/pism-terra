@@ -23,6 +23,7 @@ forcing. That means two PISM calls whose only differences are the time bounds,
 the forcing file, and where the second one gets its initial state.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -148,9 +149,13 @@ def test_init_bounds_render_two_legs(tmp_path):
     assert f"-time.start {MAIN_START}" in main and f"-time.end {MAIN_END}" in main
 
 
-def test_only_the_init_leg_bootstraps(tmp_path):
+def test_the_main_leg_bootstraps_from_the_init_state(tmp_path):
     """
-    Restart the main leg from the init state instead of bootstrapping twice.
+    Bootstrap the main leg from the init state and regrid the spun-up state from it.
+
+    The init leg runs on a 365-day calendar from year 1 and the main leg on
+    the config's, so a restart, which takes the file's time axis, is not an
+    option.
 
     Parameters
     ----------
@@ -161,8 +166,12 @@ def test_only_the_init_leg_bootstraps(tmp_path):
 
     assert "-input.bootstrap yes" in init
     assert f"-input.file {BOOT_FILE}" in init
-    assert "-input.bootstrap" not in main
-    assert f"state_{INIT_TAG}.nc" in main
+    assert "-input.regrid" not in init
+    assert "-input.bootstrap yes" in main
+    assert re.search(rf"-input\.file \S+/state_{re.escape(INIT_TAG)}\.nc ", main)
+    assert re.search(rf"-input\.regrid\.file \S+/state_{re.escape(INIT_TAG)}\.nc ", main)
+    assert "-input.regrid.vars litho_temp,enthalpy,age,tillwat " in main
+    assert BOOT_FILE not in main.split("-input.file ")[1].split()[0]
 
 
 def test_init_leg_uses_the_init_climate(tmp_path):
@@ -496,7 +505,8 @@ def test_the_command_line_adds_an_init_leg_to_a_config_without_one(tmp_path, no_
     script = render(tmp_path / "both", config=no_init_config, init_start="0001-01-01", init_end="0011-01-01")
     init, main = legs(script)
     assert "-time.start 0001-01-01" in init and "-time.end 0011-01-01" in init
-    assert "-input.bootstrap yes" in init and "-input.bootstrap yes" not in main
+    assert "-input.bootstrap yes" in init and "-input.bootstrap yes" in main
+    assert re.search(r"-input\.regrid\.file \S+/state_\S+_0001-01-01_0011-01-01\.nc ", main)
 
     # One bound with nothing to pair it with would silently render no init leg.
     with pytest.raises(SystemExit, match="--init-start needs --init-end"):

@@ -37,9 +37,15 @@ init_start = "0001-01-01"
 init_end = "0051-01-01"
 ```
 
-The generated script then holds two PISM calls. The first bootstraps and runs
-over `init_start`..`init_end`; the second restarts from its state file — it no
-longer sets `input.bootstrap` — and runs the `[time]` span. Init products are
+The generated script then holds two PISM calls. The first bootstraps from the
+boot file and runs over `init_start`..`init_end` on a 365-day calendar counted
+from year 1. The second runs the `[time]` span on the config's calendar. A
+restart would take the time axis of the file it reads, so instead it bootstraps
+from the init leg's state file, which carries over the spun-up geometry, and
+regrids the rest of the spun-up state from the same file: `input.regrid.vars`
+from `['input']` if the config sets it, otherwise
+`litho_temp,enthalpy,age,tillwat`, plus the debris state when the debris model
+is on. Init products are
 named for the init span (`state_g500m_<rgi_id>_id_0_0001-01-01_0051-01-01.nc`),
 so they never collide with the main leg's.
 

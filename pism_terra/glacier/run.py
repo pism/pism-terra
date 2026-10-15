@@ -149,6 +149,45 @@ def _debris_vars_in(path: Path) -> list[str]:
         return [name for name in DEBRIS_REGRID_VARS if name in ds.variables]
 
 
+def _bootstrap_from_init_state(cfg, run: dict, state_init: Path) -> None:
+    """
+    Start the main leg of a forward run from the init leg's state, in place.
+
+    The init leg runs on a 365-day calendar counted from year 1
+    (:data:`INIT_TIME_OPTIONS`) and the main leg on the config's, so the main
+    leg cannot restart from the init state: a restart takes the time axis of
+    the file it reads. It bootstraps from the state instead, which carries
+    over the spun-up geometry, and regrids the rest of the spun-up state from
+    the same file: ``['input'] input.regrid.vars`` when the config pins it,
+    otherwise :data:`DEFAULT_REGRID_VARS`, plus :data:`DEBRIS_REGRID_VARS`
+    when the debris transport model is on. The init leg is built from the
+    same options, so it ran the debris model too and its state holds them.
+
+    Parameters
+    ----------
+    cfg : PismConfig
+        Loaded configuration; its ``['input']`` table may pin the variables.
+    run : dict
+        Assembled option dict of the main leg. Mutated.
+    state_init : pathlib.Path
+        State file the init leg writes.
+    """
+    pinned = str(cfg.input.get("input.regrid.vars", "none")).strip()
+    if pinned.lower() == "none":
+        regrid_vars = DEFAULT_REGRID_VARS.split(",")
+        if _debris_transport_on(run):
+            regrid_vars += list(DEBRIS_REGRID_VARS)
+        pinned = ",".join(regrid_vars)
+    run.update(
+        {
+            "input.file": state_init.resolve(),
+            "input.bootstrap": "yes",
+            "input.regrid.file": state_init.resolve(),
+            "input.regrid.vars": pinned,
+        }
+    )
+
+
 def _resolve_regrid_file(spec: str | Path | None, input_path: Path) -> Path | None:
     """
     Resolve the state file a run regrids from.
@@ -1198,8 +1237,9 @@ def _render_forward_run(
 
     # Optional init leg: when the campaign config carries init_start/init_end
     # (or --init-start/--init-end give them), render a short bootstrap run
-    # first and restart the main leg from its state instead of bootstrapping
-    # directly. ``campaign.init_climate`` swaps the forcing for that leg only
+    # first and start the main leg from its state instead of from the boot
+    # file. The legs run on different calendars, so the main leg bootstraps
+    # from that state and regrids the rest of it (_bootstrap_from_init_state). ``campaign.init_climate`` swaps the forcing for that leg only
     # — typically a climatology, which PISM cycles. Without the bounds the
     # main leg bootstraps as before.
     init_start, init_end = _init_span(cfg, config_cli)
@@ -1221,10 +1261,7 @@ def _render_forward_run(
             spatial_path=spatial_path,
             pism_config_cdl=pism_config_cdl,
         )
-        run["input.file"] = state_init.resolve()
-        run.pop("input.bootstrap", None)
-        run.pop("input.regrid.file", None)
-        run.pop("input.regrid.vars", None)
+        _bootstrap_from_init_state(cfg, run, state_init)
 
     if pism_config_cdl is not None:
         validate_pism_options(run, pism_config_cdl)
