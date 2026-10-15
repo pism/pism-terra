@@ -35,13 +35,14 @@ observation products.
 | `<RGI_ID>_${velocity}_vx.tif`, `<RGI_ID>_${velocity}_vy.tif` | velocity components along the grid's x and y axes | m yr-1 | `$velocity` |
 | `<RGI_ID>_${velocity}_vx_error.tif`, `<RGI_ID>_${velocity}_vy_error.tif` | errors of the components | m yr-1 | `$velocity` |
 | `<RGI_ID>_carra2_snowfall_${snowfall_first}_${snowfall_last}.tif` | mean annual snowfall $snowfall_first-$snowfall_last, water equivalent | m yr-1 | CARRA2 |
+| `<RGI_ID>_carra2_precipitation_${snowfall_first}_${snowfall_last}.tif` | mean annual total precipitation (rain and snow) $snowfall_first-$snowfall_last, water equivalent | m yr-1 | CARRA2 |
 
 `dh`, `dh_err` and the velocity fields are clipped to the outlines and NaN
-where there is no observation. The snowfall covers the whole grid.
+where there is no observation. The snowfall and precipitation cover the whole grid.
 
-### Snowfall
+### Snowfall and precipitation
 
-CARRA2 gives monthly snowfall as a daily rate (kg m-2 day-1). Each month's
+CARRA2 gives monthly snowfall and total precipitation as daily rates (kg m-2 day-1). Each month's
 rate is multiplied by the number of days in that month, leap-year Februaries
 included, and the months are summed to an annual total. The totals of
 $snowfall_first-$snowfall_last are averaged and divided by 1000 kg m-3 to give metres
@@ -63,4 +64,4 @@ planning products:
 
 A product that does not apply to a complex is missing from its folder: a
 complex outside the elevation-change tiles has no `dh`, one outside CARRA2's
-domain has no snowfall.
+domain has no snowfall or precipitation.
