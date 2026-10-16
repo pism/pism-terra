@@ -1,5 +1,10 @@
 samples = 150
-mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
+
+['surface.debm_simple.std_dev.value']
+
+loc = 2.5
+scale = 5.0
+distribution = "uniform"
 
 ['surface.debm_simple.c1']
 

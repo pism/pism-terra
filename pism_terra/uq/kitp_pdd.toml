@@ -1,5 +1,10 @@
-samples = 75
-mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
+samples = 150
+
+['surface.pdd.std_dev.value']
+
+loc = 2.5
+scale = 5.0
+distribution = "uniform"
 
 ['surface.pdd.factor_ice']
 
