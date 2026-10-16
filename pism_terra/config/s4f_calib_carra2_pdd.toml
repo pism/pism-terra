@@ -144,8 +144,7 @@ model = "pdd"
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
 'surface.pdd.refreeze_ice_melt' = "no"
-'surface.pdd.std_dev.file' = "none"
-'surface.pdd.std_dev.periodic' = "yes"
+'surface.pdd.std_dev.value' = 5.0
 
 [surface.options.pdd_forcing]
 
@@ -159,8 +158,7 @@ model = "pdd"
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
 'surface.pdd.refreeze_ice_melt' = "no"
-'surface.pdd.std_dev.file' = "none"
-'surface.pdd.std_dev.periodic' = "yes"
+'surface.pdd.std_dev.value' = 5.0
 
 [surface.options.debm_simple]
 
@@ -173,8 +171,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.std_dev' = 5.0
 'surface.models' = "debm_simple"
 
 [surface.options.debm_simple_forcing]
@@ -194,8 +191,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.std_dev' = 5.0
 'surface.force_to_thickness.alpha' = 0.98
 'surface.force_to_thickness.file' = "none"
 'surface.force_to_thickness.ice_free_alpha_factor' = 10
@@ -212,8 +208,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.std_dev' = 5.0
 'surface.models' = "debm_enhanced"
 
 [surface.options.debm_enhanced_forcing]
@@ -227,8 +222,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.std_dev' = 5.0
 'surface.force_to_thickness.alpha' = 0.98
 'surface.force_to_thickness.file' = "none"
 'surface.force_to_thickness.ice_free_alpha_factor' = 10
