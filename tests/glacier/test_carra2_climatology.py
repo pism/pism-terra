@@ -90,7 +90,6 @@ def carra2_store(path, first_year: int = 1986, last_year: int = 2026):
     ds = xr.Dataset(
         {
             "air_temp": (("time", "y", "x"), field(1.0)),
-            "air_temp_sd": (("time", "y", "x"), field(0.01)),
             "precipitation": (("time", "y", "x"), field(0.1)),
             "snowfall": (("time", "y", "x"), field(0.05)),
             "orography": (("y", "x"), np.arange(20.0).reshape(4, 5)),
@@ -141,24 +140,6 @@ def test_averages_over_the_fixed_reference_period(climatology):
     for month in (1, 7, 12):
         assert float(climatology["air_temp"].sel(time=month).mean()) == pytest.approx(month * 100 + offset)
     assert climatology.attrs["climatology_period"] == "1990-2019"
-
-
-def test_air_temp_sd_is_averaged_not_recomputed(climatology):
-    """
-    Keep ``air_temp_sd`` as within-month variability.
-
-    The PDD scheme reads it as sub-monthly spread, so it is averaged like every
-    other field rather than replaced by the interannual standard deviation
-    (which would be far smaller and would understate melt).
-
-    Parameters
-    ----------
-    climatology : xarray.Dataset
-        Climatology built from the synthetic store.
-    """
-    offset = np.mean(np.array(list(CARRA2_CLIMATOLOGY_YEARS)) - 1986)
-
-    assert float(climatology["air_temp_sd"].sel(time=7).mean()) == pytest.approx((7 * 100 + offset) * 0.01)
 
 
 def test_time_invariant_fields_survive(climatology):

@@ -39,20 +39,28 @@ comparable with the RACMO/MAR means over the same years.
 Staging crops the glacier's box out of it and writes
 `carra2_monthly_mean_<rgi_id>.nc` or `era5_monthly_mean_<rgi_id>.nc`, next to
 and never in place of the transient forcing. There is no per-glacier download
-of the ERA5 climatology: the reference period is thirty years of daily means,
-one CDS request of several hours each. Staging a glacier that no regional
-climatology covers fails and names the prepare step that builds it.
+of the ERA5 climatology: the reference period is thirty years of CDS
+requests. Staging a glacier that no regional climatology covers fails and names
+the prepare step that builds it.
 
-`air_temp_sd` is averaged like every other field, so it stays the typical
-*within-month* temperature variability — what PISM's positive-degree-day scheme
-reads. It is deliberately not the year-to-year spread of the monthly means,
-which is much smaller and would understate melt.
+## Temperature spread
+
+The CARRA2 and ERA5 forcing carry no `air_temp_sd`, the spread of the daily
+temperatures within a month. The positive-degree-day and dEBM surface models use
+a constant spread instead (`surface.pdd.std_dev.value`,
+`surface.debm_simple.std_dev`, 5 K in the packaged configs), the value their
+degree-day and melt coefficients were calibrated with. CARRA2's own spread was
+about 1.5 K in summer, which with the classic degree-day factors cut the PDD
+melt by a factor of several near 0 °C. SNAP's forcing still carries a spread,
+and a run reads it from there when its config asks for
+`surface.*.std_dev.file`; a config that asks for it with CARRA2 or ERA5 stops
+when the run script is generated.
 
 ## ERA5 regional stores
 
-Asking CDS for one glacier's ERA5 forcing takes hours: the standard deviation
-of the daily means, `air_temp_sd`, needs a year of daily statistics per request.
-`pism-glacier-prepare --include era5` therefore builds the forcing once per
+Asking CDS for every glacier's ERA5 forcing would repeat the same requests for
+each glacier of a region. `pism-glacier-prepare --include era5` therefore builds
+the forcing once per
 region of the setup file and writes it to `climate/era5_<region>.zarr` under the
 project subtree, over the box of that region's outlines and for
 {py:data}`~pism_terra.glacier.climate.ERA5_STORE_YEARS` (1986–2025). See

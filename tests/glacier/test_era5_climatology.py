@@ -19,7 +19,7 @@
 Tests for the ERA5 monthly climatology.
 
 ``era5-monthly-mean`` is the forcing a spin-up cycles. It used to be the
-twelve months of 1978, downloaded per glacier, without ``air_temp_sd``, and
+twelve months of 1978, downloaded per glacier, and
 written under the name of the transient forcing, which it replaced. These pin
 the CARRA2 workflow it now follows: ``prepare`` averages a region's store over
 a fixed reference period, and staging cuts each glacier out of that into a
@@ -31,12 +31,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 import rioxarray  # noqa: F401  # pylint: disable=unused-import
 import xarray as xr
 from pyproj import CRS
-from test_era5_air_temp_sd import YEARS, FakeCDS, daily_temperature
+from test_era5_fields import YEARS, FakeCDS
 from test_era5_store import BOUNDS, GLACIER, glacier_grid
 
 from pism_terra.glacier import climate
@@ -60,23 +59,6 @@ def fixture_cds(monkeypatch) -> FakeCDS:
     cds = FakeCDS()
     monkeypatch.setattr(climate, "download_request", cds)
     return cds
-
-
-def january_spread() -> float:
-    """
-    Compute the January ``air_temp_sd`` of the stand-in's climatology.
-
-    Returns
-    -------
-    float
-        The mean, over the stand-in's years, of the spread of the daily means
-        within each January.
-    """
-    return float(
-        np.mean(
-            [np.std(daily_temperature(pd.date_range(f"{year}-01-01", f"{year}-01-31", freq="D"))) for year in YEARS]
-        )
-    )
 
 
 @pytest.fixture(name="stores")
@@ -110,7 +92,7 @@ def test_the_reference_period_is_carra2s():
 
 def test_a_store_is_averaged_by_calendar_month(stores: tuple[Path, Path]):
     """
-    Write twelve months on the store's own grid, the spread averaged like the rest.
+    Write twelve months on the store's own grid, each field averaged by calendar month.
 
     Parameters
     ----------
@@ -127,8 +109,6 @@ def test_a_store_is_averaged_by_calendar_month(stores: tuple[Path, Path]):
     assert np.array_equal(climatology["latitude"], series["latitude"])
     assert np.allclose(climatology["air_temp"], 265.0)
     assert np.allclose(climatology["precipitation"], 2.0)
-    # The mean of the Januaries' spreads, not the spread of two Januaries.
-    assert np.allclose(climatology["air_temp_sd"].isel(time=0), january_spread(), rtol=1e-5)
     # The surface has no time axis to average over.
     assert climatology["surface"].dims == ("latitude", "longitude")
     assert np.allclose(climatology["surface"], 1000.0)
@@ -189,8 +169,7 @@ def test_staging_cuts_the_glacier_out_of_the_climatology(
         bounds = ds["time_bounds"].values
         assert bounds[0, 0] == 0.0 and bounds[-1, 1] == 365.0
         assert (bounds[1:, 0] == bounds[:-1, 1]).all()
-        assert np.allclose(ds["air_temp_sd"].isel(time=0), january_spread(), rtol=1e-5)
-        assert not bool(ds["air_temp_sd"].isnull().any())
+        assert "air_temp_sd" not in ds
         # The glacier's box only, on the store's own cells.
         whole = climate.open_era5_store(stores[1])
         assert ds.sizes["longitude"] < whole.sizes["longitude"] and ds.sizes["latitude"] < whole.sizes["latitude"]
@@ -231,8 +210,8 @@ def test_without_a_climatology_nothing_is_downloaded(cds: FakeCDS, tmp_path: Pat
     """
     Refuse, naming the prepare step, when no regional climatology covers the glacier.
 
-    The reference period is thirty years of daily means, one CDS request of
-    hours each; a run must not queue that for one glacier by accident.
+    The reference period is thirty years of CDS requests; a run must not queue
+    that for one glacier by accident.
 
     Parameters
     ----------

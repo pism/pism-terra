@@ -81,7 +81,6 @@ def render(tmp_path, config=CONFIG, init_climate_file=INIT_CLIMATE_FILE, uq_extr
             "input.file": BOOT_FILE,
             "grid.file": "/in/grid.nc",
             "atmosphere.given.file": CLIMATE_FILE,
-            "surface.debm_simple.std_dev.file": CLIMATE_FILE,
             "surface.debm_simple.albedo_input.file": CLIMATE_FILE,
             "surface.force_to_thickness.file": BOOT_FILE,
             **(uq_extra or {}),
@@ -186,9 +185,9 @@ def test_init_leg_uses_the_init_climate(tmp_path):
     init, main = legs(render(tmp_path))
 
     assert f"-atmosphere.given.file {INIT_CLIMATE_FILE}" in init
-    assert f"-surface.debm_simple.std_dev.file {INIT_CLIMATE_FILE}" in init
+    assert f"-surface.debm_simple.albedo_input.file {INIT_CLIMATE_FILE}" in init
     assert f"-atmosphere.given.file {CLIMATE_FILE}" in main
-    assert f"-surface.debm_simple.std_dev.file {CLIMATE_FILE}" in main
+    assert f"-surface.debm_simple.albedo_input.file {CLIMATE_FILE}" in main
 
 
 def test_init_leg_keeps_the_main_climate_without_an_init_file(tmp_path):
@@ -299,8 +298,8 @@ def test_swapping_the_surface_model_keeps_the_staged_files(tmp_path):
     # Carried over from the main leg, untouched by the swap.
     assert f"-surface.force_to_thickness.file {BOOT_FILE}" in init
     # Still re-pointed at the init climatology by the init_climate swap.
-    assert f"-surface.debm_simple.std_dev.file {INIT_CLIMATE_FILE}" in init
-    assert "-surface.debm_simple.std_dev.file none" not in init
+    assert f"-surface.debm_simple.albedo_input.file {INIT_CLIMATE_FILE}" in init
+    assert "-surface.debm_simple.albedo_input.file none" not in init
 
 
 def test_a_file_only_the_init_surface_model_reads_is_staged(tmp_path):

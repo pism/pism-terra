@@ -131,6 +131,58 @@ def _require_debris_input(run: Mapping[str, object]) -> None:
         )
 
 
+#: Options that read the temperature spread, ``air_temp_sd``, from a file.
+SPREAD_FILE_OPTIONS = ("surface.debm_simple.std_dev.file", "surface.pdd.std_dev.file")
+
+
+def _has_spread(climate_file: str | Path | None) -> bool:
+    """
+    Tell whether a staged climate file holds the temperature spread.
+
+    Parameters
+    ----------
+    climate_file : str or pathlib.Path or None
+        Staged forcing; ``None`` for a parameterized climate.
+
+    Returns
+    -------
+    bool
+        ``True`` when the file exists and has ``air_temp_sd``.
+    """
+    if not isinstance(climate_file, (str, Path)) or not Path(climate_file).is_file():
+        return False
+    with xr.open_dataset(climate_file, decode_times=False, decode_cf=False) as ds:
+        return "air_temp_sd" in ds.variables
+
+
+def _require_spread_file(run: Mapping[str, object]) -> None:
+    """
+    Stop when a surface model reads the temperature spread from no file.
+
+    Staging fills ``surface.pdd.std_dev.file`` and
+    ``surface.debm_simple.std_dev.file`` with the climate file only when that
+    file holds ``air_temp_sd``. The CARRA2 and ERA5 forcing no longer do, so a
+    config that still declares the option is left with its ``"none"``
+    placeholder, and PISM would try to open a file of that name.
+
+    Parameters
+    ----------
+    run : Mapping[str, object]
+        Option dict after the staged files were applied.
+
+    Raises
+    ------
+    ValueError
+        If a spread-file option is still ``"none"``.
+    """
+    unset = [option for option in SPREAD_FILE_OPTIONS if str(run.get(option, "")).strip().lower() == "none"]
+    if unset:
+        raise ValueError(
+            f"{', '.join(unset)} still 'none': the climate forcing has no air_temp_sd to read. Set a constant "
+            "spread instead (surface.pdd.std_dev.value, surface.debm_simple.std_dev) and drop the file option."
+        )
+
+
 def _debris_vars_in(path: Path) -> list[str]:
     """
     List the debris transport variables a state file holds.
@@ -878,6 +930,7 @@ def _render_inverse_run(
     run.update(run_overrides)
     inv.update(inv_overrides)
     _require_debris_input(run)
+    _require_spread_file(run)
 
     # The prior leg is the one that bootstraps, so an optional spin-up state
     # (``--regrid-file`` / ``campaign.regrid_file``) is regridded there; the
@@ -1217,6 +1270,7 @@ def _render_forward_run(
     # Apply to runtime dict (these should be dotted PISM flags)
     run.update(overrides)
     _require_debris_input(run)
+    _require_spread_file(run)
 
     # Optional spin-up state to regrid from (``--regrid-file`` /
     # ``campaign.regrid_file``). Applied before the init leg is split off so
@@ -1670,11 +1724,14 @@ def _run(*, kind: str) -> None:
                 "atmosphere.given.file": row["climate_file"],
                 "energy.bedrock_thermal.file": row["heatflux_file"],
                 "surface.debm_simple.albedo_input.file": row["climate_file"],
-                "surface.debm_simple.std_dev.file": row["climate_file"],
                 "surface.force_to_thickness.file": row["boot_file"],
-                "surface.pdd.std_dev.file": row["climate_file"],
             }
         )
+        # The spread is read from the forcing only when the forcing has one
+        # (SNAP's does; CARRA2's and ERA5's do not): otherwise the surface
+        # models use their constant std_dev.
+        if _has_spread(row["climate_file"]):
+            uq_overrides.update({option: row["climate_file"] for option in SPREAD_FILE_OPTIONS})
         if kind == "inverse":
             uq_overrides["inverse.file"] = row["obs_file"]
         # The staged debris file carries the debris input rate; configs
