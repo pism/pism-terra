@@ -668,6 +668,49 @@ def run_label(file: Path, root: Path | str | None) -> str:
     return f"{label} uq_{match.group(2)}" if match.group(2) is not None else label
 
 
+def unique_run_labels(files: Sequence[Path | str], root: Path | str | None) -> dict[Path, str]:
+    """
+    Name every file's run, apart even when two files share one.
+
+    :func:`run_label` leaves out the resolution and the span of a file, so
+    two outputs of one member in one directory (a rerun at another
+    resolution, or for another span) get the same name. Their rows would be
+    taken for one run, and duplicated. Those files are named by their path
+    under ``root`` instead, and a warning names them.
+
+    Parameters
+    ----------
+    files : sequence of Path or str
+        Model output files.
+    root : Path or str or None
+        Search root, as for :func:`run_label`.
+
+    Returns
+    -------
+    dict of Path to str
+        The label of each file, all different.
+    """
+    paths = [Path(file) for file in files]
+    labels = {path: run_label(path, root) for path in paths}
+    shared: dict[str, list[Path]] = {}
+    for path, label in labels.items():
+        shared.setdefault(label, []).append(path)
+    for label, group in shared.items():
+        if len(group) < 2:
+            continue
+        logger.warning(
+            "%d files are run %r; told apart by file name: %s",
+            len(group),
+            label,
+            ", ".join(path.name for path in group),
+        )
+        for path in group:
+            labels[path] = (
+                path.relative_to(root).as_posix() if root is not None and path.is_relative_to(root) else path.name
+            )
+    return labels
+
+
 def to_timestamp(t: Any) -> pd.Timestamp:
     """
     Convert a cftime, numpy or pandas time stamp to a pandas Timestamp.

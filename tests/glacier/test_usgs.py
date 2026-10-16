@@ -172,6 +172,36 @@ def test_run_label_keeps_ensemble_members_apart():
     assert usgs.run_label(base / "other.nc", None) == "other.nc"
 
 
+def test_two_files_of_one_run_are_told_apart(caplog):
+    """
+    Name two outputs of one member by their paths, and say so.
+
+    A rerun at another resolution (or for another span) in the same directory
+    has the same ``id`` and ``uq``; with one label for both, their rows were
+    taken for one run, twice.
+
+    Parameters
+    ----------
+    caplog : pytest.LogCaptureFixture
+        Pytest fixture capturing the warning.
+    """
+    root = Path("/runs")
+    base = root / "RGI1" / "output" / "spatial"
+    files = [
+        base / "spatial_g200m_RGI1_id_0_uq_3_1986-01-01_2025-01-01.nc",
+        base / "spatial_g500m_RGI1_id_0_uq_3_1986-01-01_2025-01-01.nc",
+        base / "spatial_g200m_RGI1_id_0_uq_4_1986-01-01_2025-01-01.nc",
+    ]
+
+    with caplog.at_level("WARNING", logger="pism_terra.glacier.usgs"):
+        labels = usgs.unique_run_labels(files, root)
+
+    assert len(set(labels.values())) == 3
+    assert labels[files[2]] == "RGI1 id_0 uq_4"
+    assert labels[files[0]] == "RGI1/output/spatial/spatial_g200m_RGI1_id_0_uq_3_1986-01-01_2025-01-01.nc"
+    assert "2 files are run 'RGI1 id_0 uq_3'" in caplog.text
+
+
 def test_score_on_plain_arrays():
     """
     Score plain arrays like aligned DataArrays; drop NaNs and withhold r below three points.

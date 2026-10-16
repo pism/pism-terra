@@ -80,9 +80,9 @@ from pism_terra.glacier.usgs import (
     open_pism,
     plot_year,
     rgi_output_dir,
-    run_label,
     score,
     uncertainty_var,
+    unique_run_labels,
 )
 from pism_terra.kitp.analyze import REGION_DIM, rc_params, with_region_labels
 from pism_terra.log import setup_logging
@@ -506,8 +506,9 @@ def load_model_data(
     annual_labels: dict[str, list[str]] = {}
     seasonal_series: dict[str, list[xr.Dataset]] = {}
     seasonal_labels: dict[str, list[str]] = {}
+    labels = unique_run_labels(files, root)
     for file, (file_annual, file_seasonal) in zip(files, results):
-        label = run_label(Path(file), root)
+        label = labels[Path(file)]
         for rgi_id, da in file_annual.items():
             annual_series.setdefault(rgi_id, []).append(da)
             annual_labels.setdefault(rgi_id, []).append(label)

@@ -40,7 +40,7 @@ import logging
 import math
 import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -82,8 +82,8 @@ from pism_terra.glacier.usgs import (
     open_pism,
     plot_year,
     rgi_output_dir,
-    run_label,
     score,
+    unique_run_labels,
 )
 from pism_terra.kitp.analyze import rc_params
 from pism_terra.log import setup_logging
@@ -1188,6 +1188,18 @@ def to_dataset(table: pd.DataFrame, sampled: Sequence[xr.Dataset] = ()) -> xr.Da
         *sampled* provides them.
     """
     seasonal = table[table["variable"] != "db"]
+    # One row per run, stake, year and season. A measurement listed twice in
+    # a release would otherwise stop the whole conversion; the observations
+    # below keep the first of them, and so do the model values.
+    repeated = seasonal.duplicated(subset=["run", "site", "year", "variable"])
+    if repeated.any():
+        twice = seasonal[repeated].drop_duplicates(subset=["site", "year", "variable"])
+        logger.warning(
+            "%d rows repeat a run, stake, year and season and are left out, e.g. %s",
+            int(repeated.sum()),
+            ", ".join(f"{r.site} {r.year} {r.variable}" for r in twice.head(5).itertuples(index=False)),
+        )
+        seasonal = seasonal[~repeated]
     runs = sorted(r for r in table["run"].unique() if r != NO_RUN) or [NO_RUN]
     out = xr.Dataset()
     if not seasonal.empty:
@@ -1251,7 +1263,7 @@ def to_dataset(table: pd.DataFrame, sampled: Sequence[xr.Dataset] = ()) -> xr.Da
 
 def _sample_one_file(
     file: Path,
-    run_dir: Path | str | None,
+    labels: Mapping[Path, str],
     points: gpd.GeoDataFrame,
     stakes: dict[str, pd.DataFrame],
     subseasonal: dict[str, pd.DataFrame],
@@ -1269,8 +1281,9 @@ def _sample_one_file(
     ----------
     file : pathlib.Path
         PISM spatial output file.
-    run_dir : Path or str or None
-        Run directory the ``run`` labels are made relative to.
+    labels : Mapping[pathlib.Path, str]
+        The ``run`` label of every file, from
+        :func:`pism_terra.glacier.usgs.unique_run_labels`.
     points : geopandas.GeoDataFrame
         Measured sites from :func:`stake_points`.
     stakes : dict
@@ -1289,7 +1302,7 @@ def _sample_one_file(
         number of ice-free months per ``(glacier, site)``; None when the
         file is not monthly or no stake falls inside its grid.
     """
-    label = run_label(file, run_dir)
+    label = labels[Path(file)]
     try:
         ds = open_pism(file)
     except (OSError, ValueError) as exc:
@@ -1410,7 +1423,7 @@ def run_pipeline(
     for result in map_files(
         _sample_one_file,
         files,
-        run_dir,
+        unique_run_labels(files, run_dir),
         points,
         stakes,
         subseasonal,

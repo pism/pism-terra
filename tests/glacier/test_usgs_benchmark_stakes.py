@@ -516,3 +516,38 @@ def test_first_measurement_is_the_earliest_date_in_any_table():
     assert ubs.first_measurement([stakes, None, sub]) == pd.Timestamp("1966-04-15")
     assert ubs.first_measurement([None]) is None
     assert ubs.first_measurement([pd.DataFrame({"site": ["A"]})]) is None
+
+
+def test_a_repeated_row_does_not_stop_the_dataset(caplog):
+    """
+    Keep the first of two rows for one run, stake, year and season.
+
+    ``from_series`` refuses a repeated index, and one repeated measurement
+    stopped the NetCDF of a whole glacier.
+
+    Parameters
+    ----------
+    caplog : pytest.LogCaptureFixture
+        Pytest fixture capturing the warning.
+    """
+    row = {
+        "glacier": "G",
+        "site": "AB",
+        "year": 2000,
+        "variable": "ba",
+        "start": pd.Timestamp("1999-09-01"),
+        "end": pd.Timestamp("2000-09-01"),
+        "obs": -1.0,
+        "model": -1.5,
+        "elevation": 1500.0,
+        "usurf": 1490.0,
+        "visit": -1,
+        "run": "RGI1 id_0",
+    }
+    table = pd.DataFrame([row, {**row, "model": -9.0}], columns=ubs.TABLE_COLUMNS)
+
+    with caplog.at_level("WARNING", logger="pism_terra.glacier.usgs_benchmark_stakes"):
+        out = ubs.to_dataset(table)
+
+    assert float(out["ba_model"].sel(run="RGI1 id_0", site="AB", time=2000)) == -1.5
+    assert "1 rows repeat a run, stake, year and season" in caplog.text
