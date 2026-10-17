@@ -42,6 +42,7 @@ import rioxarray  # pylint: disable=unused-import
 import xarray as xr
 from test_postprocess_scalar import synthetic_greenland
 
+from pism_terra import postprocess_spatial as pps
 from pism_terra.postprocess_scalar import basin_masks, resolve_column
 from pism_terra.postprocess_spatial import (
     DEFAULT_FILL_VALUE,
@@ -572,3 +573,47 @@ def test_process_file_spatial_keeps_the_crs_of_a_pism_file(tmp_path, basins, out
         assert out["mask"].dtype == np.dtype(mask_dtype)
     finally:
         out.close()
+
+
+def test_the_command_line_hands_crs_on(tmp_path, monkeypatch):
+    """
+    Pass ``--crs`` to the processing, for a file without a grid mapping.
+
+    The option did not exist, and unknown options were dropped without a
+    word, so ``--crs EPSG:3413`` changed nothing and the run stopped asking
+    for it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture replacing the processing and the command line.
+    """
+    seen = {}
+
+    def fake(infile, outdir, outlinefile, **kwargs):  # pylint: disable=unused-argument
+        """
+        Record the options instead of processing.
+
+        Parameters
+        ----------
+        infile, outdir, outlinefile : str or pathlib.Path
+            Positional arguments of the processing.
+        **kwargs
+            Its options.
+        """
+        seen.update(kwargs)
+
+    monkeypatch.setattr(pps, "postprocess_glacier_spatial", fake)
+    monkeypatch.setattr(
+        "sys.argv", ["pism-postprocess-spatial", "in.nc", str(tmp_path / "out"), "basins.gpkg", "--crs", "EPSG:3413"]
+    )
+    pps.main()
+    assert seen["crs"] == "EPSG:3413"
+
+    monkeypatch.setattr(
+        "sys.argv", ["pism-postprocess-spatial", "in.nc", str(tmp_path / "out"), "basins.gpkg", "--projection", "x"]
+    )
+    with pytest.raises(SystemExit):
+        pps.main()
