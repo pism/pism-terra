@@ -19,7 +19,7 @@ profile = true
 project_directory = "s4f"
 rgi_complex_file = "s4f_c.gpkg"
 rgi_glacier_file = "s4f_g.gpkg"
-velocity = "its_live"
+velocity = "none"
 
 [time]
 
