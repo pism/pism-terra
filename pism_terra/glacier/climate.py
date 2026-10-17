@@ -170,6 +170,45 @@ def _finalize_pism_crs(ds: xr.Dataset, crs_wkt: str) -> xr.Dataset:
     return ds
 
 
+def _promote_grid_mapping(target_grid: xr.Dataset) -> xr.Dataset:
+    """
+    Make the target grid's CF grid-mapping variable a coordinate.
+
+    A grid file opened with plain ``xarray.open_dataset`` (``decode_coords=True``)
+    keeps ``spatial_ref`` as a *data variable*, and rioxarray only reads a CRS
+    from a coordinate. ``target_grid.rio.crs`` is then ``None`` and
+    ``reproject_match(target_grid)`` fails deep inside rasterio with
+    "Missing dst_crs". Promoting the variable named by the ``grid_mapping``
+    pointer fixes that without changing the grid itself.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        Target grid, opened with or without ``decode_coords="all"``.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``target_grid`` with a usable ``rio.crs``.
+
+    Raises
+    ------
+    ValueError
+        If the grid has no grid-mapping variable rioxarray can read a CRS from.
+    """
+    if target_grid.rio.crs is not None:
+        return target_grid
+    mapping_var = target_grid.rio.grid_mapping
+    if mapping_var in target_grid.data_vars:
+        target_grid = target_grid.set_coords(mapping_var)
+    if target_grid.rio.crs is None:
+        raise ValueError(
+            f"Could not determine the CRS of the target grid: no usable grid mapping "
+            f"(looked for {mapping_var!r}). Variables present: {list(target_grid.variables)}"
+        )
+    return target_grid
+
+
 def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | None:
     """
     Convert a single GeoTIFF to a time-stamped NetCDF, returning the output path.
@@ -1409,6 +1448,7 @@ def carra2_monthly_mean(
         print(f"Using cached {out_file}")
         return out_file
 
+    target_grid = _promote_grid_mapping(target_grid)
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
 
@@ -1696,6 +1736,7 @@ def snap(
 
     # Destination CRS/extent from the target grid; SNAP is on EPSG:3338, so clip
     # in that CRS (PISM reprojects 3338 -> model grid via the grid mapping).
+    target_grid = _promote_grid_mapping(target_grid)
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     bounds = [
@@ -1792,6 +1833,28 @@ def snap(
         out_files.append(snap_filename)
 
     return out_files
+
+
+def _nearest_source_year(source_years: Sequence[int], year: int) -> int:
+    """
+    Return the CARRA2 source year that stands in for ``year``.
+
+    The nearest of ``source_years``; ties go to the earlier year (e.g.
+    2004 -> 2003 when both 2003 and 2005 are available).
+
+    Parameters
+    ----------
+    source_years : sequence of int
+        Years present in the CARRA2 source.
+    year : int
+        Target year.
+
+    Returns
+    -------
+    int
+        The source year whose 12 months are used for ``year``.
+    """
+    return min((abs(sy - year), sy) for sy in source_years)[1]
 
 
 def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Dataset:
@@ -1914,7 +1977,7 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
 
     pieces = []
     for ty in sorted({int(y) for y in years}):
-        nearest = min((abs(sy - ty), sy) for sy in source_years)[1]
+        nearest = _nearest_source_year(source_years, ty)
         sub = ds.isel(time=np.where(src_year_of == nearest)[0])
         new_times = np.array([_replace_year(t, ty) for t in sub["time"].values])
         pieces.append(sub.assign_coords(time=new_times))
@@ -2037,6 +2100,7 @@ def carra2(
         float(target_grid.x_bnds.values[-1][-1]),
         float(target_grid.y_bnds.values[-1][-1]),
     )
+    target_grid = _promote_grid_mapping(target_grid)
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
 
@@ -2102,6 +2166,14 @@ def carra2(
         x=slice(minx, maxx) if x_ascending else slice(maxx, minx),
         y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
     )
+    # Keep only the source years the requested ``years`` are filled from, so
+    # the S3 reads and reprojection below cover those months and not the whole
+    # record. _carra2_fill_years_and_bounds picks the same years afterwards.
+    years = list(years)
+    src_year_of = sub["time"].dt.year.values
+    needed = {_nearest_source_year(sorted(set(src_year_of.tolist())), int(y)) for y in years}
+    sub = sub.isel(time=np.flatnonzero(np.isin(src_year_of, sorted(needed))))
+    print(f"  source years used: {sorted(needed)}", flush=True)
     print(f"  subset dims: {dict(sub.sizes)}", flush=True)
 
     # rioxarray.reproject_match eagerly reads every non-spatial coord (via
@@ -3291,6 +3363,7 @@ def era5(
     # The regional store ``pism-glacier-prepare`` builds holds the same fields
     # for every glacier of a region, so the CDS requests are made once per
     # region instead of once per glacier.
+    target_grid = _promote_grid_mapping(target_grid)
     bucket = kwargs.get("bucket")
     if bucket is not None:
         store = find_era5_store(
@@ -3418,6 +3491,7 @@ def era5_mean(
         target_grid.x_bnds.values[-1][-1],
         target_grid.y_bnds.values[-1][-1],
     ]
+    target_grid = _promote_grid_mapping(target_grid)
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326")
@@ -3622,6 +3696,7 @@ def era5_monthly_mean(
         return out_file
 
     _ = dataset
+    target_grid = _promote_grid_mapping(target_grid)
     store = None
     bucket = kwargs.get("bucket")
     prefix, project_directory = kwargs.get("prefix") or "", kwargs.get("project_directory")

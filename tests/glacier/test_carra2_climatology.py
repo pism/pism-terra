@@ -30,10 +30,14 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from pyproj import CRS, Transformer
+from rioxarray.raster_array import RasterArray
 
+from pism_terra.glacier import climate
 from pism_terra.glacier.climate import (
     CARRA2_CLIMATOLOGY_YEARS,
     _carra2_fill_years_and_bounds,
+    _promote_grid_mapping,
     files_by_year,
     has_variables,
     open_carra2_zarr,
@@ -390,3 +394,227 @@ def test_yearly_downloads_are_paired_by_year_not_by_position(tmp_path):
         files_by_year(arrived, years, "2 m temperature")
     # A file of a year that was not asked for is ignored rather than paired with anything.
     assert list(files_by_year(complete, [1988], "2 m temperature")) == [1988]
+
+
+def _grid_file(tmp_path, crs_wkt=None):
+    """
+    Write a PISM grid file laid out like pism-terra's ``grid_<rgi_id>.nc``.
+
+    One ``domain`` variable pointing at a 0-d ``spatial_ref``, with ``x_bnds`` and
+    ``y_bnds`` cell bounds: 120 x 120 cells of 100 m around Storglaciaren.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write ``grid.nc`` into.
+    crs_wkt : str or None, optional
+        WKT stored as the ``crs_wkt`` of ``spatial_ref``; ``None`` writes a grid
+        mapping without one.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the written grid file.
+    """
+    x = np.arange(392050.0, 404000.0, 100.0)
+    y = np.arange(7529050.0, 7541000.0, 100.0)
+    ds = xr.Dataset(
+        {
+            "domain": (("y", "x"), np.zeros((y.size, x.size), dtype="int64"), {"grid_mapping": "spatial_ref"}),
+            "x_bnds": (("x", "nv2"), np.stack([x - 50, x + 50], axis=1)),
+            "y_bnds": (("y", "nv2"), np.stack([y - 50, y + 50], axis=1)),
+            "spatial_ref": ((), 0, {} if crs_wkt is None else {"crs_wkt": crs_wkt}),
+        },
+        coords={"x": ("x", x, {"bounds": "x_bnds"}), "y": ("y", y, {"bounds": "y_bnds"})},
+    )
+    path = tmp_path / "grid.nc"
+    ds.to_netcdf(path)
+    return path
+
+
+def test_a_grid_opened_without_decode_coords_gets_its_crs(tmp_path):
+    """
+    Recover the CRS of a grid whose grid mapping xarray left as a data variable.
+
+    Plain ``xr.open_dataset`` keeps ``spatial_ref`` out of the coordinates, so
+    rioxarray finds no CRS and ``reproject_match`` fails with "Missing dst_crs".
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    path = _grid_file(tmp_path, CRS("EPSG:32634").to_wkt())
+    with xr.open_dataset(path) as grid:
+        assert grid.rio.crs is None  # the failure mode: spatial_ref is a data variable
+        promoted = _promote_grid_mapping(grid)
+        assert promoted.rio.crs.to_epsg() == 32634
+        assert "spatial_ref" in promoted.coords
+        assert promoted.rio.shape == grid.rio.shape
+
+
+def test_a_grid_that_already_has_a_crs_is_untouched(tmp_path):
+    """
+    Return a grid that already has a usable CRS as it is.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    path = _grid_file(tmp_path, CRS("EPSG:32634").to_wkt())
+    with xr.open_dataset(path, decode_coords="all") as grid:
+        assert _promote_grid_mapping(grid) is grid
+
+
+def test_a_grid_without_a_crs_is_rejected(tmp_path):
+    """
+    Fail early, and say why, on a grid with no CRS to recover.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    with xr.open_dataset(_grid_file(tmp_path)) as grid:
+        with pytest.raises(ValueError, match="CRS of the target grid"):
+            _promote_grid_mapping(grid)
+
+
+def _fake_carra2_store(years):
+    """
+    Build a small CARRA2-like store on EPSG:3413 around the test grid.
+
+    Every cell of ``air_temp`` and ``precipitation`` holds ``100 * year + month``,
+    so the output shows which source month it came from.
+
+    Parameters
+    ----------
+    years : sequence of int
+        Years in the store, twelve mid-month steps each.
+
+    Returns
+    -------
+    xarray.Dataset
+        The store, with its CRS and spatial dims set as ``open_carra2_zarr`` would.
+    """
+    cx, cy = Transformer.from_crs("EPSG:32634", "EPSG:3413", always_xy=True).transform(398000.0, 7535000.0)
+    x = cx + 2500.0 * np.arange(-6, 7)
+    y = cy + 2500.0 * np.arange(-6, 7)
+    time = pd.to_datetime([f"{yr}-{m:02d}-15" for yr in years for m in range(1, 13)])
+    code = np.array([100.0 * t.year + t.month for t in time])[:, None, None]
+    field = np.broadcast_to(code, (time.size, y.size, x.size)).astype("float32")
+    ds = xr.Dataset(
+        {
+            "air_temp": (("time", "y", "x"), field.copy()),
+            "precipitation": (("time", "y", "x"), field.copy()),
+            "orography": (("y", "x"), np.full((y.size, x.size), 1500.0, dtype="float32")),
+        },
+        coords={"time": time, "x": x, "y": y},
+    )
+    return ds.rio.write_crs("EPSG:3413").rio.set_spatial_dims(x_dim="x", y_dim="y")
+
+
+class _NoPrebuiltS3:
+    """
+    Stand in for ``s3fs.S3FileSystem`` with no pre-reprojected CARRA2 file.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Accepted and ignored, like the real constructor's options.
+    """
+
+    def __init__(self, *args, **kwargs):
+        """
+        Accept the real constructor's options and ignore them.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Ignored.
+        """
+        _ = args, kwargs
+
+    def exists(self, uri):
+        """
+        Report that nothing exists, so ``carra2`` takes the reprojection path.
+
+        Parameters
+        ----------
+        uri : str
+            Ignored.
+
+        Returns
+        -------
+        bool
+            Always ``False``.
+        """
+        _ = uri
+        return False
+
+
+@pytest.mark.parametrize(
+    "store_years, requested, source",
+    [((1985, 1986, 1987, 1988), 1986, 1986), ((1985, 1990), 1987, 1985)],
+)
+def test_carra2_reprojects_only_the_source_years_it_uses(
+    tmp_path, monkeypatch, capsys, store_years, requested, source
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    """
+    Reproject only the months the requested years are filled from.
+
+    ``carra2`` used to reproject every step in the store and pick the requested
+    years afterwards: a one-year run read and warped the whole forty-year record.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    monkeypatch : pytest.MonkeyPatch
+        Replaces the S3 access and counts the reprojected steps.
+    capsys : pytest.CaptureFixture
+        Captures the log naming the source years used.
+    store_years : tuple of int
+        Years in the fake CARRA2 store.
+    requested : int
+        The one year asked for.
+    source : int
+        The store year that ``requested`` is filled from.
+    """
+    reprojected_steps = []
+    real_reproject_match = RasterArray.reproject_match
+
+    def counting_reproject_match(self, *args, **kwargs):
+        """
+        Record the number of time steps, then reproject as usual.
+
+        Parameters
+        ----------
+        self : rioxarray.raster_array.RasterArray
+            The ``.rio`` accessor being reprojected.
+        *args, **kwargs
+            Passed on to the real ``reproject_match``.
+
+        Returns
+        -------
+        xarray.DataArray
+            The reprojected array.
+        """
+        reprojected_steps.append(self._obj.sizes.get("time", 0))  # pylint: disable=protected-access
+        return real_reproject_match(self, *args, **kwargs)
+
+    monkeypatch.setattr(climate.s3fs, "S3FileSystem", _NoPrebuiltS3)
+    monkeypatch.setattr(climate, "open_carra2_zarr", lambda uri: _fake_carra2_store(store_years))
+    monkeypatch.setattr(RasterArray, "reproject_match", counting_reproject_match)
+
+    with xr.open_dataset(_grid_file(tmp_path, CRS("EPSG:32634").to_wkt())) as grid:
+        out_file = climate.carra2(grid, "RGI-test", years=[requested], path=tmp_path / "out")
+
+    assert f"source years used: [{source}]" in capsys.readouterr().out
+    assert sum(reprojected_steps) == 12 * 2  # 12 months of air_temp and precipitation, nothing more
+    with xr.open_dataset(out_file) as out:
+        assert out.sizes["time"] == 12
+        assert set(out["time"].dt.year.values) == {requested}
+        expected = 100.0 * source + np.arange(1, 13)
+        np.testing.assert_allclose(out["air_temp"].mean(dim=("x", "y")).values, expected)
