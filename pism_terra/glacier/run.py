@@ -179,7 +179,7 @@ def _require_spread_file(run: Mapping[str, object]) -> None:
     if unset:
         raise ValueError(
             f"{', '.join(unset)} still 'none': the climate forcing has no air_temp_sd to read. Set a constant "
-            "spread instead (surface.pdd.std_dev.value, surface.debm_simple.std_dev) and drop the file option."
+            "spread instead (surface.pdd.std_dev.value, surface.debm_simple.std_dev.value) and drop the file option."
         )
 
 

@@ -171,12 +171,12 @@ model = "pdd_forcing"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev' = 5.0
+'surface.debm_simple.std_dev.value' = 5.0
 'surface.models' = "debm_simple"
 
 [surface.options.debm_simple_forcing]
 
-'surface.debm_simple.std_dev' = 5.0
+'surface.debm_simple.std_dev.value' = 5.0
 'surface.pdd.air_temp_all_precip_as_rain' = 275.15
 'surface.pdd.air_temp_all_precip_as_snow' = 273.15
 'surface.pdd.factor_ice' = 0.00879120879120879
@@ -208,7 +208,7 @@ model = "pdd_forcing"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev' = 5.0
+'surface.debm_simple.std_dev.value' = 5.0
 'surface.models' = "debm_enhanced"
 
 [surface.options.debm_enhanced_forcing]
@@ -222,7 +222,7 @@ model = "pdd_forcing"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev' = 5.0
+'surface.debm_simple.std_dev.value' = 5.0
 'surface.force_to_thickness.alpha' = 0.98
 'surface.force_to_thickness.file' = "none"
 'surface.force_to_thickness.ice_free_alpha_factor' = 10

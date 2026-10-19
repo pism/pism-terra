@@ -48,7 +48,7 @@ the prepare step that builds it.
 The CARRA2 and ERA5 forcing carry no `air_temp_sd`, the spread of the daily
 temperatures within a month. The positive-degree-day and dEBM surface models use
 a constant spread instead (`surface.pdd.std_dev.value`,
-`surface.debm_simple.std_dev`, 5 K in the packaged configs), the value their
+`surface.debm_simple.std_dev.value`, 5 K in the packaged configs), the value their
 degree-day and melt coefficients were calibrated with. CARRA2's own spread was
 about 1.5 K in summer, which with the classic degree-day factors cut the PDD
 melt by a factor of several near 0 °C. SNAP's forcing still carries a spread,

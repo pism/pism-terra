@@ -152,7 +152,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.50
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev' = 5.0
+'surface.debm_simple.std_dev.value' = 5.0
 'surface.models' = "debm_simple"
 
 [surface.options.debm_enhanced]
@@ -164,7 +164,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.60
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev' = 5.0
+'surface.debm_simple.std_dev.value' = 5.0
 'surface.models' = "debm_enhanced"
 
 [calving]
