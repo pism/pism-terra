@@ -27,6 +27,7 @@ velocity = "none"
 'time.end' =  "2017-01-01"
 'time.reference_date' = "1980-01-01"
 'time.start' = "2016-01-01"
+'time.ignore_input_file' = "yes"
 
 [time_stepping]
 

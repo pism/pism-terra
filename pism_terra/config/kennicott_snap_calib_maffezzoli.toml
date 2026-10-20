@@ -26,6 +26,7 @@ velocity = "its_live"
 'time.end' =  "0002-01-01"
 'time.reference_date' = "0001-01-01"
 'time.start' = "0001-01-01"
+'time.ignore_input_file' = "yes"
 
 [time_stepping]
 

@@ -32,6 +32,7 @@ version = "v2"
 'time.calendar' =  "365_day"
 'time.reference_date' = "1850-01-01"
 'time.start' = "1900-01-01"
+'time.ignore_input_file' = "yes"
 
 [time_stepping]
 

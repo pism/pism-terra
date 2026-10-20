@@ -37,6 +37,7 @@ version = "v2"
 'time.end' = "2015-01-01"
 'time.reference_date' = "1850-01-01"
 'time.start' = "1915-01-01"
+'time.ignore_input_file' = "yes"
 
 [time_stepping]
 
