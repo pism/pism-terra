@@ -152,6 +152,7 @@ model = "debm_enhanced"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.c1' = 48
 'surface.debm_simple.c2' = -80
+'surface.debm_simple.insolation_model' = "simple"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
@@ -165,12 +166,13 @@ model = "debm_enhanced"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
 'surface.debm_simple.c1' = 48
 'surface.debm_simple.c2' = -80
+'surface.debm_simple.insolation_model' = "terrain_shaded"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
 'surface.debm_simple.std_dev.file' = "none"
 'surface.debm_simple.std_dev.periodic' = "yes"
-'surface.models' = "debm_enhanced"
+'surface.models' = "debm_simple"
 
 [calving]
 

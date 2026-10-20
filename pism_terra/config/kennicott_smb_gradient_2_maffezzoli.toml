@@ -150,6 +150,7 @@ model = "elevation_dependent"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 273.15
 'surface.debm_simple.c1' = 29
 'surface.debm_simple.c2' = -93
+'surface.debm_simple.insolation_model' = "simple"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.60
 'surface.debm_simple.refreeze_ice_melt' = "no"
@@ -161,10 +162,11 @@ model = "elevation_dependent"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 273.15
 'surface.debm_simple.c1' = 29
 'surface.debm_simple.c2' = -93
+'surface.debm_simple.insolation_model' = "terrain_shaded"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.60
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.models' = "debm_enhanced"
+'surface.models' = "debm_simple"
 
 [calving]
 

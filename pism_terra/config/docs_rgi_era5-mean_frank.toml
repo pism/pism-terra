@@ -142,6 +142,7 @@ model = "pdd"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 272.15
 'surface.debm_simple.c1' = 30
 'surface.debm_simple.c2' = -75
+'surface.debm_simple.insolation_model' = "simple"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.60
 'surface.debm_simple.refreeze_ice_melt' = "no"

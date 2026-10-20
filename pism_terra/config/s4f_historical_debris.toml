@@ -183,6 +183,7 @@ model = "pdd"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.c1' = 29
 'surface.debm_simple.c2' = -93
+'surface.debm_simple.insolation_model' = "simple"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
@@ -194,6 +195,7 @@ model = "pdd"
 
 [surface.options.debm_simple_forcing]
 
+'surface.debm_simple.insolation_model' = "simple"
 'surface.debm_simple.std_dev.value' = 5.0
 'surface.debm_simple.air_temp_all_precip_as_rain' = 274.2
 'surface.debm_simple.air_temp_all_precip_as_snow' = 271.5
@@ -217,6 +219,7 @@ model = "pdd"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.c1' = 29
 'surface.debm_simple.c2' = -93
+'surface.debm_simple.insolation_model' = "terrain_shaded"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
@@ -224,7 +227,7 @@ model = "pdd"
 'surface.force_to_thickness.alpha' = 0.95
 'surface.force_to_thickness.file' = "none"
 'surface.force_to_thickness.ice_free_alpha_factor' = 10
-'surface.models' = "debm_enhanced"
+'surface.models' = "debm_simple"
 
 [surface.options.debm_enhanced_forcing]
 
@@ -234,6 +237,7 @@ model = "pdd"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.c1' = 29
 'surface.debm_simple.c2' = -93
+'surface.debm_simple.insolation_model' = "terrain_shaded"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
@@ -241,7 +245,7 @@ model = "pdd"
 'surface.force_to_thickness.alpha' = 0.98
 'surface.force_to_thickness.file' = "none"
 'surface.force_to_thickness.ice_free_alpha_factor' = 10
-'surface.models' = "debm_enhanced,forcing"
+'surface.models' = "debm_simple,forcing"
 
 [calving]
 

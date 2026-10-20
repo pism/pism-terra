@@ -158,6 +158,7 @@ model = "debm"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.c1' = 48
 'surface.debm_simple.c2' = -80
+'surface.debm_simple.insolation_model' = "simple"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
