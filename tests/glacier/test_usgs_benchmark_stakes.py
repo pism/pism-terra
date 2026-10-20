@@ -254,6 +254,30 @@ def test_sampling_and_integration(tmp_path, stake_release, method):
     assert (table[table["site"] == "Z"]["obs"].notna()).all()
 
 
+def test_sample_points_returns_the_requested_variables(tmp_path, stake_release, caplog):
+    """
+    Only the listed variables come back; a missing one is skipped and ``smb`` stays masked off the ice.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    stake_release : dict of str to Path
+        The synthetic release.
+    caplog : pytest.LogCaptureFixture
+        Captured log records.
+    """
+    file = spatial_file(tmp_path / "spatial.nc")
+    sites = usgs.load_sites(stake_release["sites"])
+    stakes = usgs.load_measurements(stake_release["data"], "Foo")
+    with usgs.open_pism(file) as ds:
+        sampled = ubs.sample_points(ds, ubs.stake_points(sites, [stakes]), variables=["usurf", "velsurf_mag"])
+    assert sampled is not None
+    assert set(sampled.data_vars) == {"smb", "usurf"}
+    assert sampled["smb"].sel(site="Foo:Z").isnull().all()
+    assert "velsurf_mag" in caplog.text
+
+
 def test_previous_fall_falls_back_to_the_glacier_wide_date(tmp_path, stake_release):
     """
     Without a previous fall visit, the previous balance year's ``Ba_Date`` opens the interval.
