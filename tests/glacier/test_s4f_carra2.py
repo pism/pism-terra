@@ -56,6 +56,10 @@ Y_TRUE = mod.GRID_ORIGIN + mod.GRID_SPACING * np.arange(J0, J0 + NY)
 OUTLINE_X = (X_TRUE[NX // 2] - 5_000, X_TRUE[NX // 2] + 5_000)
 OUTLINE_Y = (Y_TRUE[NY // 2] - 5_000, Y_TRUE[NY // 2] + 5_000)
 
+#: Surface elevation of the fixture block, metres: a plane, so a clipped
+#: block can be checked cell by cell.
+GEOPOTENTIAL_SURFACE = 1000.0 + 10.0 * np.arange(NY)[:, None] + 1.0 * np.arange(NX)[None, :]
+
 
 def lattice_latlon() -> tuple[np.ndarray, np.ndarray]:
     """
@@ -83,7 +87,7 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
     year : int
         Year of the stamps.
     kind : str
-        ``"temperature"``, ``"snow"`` or ``"forecast"``.
+        ``"temperature"``, ``"snow"``, ``"forecast"`` or ``"geopotential"``.
 
     Returns
     -------
@@ -91,7 +95,7 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
         The file.
     """
     lat, lon = lattice_latlon()
-    days = [2, 1, 3, 3, 4]  # out of order, with a duplicate: what has to be cleaned up
+    days = [1] if kind == "geopotential" else [2, 1, 3, 3, 4]  # out of order, with a duplicate, to be cleaned up
     valid = pd.to_datetime([f"{year}-01-{d:02d} 12:00" for d in days])
     if kind == "forecast":
         # Forecast-based: the reference time is the day before the day the
@@ -117,6 +121,17 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
                 )
             },
             coords={**coords, "isobaricInhPa": ("isobaricInhPa", levels)},
+        )
+    elif kind == "geopotential":
+        ds = xr.Dataset(
+            {
+                "z": (
+                    ("time", "y", "x"),
+                    (GEOPOTENTIAL_SURFACE * mod.STANDARD_GRAVITY)[None].astype("float32"),
+                    {"standard_name": "geopotential", "units": "m**2 s**-2", "GRIB_shortName": "z"},
+                )
+            },
+            coords=coords,
         )
     elif kind == "snow":
         ds = xr.Dataset(
@@ -298,7 +313,12 @@ def test_requests_use_the_pan_carra_keys_and_no_area():
     is the same request for every glacier.
     """
     reqs = mod.build_requests([1990, 1991])
-    assert set(reqs) == {"temperature", "snow", "forecast"}
+    assert set(reqs) == {"temperature", "snow", "forecast", "geopotential"}
+    geo = reqs["geopotential"]
+    assert geo["product_type"] == "analysis_based" and geo["variable"] == ["geopotential"]
+    assert geo["year"] == ["1990"] and geo["month"] == ["01"] and geo["day"] == ["01"]
+    assert geo["level_type"] == "single_levels" and geo["time_aggregation"] == "daily"
+    del reqs["geopotential"]
     t = reqs["temperature"]
     assert t["level_type"] == "pressure_levels" and t["product_type"] == "analysis_based"
     assert t["level_location"] == ["1000", "900", "800", "750", "500"]
@@ -384,6 +404,15 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     assert ds["pressure_level"].attrs["positive"] == "down" and ds["pressure_level"].attrs["units"] == "hPa"
     assert ds["air_temp"].dims == ("time", "pressure_level", "y", "x")
     assert ds["snow_depth"].dims == ("time", "y", "x")
+
+    # Geopotential becomes a static surface elevation, divided by g as the
+    # ERA5 path does; the raw field is not kept.
+    assert "geopotential" not in ds
+    assert ds["surface"].dims == ("y", "x")
+    assert ds["surface"].attrs["standard_name"] == "surface_altitude" and ds["surface"].attrs["units"] == "m"
+    expected = GEOPOTENTIAL_SURFACE[np.isin(Y_TRUE, ds["y"].values)][:, np.isin(X_TRUE, ds["x"].values)]
+    np.testing.assert_allclose(ds["surface"].values, expected, rtol=1e-6)
+    assert ds["surface"].encoding.get("grid_mapping") == "spatial_ref" or ds["surface"].attrs.get("grid_mapping")
 
     # Time: daily at 00:00, duplicates dropped, sorted, two years concatenated.
     times = pd.DatetimeIndex(ds["time"].values)

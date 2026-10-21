@@ -21,8 +21,10 @@ Daily CARRA2 forcing for one RGI7 glacier complex, on CARRA2's own grid.
 ``pism-s4f-carra2`` takes an RGI7 id, finds the outline, and downloads the
 daily CARRA2 means (CDS dataset ``reanalysis-pan-carra-means``) over the
 outline's bounding box: air temperature on five pressure levels, snow depth,
-total precipitation, and the net and downward surface shortwave radiation.
-The result is one Zarr store per glacier.
+total precipitation, the net and downward surface shortwave radiation, and
+the surface geopotential, converted to a static surface elevation the way
+:mod:`pism_terra.glacier.climate` does for ERA5. The result is one Zarr store
+per glacier.
 
 Two things set this apart from the monthly, whole-domain store that
 :func:`pism_terra.glacier.climate.prepare_carra2` builds.
@@ -98,6 +100,10 @@ GRID_ORIGIN = -3585000.0
 #: normal; hundreds means the wrong projection.
 SNAP_TOLERANCE = 25.0
 
+#: Standard gravity, m s^-2, turning geopotential into geometric height; the
+#: same constant :mod:`pism_terra.glacier.climate` uses for ERA5.
+STANDARD_GRAVITY = 9.80665
+
 #: Margin added around the outline's bounding box, kilometres. CARRA2 cells
 #: are 2.5 km; a glacier's forcing needs the cells around it, not just the
 #: ones it covers.
@@ -146,6 +152,7 @@ FIELDS: dict[str, dict[str, Any]] = {
         "standard_name": "surface_downwelling_shortwave_flux_in_air",
         "short": ("ssrd", "surface_solar_radiation_downwards"),
     },
+    "geopotential": {"standard_name": "geopotential", "short": ("z", "geopotential")},
 }
 
 TIME_ENCODING = {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00", "calendar": "standard"}
@@ -277,10 +284,13 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
 
     Analysis-based and forecast-based fields cannot share a request, and
     pressure-level fields cannot share one with single-level fields, so
-    three requests it is. The pressure levels go under ``level_location``:
-    that is the key the pan-CARRA form uses, not ``pressure_level``. No
-    ``area``: CDS ignores it for this dataset (the full grid comes back
-    either way) and leaving it out lets every glacier share the same files.
+    three requests it is for the daily fields. The surface geopotential is
+    static, so it gets a fourth request for a single day -- the first day
+    of the first year -- rather than a full-domain field per day. The
+    pressure levels go under ``level_location``: that is the key the
+    pan-CARRA form uses, not ``pressure_level``. No ``area``: CDS ignores it
+    for this dataset (the full grid comes back either way) and leaving it
+    out lets every glacier share the same files.
 
     Parameters
     ----------
@@ -292,6 +302,7 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
     dict
         Request name to CDS request dict.
     """
+    years = list(years)
     base = {
         "time_aggregation": "daily",
         "year": [str(y) for y in years],
@@ -318,6 +329,15 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
             "level_type": "single_levels",
             "product_type": "forecast_based",
             "variable": ["total_precipitation", "surface_net_solar_radiation", "surface_solar_radiation_downwards"],
+        },
+        "geopotential": {
+            **base,
+            "year": [str(years[0])],
+            "month": [MONTHS[0]],
+            "day": [DAYS[0]],
+            "level_type": "single_levels",
+            "product_type": "analysis_based",
+            "variable": ["geopotential"],
         },
     }
 
@@ -612,7 +632,7 @@ def download(
     force_overwrite: bool = False,
 ) -> dict[str, list[Path]]:
     """
-    Fetch the three CDS requests.
+    Fetch the four CDS requests.
 
     Parameters
     ----------
@@ -653,7 +673,41 @@ REQUEST_FIELDS = {
     "temperature": ["air_temp"],
     "snow": ["snow_depth"],
     "forecast": ["precipitation", "surface_net_solar_radiation", "surface_solar_radiation_downwards"],
+    "geopotential": ["geopotential"],
 }
+
+
+def geopotential_to_elevation(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Replace ``geopotential`` by a static ``surface`` elevation.
+
+    The surface geopotential does not change, so its first time step is
+    taken and divided by standard gravity, as
+    :mod:`pism_terra.glacier.climate` does with ERA5's ``z``.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        With ``geopotential`` on ``(time, y, x)`` in m^2 s^-2.
+
+    Returns
+    -------
+    xarray.Dataset
+        With ``surface`` on ``(y, x)`` in metres and ``geopotential`` gone.
+        Unchanged when there is no ``geopotential``.
+    """
+    if "geopotential" not in ds:
+        return ds
+    geopotential = ds["geopotential"]
+    if "time" in geopotential.dims:
+        geopotential = geopotential.isel(time=0, drop=True)
+    surface = geopotential / STANDARD_GRAVITY
+    surface.attrs = {"standard_name": "surface_altitude", "long_name": "surface altitude", "units": "m"}
+    ds = ds.drop_vars("geopotential")
+    if "time" in ds.coords and not any("time" in ds[v].dims for v in ds.data_vars):
+        ds = ds.drop_vars("time")
+    ds["surface"] = surface.transpose("y", "x")
+    return ds
 
 
 def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) -> xr.Dataset:
@@ -675,9 +729,10 @@ def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) 
     parts = []
     for name, paths in files.items():
         yearly = [normalize(xr.open_dataset(p, chunks={}), REQUEST_FIELDS[name], bbox) for p in sorted(paths)]
-        parts.append(
-            xr.concat(yearly, dim="time", data_vars="minimal", coords="minimal", compat="override", join="exact")
-        )
+        part = xr.concat(yearly, dim="time", data_vars="minimal", coords="minimal", compat="override", join="exact")
+        # The static field has one time step of its own; make it static
+        # before the merge insists every part share the daily axis.
+        parts.append(geopotential_to_elevation(part))
     ds = xr.merge(parts, join="exact", compat="override")
     ds = add_time_bounds(ds)
     # rioxarray records the grid mapping in each variable's *encoding*, and
@@ -783,10 +838,13 @@ def run(
     logger.info("%s: area N %.2f W %.2f S %.2f E %.2f, years %d-%d", rgi_id, *area, start, end)
     print(f"Area N {area[0]} W {area[1]} S {area[2]} E {area[3]}, years {start}-{end}", flush=True)
     print(
-        "Submitting 3 CDS requests (temperature on pressure levels, snow depth, precipitation + radiation).", flush=True
+        "Submitting 4 CDS requests (temperature on pressure levels, snow depth, precipitation + radiation, "
+        "and one day of surface geopotential).",
+        flush=True,
     )
     print(
-        "CDS returns the whole pan-Arctic domain (~0.8 GB per year across the three); the files are cached", flush=True
+        "CDS returns the whole pan-Arctic domain (~0.8 GB per year across the daily three); the files are cached",
+        flush=True,
     )
     print(
         f"under {output_path / 'cds'} and shared by every glacier. The queue can take hours -- the bars track it.",
