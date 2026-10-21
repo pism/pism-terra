@@ -56,9 +56,14 @@ Y_TRUE = mod.GRID_ORIGIN + mod.GRID_SPACING * np.arange(J0, J0 + NY)
 OUTLINE_X = (X_TRUE[NX // 2] - 5_000, X_TRUE[NX // 2] + 5_000)
 OUTLINE_Y = (Y_TRUE[NY // 2] - 5_000, Y_TRUE[NY // 2] + 5_000)
 
-#: Surface elevation of the fixture block, metres: a plane, so a clipped
-#: block can be checked cell by cell.
-GEOPOTENTIAL_SURFACE = 1000.0 + 10.0 * np.arange(NY)[:, None] + 1.0 * np.arange(NX)[None, :]
+#: Height of each pressure level over the fixture block, metres, as a
+#: ``(level, y, x)`` plane per level in the GRIB file's (unordered) level
+#: order, so a clipped, re-sorted block can be checked cell by cell.
+LEVEL_HEIGHT = (
+    np.array([5500.0, 100.0, 2500.0, 1000.0, 1900.0])[:, None, None]
+    + 10.0 * np.arange(NY)[None, :, None]
+    + 1.0 * np.arange(NX)[None, None, :]
+)
 
 
 def lattice_latlon() -> tuple[np.ndarray, np.ndarray]:
@@ -95,7 +100,7 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
         The file.
     """
     lat, lon = lattice_latlon()
-    days = [1] if kind == "geopotential" else [2, 1, 3, 3, 4]  # out of order, with a duplicate, to be cleaned up
+    days = [2, 1, 3, 3, 4]  # out of order, with a duplicate: what has to be cleaned up
     valid = pd.to_datetime([f"{year}-01-{d:02d} 12:00" for d in days])
     if kind == "forecast":
         # Forecast-based: the reference time is the day before the day the
@@ -123,15 +128,17 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
             coords={**coords, "isobaricInhPa": ("isobaricInhPa", levels)},
         )
     elif kind == "geopotential":
+        levels = np.array([500.0, 1000.0, 750.0, 900.0, 800.0])  # the same unordered levels as the temperature
+        geopotential = np.broadcast_to(LEVEL_HEIGHT * mod.STANDARD_GRAVITY, (len(time), 5, NY, NX))
         ds = xr.Dataset(
             {
                 "z": (
-                    ("time", "y", "x"),
-                    (GEOPOTENTIAL_SURFACE * mod.STANDARD_GRAVITY)[None].astype("float32"),
+                    ("time", "isobaricInhPa", "y", "x"),
+                    geopotential.astype("float32"),
                     {"standard_name": "geopotential", "units": "m**2 s**-2", "GRIB_shortName": "z"},
                 )
             },
-            coords=coords,
+            coords={**coords, "isobaricInhPa": ("isobaricInhPa", levels)},
         )
     elif kind == "snow":
         ds = xr.Dataset(
@@ -316,9 +323,7 @@ def test_requests_use_the_pan_carra_keys_and_no_area():
     assert set(reqs) == {"temperature", "snow", "forecast", "geopotential"}
     geo = reqs["geopotential"]
     assert geo["product_type"] == "analysis_based" and geo["variable"] == ["geopotential"]
-    assert geo["year"] == ["1990"] and geo["month"] == ["01"] and geo["day"] == ["01"]
-    assert geo["level_type"] == "single_levels" and geo["time_aggregation"] == "daily"
-    del reqs["geopotential"]
+    assert geo["level_type"] == "pressure_levels" and geo["level_location"] == ["1000", "900", "800", "750", "500"]
     t = reqs["temperature"]
     assert t["level_type"] == "pressure_levels" and t["product_type"] == "analysis_based"
     assert t["level_location"] == ["1000", "900", "800", "750", "500"]
@@ -405,14 +410,17 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     assert ds["air_temp"].dims == ("time", "pressure_level", "y", "x")
     assert ds["snow_depth"].dims == ("time", "y", "x")
 
-    # Geopotential becomes a static surface elevation, divided by g as the
-    # ERA5 path does; the raw field is not kept.
+    # Geopotential becomes the height of each level, divided by g as the ERA5
+    # path does, on the same axes as the temperature; the raw field is not kept.
     assert "geopotential" not in ds
-    assert ds["surface"].dims == ("y", "x")
-    assert ds["surface"].attrs["standard_name"] == "surface_altitude" and ds["surface"].attrs["units"] == "m"
-    expected = GEOPOTENTIAL_SURFACE[np.isin(Y_TRUE, ds["y"].values)][:, np.isin(X_TRUE, ds["x"].values)]
-    np.testing.assert_allclose(ds["surface"].values, expected, rtol=1e-6)
-    assert ds["surface"].encoding.get("grid_mapping") == "spatial_ref" or ds["surface"].attrs.get("grid_mapping")
+    height = ds["geopotential_height"]
+    assert height.dims == ("time", "pressure_level", "y", "x")
+    assert height.attrs["standard_name"] == "geopotential_height" and height.attrs["units"] == "m"
+    # Fixture levels are (500, 1000, 750, 900, 800); the store sorts them bottom up.
+    expected = LEVEL_HEIGHT[[1, 3, 4, 2, 0]][:, np.isin(Y_TRUE, ds["y"].values)][:, :, np.isin(X_TRUE, ds["x"].values)]
+    np.testing.assert_allclose(height.isel(time=0).values, expected, rtol=1e-6)
+    np.testing.assert_allclose(height.isel(time=-1).values, expected, rtol=1e-6)
+    assert height.encoding.get("grid_mapping") == "spatial_ref" or height.attrs.get("grid_mapping")
 
     # Time: daily at 00:00, duplicates dropped, sorted, two years concatenated.
     times = pd.DatetimeIndex(ds["time"].values)
