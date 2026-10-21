@@ -65,6 +65,9 @@ LEVEL_HEIGHT = (
     + 1.0 * np.arange(NX)[None, None, :]
 )
 
+#: Orography of the fixture block, metres: a plane, checked cell by cell.
+OROGRAPHY = 800.0 + 10.0 * np.arange(NY)[:, None] + 1.0 * np.arange(NX)[None, :]
+
 
 def lattice_latlon() -> tuple[np.ndarray, np.ndarray]:
     """
@@ -92,7 +95,8 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
     year : int
         Year of the stamps.
     kind : str
-        ``"temperature"``, ``"snow"``, ``"forecast"`` or ``"geopotential"``.
+        ``"temperature"``, ``"snow"``, ``"forecast"``, ``"geopotential"`` or
+        ``"orography"``.
 
     Returns
     -------
@@ -100,7 +104,7 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
         The file.
     """
     lat, lon = lattice_latlon()
-    days = [2, 1, 3, 3, 4]  # out of order, with a duplicate: what has to be cleaned up
+    days = [1] if kind == "orography" else [2, 1, 3, 3, 4]  # out of order, with a duplicate, to be cleaned up
     valid = pd.to_datetime([f"{year}-01-{d:02d} 12:00" for d in days])
     if kind == "forecast":
         # Forecast-based: the reference time is the day before the day the
@@ -139,6 +143,18 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
                 )
             },
             coords={**coords, "isobaricInhPa": ("isobaricInhPa", levels)},
+        )
+    elif kind == "orography":
+        # One analysis time from reanalysis-pan-carra, in the GRIB naming.
+        ds = xr.Dataset(
+            {
+                "orog": (
+                    ("time", "y", "x"),
+                    OROGRAPHY[None].astype("float32"),
+                    {"long_name": "Orography", "units": "m", "GRIB_shortName": "orog"},
+                )
+            },
+            coords=coords,
         )
     elif kind == "snow":
         ds = xr.Dataset(
@@ -320,7 +336,12 @@ def test_requests_use_the_pan_carra_keys_and_no_area():
     is the same request for every glacier.
     """
     reqs = mod.build_requests([1990, 1991])
-    assert set(reqs) == {"temperature", "snow", "forecast", "geopotential"}
+    assert set(reqs) == {"temperature", "snow", "forecast", "geopotential", "orography"}
+    oro = reqs.pop("orography")
+    assert oro["product_type"] == "analysis" and oro["variable"] == ["orography"]
+    assert oro["level_type"] == "single_levels" and "time_aggregation" not in oro
+    assert oro["year"] == ["1990"] and oro["month"] == ["01"] and oro["day"] == ["01"] and oro["time"] == ["00:00"]
+    assert mod.REQUEST_DATASETS["orography"] == "reanalysis-pan-carra"
     geo = reqs["geopotential"]
     assert geo["product_type"] == "analysis_based" and geo["variable"] == ["geopotential"]
     assert geo["level_type"] == "pressure_levels" and geo["level_location"] == ["1000", "900", "800", "750", "500"]
@@ -382,6 +403,8 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     assert fake_download["temperature"]["request"]["year"] == ["1990", "1991"]
     # The cache is shared, not per glacier: the files are the whole domain.
     assert fake_download["temperature"]["cache"] == tmp_path / "out" / "cds"
+    assert fake_download["temperature"]["dataset"] == "reanalysis-pan-carra-means"
+    assert fake_download["orography"]["dataset"] == "reanalysis-pan-carra"
 
     # As a consumer must open it: decode_coords="all" is what lets rioxarray
     # follow the grid_mapping pointer to the stored spatial_ref.
@@ -421,6 +444,13 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     np.testing.assert_allclose(height.isel(time=0).values, expected, rtol=1e-6)
     np.testing.assert_allclose(height.isel(time=-1).values, expected, rtol=1e-6)
     assert height.encoding.get("grid_mapping") == "spatial_ref" or height.attrs.get("grid_mapping")
+
+    # The orography comes from the other dataset at one analysis time and is
+    # stored static, with the attributes prepare_carra2 gives it.
+    assert ds["orography"].dims == ("y", "x")
+    assert ds["orography"].attrs["standard_name"] == "surface_altitude" and ds["orography"].attrs["units"] == "m"
+    expected = OROGRAPHY[np.isin(Y_TRUE, ds["y"].values)][:, np.isin(X_TRUE, ds["x"].values)]
+    np.testing.assert_allclose(ds["orography"].values, expected, rtol=1e-6)
 
     # Time: daily at 00:00, duplicates dropped, sorted, two years concatenated.
     times = pd.DatetimeIndex(ds["time"].values)

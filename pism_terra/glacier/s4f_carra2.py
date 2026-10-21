@@ -25,9 +25,10 @@ levels, snow depth, total precipitation, and the net and downward surface
 shortwave radiation. The geopotential is converted to the geometric height
 of each pressure level the way :mod:`pism_terra.glacier.climate` converts
 ERA5's geopotential, so a temperature profile can be read at a site's
-elevation. (CARRA2's daily means carry no surface geopotential; the static
-orography lives in ``reanalysis-pan-carra`` instead.) The result is one
-Zarr store per glacier.
+elevation. The daily means carry no surface geopotential, so the static
+orography is fetched from ``reanalysis-pan-carra`` for one analysis time
+and stored as a 2-D surface elevation. The result is one Zarr store per
+glacier.
 
 Two things set this apart from the monthly, whole-domain store that
 :func:`pism_terra.glacier.climate.prepare_carra2` builds.
@@ -85,6 +86,13 @@ logger = logging.getLogger(__name__)
 
 #: CDS dataset holding the daily and monthly CARRA2 means.
 DATASET = "reanalysis-pan-carra-means"
+
+#: CDS dataset holding the 3-hourly analyses, and with them the static
+#: orography the means dataset lacks.
+OROGRAPHY_DATASET = "reanalysis-pan-carra"
+
+#: Which request goes to which dataset; the daily means unless listed.
+REQUEST_DATASETS = {"orography": OROGRAPHY_DATASET}
 
 #: Years the dataset spans, per its CDS form.
 FIRST_YEAR = 1985
@@ -156,6 +164,7 @@ FIELDS: dict[str, dict[str, Any]] = {
         "short": ("ssrd", "surface_solar_radiation_downwards"),
     },
     "geopotential": {"standard_name": "geopotential", "short": ("z", "geopotential")},
+    "orography": {"standard_name": "surface_altitude", "short": ("orog", "orography")},
 }
 
 TIME_ENCODING = {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00", "calendar": "standard"}
@@ -289,11 +298,13 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
     pressure-level fields cannot share one with single-level fields, so
     three requests it is -- plus a fourth for the geopotential on the same
     pressure levels, kept apart from the temperature so that a cache
-    downloaded before it was added stays valid. The pressure levels go
-    under ``level_location``: that is the key the pan-CARRA form uses, not
-    ``pressure_level``. No ``area``: CDS ignores it for this dataset (the
-    full grid comes back either way) and leaving it out lets every glacier
-    share the same files.
+    downloaded before it was added stays valid, and a fifth to
+    :data:`OROGRAPHY_DATASET` for the static orography at a single analysis
+    time (the first day of the first year at 00:00; the field does not
+    change). The pressure levels go under ``level_location``: that is the
+    key the pan-CARRA form uses, not ``pressure_level``. No ``area``: CDS
+    ignores it for this dataset (the full grid comes back either way) and
+    leaving it out lets every glacier share the same files.
 
     Parameters
     ----------
@@ -305,6 +316,7 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
     dict
         Request name to CDS request dict.
     """
+    years = list(years)
     base = {
         "time_aggregation": "daily",
         "year": [str(y) for y in years],
@@ -338,6 +350,16 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
             "product_type": "analysis_based",
             "variable": ["geopotential"],
             "level_location": [str(p) for p in PRESSURE_LEVELS],
+        },
+        "orography": {
+            "level_type": "single_levels",
+            "product_type": "analysis",
+            "variable": ["orography"],
+            "year": [str(years[0])],
+            "month": [MONTHS[0]],
+            "day": [DAYS[0]],
+            "time": ["00:00"],
+            "data_format": "netcdf",
         },
     }
 
@@ -632,7 +654,7 @@ def download(
     force_overwrite: bool = False,
 ) -> dict[str, list[Path]]:
     """
-    Fetch the four CDS requests.
+    Fetch the five CDS requests.
 
     Parameters
     ----------
@@ -655,11 +677,12 @@ def download(
     cache_path.mkdir(parents=True, exist_ok=True)
     files: dict[str, list[Path]] = {}
     for name, request in build_requests(years).items():
-        logger.info("CDS %s: %s %s", name, request["product_type"], request["variable"])
+        dataset = REQUEST_DATASETS.get(name, DATASET)
+        logger.info("CDS %s %s: %s %s", dataset, name, request["product_type"], request["variable"])
         files[name] = [
             Path(f)
             for f in carra_download_request(
-                DATASET,
+                dataset,
                 dict(request),
                 file_path=cache_path / f"{name}.nc",
                 max_workers=max_workers,
@@ -674,7 +697,40 @@ REQUEST_FIELDS = {
     "snow": ["snow_depth"],
     "forecast": ["precipitation", "surface_net_solar_radiation", "surface_solar_radiation_downwards"],
     "geopotential": ["geopotential"],
+    "orography": ["orography"],
 }
+
+
+def orography_to_static(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Make ``orography`` a static 2-D field.
+
+    The orography is requested for a single analysis time, so it arrives
+    with a one-step time axis that the daily fields do not share; the step
+    is dropped and the field given CF surface-altitude attributes, as
+    :func:`pism_terra.glacier.climate.prepare_carra2` does.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        With ``orography`` on ``(time, y, x)`` in metres.
+
+    Returns
+    -------
+    xarray.Dataset
+        With ``orography`` on ``(y, x)`` and no time axis. Unchanged when
+        there is no ``orography``.
+    """
+    if "orography" not in ds:
+        return ds
+    orography = ds["orography"]
+    if "time" in orography.dims:
+        orography = orography.isel(time=0, drop=True)
+    orography.attrs = {"standard_name": "surface_altitude", "long_name": "surface altitude", "units": "m"}
+    ds = ds.drop_vars("orography")
+    if "time" in ds.coords and not any("time" in ds[v].dims for v in ds.data_vars):
+        ds = ds.drop_vars("time")
+    return ds.assign(orography=orography.transpose("y", "x"))
 
 
 def geopotential_to_elevation(ds: xr.Dataset) -> xr.Dataset:
@@ -727,7 +783,9 @@ def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) 
     for name, paths in files.items():
         yearly = [normalize(xr.open_dataset(p, chunks={}), REQUEST_FIELDS[name], bbox) for p in sorted(paths)]
         part = xr.concat(yearly, dim="time", data_vars="minimal", coords="minimal", compat="override", join="exact")
-        parts.append(geopotential_to_elevation(part))
+        # The orography has one time step of its own; make it static before
+        # the merge insists every part share the daily axis.
+        parts.append(orography_to_static(geopotential_to_elevation(part)))
     ds = xr.merge(parts, join="exact", compat="override")
     ds = add_time_bounds(ds)
     # rioxarray records the grid mapping in each variable's *encoding*, and
@@ -833,12 +891,12 @@ def run(
     logger.info("%s: area N %.2f W %.2f S %.2f E %.2f, years %d-%d", rgi_id, *area, start, end)
     print(f"Area N {area[0]} W {area[1]} S {area[2]} E {area[3]}, years {start}-{end}", flush=True)
     print(
-        "Submitting 4 CDS requests (temperature and geopotential on pressure levels, snow depth, "
-        "precipitation + radiation).",
+        "Submitting 5 CDS requests (temperature and geopotential on pressure levels, snow depth, "
+        "precipitation + radiation, and one analysis of the orography).",
         flush=True,
     )
     print(
-        "CDS returns the whole pan-Arctic domain (~1 GB per year across the four); the files are cached",
+        "CDS returns the whole pan-Arctic domain (~1 GB per year across the daily four); the files are cached",
         flush=True,
     )
     print(
