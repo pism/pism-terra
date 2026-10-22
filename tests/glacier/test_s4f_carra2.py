@@ -95,8 +95,8 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
     year : int
         Year of the stamps.
     kind : str
-        ``"temperature"``, ``"snow"``, ``"forecast"``, ``"geopotential"`` or
-        ``"orography"``.
+        ``"temperature"``, ``"surface_temperature"``, ``"snow"``,
+        ``"forecast"``, ``"geopotential"`` or ``"orography"``.
 
     Returns
     -------
@@ -155,6 +155,18 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
                 )
             },
             coords=coords,
+        )
+    elif kind == "surface_temperature":
+        # 2 m temperature in the GRIB naming: variable t2m, short name 2t.
+        ds = xr.Dataset(
+            {
+                "t2m": (
+                    ("time", "y", "x"),
+                    (260.0 + rng.random((len(time), NY, NX))).astype("float32"),
+                    {"long_name": "2 metre temperature", "units": "K", "GRIB_shortName": "2t"},
+                )
+            },
+            coords={**coords, "heightAboveGround": 2.0},
         )
     elif kind == "snow":
         ds = xr.Dataset(
@@ -336,7 +348,7 @@ def test_requests_use_the_pan_carra_keys_and_no_area():
     is the same request for every glacier.
     """
     reqs = mod.build_requests([1990, 1991])
-    assert set(reqs) == {"temperature", "snow", "forecast", "geopotential", "orography"}
+    assert set(reqs) == {"temperature", "surface_temperature", "snow", "forecast", "geopotential", "orography"}
     oro = reqs.pop("orography")
     assert oro["product_type"] == "analysis" and oro["variable"] == ["orography"]
     assert oro["level_type"] == "single_levels" and "time_aggregation" not in oro
@@ -350,6 +362,9 @@ def test_requests_use_the_pan_carra_keys_and_no_area():
     assert t["level_location"] == ["1000", "900", "800", "750", "500"]
     assert "pressure_level" not in t
     assert reqs["snow"]["product_type"] == "analysis_based" and reqs["snow"]["variable"] == ["snow_depth"]
+    t2m = reqs["surface_temperature"]
+    assert t2m["level_type"] == "single_levels" and t2m["product_type"] == "analysis_based"
+    assert t2m["variable"] == ["2m_temperature"] and "level_location" not in t2m
     assert reqs["forecast"]["product_type"] == "forecast_based"
     for r in reqs.values():
         assert r["time_aggregation"] == "daily" and r["year"] == ["1990", "1991"]
@@ -411,6 +426,7 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     ds = xr.open_zarr(store, consolidated=True, decode_coords="all")
     assert set(ds.data_vars) >= {
         "air_temp",
+        "air_temp_2m",
         "snow_depth",
         "precipitation",
         "surface_net_solar_radiation",
@@ -432,6 +448,9 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     assert ds["pressure_level"].attrs["positive"] == "down" and ds["pressure_level"].attrs["units"] == "hPa"
     assert ds["air_temp"].dims == ("time", "pressure_level", "y", "x")
     assert ds["snow_depth"].dims == ("time", "y", "x")
+    # The 2 m temperature is single level, apart from the profile's air_temp.
+    assert ds["air_temp_2m"].dims == ("time", "y", "x") and ds["air_temp_2m"].attrs["units"] == "K"
+    assert not ds["air_temp_2m"].isnull().all(("y", "x")).any()
 
     # Geopotential becomes the height of each level, divided by g as the ERA5
     # path does, on the same axes as the temperature; the raw field is not kept.

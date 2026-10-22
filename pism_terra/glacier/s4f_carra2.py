@@ -21,8 +21,8 @@ Daily CARRA2 forcing for one RGI7 glacier complex, on CARRA2's own grid.
 ``pism-s4f-carra2`` takes an RGI7 id, finds the outline, and downloads the
 daily CARRA2 means (CDS dataset ``reanalysis-pan-carra-means``) over the
 outline's bounding box: air temperature and geopotential on five pressure
-levels, snow depth, total precipitation, and the net and downward surface
-shortwave radiation. The geopotential is converted to the geometric height
+levels, the 2 m air temperature, snow depth, total precipitation, and the net
+and downward surface shortwave radiation. The geopotential is converted to the geometric height
 of each pressure level the way :mod:`pism_terra.glacier.climate` converts
 ERA5's geopotential, so a temperature profile can be read at a site's
 elevation. The daily means carry no surface geopotential, so the static
@@ -153,6 +153,9 @@ DAYS = [f"{d:02d}" for d in range(1, 32)]
 #: on its CF metadata first and its short name last.
 FIELDS: dict[str, dict[str, Any]] = {
     "air_temp": {"standard_name": "air_temperature", "short": ("t", "temperature")},
+    # Same standard name as the profile; the two never share a file, so the
+    # match is unambiguous within the request that fetches it.
+    "air_temp_2m": {"standard_name": "air_temperature", "short": ("t2m", "2t", "2m_temperature")},
     "snow_depth": {"standard_name": "lwe_thickness_of_surface_snow_amount", "short": ("sde", "sd", "snow_depth")},
     "precipitation": {"standard_name": "precipitation_amount", "short": ("tp", "total_precipitation")},
     "surface_net_solar_radiation": {
@@ -297,11 +300,11 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
     Analysis-based and forecast-based fields cannot share a request, and
     pressure-level fields cannot share one with single-level fields, so
     three requests it is -- plus a fourth for the geopotential on the same
-    pressure levels, kept apart from the temperature so that a cache
-    downloaded before it was added stays valid, and a fifth to
-    :data:`OROGRAPHY_DATASET` for the static orography at a single analysis
-    time (the first day of the first year at 00:00; the field does not
-    change). The pressure levels go under ``level_location``: that is the
+    pressure levels and a fifth for the 2 m temperature, each kept apart
+    from the request it could have joined so that a cache downloaded before
+    it was added stays valid, and a sixth to :data:`OROGRAPHY_DATASET` for
+    the static orography at a single analysis time (the first day of the
+    first year at 00:00; the field does not change). The pressure levels go under ``level_location``: that is the
     key the pan-CARRA form uses, not ``pressure_level``. No ``area``: CDS
     ignores it for this dataset (the full grid comes back either way) and
     leaving it out lets every glacier share the same files.
@@ -337,6 +340,12 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
             "level_type": "single_levels",
             "product_type": "analysis_based",
             "variable": ["snow_depth"],
+        },
+        "surface_temperature": {
+            **base,
+            "level_type": "single_levels",
+            "product_type": "analysis_based",
+            "variable": ["2m_temperature"],
         },
         "forecast": {
             **base,
@@ -654,7 +663,7 @@ def download(
     force_overwrite: bool = False,
 ) -> dict[str, list[Path]]:
     """
-    Fetch the five CDS requests.
+    Fetch the six CDS requests.
 
     Parameters
     ----------
@@ -695,6 +704,7 @@ def download(
 REQUEST_FIELDS = {
     "temperature": ["air_temp"],
     "snow": ["snow_depth"],
+    "surface_temperature": ["air_temp_2m"],
     "forecast": ["precipitation", "surface_net_solar_radiation", "surface_solar_radiation_downwards"],
     "geopotential": ["geopotential"],
     "orography": ["orography"],
@@ -891,12 +901,12 @@ def run(
     logger.info("%s: area N %.2f W %.2f S %.2f E %.2f, years %d-%d", rgi_id, *area, start, end)
     print(f"Area N {area[0]} W {area[1]} S {area[2]} E {area[3]}, years {start}-{end}", flush=True)
     print(
-        "Submitting 5 CDS requests (temperature and geopotential on pressure levels, snow depth, "
-        "precipitation + radiation, and one analysis of the orography).",
+        "Submitting 6 CDS requests (temperature and geopotential on pressure levels, 2 m temperature, "
+        "snow depth, precipitation + radiation, and one analysis of the orography).",
         flush=True,
     )
     print(
-        "CDS returns the whole pan-Arctic domain (~1 GB per year across the daily four); the files are cached",
+        "CDS returns the whole pan-Arctic domain (over 1 GB per year across the daily five); the files are cached",
         flush=True,
     )
     print(
