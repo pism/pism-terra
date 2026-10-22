@@ -8,15 +8,10 @@ the repository root unless they start with `cd`.
 1. **The pism-terra environment.** The figures are made with pism-terra itself:
 
    ```bash
-   conda env create -f environment.yml
+   conda env create -f environment-dev.yml
    conda activate pism-terra
    python -m pip install -e .
    ```
-
-   `make figures` also needs jupytext. It is in the development environment
-   (`environment-dev.yml`) and in the `docs` extras
-   (`python -m pip install -e ".[docs]"`); in the plain environment, add it
-   with `conda install -c conda-forge jupytext`.
 
 2. **pandoc 3 or later** (`pandoc --version`), e.g. `brew install pandoc`. The
    pism-terra environment may already have one.
