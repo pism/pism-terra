@@ -254,6 +254,30 @@ def test_sampling_and_integration(tmp_path, stake_release, method):
     assert (table[table["site"] == "Z"]["obs"].notna()).all()
 
 
+def test_sample_points_returns_the_requested_variables(tmp_path, stake_release, caplog):
+    """
+    Only the listed variables come back; a missing one is skipped and ``smb`` stays masked off the ice.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    stake_release : dict of str to Path
+        The synthetic release.
+    caplog : pytest.LogCaptureFixture
+        Captured log records.
+    """
+    file = spatial_file(tmp_path / "spatial.nc")
+    sites = usgs.load_sites(stake_release["sites"])
+    stakes = usgs.load_measurements(stake_release["data"], "Foo")
+    with usgs.open_pism(file) as ds:
+        sampled = ubs.sample_points(ds, ubs.stake_points(sites, [stakes]), variables=["usurf", "velsurf_mag"])
+    assert sampled is not None
+    assert set(sampled.data_vars) == {"smb", "usurf"}
+    assert sampled["smb"].sel(site="Foo:Z").isnull().all()
+    assert "velsurf_mag" in caplog.text
+
+
 def test_previous_fall_falls_back_to_the_glacier_wide_date(tmp_path, stake_release):
     """
     Without a previous fall visit, the previous balance year's ``Ba_Date`` opens the interval.
@@ -516,3 +540,38 @@ def test_first_measurement_is_the_earliest_date_in_any_table():
     assert ubs.first_measurement([stakes, None, sub]) == pd.Timestamp("1966-04-15")
     assert ubs.first_measurement([None]) is None
     assert ubs.first_measurement([pd.DataFrame({"site": ["A"]})]) is None
+
+
+def test_a_repeated_row_does_not_stop_the_dataset(caplog):
+    """
+    Keep the first of two rows for one run, stake, year and season.
+
+    ``from_series`` refuses a repeated index, and one repeated measurement
+    stopped the NetCDF of a whole glacier.
+
+    Parameters
+    ----------
+    caplog : pytest.LogCaptureFixture
+        Pytest fixture capturing the warning.
+    """
+    row = {
+        "glacier": "G",
+        "site": "AB",
+        "year": 2000,
+        "variable": "ba",
+        "start": pd.Timestamp("1999-09-01"),
+        "end": pd.Timestamp("2000-09-01"),
+        "obs": -1.0,
+        "model": -1.5,
+        "elevation": 1500.0,
+        "usurf": 1490.0,
+        "visit": -1,
+        "run": "RGI1 id_0",
+    }
+    table = pd.DataFrame([row, {**row, "model": -9.0}], columns=ubs.TABLE_COLUMNS)
+
+    with caplog.at_level("WARNING", logger="pism_terra.glacier.usgs_benchmark_stakes"):
+        out = ubs.to_dataset(table)
+
+    assert float(out["ba_model"].sel(run="RGI1 id_0", site="AB", time=2000)) == -1.5
+    assert "1 rows repeat a run, stake, year and season" in caplog.text

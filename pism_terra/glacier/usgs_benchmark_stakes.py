@@ -40,7 +40,7 @@ import logging
 import math
 import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -82,8 +82,8 @@ from pism_terra.glacier.usgs import (
     open_pism,
     plot_year,
     rgi_output_dir,
-    run_label,
     score,
+    unique_run_labels,
 )
 from pism_terra.kitp.analyze import rc_params
 from pism_terra.log import setup_logging
@@ -269,7 +269,12 @@ def _nearest_indices(coord: pd.Index, values: np.ndarray) -> np.ndarray:
     return np.asarray(coord.get_indexer(values, method="nearest"))
 
 
-def sample_points(ds: xr.Dataset, points: gpd.GeoDataFrame, method: str = "nearest") -> xr.Dataset | None:
+def sample_points(
+    ds: xr.Dataset,
+    points: gpd.GeoDataFrame,
+    method: str = "nearest",
+    variables: Sequence[str] = POINT_VARS,
+) -> xr.Dataset | None:
     """
     Sample a spatial file at the stakes that fall inside its grid.
 
@@ -291,12 +296,17 @@ def sample_points(ds: xr.Dataset, points: gpd.GeoDataFrame, method: str = "neare
         bilinear value that touches a masked cell falls back to the nearest
         cell for that site and time step, and ``thk`` — which only masks
         ice-free cells — is always the stake's own cell.
+    variables : sequence of str, default :data:`POINT_VARS`
+        Variables sampled alongside ``smb`` and returned as stored in the
+        file. Those the file lacks are skipped with a warning. ``thk`` is
+        read whenever the file has it, to mask ``smb`` off the ice, but is
+        returned only when listed.
 
     Returns
     -------
     xarray.Dataset or None
         ``smb`` in m w.e./yr (see :func:`point_smb_rate`) and whichever of
-        :data:`POINT_VARS` the file has, on ``(site, time)``, with
+        *variables* the file has, on ``(site, time)``, with
         ``glacier``/``site_name``/``x``/``y``/``lon``/``lat`` coordinates
         on ``site`` and ``month_start``/``month_end`` on ``time``. None
         when no stake lies inside the grid or the file has no usable
@@ -332,11 +342,18 @@ def sample_points(ds: xr.Dataset, points: gpd.GeoDataFrame, method: str = "neare
     else:
         logger.warning("no surface mass balance variables (%s or %s); skipping", SMB_VARS, SMB_TENDENCY_VAR)
         return None
-    variables = balance_vars + [v for v in POINT_VARS if v in ds]
+    missing = [v for v in variables if v not in ds]
+    if missing:
+        logger.warning("requested variables not in the file: %s; skipping them", missing)
+    requested = list(dict.fromkeys(v for v in variables if v in ds))
+    extra = [v for v in requested if v not in balance_vars]
+    if "thk" in ds and "thk" not in extra:
+        extra.append("thk")
+    to_read = balance_vars + extra
 
     ix = _nearest_indices(ds.indexes["x"], xs)
     iy = _nearest_indices(ds.indexes["y"], ys)
-    crop = ds[variables].isel(
+    crop = ds[to_read].isel(
         x=slice(max(int(ix.min()) - 1, 0), int(ix.max()) + 2),
         y=slice(max(int(iy.min()) - 1, 0), int(iy.max()) + 2),
     )
@@ -349,7 +366,7 @@ def sample_points(ds: xr.Dataset, points: gpd.GeoDataFrame, method: str = "neare
         sampled = nearest
     elif method == "linear":
         sampled = crop.interp(x=x_sel, y=y_sel, method="linear")
-        for var in variables:
+        for var in to_read:
             gaps = sampled[var].isnull() & nearest[var].notnull()
             if bool(gaps.any()):
                 logger.info(
@@ -366,9 +383,8 @@ def sample_points(ds: xr.Dataset, points: gpd.GeoDataFrame, method: str = "neare
 
     smb = point_smb_rate(sampled, spacing)
     out = xr.Dataset({"smb": smb})
-    for var in POINT_VARS:
-        if var in sampled:
-            out[var] = sampled[var]
+    for var in requested:
+        out[var] = sampled[var]
     starts, ends = interval_edges(ds)
     out = out.assign_coords(
         site=("site", points["site"].to_numpy()),
@@ -1188,6 +1204,18 @@ def to_dataset(table: pd.DataFrame, sampled: Sequence[xr.Dataset] = ()) -> xr.Da
         *sampled* provides them.
     """
     seasonal = table[table["variable"] != "db"]
+    # One row per run, stake, year and season. A measurement listed twice in
+    # a release would otherwise stop the whole conversion; the observations
+    # below keep the first of them, and so do the model values.
+    repeated = seasonal.duplicated(subset=["run", "site", "year", "variable"])
+    if repeated.any():
+        twice = seasonal[repeated].drop_duplicates(subset=["site", "year", "variable"])
+        logger.warning(
+            "%d rows repeat a run, stake, year and season and are left out, e.g. %s",
+            int(repeated.sum()),
+            ", ".join(f"{r.site} {r.year} {r.variable}" for r in twice.head(5).itertuples(index=False)),
+        )
+        seasonal = seasonal[~repeated]
     runs = sorted(r for r in table["run"].unique() if r != NO_RUN) or [NO_RUN]
     out = xr.Dataset()
     if not seasonal.empty:
@@ -1251,7 +1279,7 @@ def to_dataset(table: pd.DataFrame, sampled: Sequence[xr.Dataset] = ()) -> xr.Da
 
 def _sample_one_file(
     file: Path,
-    run_dir: Path | str | None,
+    labels: Mapping[Path, str],
     points: gpd.GeoDataFrame,
     stakes: dict[str, pd.DataFrame],
     subseasonal: dict[str, pd.DataFrame],
@@ -1269,8 +1297,9 @@ def _sample_one_file(
     ----------
     file : pathlib.Path
         PISM spatial output file.
-    run_dir : Path or str or None
-        Run directory the ``run`` labels are made relative to.
+    labels : Mapping[pathlib.Path, str]
+        The ``run`` label of every file, from
+        :func:`pism_terra.glacier.usgs.unique_run_labels`.
     points : geopandas.GeoDataFrame
         Measured sites from :func:`stake_points`.
     stakes : dict
@@ -1289,7 +1318,7 @@ def _sample_one_file(
         number of ice-free months per ``(glacier, site)``; None when the
         file is not monthly or no stake falls inside its grid.
     """
-    label = run_label(file, run_dir)
+    label = labels[Path(file)]
     try:
         ds = open_pism(file)
     except (OSError, ValueError) as exc:
@@ -1410,7 +1439,7 @@ def run_pipeline(
     for result in map_files(
         _sample_one_file,
         files,
-        run_dir,
+        unique_run_labels(files, run_dir),
         points,
         stakes,
         subseasonal,

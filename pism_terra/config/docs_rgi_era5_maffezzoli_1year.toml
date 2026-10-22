@@ -27,6 +27,7 @@ velocity = "its_live"
 'time.end' =  "1979-01-01"
 'time.reference_date' = "1978-01-01"
 'time.start' = "1978-01-01"
+'time.ignore_input_file' = "yes"
 
 [time_stepping]
 
@@ -134,6 +135,7 @@ model = "pdd"
 
 'surface.force_to_thickness.file' = "none"
 'surface.models' = "pdd,forcing"
+'surface.pdd.std_dev.value' = 5.0
 
 [surface.options.debm]
 
@@ -141,11 +143,11 @@ model = "pdd"
 'surface.debm_simple.air_temp_all_precip_as_snow' = 272.15
 'surface.debm_simple.c1' = 30
 'surface.debm_simple.c2' = -75
+'surface.debm_simple.insolation_model' = "simple"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.60
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.std_dev.value' = 5.0
 'surface.force_to_thickness.file' = "none"
 'surface.models' = "debm_simple,forcing"
 

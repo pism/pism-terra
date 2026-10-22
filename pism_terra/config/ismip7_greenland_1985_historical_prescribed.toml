@@ -49,6 +49,7 @@ CESM2-WACCM = {climate = 3, ocean = 2}
 'time.end' = "2015-01-01"
 'time.reference_date' = "1850-01-01"
 'time.start' = "1985-01-01"
+'time.ignore_input_file' = "yes"
 
 [time_stepping]
 

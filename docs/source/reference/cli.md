@@ -202,7 +202,8 @@ keeps their outputs apart.
 * - `pism-kitp-run-ensemble`
   - Render ensemble run scripts.
 * - `pism-kitp-calibrate`
-  - Calibrate KITP surface mass balance ensembles.
+  - Calibrate a KITP surface mass balance ensemble against observed fields:
+    `--obs-path OBS.nc` and the members' spatial files as arguments.
 * - `pism-kitp-analyze`
   - Post-process KITP Greenland output into figures.
 * - `pism-kitp-adjust-timeseries`

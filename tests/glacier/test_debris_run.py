@@ -82,3 +82,19 @@ def test_a_debris_run_without_a_staged_file_is_refused(tmp_path):
     """
     with pytest.raises(ValueError, match="campaign.debris"):
         render(tmp_path, None)
+
+
+def test_the_main_leg_carries_the_debris_state_of_the_init_leg(tmp_path):
+    """
+    Regrid the debris state from the init state when the debris model runs.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    script = render(tmp_path, DEBRIS_FILE)
+    main = script.split(" pism ")[-1]
+
+    assert "-input.bootstrap yes" in main
+    assert "-input.regrid.vars litho_temp,enthalpy,age,tillwat,debris_thickness,englacial_debris_concentration " in main

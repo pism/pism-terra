@@ -25,6 +25,7 @@ generates one page per symbol under `generated/`.
     :toctree: generated/
 
     load_grid
+    sample_points
 ```
 
 ## Configuration

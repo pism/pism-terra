@@ -18,8 +18,8 @@
 """
 Tests for the regional ERA5 stores.
 
-Asking CDS for a glacier's forcing takes hours, almost all of it the daily
-means behind ``air_temp_sd``. ``prepare`` therefore builds the forcing once
+Asking CDS for every glacier's forcing would repeat the same requests for
+each glacier of a region. ``prepare`` therefore builds the forcing once
 per region and staging cuts each glacier out of it. These pin the store that
 is written -- ERA5's own latitude/longitude grid, bounded by the region's
 glaciers -- and that staging uses it instead of CDS whenever it covers the
@@ -36,7 +36,7 @@ import pytest
 import rioxarray  # noqa: F401  # pylint: disable=unused-import
 import xarray as xr
 from pyproj import CRS, Transformer
-from test_era5_air_temp_sd import YEARS, FakeCDS, daily_temperature
+from test_era5_fields import YEARS, FakeCDS
 
 from pism_terra.domain import create_domain
 from pism_terra.glacier import climate
@@ -90,18 +90,6 @@ def glacier_grid(crs: str = ALASKA, lon: float = -150.0, lat: float = 62.0) -> x
     return create_domain([x - 10_000.0, x + 10_000.0], [y - 10_000.0, y + 10_000.0], resolution=1000.0, crs=crs)
 
 
-def january_1990() -> float:
-    """
-    Compute the spread of the stand-in's daily means in January 1990.
-
-    Returns
-    -------
-    float
-        The population standard deviation.
-    """
-    return float(np.std(daily_temperature(pd.date_range("1990-01-01", "1990-01-31", freq="D"))))
-
-
 @pytest.mark.usefixtures("cds")
 def test_a_region_is_stored_on_era5s_own_grid(tmp_path: Path):
     """
@@ -129,7 +117,6 @@ def test_a_region_is_stored_on_era5s_own_grid(tmp_path: Path):
     assert np.allclose(store["air_temp"], 265.0)
     assert np.allclose(store["precipitation"], 2.0)
     assert np.allclose(store["surface"], 1000.0)
-    assert np.allclose(store["air_temp_sd"].isel(time=0), january_1990(), rtol=1e-5)
 
 
 def test_a_complete_store_is_not_built_again(cds: FakeCDS, tmp_path: Path):
@@ -216,8 +203,6 @@ def test_staging_cuts_the_glacier_out_of_the_store(cds: FakeCDS, tmp_path: Path,
         assert pd.Timestamp(bounds[0, 0]) == pd.Timestamp("1990-01-01")
         assert pd.Timestamp(bounds[-1, 1]) == pd.Timestamp("1992-01-01")
         assert (bounds[1:, 0] == bounds[:-1, 1]).all()
-        assert not bool(ds["air_temp_sd"].isnull().any())
-        assert np.allclose(ds["air_temp_sd"].isel(time=0), january_1990(), rtol=1e-5)
         # Cropped to the glacier, with data past every edge of its grid.
         to_lonlat = Transformer.from_crs(ALASKA, "EPSG:4326", always_xy=True)
         west, south, east, north = to_lonlat.transform_bounds(

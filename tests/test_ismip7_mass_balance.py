@@ -635,3 +635,43 @@ def test_mass_balance_series_from_basin_sums_without_pathways():
     rate = regions["mass_balance"].values[0, 0]
     expected = np.concatenate([[0.0], np.cumsum(rate * days / 365.25)])
     np.testing.assert_allclose(regions["cumulative_mass_balance"].values.ravel(), expected - expected[1])
+
+
+def test_ice_thickness_and_elevation_stay_out_of_the_mass_balance():
+    """
+    Leave the states, and the records only they have, out of the mass balance.
+
+    With ``lithk`` and ``orog`` among the variables the sum added thickness
+    and elevation to the fluxes. The states are stamped at the year
+    boundaries and the fluxes mid-year, so every sum was missing, and the
+    cumulative balance, zeroed at a year-boundary record, was missing too.
+    """
+    assert set(mb.DEFAULT_VARIABLES) == set(mb.MASS_BALANCE_FLUXES)
+    assert not set(mb.STATE_VARIABLES) & set(mb.MASS_BALANCE_FLUXES)
+    mid_year = pd.date_range("2014-07-01", periods=3, freq="12MS")
+    boundaries = pd.date_range("2015-01-01", periods=3, freq="YS")
+    rate = xr.DataArray(np.full((3, 1), 2.0), coords={"time": mid_year, "region": ["GIS_GIS"]}, dims=("time", "region"))
+    state = xr.DataArray(
+        np.full((3, 1), 100.0), coords={"time": boundaries, "region": ["GIS_GIS"]}, dims=("time", "region")
+    )
+    sums = xr.Dataset(
+        {
+            "acabf": rate.assign_attrs(units="Gt year-1"),
+            "libmassbfgr": rate.assign_attrs(units="Gt year-1"),
+            "ligroundf": (-rate).assign_attrs(units="Gt year-1"),
+            "lithk": state.assign_attrs(units="m"),
+            "orog": state.assign_attrs(units="m"),
+        }
+    )
+
+    regions = mb.mass_balance_series(
+        sums, variables=[*mb.MASS_BALANCE_FLUXES, *mb.STATE_VARIABLES], reference_year="2015"
+    )
+
+    assert "lithk" not in regions and "orog" not in regions
+    assert regions["mass_balance"].attrs["components"] == "acabf + libmassbfgr + ligroundf"
+    np.testing.assert_array_equal(regions["time"].values, mid_year.values)
+    np.testing.assert_allclose(regions["mass_balance"].values.ravel(), np.full(3, 2.0))
+    cumulative = regions["cumulative_mass_balance"].values.ravel()
+    assert not np.isnan(cumulative).any()
+    assert cumulative[1] == 0.0

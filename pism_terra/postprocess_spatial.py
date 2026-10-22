@@ -844,6 +844,12 @@ def main():
         default=False,
     )
     parser.add_argument(
+        "--crs",
+        help="CRS of the input grid. Read from the file's grid mapping when unset.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--column",
         help="Column in OUTLINEFILE holding the region names. " f"Tried in order {list(DEFAULT_COLUMNS)} when unset.",
         type=str,
@@ -865,7 +871,9 @@ def main():
         nargs=1,
     )
 
-    options, _ = parser.parse_known_args()
+    # Unknown options are errors: ignored, a misspelt or missing one (--crs
+    # was not an option here) changed nothing and was never reported.
+    options = parser.parse_args()
     outdir = Path(options.OUTDIR[0]).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     setup_logging(outdir / "postprocess_spatial.log")
@@ -882,6 +890,7 @@ def main():
         total=options.total,
         time_batch=options.time_batch,
         column=options.column,
+        crs=options.crs,
     )
 
 

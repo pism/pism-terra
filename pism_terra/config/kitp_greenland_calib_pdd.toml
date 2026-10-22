@@ -33,6 +33,7 @@ version = "v4"
 'time.end' =  "0002-01-01"
 'time.reference_date' = "0001-01-01"
 'time.start' = "0001-01-01"
+'time.ignore_input_file' = "yes"
 
 [time_stepping]
 
@@ -81,7 +82,7 @@ version = "v4"
 'grid.Mz' = 101
 'grid.allow_extrapolation' = "yes"
 'grid.file' = "none"
-resolution = "1200m"
+resolution = "4500m"
 
 [energy]
 
@@ -142,7 +143,7 @@ model = 'none'
 
 [surface]
 
-model = "debm"
+model = "pdd"
 
 [surface.options.pdd]
 
@@ -152,8 +153,7 @@ model = "debm"
 'surface.pdd.factor_ice' = 0.00879120879120879
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
-'surface.pdd.std_dev.file' = "none"
-'surface.pdd.std_dev.periodic' = "yes"
+'surface.pdd.std_dev.value' = 5
 
 [surface.options.debm]
 
@@ -163,11 +163,11 @@ model = "debm"
 'surface.debm_simple.albedo_input.periodic' = "yes"
 'surface.debm_simple.c1' = 42
 'surface.debm_simple.c2' = -128
+'surface.debm_simple.insolation_model' = "simple"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.4
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
+'surface.debm_simple.std_dev.value' = 5
 'surface.models' = "debm_simple"
 
 [calving]

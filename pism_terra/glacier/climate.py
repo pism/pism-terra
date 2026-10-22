@@ -170,6 +170,45 @@ def _finalize_pism_crs(ds: xr.Dataset, crs_wkt: str) -> xr.Dataset:
     return ds
 
 
+def _promote_grid_mapping(target_grid: xr.Dataset) -> xr.Dataset:
+    """
+    Make the target grid's CF grid-mapping variable a coordinate.
+
+    A grid file opened with plain ``xarray.open_dataset`` (``decode_coords=True``)
+    keeps ``spatial_ref`` as a *data variable*, and rioxarray only reads a CRS
+    from a coordinate. ``target_grid.rio.crs`` is then ``None`` and
+    ``reproject_match(target_grid)`` fails deep inside rasterio with
+    "Missing dst_crs". Promoting the variable named by the ``grid_mapping``
+    pointer fixes that without changing the grid itself.
+
+    Parameters
+    ----------
+    target_grid : xarray.Dataset
+        Target grid, opened with or without ``decode_coords="all"``.
+
+    Returns
+    -------
+    xarray.Dataset
+        ``target_grid`` with a usable ``rio.crs``.
+
+    Raises
+    ------
+    ValueError
+        If the grid has no grid-mapping variable rioxarray can read a CRS from.
+    """
+    if target_grid.rio.crs is not None:
+        return target_grid
+    mapping_var = target_grid.rio.grid_mapping
+    if mapping_var in target_grid.data_vars:
+        target_grid = target_grid.set_coords(mapping_var)
+    if target_grid.rio.crs is None:
+        raise ValueError(
+            f"Could not determine the CRS of the target grid: no usable grid mapping "
+            f"(looked for {mapping_var!r}). Variables present: {list(target_grid.variables)}"
+        )
+    return target_grid
+
+
 def _process_one_tif(p: Path, outdir: Path, force_overwrite: bool) -> Path | None:
     """
     Convert a single GeoTIFF to a time-stamped NetCDF, returning the output path.
@@ -672,7 +711,7 @@ def prepare_carra2(
     cdo = Cdo(tempdir=str(path))
     cdo.debug = True
 
-    # --- Step 1: per-year batches (setgrid, settaxis, monmean/monstd) ---
+    # --- Step 1: per-year batches (setgrid, settaxis, monmean) ---
 
     # Paired by year, not by position: a year CDS failed to deliver is missing
     # from its list, and every later year would otherwise slide onto the wrong
@@ -691,7 +730,7 @@ def prepare_carra2(
 
     def _process_carra2_batch(args):
         """
-        Process a single year-batch: fix grid/time, compute monmean/monstd, merge.
+        Process a single year-batch: fix grid/time, compute monmean, merge.
 
         Parameters
         ----------
@@ -749,24 +788,14 @@ def prepare_carra2(
             options="--reduce_dim -f nc4 -z zip_2",
         )
 
-        # Temperature: aggregate daily -> monthly std
-        tas_mstd = os.path.join(tmp, f"tas_mstd_{yr}.nc")
-        cdo_local.setattribute(
-            """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
-            input=f"""-chname,air_temp,air_temp_sd -monstd -setgrid,{grid} -chname,t2m,air_temp """
-            f"""-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {tas_f}""",
-            output=tas_mstd,
-            options="--reduce_dim -f nc4 -z zip_2",
-        )
-
-        # Merge pr + snowfall + tas_mm + tas_mstd + radiation for this year
+        # Merge pr + snowfall + tas_mm + radiation for this year
         cdo_local.merge(
-            input=f"{pr_fixed} {snow_fixed} {tas_mm} {tas_mstd} {rad_fixed}",
+            input=f"{pr_fixed} {snow_fixed} {tas_mm} {rad_fixed}",
             output=batch_out,
             options="-f nc4 -z zip_2",
         )
         # Clean up per-year intermediate files only (not the shared directory)
-        for f in (pr_fixed, snow_fixed, tas_mm, tas_mstd, rad_fixed):
+        for f in (pr_fixed, snow_fixed, tas_mm, rad_fixed):
             Path(f).unlink(missing_ok=True)
         return batch_out
 
@@ -792,7 +821,7 @@ def prepare_carra2(
     batches_to_run = [b for b in batches if force_overwrite or not _is_current(b[-1])]
     if batches_to_run:
         logger.info(
-            "CDO: processing %d year batches (setgrid + monmean/monstd)...",
+            "CDO: processing %d year batches (setgrid + monmean)...",
             len(batches_to_run),
         )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1108,11 +1137,6 @@ def prepare_carra2_monthly_mean(
     the climatology stable when the CARRA2 download is later extended, and
     comparable with the ERA5/RACMO/MAR 1990-2019 means.
 
-    ``air_temp_sd`` is averaged like every other field, so it keeps its meaning
-    — the typical within-month temperature variability for that month, which is
-    what PISM's positive-degree-day scheme reads. It is *not* the year-to-year
-    spread of the monthly means.
-
     Time-invariant variables (``orography``) are carried through untouched. The
     output's ``time`` coordinate is the calendar month, ``1``-``12``; the
     CF climatological axis is stamped later, when a per-glacier file is written
@@ -1424,6 +1448,7 @@ def carra2_monthly_mean(
         print(f"Using cached {out_file}")
         return out_file
 
+    target_grid = _promote_grid_mapping(target_grid)
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
 
@@ -1469,7 +1494,7 @@ def carra2_monthly_mean(
     # Same per-variable fills as the full CARRA2 path: 0 K air temperature at
     # the masked corners would wreck PISM's energy balance, so use a plausible
     # cold value instead.
-    fill_defaults = {"air_temp": 260.0, "air_temp_sd": 0.0, "precipitation": 0.0, "orography": 0.0}
+    fill_defaults = {"air_temp": 260.0, "precipitation": 0.0, "orography": 0.0}
     for name in out.data_vars:
         if np.issubdtype(out[name].dtype, np.floating):
             out[name] = out[name].fillna(fill_defaults.get(str(name), 0.0))
@@ -1711,6 +1736,7 @@ def snap(
 
     # Destination CRS/extent from the target grid; SNAP is on EPSG:3338, so clip
     # in that CRS (PISM reprojects 3338 -> model grid via the grid mapping).
+    target_grid = _promote_grid_mapping(target_grid)
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     bounds = [
@@ -1807,6 +1833,28 @@ def snap(
         out_files.append(snap_filename)
 
     return out_files
+
+
+def _nearest_source_year(source_years: Sequence[int], year: int) -> int:
+    """
+    Return the CARRA2 source year that stands in for ``year``.
+
+    The nearest of ``source_years``; ties go to the earlier year (e.g.
+    2004 -> 2003 when both 2003 and 2005 are available).
+
+    Parameters
+    ----------
+    source_years : sequence of int
+        Years present in the CARRA2 source.
+    year : int
+        Target year.
+
+    Returns
+    -------
+    int
+        The source year whose 12 months are used for ``year``.
+    """
+    return min((abs(sy - year), sy) for sy in source_years)[1]
 
 
 def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Dataset:
@@ -1929,7 +1977,7 @@ def _carra2_fill_years_and_bounds(ds: xr.Dataset, years: Sequence[int]) -> xr.Da
 
     pieces = []
     for ty in sorted({int(y) for y in years}):
-        nearest = min((abs(sy - ty), sy) for sy in source_years)[1]
+        nearest = _nearest_source_year(source_years, ty)
         sub = ds.isel(time=np.where(src_year_of == nearest)[0])
         new_times = np.array([_replace_year(t, ty) for t in sub["time"].values])
         pieces.append(sub.assign_coords(time=new_times))
@@ -2052,6 +2100,7 @@ def carra2(
         float(target_grid.x_bnds.values[-1][-1]),
         float(target_grid.y_bnds.values[-1][-1]),
     )
+    target_grid = _promote_grid_mapping(target_grid)
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
 
@@ -2117,6 +2166,14 @@ def carra2(
         x=slice(minx, maxx) if x_ascending else slice(maxx, minx),
         y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
     )
+    # Keep only the source years the requested ``years`` are filled from, so
+    # the S3 reads and reprojection below cover those months and not the whole
+    # record. _carra2_fill_years_and_bounds picks the same years afterwards.
+    years = list(years)
+    src_year_of = sub["time"].dt.year.values
+    needed = {_nearest_source_year(sorted(set(src_year_of.tolist())), int(y)) for y in years}
+    sub = sub.isel(time=np.flatnonzero(np.isin(src_year_of, sorted(needed))))
+    print(f"  source years used: {sorted(needed)}", flush=True)
     print(f"  subset dims: {dict(sub.sizes)}", flush=True)
 
     # rioxarray.reproject_match eagerly reads every non-spatial coord (via
@@ -2236,11 +2293,8 @@ def carra2(
             # unphysical and blows up PISM's energy balance. Use 260 K
             # (well below any real surface temperature we'd care about
             # preserving) so the corners have a plausible cold value.
-            # ``air_temp_sd`` stays at 0 because a missing standard
-            # deviation is best interpreted as "no variability observed".
             fill_defaults: dict[str, float] = {
                 "air_temp": 260.0,
-                "air_temp_sd": 0.0,
                 "precipitation": 0.0,
                 "orography": 0.0,
             }
@@ -2307,12 +2361,6 @@ def carra2(
 
 GLOBAL_ERA5_DATASET = "reanalysis-era5-single-levels-monthly-means"
 
-#: Daily statistics CDS computes from hourly ERA5, the source of the daily
-#: means behind ``air_temp_sd``. The global product rather than ERA5-Land's:
-#: it is defined over water, and the spread of daily temperature within a
-#: month is a smooth field that loses little at 0.25 degrees.
-ERA5_DAILY_DATASET = "derived-era5-single-levels-daily-statistics"
-
 # Margin, in degrees, added on every side of an ERA5-Land request box. ERA5-Land
 # is a 0.1° grid, so 0.25° guarantees at least three grid points per axis even
 # for a domain smaller than one cell; PISM refuses to interpolate from a grid
@@ -2329,7 +2377,7 @@ ERA5_STORE_YEARS = range(1986, 2026)
 ERA5_STORE_PAD = 1.0
 
 #: Fields of an ERA5 store, and of the forcing file cut from it.
-ERA5_VARIABLES = ("air_temp", "air_temp_sd", "precipitation", "surface")
+ERA5_VARIABLES = ("air_temp", "precipitation", "surface")
 
 #: Reference period of the ERA5 monthly climatology, the same as CARRA2's.
 ERA5_CLIMATOLOGY_YEARS = CARRA2_CLIMATOLOGY_YEARS
@@ -2612,112 +2660,6 @@ def fill_from_global_era5(
     return ds, ds_geo
 
 
-def era5_air_temp_sd(
-    ds: xr.Dataset,
-    area: Sequence[float],
-    years: Sequence[int],
-    path: Path | str,
-    rgi_id: str,
-    pad: float = 1.0,
-    **kwargs,
-) -> xr.DataArray:
-    """
-    Monthly standard deviation of ERA5 daily-mean 2-m temperature.
-
-    The ERA5 counterpart of CARRA2's ``air_temp_sd``: the spread of the daily
-    means within each month, which is what PISM's temperature-index models
-    take as the day-to-day variability around the monthly mean. The monthly
-    means say nothing about it, so the daily means are downloaded -- one
-    request per year, computed by CDS from the hourly reanalysis.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Monthly ERA5 fields on ``latitude``/``longitude`` and ``valid_time``;
-        the result is put on this grid and these months.
-    area : sequence of float
-        Bounding box of ``ds`` as handed to :func:`download_request`.
-    years : sequence of int
-        Years to request.
-    path : str or pathlib.Path
-        Directory for the ``_tmp_5`` download cache.
-    rgi_id : str
-        Glacier identifier, used in the cache filename.
-    pad : float, default 1.0
-        Degrees of margin added to ``area``, so the 0.25 degree product has
-        data past every edge of ``ds`` (see :func:`pad_area`).
-    **kwargs
-        Forwarded to :func:`download_request`.
-
-    Returns
-    -------
-    xarray.DataArray
-        ``air_temp_sd`` in kelvin, on the grid and the ``valid_time`` of ``ds``.
-
-    Raises
-    ------
-    ValueError
-        If the download does not hold exactly one field, or lacks a month
-        that ``ds`` has.
-
-    Notes
-    -----
-    The standard deviation is the population one (``ddof=0``), as ``cdo
-    monstd`` gives for CARRA2.
-    """
-    lat_a, west, lat_b, east = pad_area(area, pad)
-    request = {
-        "product_type": "reanalysis",
-        "variable": ["2m_temperature"],
-        "year": [str(year) for year in years],
-        "month": [f"{month:02d}" for month in range(1, 13)],
-        "day": [f"{day:02d}" for day in range(1, 32)],
-        "daily_statistic": "daily_mean",
-        "time_zone": "utc+00:00",
-        "frequency": "1_hourly",
-        # CDS wants [North, West, South, East]; see ``download_request``.
-        "area": [max(lat_a, lat_b), west, min(lat_a, lat_b), east],
-    }
-    daily = download_request(
-        ERA5_DAILY_DATASET,
-        file_path=Path(path) / Path(f"era5_wgs84_{rgi_id}_tmp_5.nc"),
-        request_override=request,
-        **kwargs,
-    )
-    fields = [
-        str(name) for name, da in daily.data_vars.items() if {"valid_time", "latitude", "longitude"} <= set(da.dims)
-    ]
-    if len(fields) != 1:
-        raise ValueError(f"Expected exactly one daily field from {ERA5_DAILY_DATASET}, got {fields}")
-
-    monthly = daily[fields].resample(valid_time="MS").std()
-    monthly = (
-        monthly.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
-        .rio.write_crs("EPSG:4326")
-        .rio.reproject_match(ds, resampling=Resampling.bilinear)
-        .rename({"x": "longitude", "y": "latitude"})
-        # Same reason as in ``_patch_from_global``: re-attach the target's own
-        # coordinates so the merge aligns on them exactly.
-        .assign_coords(longitude=ds["longitude"], latitude=ds["latitude"])
-    )
-
-    # Match the months of ``ds`` by calendar month, whatever time of day
-    # either product stamps them with, and fail on a month that is missing
-    # rather than hand PISM a NaN standard deviation.
-    have = pd.DatetimeIndex(monthly["valid_time"].values).to_period("M")
-    want = pd.DatetimeIndex(ds["valid_time"].values).to_period("M")
-    missing = want.difference(have)
-    if len(missing):
-        raise ValueError(
-            f"{ERA5_DAILY_DATASET}: no daily temperature for {len(missing)} of {len(want)} months "
-            f"(first: {missing[0]}, last: {missing[-1]})"
-        )
-    sd = monthly[fields[0]].isel(valid_time=have.get_indexer(want)).assign_coords(valid_time=ds["valid_time"])
-    sd = sd.astype("float32").rename("air_temp_sd")
-    sd.attrs = {"units": "kelvin", "long_name": "standard deviation of 2-m air temperature"}
-    return sd
-
-
 def ensure_no_missing(ds: xr.Dataset, context: str = "") -> xr.Dataset:
     """
     Guarantee that a gridded dataset carries no missing values.
@@ -2771,8 +2713,7 @@ def era5_fields(
     Download and assemble the monthly ERA5 forcing fields over a box.
 
     The fields are ERA5-Land's, patched over water from the global
-    reanalysis, with the surface elevation from the geopotential and the
-    within-month spread of the daily means from the daily statistics.
+    reanalysis, with the surface elevation from the geopotential.
 
     Parameters
     ----------
@@ -2793,8 +2734,8 @@ def era5_fields(
     Returns
     -------
     xarray.Dataset
-        ``air_temp`` and ``air_temp_sd`` (kelvin), ``precipitation``
-        (kg m^-2 day^-1) and ``surface`` (m) on ``latitude``/``longitude`` in
+        ``air_temp`` (kelvin), ``precipitation`` (kg m^-2 day^-1) and
+        ``surface`` (m) on ``latitude``/``longitude`` in
         EPSG:4326, with first-of-month ``time`` stamps and no missing values.
     """
     path = Path(path)
@@ -2821,7 +2762,6 @@ def era5_fields(
     lat_attrs = ds["latitude"].attrs
 
     ds, ds_geo_ = fill_from_global_era5(ds, ds_geo_, area, years, path, tag, **kwargs)
-    ds["air_temp_sd"] = era5_air_temp_sd(ds, area, years, path, tag, **kwargs)
 
     ds = xr.merge([ds, ds_geo_], compat="no_conflicts")
     ds = ensure_no_missing(ds, "the merged ERA5 fields")
@@ -2908,8 +2848,7 @@ def prepare_era5(
     ds.attrs = {
         "Conventions": "CF-1.8",
         "title": f"ERA5 monthly forcing, {region}",
-        "source": f"{kwargs.get('dataset', 'reanalysis-era5-land-monthly-means')}, {GLOBAL_ERA5_DATASET}, "
-        f"{ERA5_DAILY_DATASET}",
+        "source": f"{kwargs.get('dataset', 'reanalysis-era5-land-monthly-means')}, {GLOBAL_ERA5_DATASET}",
         "years": f"{years[0]}-{years[-1]}",
     }
     for name in ds.variables:
@@ -2935,9 +2874,7 @@ def prepare_era5_monthly_mean(
 
     The ERA5 counterpart of :func:`prepare_carra2_monthly_mean`: one field per
     calendar month over a fixed reference period, a periodic forcing PISM can
-    cycle for a spin-up. ``air_temp_sd`` is averaged like every other field,
-    so it stays the typical within-month spread of the daily means. The
-    surface elevation is carried through untouched.
+    cycle for a spin-up. The surface elevation is carried through untouched.
 
     The climatology stays on the store's latitude/longitude grid and its
     ``time`` coordinate is the calendar month, ``1``-``12``; the periodic axis
@@ -3405,8 +3342,6 @@ def era5(
     -----
     - Output variables:
       - ``air_temp`` (K) from ERA5 ``t2m``.
-      - ``air_temp_sd`` (K), the standard deviation of the daily means within
-        each month, from ERA5's daily statistics (see :func:`era5_air_temp_sd`).
       - ``precipitation`` (kg m^-2 day^-1) from ERA5 ``tp`` (converted).
       - ``surface`` (m) derived from ERA5 ``z`` / 9.80665 (geopotential → meters).
     - ``time_bounds`` are added for CF-style climatological metadata.
@@ -3426,8 +3361,9 @@ def era5(
     years = list(years)
 
     # The regional store ``pism-glacier-prepare`` builds holds the same fields
-    # for every glacier of a region, so the slow part -- a year of daily means
-    # per CDS request -- is paid once per region instead of once per glacier.
+    # for every glacier of a region, so the CDS requests are made once per
+    # region instead of once per glacier.
+    target_grid = _promote_grid_mapping(target_grid)
     bucket = kwargs.get("bucket")
     if bucket is not None:
         store = find_era5_store(
@@ -3437,10 +3373,7 @@ def era5(
             return era5_from_store(
                 store, target_grid, rgi_id, years, path, force_overwrite=bool(kwargs.get("force_overwrite", False))
             )
-        print(
-            "No regional ERA5 store covers this glacier and these years; downloading from CDS instead. "
-            "This is slow: the daily means take one request per year."
-        )
+        print("No regional ERA5 store covers this glacier and these years; downloading from CDS instead.")
 
     era5_filename = path / Path(f"era5_wgs84_{rgi_id}.nc")
 
@@ -3558,6 +3491,7 @@ def era5_mean(
         target_grid.x_bnds.values[-1][-1],
         target_grid.y_bnds.values[-1][-1],
     ]
+    target_grid = _promote_grid_mapping(target_grid)
     mapping_var = target_grid.rio.grid_mapping
     dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
     t = Transformer.from_crs(dst_crs, "EPSG:4326")
@@ -3606,7 +3540,6 @@ def era5_mean(
     src_lo = src_times.min()
     src_hi = (pd.Timestamp(src_times.max()) + pd.offsets.MonthBegin(1)).to_datetime64()
     ds = renamed.mean(dim="time", keep_attrs=True).expand_dims(time=[midpoint])
-    ds["air_temp_sd"] = renamed["t2m"].std(dim="time", keep_attrs=True).expand_dims(time=[midpoint])
 
     ds = ds.rename_vars({"tp": "precipitation", "t2m": "air_temp", "z": "surface"})
     ds["surface"] /= 9.80665
@@ -3614,7 +3547,6 @@ def era5_mean(
     ds["precipitation"] *= 1000
     ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
     ds["air_temp"].attrs.update({"units": "kelvin"})
-    ds["air_temp_sd"].attrs.update({"units": "kelvin"})
     ds["time"].encoding["units"] = "hours since 1980-01-01 00:00:00"
     ds["time"].encoding["calendar"] = "standard"
     ds["longitude"].attrs = lon_attrs
@@ -3706,8 +3638,7 @@ def era5_monthly_mean(
     The box is cut out of the regional climatology
     :func:`prepare_era5_monthly_mean` wrote, found through ``bucket``.
     There is no download for one glacier: the reference period is thirty
-    years of daily means, one CDS request of hours each, which no run should
-    queue by accident. Without a climatology that covers the glacier this
+    years of CDS requests, which no run should queue by accident. Without a climatology that covers the glacier this
     fails and names the prepare step that builds it.
 
     Parameters
@@ -3742,9 +3673,8 @@ def era5_monthly_mean(
 
     Notes
     -----
-    Output variables are those of :func:`era5`: ``air_temp`` and
-    ``air_temp_sd`` (K), ``precipitation`` (kg m^-2 day^-1) and the
-    time-invariant ``surface`` (m).
+    Output variables are those of :func:`era5`: ``air_temp`` (K),
+    ``precipitation`` (kg m^-2 day^-1) and the time-invariant ``surface`` (m).
     """
     _ = years
 
@@ -3766,6 +3696,7 @@ def era5_monthly_mean(
         return out_file
 
     _ = dataset
+    target_grid = _promote_grid_mapping(target_grid)
     store = None
     bucket = kwargs.get("bucket")
     prefix, project_directory = kwargs.get("prefix") or "", kwargs.get("project_directory")

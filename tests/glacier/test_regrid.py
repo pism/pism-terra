@@ -24,6 +24,7 @@ spin-up. The regrid belongs to whichever leg bootstraps, and never to a leg
 that restarts from a state file.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -164,9 +165,9 @@ def test_a_single_leg_bootstraps_and_regrids(tmp_path):
     assert f"-input.regrid.vars {DEFAULT_REGRID_VARS}" in main
 
 
-def test_only_the_init_leg_regrids(tmp_path):
+def test_only_the_init_leg_regrids_the_spin_up(tmp_path):
     """
-    The init leg bootstraps with the regrid; the main leg restarts from its state.
+    Regrid the given spin-up into the init leg; the main leg regrids the init state.
 
     Parameters
     ----------
@@ -177,9 +178,24 @@ def test_only_the_init_leg_regrids(tmp_path):
 
     assert "-input.bootstrap yes" in init
     assert f"-input.regrid.file {STATE_FILE}" in init
-    assert "-input.bootstrap" not in main
-    assert "-input.regrid" not in main
-    assert "state_g1000m" in main
+    assert "-input.bootstrap yes" in main
+    assert STATE_FILE not in main
+    assert re.search(r"-input\.regrid\.file \S+/state_g1000m\S+\.nc ", main)
+
+
+def test_the_main_leg_regrids_the_fields_the_config_pins(tmp_path):
+    """
+    Regrid ``['input'] input.regrid.vars`` from the init state when the config pins it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    config = strip_config(tmp_path, drop_init=False, regrid_vars="thk,enthalpy")
+    _, main = legs(render(tmp_path, config=config))
+
+    assert "-input.regrid.vars thk,enthalpy " in main
 
 
 def test_the_config_can_pin_the_regridded_fields(tmp_path):

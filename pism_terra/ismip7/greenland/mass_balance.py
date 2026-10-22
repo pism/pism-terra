@@ -94,7 +94,17 @@ logger = logging.getLogger("pism_terra.ismip7.greenland.mass_balance" if __name_
 #: Fluxes summed into the mass balance: surface mass balance, basal mass
 #: balance of grounded ice and the flux across the grounding line, all per
 #: unit area in the submission files.
-DEFAULT_VARIABLES = ("acabf", "libmassbfgr", "ligroundf", "lithk", "orog")
+MASS_BALANCE_FLUXES = ("acabf", "libmassbfgr", "ligroundf")
+
+#: Ice thickness and surface elevation. They are states, not rates, and are
+#: stamped at the year boundaries while the fluxes are stamped mid-year: in
+#: a mass balance they make every sum missing and interleave records that hold
+#: no flux, so :func:`mass_balance_series` leaves them out. Read them on their
+#: own for maps and thickness change.
+STATE_VARIABLES = ("lithk", "orog")
+
+#: Variables the mass balance reads from a submission.
+DEFAULT_VARIABLES = MASS_BALANCE_FLUXES
 
 #: Where a submission tree sits below a run's ``output`` directory.
 DEFAULT_TREE = ("GrIS", "UAF", "PISM", "CORE")
@@ -822,7 +832,7 @@ def compute_regions(
 def mass_balance_series(
     sums: xr.Dataset,
     *,
-    variables: Sequence[str] = DEFAULT_VARIABLES,
+    variables: Sequence[str] = MASS_BALANCE_FLUXES,
     reference_year: str = DEFAULT_REFERENCE_YEAR,
     splice: bool = True,
 ) -> xr.Dataset:
@@ -843,6 +853,8 @@ def mass_balance_series(
         Each record is taken as the mean over the interval to the next one.
     variables : sequence of str, optional
         The fluxes summed into ``mass_balance``, when all are present.
+        :data:`STATE_VARIABLES`, here or in ``sums``, are left out, together
+        with the records only they had.
     reference_year : str, optional
         Year the cumulative mass balance is zeroed at.
     splice : bool, optional
@@ -856,12 +868,19 @@ def mass_balance_series(
         The fluxes in Gt/yr, ``mass_balance`` and ``cumulative_mass_balance``
         (Gt, zero at ``reference_year``).
     """
+    states = [v for v in STATE_VARIABLES if v in sums]
+    if states:
+        logger.info("Leaving %s out of the mass balance: states, not fluxes", ", ".join(states))
+        # They were the only variables on the year-boundary records; without
+        # them those records hold nothing.
+        sums = sums.drop_vars(states).dropna("time", how="all")
     regions = to_units(sums)
     if splice and "ssp_id" in regions.dims:
         regions = splice_historical(regions)
-    present = [v for v in variables if v in regions]
-    if len(present) < len(variables):
-        logger.warning("mass_balance is the sum of %s only; %s missing", present, sorted(set(variables) - set(present)))
+    fluxes = [v for v in variables if v not in STATE_VARIABLES]
+    present = [v for v in fluxes if v in regions]
+    if len(present) < len(fluxes):
+        logger.warning("mass_balance is the sum of %s only; %s missing", present, sorted(set(fluxes) - set(present)))
     regions["mass_balance"] = sum(regions[v] for v in present)
     regions["mass_balance"].attrs = {
         "units": FLUX_UNITS,
