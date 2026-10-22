@@ -59,11 +59,30 @@ OUTLINE_Y = (Y_TRUE[NY // 2] - 5_000, Y_TRUE[NY // 2] + 5_000)
 #: Height of each pressure level over the fixture block, metres, as a
 #: ``(level, y, x)`` plane per level in the GRIB file's (unordered) level
 #: order, so a clipped, re-sorted block can be checked cell by cell.
-LEVEL_HEIGHT = (
-    np.array([5500.0, 100.0, 2500.0, 1000.0, 1900.0])[:, None, None]
-    + 10.0 * np.arange(NY)[None, :, None]
-    + 1.0 * np.arange(NX)[None, None, :]
-)
+#: The levels of each request in the (unordered) order a GRIB file has them.
+GRIB_LEVELS = {"": [500.0, 1000.0, 750.0, 900.0, 800.0], "_extra": [600.0, 950.0, 700.0, 825.0, 925.0, 875.0, 850.0]}
+
+
+def level_height(level: float) -> np.ndarray:
+    """
+    Height of one pressure level over the fixture block.
+
+    A standard-atmosphere height plus a plane, so every level differs and a
+    clipped, re-sorted block can be checked cell by cell.
+
+    Parameters
+    ----------
+    level : float
+        Pressure, hPa.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(NY, NX)`` heights, metres.
+    """
+    base = 44330.8 * (1.0 - (level / 1013.25) ** 0.190263)
+    return base + 10.0 * np.arange(NY)[:, None] + 1.0 * np.arange(NX)[None, :]
+
 
 #: Orography of the fixture block, metres: a plane, checked cell by cell.
 OROGRAPHY = 800.0 + 10.0 * np.arange(NY)[:, None] + 1.0 * np.arange(NX)[None, :]
@@ -96,7 +115,8 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
         Year of the stamps.
     kind : str
         ``"temperature"``, ``"surface_temperature"``, ``"snow"``,
-        ``"forecast"``, ``"geopotential"`` or ``"orography"``.
+        ``"forecast"``, ``"geopotential"`` or ``"orography"``; a
+        ``"_extra"`` suffix on a profile gives the second level group.
 
     Returns
     -------
@@ -119,21 +139,23 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
         "longitude": (("y", "x"), lon),
     }
     rng = np.random.default_rng(int(year))
+    suffix = "_extra" if kind.endswith("_extra") else ""
+    kind = kind.removesuffix("_extra")
+    levels = np.array(GRIB_LEVELS[suffix])  # unordered, under the GRIB name
     if kind == "temperature":
-        levels = np.array([500.0, 1000.0, 750.0, 900.0, 800.0])  # unordered, GRIB name
         ds = xr.Dataset(
             {
                 "t": (
                     ("time", "isobaricInhPa", "y", "x"),
-                    (250.0 + rng.random((len(time), 5, NY, NX))).astype("float32"),
+                    (250.0 + rng.random((len(time), levels.size, NY, NX))).astype("float32"),
                     {"standard_name": "air_temperature", "units": "K", "GRIB_shortName": "t"},
                 )
             },
             coords={**coords, "isobaricInhPa": ("isobaricInhPa", levels)},
         )
     elif kind == "geopotential":
-        levels = np.array([500.0, 1000.0, 750.0, 900.0, 800.0])  # the same unordered levels as the temperature
-        geopotential = np.broadcast_to(LEVEL_HEIGHT * mod.STANDARD_GRAVITY, (len(time), 5, NY, NX))
+        heights = np.stack([level_height(p) for p in levels])
+        geopotential = np.broadcast_to(heights * mod.STANDARD_GRAVITY, (len(time), levels.size, NY, NX))
         ds = xr.Dataset(
             {
                 "z": (
@@ -145,16 +167,30 @@ def write_cds_file(path: Path, year: int, kind: str) -> Path:
             coords={**coords, "isobaricInhPa": ("isobaricInhPa", levels)},
         )
     elif kind == "orography":
-        # One analysis time from reanalysis-pan-carra, in the GRIB naming.
+        # One analysis time from reanalysis-pan-carra, as CDS really delivers
+        # it: ``time``/``valid_time`` are scalars, so the field is purely
+        # (y, x), and it is labelled geopotential_height, not surface_altitude.
         ds = xr.Dataset(
             {
                 "orog": (
-                    ("time", "y", "x"),
-                    OROGRAPHY[None].astype("float32"),
-                    {"long_name": "Orography", "units": "m", "GRIB_shortName": "orog"},
+                    ("y", "x"),
+                    OROGRAPHY.astype("float32"),
+                    {
+                        "long_name": "Orography",
+                        "units": "m",
+                        "standard_name": "geopotential_height",
+                        "GRIB_shortName": "orog",
+                    },
                 )
             },
-            coords=coords,
+            coords={
+                "time": time.values[0],
+                "valid_time": valid.values[0],
+                "step": np.timedelta64(0, "ns"),
+                "surface": 0.0,
+                "latitude": (("y", "x"), lat),
+                "longitude": (("y", "x"), lon),
+            },
         )
     elif kind == "surface_temperature":
         # 2 m temperature in the GRIB naming: variable t2m, short name 2t.
@@ -348,7 +384,23 @@ def test_requests_use_the_pan_carra_keys_and_no_area():
     is the same request for every glacier.
     """
     reqs = mod.build_requests([1990, 1991])
-    assert set(reqs) == {"temperature", "surface_temperature", "snow", "forecast", "geopotential", "orography"}
+    assert set(reqs) == {
+        "temperature",
+        "temperature_extra",
+        "surface_temperature",
+        "snow",
+        "forecast",
+        "geopotential",
+        "geopotential_extra",
+        "orography",
+    }
+    # The first five levels keep their original request, so an existing cache
+    # still matches; the rest come separately, and together they are the profile.
+    for variable in ("temperature", "geopotential"):
+        assert reqs[f"{variable}_extra"]["level_location"] == ["950", "925", "875", "850", "825", "700", "600"]
+        assert reqs[f"{variable}_extra"]["variable"] == [variable]
+        levels = reqs[variable]["level_location"] + reqs[f"{variable}_extra"]["level_location"]
+        assert sorted(map(int, levels), reverse=True) == list(mod.PRESSURE_LEVELS)
     oro = reqs.pop("orography")
     assert oro["product_type"] == "analysis" and oro["variable"] == ["orography"]
     assert oro["level_type"] == "single_levels" and "time_aggregation" not in oro
@@ -443,8 +495,9 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     assert ds["x"].attrs["standard_name"] == "projection_x_coordinate"
     assert ds["latitude"].dims == ("y", "x") and ds["latitude"].shape == (ds.sizes["y"], ds.sizes["x"])
 
-    # Vertical axis: bottom up, CF direction stated.
-    np.testing.assert_array_equal(ds["pressure_level"].values, [1000, 900, 800, 750, 500])
+    # Vertical axis: both level requests stacked, bottom up, CF direction stated.
+    np.testing.assert_array_equal(ds["pressure_level"].values, mod.PRESSURE_LEVELS)
+    assert not ds["air_temp"].isnull().any()
     assert ds["pressure_level"].attrs["positive"] == "down" and ds["pressure_level"].attrs["units"] == "hPa"
     assert ds["air_temp"].dims == ("time", "pressure_level", "y", "x")
     assert ds["snow_depth"].dims == ("time", "y", "x")
@@ -458,8 +511,9 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     height = ds["geopotential_height"]
     assert height.dims == ("time", "pressure_level", "y", "x")
     assert height.attrs["standard_name"] == "geopotential_height" and height.attrs["units"] == "m"
-    # Fixture levels are (500, 1000, 750, 900, 800); the store sorts them bottom up.
-    expected = LEVEL_HEIGHT[[1, 3, 4, 2, 0]][:, np.isin(Y_TRUE, ds["y"].values)][:, :, np.isin(X_TRUE, ds["x"].values)]
+    # The fixture's two unordered level groups come out as one profile, bottom up.
+    expected = np.stack([level_height(p) for p in mod.PRESSURE_LEVELS])
+    expected = expected[:, np.isin(Y_TRUE, ds["y"].values)][:, :, np.isin(X_TRUE, ds["x"].values)]
     np.testing.assert_allclose(height.isel(time=0).values, expected, rtol=1e-6)
     np.testing.assert_allclose(height.isel(time=-1).values, expected, rtol=1e-6)
     assert height.encoding.get("grid_mapping") == "spatial_ref" or height.attrs.get("grid_mapping")
@@ -540,6 +594,42 @@ def test_time_and_bounds_share_one_encoding(tmp_path: Path, fake_download, outli
     assert raw["time"].attrs["units"].startswith("hours since 1850-01-01")
     assert raw["time"].dtype == np.int64
     assert raw["time"].values[0] == raw["time_bounds"].values[0, 0]
+
+
+def test_an_unknown_pressure_level_is_an_error():
+    """
+    Refuse a level outside :data:`PRESSURE_LEVELS` rather than store it unchecked.
+    """
+    lat, lon = lattice_latlon()
+    ds = xr.Dataset(
+        {
+            "t": (
+                ("time", "isobaricInhPa", "y", "x"),
+                np.zeros((1, 2, NY, NX), "float32"),
+                {"standard_name": "air_temperature"},
+            )
+        },
+        coords={
+            "time": ("time", pd.to_datetime(["1990-01-01"]).values),
+            "isobaricInhPa": ("isobaricInhPa", np.array([1000.0, 650.0])),
+            "latitude": (("y", "x"), lat),
+            "longitude": (("y", "x"), lon),
+        },
+    )
+    with pytest.raises(ValueError, match="not distinct levels"):
+        mod.normalize(ds, ["air_temp"])
+
+
+def test_stacking_refuses_a_level_requested_twice():
+    """
+    Two parts that both hold a level would silently duplicate it.
+    """
+    part = xr.Dataset(
+        {"air_temp": (("pressure_level", "y", "x"), np.zeros((2, 1, 1)))},
+        coords={"pressure_level": [1000.0, 900.0], "y": [0.0], "x": [0.0]},
+    )
+    with pytest.raises(ValueError, match="requested twice"):
+        mod._stack_levels([part, part.assign_coords(pressure_level=[900.0, 800.0])])  # pylint: disable=protected-access
 
 
 def test_a_bbox_outside_the_file_is_an_error():
