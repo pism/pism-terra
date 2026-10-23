@@ -143,11 +143,20 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     fit_to_ground
     ground_bias
     glacier_mask
-    bias_table
+    value_edges
+    bias_histograms
+    histogram_quantiles
+    annual_histograms
     binned_medians
-    fit_piecewise
+    year_fraction
+    daily_medians
+    fit_seasonal
+    seasonal_curve
+    seasonal_cycle
     fit_categories
+    seasonal_by_elevation
     plot_bias_by_elevation
+    plot_seasonal_fit
     site_bias
     plot_sites_pooled
     plot_sites
