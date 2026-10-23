@@ -656,6 +656,80 @@ def test_a_bbox_outside_the_file_is_an_error():
         mod.normalize(ds, ["air_temp"], bbox=(0.0, 1.0, 0.0, 1.0))
 
 
+def test_parts_are_cut_to_the_grid_they_share(caplog):
+    """
+    A field delivered on a larger grid (CDS's snow depth) is cut to the others' cells.
+
+    Parameters
+    ----------
+    caplog : pytest.LogCaptureFixture
+        Captured log records.
+    """
+    x = mod.GRID_ORIGIN + mod.GRID_SPACING * np.arange(4)
+    y = mod.GRID_ORIGIN + mod.GRID_SPACING * np.arange(7)
+    small = xr.Dataset({"air_temp_2m": (("y", "x"), np.ones((5, 4)))}, coords={"y": y[:5], "x": x})
+    large = xr.Dataset({"snow_depth": (("y", "x"), np.ones((7, 4)))}, coords={"y": y, "x": x})
+    common = mod._on_common_grid({"surface_temperature": small, "snow": large})  # pylint: disable=protected-access
+    np.testing.assert_array_equal(common["snow"]["y"], y[:5])
+    assert xr.merge(list(common.values()), join="exact").sizes == {"y": 5, "x": 4}
+    assert "snow: 7 x 4 cells cut to the 5 x 4" in caplog.text
+    with pytest.raises(ValueError, match="share no grid cell"):
+        mod._on_common_grid(  # pylint: disable=protected-access
+            {"a": small, "b": large.assign_coords(x=x + 100 * mod.GRID_SPACING)}
+        )
+
+
+def test_outline_outside_domain_is_measured():
+    """
+    Report the share of an outline's area beyond the CARRA2 domain's edge.
+    """
+    edge = mod.GRID_ORIGIN + (mod.GRID_SIZE - 1) * mod.GRID_SPACING + mod.GRID_SPACING / 2
+
+    def outline(x0: float, x1: float) -> gpd.GeoDataFrame:
+        """
+        Build a square outline spanning x0 to x1 in CARRA2 metres.
+
+        Parameters
+        ----------
+        x0, x1 : float
+            Its x extent.
+
+        Returns
+        -------
+        geopandas.GeoDataFrame
+            The outline, in geographic coordinates like RGI.
+        """
+        width = x1 - x0
+        return gpd.GeoDataFrame(geometry=[box(x0, 0.0, x1, width)], crs=CARRA2_CRS).to_crs("EPSG:4326")
+
+    assert mod.outline_outside_domain(outline(edge - 30_000, edge - 10_000)) == pytest.approx(0.0, abs=1e-3)
+    assert mod.outline_outside_domain(outline(edge - 10_000, edge + 10_000)) == pytest.approx(0.5, abs=0.01)
+    assert mod.outline_outside_domain(outline(edge + 10_000, edge + 30_000)) == pytest.approx(1.0, abs=1e-3)
+
+
+def test_an_outline_outside_the_domain_stops_before_downloading(tmp_path: Path, fake_download):
+    """
+    A target CARRA2 does not cover is refused before hours in the CDS queue.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    fake_download : dict
+        Recorded requests; must stay empty.
+    """
+    edge = mod.GRID_ORIGIN + (mod.GRID_SIZE - 1) * mod.GRID_SPACING + mod.GRID_SPACING / 2
+    rgi_file = tmp_path / "outside.gpkg"
+    gpd.GeoDataFrame(
+        {"rgi_id": ["RGI2000-v7.0-C-01-99999"]},
+        geometry=[box(edge + 10_000, 0.0, edge + 20_000, 10_000)],
+        crs=CARRA2_CRS,
+    ).to_crs("EPSG:4326").to_file(rgi_file)
+    with pytest.raises(ValueError, match="outside the CARRA2 domain"):
+        mod.run("RGI2000-v7.0-C-01-99999", tmp_path / "out", rgi_file=rgi_file, start=1990, end=1990)
+    assert not fake_download
+
+
 def test_years_are_validated():
     """
     Refuse years outside the record or a reversed range.

@@ -60,6 +60,7 @@ encoding -- xarray otherwise picks their units independently.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -72,6 +73,7 @@ import numpy as np
 import pandas as pd
 import pyogrio
 import rioxarray  # noqa: F401  pylint: disable=unused-import
+import shapely
 import xarray as xr
 from pyproj import CRS, Transformer
 
@@ -116,6 +118,8 @@ VERTICAL_NAMES = ("isobaricInhPa", "pressure_level", "level", "plev")
 #: ``pism_terra/grids/carra2.txt``.
 GRID_SPACING = 2500.0
 GRID_ORIGIN = -3585000.0
+#: Cells along each axis of the CARRA2 domain, from the same file.
+GRID_SIZE = 2869
 
 #: How far a reprojected cell centre may sit from the lattice before the
 #: grid is declared not to be CARRA2's. A few metres of float noise is
@@ -858,6 +862,75 @@ def _stack_levels(parts: list[xr.Dataset]) -> xr.Dataset:
     return stacked
 
 
+def outline_outside_domain(outline: gpd.GeoDataFrame) -> float:
+    """
+    Measure how much of an outline lies outside the CARRA2 domain.
+
+    Parameters
+    ----------
+    outline : geopandas.GeoDataFrame
+        Outline in any CRS.
+
+    Returns
+    -------
+    float
+        Fraction of the outline's area, 0 to 1, outside the domain's edge
+        (the outer edge of its outermost cells).
+    """
+    half = GRID_SPACING / 2
+    edge = GRID_ORIGIN + (GRID_SIZE - 1) * GRID_SPACING + half
+    domain = shapely.box(GRID_ORIGIN - half, GRID_ORIGIN - half, edge, edge)
+    shapes = outline.to_crs(CRS.from_proj4(CARRA2_PROJ)).geometry.make_valid()
+    area = float(shapes.area.sum())
+    if area == 0:
+        return 0.0
+    return float(1.0 - shapes.intersection(domain).area.sum() / area)
+
+
+def _on_common_grid(parts: dict[str, xr.Dataset]) -> dict[str, xr.Dataset]:
+    """
+    Cut every part to the grid cells all of them share.
+
+    CDS does not deliver every field on the same grid: the daily snow depth
+    has come on 2880 x 2880 cells, eleven rows and columns past the 2869 x
+    2869 of the others. Inside the domain they coincide, so where a clip
+    reaches the edge the extra cells are dropped rather than left to break
+    the merge.
+
+    Parameters
+    ----------
+    parts : dict of str to xarray.Dataset
+        Normalized parts on ``(…, y, x)``, by name.
+
+    Returns
+    -------
+    dict of str to xarray.Dataset
+        The parts on the shared ``y`` and ``x``.
+
+    Raises
+    ------
+    ValueError
+        If the parts share no cell.
+    """
+    x = functools.reduce(np.intersect1d, [part["x"].values for part in parts.values()])
+    y = functools.reduce(np.intersect1d, [part["y"].values for part in parts.values()])
+    if x.size == 0 or y.size == 0:
+        raise ValueError("the downloaded files share no grid cell")
+    common = {}
+    for name, part in parts.items():
+        if part.sizes["x"] != x.size or part.sizes["y"] != y.size:
+            logger.warning(
+                "%s: %d x %d cells cut to the %d x %d the other files share",
+                name,
+                part.sizes["y"],
+                part.sizes["x"],
+                y.size,
+                x.size,
+            )
+        common[name] = part.sel(x=x, y=y)
+    return common
+
+
 def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) -> xr.Dataset:
     """
     Merge the downloaded files into one dataset on CARRA2's grid.
@@ -874,15 +947,18 @@ def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) 
     xarray.Dataset
         Every field, with time bounds and the CARRA2 CRS attached.
     """
-    # Requests that deliver the same fields on different pressure levels (see
-    # LEVEL_REQUESTS) are stacked into one profile before the merge.
-    groups: dict[tuple[str, ...], list[xr.Dataset]] = {}
+    parts = {}
     for name, paths in files.items():
         yearly = [normalize(xr.open_dataset(p, chunks={}), REQUEST_FIELDS[name], bbox) for p in sorted(paths)]
         part = xr.concat(yearly, dim="time", data_vars="minimal", coords="minimal", compat="override", join="exact")
         # The orography has one time step of its own; make it static before
         # the merge insists every part share the daily axis.
-        groups.setdefault(tuple(REQUEST_FIELDS[name]), []).append(orography_to_static(geopotential_to_elevation(part)))
+        parts[name] = orography_to_static(geopotential_to_elevation(part))
+    # Requests that deliver the same fields on different pressure levels (see
+    # LEVEL_REQUESTS) are stacked into one profile before the merge.
+    groups: dict[tuple[str, ...], list[xr.Dataset]] = {}
+    for name, part in _on_common_grid(parts).items():
+        groups.setdefault(tuple(REQUEST_FIELDS[name]), []).append(part)
     ds = xr.merge([_stack_levels(group) for group in groups.values()], join="exact", compat="override")
     ds = add_time_bounds(ds)
     # rioxarray records the grid mapping in each variable's *encoding*, and
@@ -962,7 +1038,8 @@ def run(
     Raises
     ------
     ValueError
-        If the years are out of range or reversed.
+        If the years are out of range or reversed, or the outline lies
+        entirely outside the CARRA2 domain.
     """
     if not FIRST_YEAR <= start <= end <= LAST_YEAR:
         raise ValueError(f"years must satisfy {FIRST_YEAR} <= start <= end <= {LAST_YEAR}, got {start}..{end}")
@@ -983,6 +1060,16 @@ def run(
     else:
         print(f"Fetching the RGI7 region archive for {rgi_id} from NSIDC...", flush=True)
     outline = load_outline(rgi_id, rgi_file, cache_path=output_path)
+    outside = outline_outside_domain(outline)
+    if outside > 0.999:
+        raise ValueError(f"{rgi_id} lies outside the CARRA2 domain")
+    if outside > 0:
+        message = (
+            f"WARNING: {100 * outside:.1f}% of the {rgi_id} outline's area lies outside the CARRA2 domain; "
+            "the store covers only the part inside."
+        )
+        logger.warning(message)
+        print(message, flush=True)
     area = area_from_outline(outline, margin_km)
     bbox = bbox_from_outline(outline, margin_km)
     logger.info("%s: area N %.2f W %.2f S %.2f E %.2f, years %d-%d", rgi_id, *area, start, end)
