@@ -132,6 +132,27 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     write_zarr_in_bands
 ```
 
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.carra2_bias_correction
+
+.. autosummary::
+    :toctree: generated/
+
+    open_carra2
+    read_vector
+    fit_to_ground
+    ground_bias
+    glacier_mask
+    bias_table
+    binned_medians
+    fit_piecewise
+    fit_categories
+    plot_bias_by_elevation
+    site_bias
+    plot_sites_pooled
+    plot_sites
+```
+
 ### Ice thickness
 
 ```{eval-rst}
