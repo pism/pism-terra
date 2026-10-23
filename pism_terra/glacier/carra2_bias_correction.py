@@ -34,10 +34,12 @@ in summer.
 outlines, splits the cells into on and off glacier by whether the cell
 centre lies inside an outline, and bins them by terrain elevation. The bias
 changes with elevation and with the season, so per category the daily median
-bias of each bin is fitted with a model linear in elevation plus one
+bias of each bin is fitted with an annual-mean elevation profile plus one
 seasonal cycle (period one year) whose amplitude and phase may also change
-linearly with elevation; see :func:`fit_seasonal`. Several years pool into
-one cycle. It writes the medians, the fit and the fitted cycle per bin as
+linearly with elevation; see :func:`fit_seasonal`. Two profiles are fitted
+and compared by BIC: a straight line, and a bias decaying exponentially
+with elevation toward a constant, which follows the strong excess over the
+lower glacier that levels off higher up. Several years pool into one cycle. It writes the medians, the fit and the fitted cycle per bin as
 CSV, and figures of the bias against elevation and against the day of the
 year. Given point sites as well, it also samples the stores there and plots
 the bias per month, pooled and per site.
@@ -68,6 +70,7 @@ import pandas as pd
 import s3fs
 import xarray as xr
 from matplotlib.figure import Figure
+from scipy.optimize import minimize_scalar
 from tqdm.auto import tqdm
 
 from pism_terra.grids import sample_points
@@ -109,8 +112,18 @@ TILE = 256
 #: Days whose bias is computed at once within a tile.
 DEFAULT_TIME_BLOCK = 31
 
-#: Coefficients of the seasonal model, see :func:`fit_seasonal`.
-COEFFICIENTS = ("mean", "mean_per_km", "cos", "sin", "cos_per_km", "sin_per_km")
+#: Annual-mean elevation profiles :func:`fit_seasonal` knows; both are fitted.
+ELEVATION_MODELS = ("linear", "exponential")
+
+#: Range of decay heights the exponential profile is scanned over, m. A fit
+#: at the upper end has found no curvature: it is a straight line.
+SCALE_HEIGHT_RANGE = (50.0, 20_000.0)
+
+#: Line style of each profile in the elevation figure.
+PROFILE_STYLES = {"linear": "--", "exponential": "-"}
+
+#: Seasonal coefficients of the model, see :func:`fit_seasonal`.
+SEASONAL_COEFFICIENTS = ("cos", "sin", "cos_per_km", "sin_per_km")
 
 #: Default number of CARRA2 levels below the terrain each daily fit may use.
 #: With five levels a high site has a single level above CARRA2's terrain,
@@ -693,9 +706,9 @@ def year_fraction(time: Sequence[Any] | np.ndarray | pd.Series) -> np.ndarray:
     return ((times.dt.dayofyear.to_numpy() - 0.5) / days).astype(float)
 
 
-def _design(z: np.ndarray, fraction: np.ndarray, elevation_dependent: bool) -> np.ndarray:
+def _seasonal_columns(z: np.ndarray, fraction: np.ndarray, elevation_dependent: bool) -> list[np.ndarray]:
     """
-    Build the regressors of the seasonal model.
+    Build the seasonal regressors.
 
     Parameters
     ----------
@@ -708,17 +721,64 @@ def _design(z: np.ndarray, fraction: np.ndarray, elevation_dependent: bool) -> n
 
     Returns
     -------
-    numpy.ndarray
-        Columns in the order of :data:`COEFFICIENTS`, the last two only when
-        *elevation_dependent*.
+    list of numpy.ndarray
+        ``cos``, ``sin`` and, when *elevation_dependent*, ``z cos`` and ``z sin``
+        (z in km), in the order of :data:`SEASONAL_COEFFICIENTS`.
     """
     z_km = np.asarray(z, dtype=float) / 1000.0
     angle = 2.0 * np.pi * np.asarray(fraction, dtype=float)
-    cos, sin = np.cos(angle), np.sin(angle)
-    columns = [np.ones_like(z_km), z_km, cos, sin]
+    columns = [np.cos(angle), np.sin(angle)]
     if elevation_dependent:
-        columns += [z_km * cos, z_km * sin]
-    return np.column_stack(columns)
+        columns += [z_km * columns[0], z_km * columns[1]]
+    return columns
+
+
+def _elevation_columns(z: np.ndarray, model: str, scale_height: float = math.nan) -> list[np.ndarray]:
+    """
+    Build the regressors of the annual-mean elevation profile.
+
+    Parameters
+    ----------
+    z : numpy.ndarray
+        Elevations, m.
+    model : {"linear", "exponential"}
+        Profile, see :func:`fit_seasonal`.
+    scale_height : float, optional
+        Decay height of the exponential, m.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        ``1, z`` (z in km) for linear; ``1, exp(-z / H)`` for exponential.
+    """
+    z = np.asarray(z, dtype=float)
+    if model == "linear":
+        return [np.ones_like(z), z / 1000.0]
+    return [np.ones_like(z), np.exp(-z / scale_height)]
+
+
+def _least_squares(columns: list[np.ndarray], y: np.ndarray) -> tuple[np.ndarray, float]:
+    """
+    Solve a linear least-squares problem.
+
+    Parameters
+    ----------
+    columns : list of numpy.ndarray
+        Regressors.
+    y : numpy.ndarray
+        Values.
+
+    Returns
+    -------
+    coef : numpy.ndarray
+        Coefficients, in the order of *columns*.
+    sse : float
+        Sum of squared residuals.
+    """
+    design = np.column_stack(columns)
+    coef, *_ = np.linalg.lstsq(design, y, rcond=None)
+    residual = y - design @ coef
+    return coef, float(residual @ residual)
 
 
 def fit_seasonal(
@@ -726,20 +786,30 @@ def fit_seasonal(
     fraction: Sequence[float] | np.ndarray | pd.Series,
     y: Sequence[float] | np.ndarray | pd.Series,
     elevation_dependent: bool = True,
-) -> dict[str, float] | None:
+    elevation: str = "linear",
+) -> dict[str, Any] | None:
     """
-    Fit a bias that is linear in elevation and follows one seasonal cycle.
+    Fit a bias that changes with elevation and follows one seasonal cycle.
 
-    The model, with ``z`` in km and ``f`` the fraction of the year, is::
+    With ``z`` in km and ``f`` the fraction of the year, the model is::
 
-        b(z, f) = (mean + mean_per_km z)
-                + (cos + cos_per_km z) cos(2 pi f)
-                + (sin + sin_per_km z) sin(2 pi f)
+        b(z, f) = m(z) + (cos + cos_per_km z) cos(2 pi f)
+                       + (sin + sin_per_km z) sin(2 pi f)
 
-    Without *elevation_dependent* the two ``_per_km`` seasonal terms are
-    zero: every elevation then shares one seasonal cycle and only the
-    annual mean changes with height. Either way it is linear least squares.
-    The period is one year, so data from several years pool into one cycle.
+    with an annual-mean profile ``m(z)`` that is either
+
+    * ``linear``: ``mean + mean_per_km z``, or
+    * ``exponential``: ``background + excess exp(-z / H)``, a bias that
+      decays with elevation toward a constant ``background``, ``excess``
+      above it at sea level, falling by 1/e every ``scale_height`` H.
+      Over glaciers the bias is large low down and levels off higher up,
+      which a straight line cannot follow.
+
+    Without *elevation_dependent* the ``_per_km`` seasonal terms are zero.
+    For a given H everything is linear least squares; H is found by a scan
+    over :data:`SCALE_HEIGHT_RANGE` refined with a bounded 1-D minimisation;
+    an H at the top of that range means the data show no curvature. The period
+    is one year, so data from several years pool into one cycle.
 
     Parameters
     ----------
@@ -751,36 +821,109 @@ def fit_seasonal(
         Values, e.g. daily median bias in K.
     elevation_dependent : bool, default True
         Let the seasonal amplitude and phase vary linearly with elevation.
+    elevation : {"linear", "exponential"}, default "linear"
+        Annual-mean profile.
 
     Returns
     -------
     dict or None
-        The coefficients of :data:`COEFFICIENTS` (K, or K per km), ``rmse``
-        (K), ``r2`` and ``n``. None when there are no more values than
+        ``elevation_model``; the profile's coefficients (``mean`` and
+        ``mean_per_km``, or ``background``, ``excess`` and ``scale_height``
+        in m; the other model's are NaN); the coefficients of
+        :data:`SEASONAL_COEFFICIENTS`; ``rmse`` (K), ``r2``, ``bic``,
+        ``n_parameters`` and ``n``. None when there are no more values than
         coefficients, or the values span a single elevation or a single day
         of the year.
+
+    Raises
+    ------
+    ValueError
+        If *elevation* is not one of :data:`ELEVATION_MODELS`.
     """
+    if elevation not in ELEVATION_MODELS:
+        raise ValueError(f"unknown elevation model {elevation!r}; use one of {ELEVATION_MODELS}")
     z_arr = np.asarray(z, dtype=float)
     f_arr = np.asarray(fraction, dtype=float)
     y_arr = np.asarray(y, dtype=float)
     keep = np.isfinite(z_arr) & np.isfinite(f_arr) & np.isfinite(y_arr)
     z_arr, f_arr, y_arr = z_arr[keep], f_arr[keep], y_arr[keep]
-    design = _design(z_arr, f_arr, elevation_dependent)
-    if y_arr.size <= design.shape[1] or np.ptp(z_arr) == 0 or np.ptp(f_arr) == 0:
+    seasonal = _seasonal_columns(z_arr, f_arr, elevation_dependent)
+    n_parameters = 2 + len(seasonal) + (1 if elevation == "exponential" else 0)
+    if y_arr.size <= n_parameters or np.ptp(z_arr) == 0 or np.ptp(f_arr) == 0:
         return None
-    coef, *_ = np.linalg.lstsq(design, y_arr, rcond=None)
-    residual = y_arr - design @ coef
-    sse = float(residual @ residual)
+
+    scale_height = math.nan
+    if elevation == "exponential":
+
+        def sse_at(log_h: float) -> float:
+            """
+            Sum of squared residuals for a decay height.
+
+            Parameters
+            ----------
+            log_h : float
+                Base-10 logarithm of the decay height in m.
+
+            Returns
+            -------
+            float
+                The sum.
+            """
+            return _least_squares(_elevation_columns(z_arr, "exponential", 10.0**log_h) + seasonal, y_arr)[1]
+
+        grid = np.linspace(math.log10(SCALE_HEIGHT_RANGE[0]), math.log10(SCALE_HEIGHT_RANGE[1]), 121)
+        best = int(np.argmin([sse_at(g) for g in grid]))
+        low, high = grid[max(best - 1, 0)], grid[min(best + 1, grid.size - 1)]
+        scale_height = 10.0 ** float(minimize_scalar(sse_at, bounds=(low, high), method="bounded").x)
+
+    coef, sse = _least_squares(_elevation_columns(z_arr, elevation, scale_height) + seasonal, y_arr)
+    n = y_arr.size
     sst = float(((y_arr - y_arr.mean()) ** 2).sum())
-    fit = dict(zip(COEFFICIENTS, np.append(coef, np.zeros(len(COEFFICIENTS) - coef.size)).tolist()))
+    fit: dict[str, Any] = {"elevation_model": elevation}
+    if elevation == "linear":
+        fit.update({"mean": float(coef[0]), "mean_per_km": float(coef[1])})
+        fit.update({"background": math.nan, "excess": math.nan, "scale_height": math.nan})
+    else:
+        fit.update({"mean": math.nan, "mean_per_km": math.nan})
+        fit.update({"background": float(coef[0]), "excess": float(coef[1]), "scale_height": scale_height})
+    seasonal_coef = np.append(coef[2:], np.zeros(len(SEASONAL_COEFFICIENTS) - (coef.size - 2)))
+    fit.update(dict(zip(SEASONAL_COEFFICIENTS, seasonal_coef.tolist())))
     fit.update(
-        {"rmse": math.sqrt(sse / y_arr.size), "r2": 1.0 - sse / sst if sst > 0 else math.nan, "n": float(y_arr.size)}
+        {
+            "rmse": math.sqrt(sse / n),
+            "r2": 1.0 - sse / sst if sst > 0 else math.nan,
+            "bic": n * math.log(sse / n) + n_parameters * math.log(n) if sse > 0 else -math.inf,
+            "n_parameters": float(n_parameters),
+            "n": float(n),
+        }
     )
     return fit
 
 
+def annual_mean(fit: dict[str, Any], z: Sequence[float] | np.ndarray | float) -> np.ndarray:
+    """
+    Evaluate the annual-mean profile of a fit from :func:`fit_seasonal`.
+
+    Parameters
+    ----------
+    fit : dict
+        The fit.
+    z : array-like or float
+        Elevations, m.
+
+    Returns
+    -------
+    numpy.ndarray
+        The annual-mean bias, K.
+    """
+    z = np.asarray(z, dtype=float)
+    if fit["elevation_model"] == "exponential":
+        return fit["background"] + fit["excess"] * np.exp(-z / fit["scale_height"])
+    return fit["mean"] + fit["mean_per_km"] * z / 1000.0
+
+
 def seasonal_curve(
-    fit: dict[str, float], z: Sequence[float] | np.ndarray | float, fraction: Sequence[float] | np.ndarray | float
+    fit: dict[str, Any], z: Sequence[float] | np.ndarray | float, fraction: Sequence[float] | np.ndarray | float
 ) -> np.ndarray:
     """
     Evaluate a fit from :func:`fit_seasonal`.
@@ -800,11 +943,12 @@ def seasonal_curve(
         The fitted bias, K.
     """
     z_b, f_b = np.broadcast_arrays(np.asarray(z, dtype=float), np.asarray(fraction, dtype=float))
-    coef = np.array([fit[name] for name in COEFFICIENTS])
-    return (_design(z_b.ravel(), f_b.ravel(), elevation_dependent=True) @ coef).reshape(z_b.shape)
+    seasonal = np.column_stack(_seasonal_columns(z_b.ravel(), f_b.ravel(), elevation_dependent=True))
+    coef = np.array([fit[name] for name in SEASONAL_COEFFICIENTS])
+    return annual_mean(fit, z_b) + (seasonal @ coef).reshape(z_b.shape)
 
 
-def seasonal_cycle(fit: dict[str, float], z: Sequence[float] | np.ndarray | float) -> tuple[np.ndarray, np.ndarray]:
+def seasonal_cycle(fit: dict[str, Any], z: Sequence[float] | np.ndarray | float) -> tuple[np.ndarray, np.ndarray]:
     """
     Give the amplitude and timing of the fitted seasonal cycle at an elevation.
 
@@ -827,6 +971,73 @@ def seasonal_cycle(fit: dict[str, float], z: Sequence[float] | np.ndarray | floa
     s = fit["sin"] + fit["sin_per_km"] * z_km
     phase = np.mod(np.arctan2(s, c), 2.0 * np.pi)
     return np.hypot(c, s), phase / (2.0 * np.pi) * 365.0 + 0.5
+
+
+def _signed(value: float, digits: int = 2) -> str:
+    """
+    Format a term to follow another, with its sign as the operator.
+
+    Parameters
+    ----------
+    value : float
+        The term's coefficient.
+    digits : int, default 2
+        Decimals.
+
+    Returns
+    -------
+    str
+        E.g. ``"+ 1.23"`` or ``"− 1.23"``.
+    """
+    return f"{'−' if value < 0 else '+'} {abs(value):.{digits}f}"
+
+
+def _number(value: float, digits: int = 2) -> str:
+    """
+    Format a number with a typographic minus sign.
+
+    Parameters
+    ----------
+    value : float
+        The number.
+    digits : int, default 2
+        Decimals.
+
+    Returns
+    -------
+    str
+        E.g. ``"−2.62"``.
+    """
+    return f"{value:.{digits}f}".replace("-", "−")
+
+
+def equation(fit: dict[str, Any]) -> str:
+    """
+    Write a fit from :func:`fit_seasonal` as an equation with its fitted values.
+
+    Parameters
+    ----------
+    fit : dict
+        The fit.
+
+    Returns
+    -------
+    str
+        E.g. ``b = 1.92 + 6.18 exp(−z / 1.04) + (−2.62 + 0.82 z) cos 2πt
+        + (−0.66 + 0.14 z) sin 2πt``, with z in km and t the fraction of
+        the year.
+    """
+    if fit["elevation_model"] == "exponential":
+        height = _number(fit["scale_height"] / 1000)
+        profile = f"{_number(fit['background'])} {_signed(fit['excess'])} exp(−z / {height})"
+    else:
+        profile = f"{_number(fit['mean'])} {_signed(fit['mean_per_km'])} z"
+    cos, sin = _number(fit["cos"]), _number(fit["sin"])
+    if fit["cos_per_km"]:
+        cos = f"({cos} {_signed(fit['cos_per_km'])} z)"
+    if fit["sin_per_km"]:
+        sin = f"({sin} {_signed(fit['sin_per_km'])} z)"
+    return f"b = {profile} + {cos} cos 2πt + {sin} sin 2πt"
 
 
 def daily_medians(hist: xr.Dataset, source: str = "") -> pd.DataFrame:
@@ -867,10 +1078,13 @@ def daily_medians(hist: xr.Dataset, source: str = "") -> pd.DataFrame:
 
 
 def fit_categories(
-    daily: pd.DataFrame, min_cells: int = DEFAULT_MIN_CELLS, elevation_dependent: bool = True
+    daily: pd.DataFrame,
+    min_cells: int = DEFAULT_MIN_CELLS,
+    elevation_dependent: bool = True,
+    models: Sequence[str] = ELEVATION_MODELS,
 ) -> pd.DataFrame:
     """
-    Fit the seasonal model to the daily medians, per category.
+    Fit the seasonal model to the daily medians, per category and elevation profile.
 
     Parameters
     ----------
@@ -880,28 +1094,65 @@ def fit_categories(
         Daily medians resting on fewer grid cells are left out.
     elevation_dependent : bool, default True
         See :func:`fit_seasonal`.
+    models : sequence of str, default :data:`ELEVATION_MODELS`
+        Elevation profiles to fit, see :func:`fit_seasonal`.
 
     Returns
     -------
     pandas.DataFrame
-        One row per category that could be fitted, indexed by category:
-        the fields of :func:`fit_seasonal`, the elevation range of the bins
-        used (``z_min``, ``z_max``) and ``elevation_dependent``.
+        One row per category and profile that could be fitted, indexed by
+        ``(category, elevation_model)``: the fields of :func:`fit_seasonal`,
+        the elevation range of the bins used (``z_min``, ``z_max``),
+        ``elevation_dependent``, ``equation`` (see :func:`equation`) and
+        ``best``, True for the profile with the lowest BIC in its category.
     """
-    rows = {}
+    rows = []
     for category in CATEGORIES:
         used = daily[(daily["category"] == category) & (daily["cells"] >= min_cells)]
-        fit = fit_seasonal(used["centre"], used["fraction"], used["median"], elevation_dependent)
-        if fit is None:
-            logger.warning("%s: too few daily medians with %d or more cells for a seasonal fit", category, min_cells)
-            continue
-        fit["z_min"] = float(used["centre"].min())
-        fit["z_max"] = float(used["centre"].max())
-        fit["elevation_dependent"] = float(elevation_dependent)
-        rows[category] = fit
-    fits = pd.DataFrame.from_dict(rows, orient="index")
-    fits.index.name = "category"
+        for model in models:
+            fit = fit_seasonal(used["centre"], used["fraction"], used["median"], elevation_dependent, model)
+            if fit is None:
+                logger.warning(
+                    "%s: too few daily medians with %d or more cells for a seasonal fit", category, min_cells
+                )
+                break
+            fit.update(
+                {
+                    "category": category,
+                    "z_min": float(used["centre"].min()),
+                    "z_max": float(used["centre"].max()),
+                    "elevation_dependent": float(elevation_dependent),
+                    "equation": equation(fit),
+                }
+            )
+            rows.append(fit)
+    if not rows:
+        return pd.DataFrame(index=pd.MultiIndex.from_arrays([[], []], names=["category", "elevation_model"]))
+    fits = pd.DataFrame(rows).set_index(["category", "elevation_model"])
+    fits["best"] = fits["bic"] == fits.groupby(level="category")["bic"].transform("min")
     return fits
+
+
+def _fit_rows(fits: pd.DataFrame, category: str) -> list[dict[str, Any]]:
+    """
+    List a category's fits, best (lowest BIC) first.
+
+    Parameters
+    ----------
+    fits : pandas.DataFrame
+        Output of :func:`fit_categories`.
+    category : str
+        Category.
+
+    Returns
+    -------
+    list of dict
+        The fits, each with its ``elevation_model``.
+    """
+    if fits.empty or category not in fits.index.get_level_values("category"):
+        return []
+    rows = fits.xs(category, level="category").sort_values("bic").reset_index()
+    return [{**row.to_dict(), "category": category} for _, row in rows.iterrows()]
 
 
 def seasonal_by_elevation(fits: pd.DataFrame, centres: Sequence[float] | np.ndarray) -> pd.DataFrame:
@@ -918,19 +1169,21 @@ def seasonal_by_elevation(fits: pd.DataFrame, centres: Sequence[float] | np.ndar
     Returns
     -------
     pandas.DataFrame
-        ``category``, ``centre``, ``annual_mean``, ``amplitude``,
-        ``day_of_max``, ``seasonal_min`` and ``seasonal_max`` (K, day of year).
+        ``category``, ``elevation_model``, ``centre``, ``annual_mean``,
+        ``amplitude``, ``day_of_max``, ``seasonal_min`` and ``seasonal_max``
+        (K, day of year).
     """
     rows = []
-    for category, fit_row in fits.iterrows():
-        fit = fit_row.to_dict()
+    for (category, model), fit_row in fits.iterrows():
+        fit = {**fit_row.to_dict(), "elevation_model": model}
         z = np.asarray([c for c in centres if fit["z_min"] <= c <= fit["z_max"]], dtype=float)
-        mean = fit["mean"] + fit["mean_per_km"] * z / 1000.0
+        mean = annual_mean(fit, z)
         amplitude, day_of_max = seasonal_cycle(fit, z)
         rows.append(
             pd.DataFrame(
                 {
                     "category": category,
+                    "elevation_model": model,
                     "centre": z,
                     "annual_mean": mean,
                     "amplitude": amplitude,
@@ -940,8 +1193,43 @@ def seasonal_by_elevation(fits: pd.DataFrame, centres: Sequence[float] | np.ndar
                 }
             )
         )
-    columns = ["category", "centre", "annual_mean", "amplitude", "day_of_max", "seasonal_min", "seasonal_max"]
+    columns = [
+        "category",
+        "elevation_model",
+        "centre",
+        "annual_mean",
+        "amplitude",
+        "day_of_max",
+        "seasonal_min",
+        "seasonal_max",
+    ]
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=columns)
+
+
+def _equation_panel(ax: Any, fits: pd.DataFrame) -> None:
+    """
+    Write every fit's equation and statistics into an empty axes.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to fill; its frame is hidden.
+    fits : pandas.DataFrame
+        Output of :func:`fit_categories`.
+    """
+    ax.set_axis_off()
+    rows = [fit for category in CATEGORIES for fit in _fit_rows(fits, category)]
+    lines = ["z in km, t fraction of the year; ★ = lowest BIC in its category"]
+    for fit in rows:
+        note = ""
+        if fit["elevation_model"] == "exponential" and fit["scale_height"] >= 0.99 * SCALE_HEIGHT_RANGE[1]:
+            note = "   H at its limit: no curvature, a straight line"
+        lines.append(
+            f"{'★' if fit['best'] else ' '} {fit['category'].replace('_', ' ')}, {fit['elevation_model']}:"
+            f"  RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}, BIC {fit['bic']:.0f}{note}"
+        )
+        lines.append(f"    {fit['equation']}")
+    ax.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=7, transform=ax.transAxes)
 
 
 def _style_violins(parts: dict[str, Any], color: str) -> None:
@@ -1018,8 +1306,11 @@ def plot_bias_by_elevation(
     Elevation runs up the y axis; each bin gets one horizontal violin per
     category, offset so the pair sits side by side, drawn from the pooled
     histograms. The number of grid cells behind each violin is printed at
-    the right edge. The fit is drawn at the true bin elevations as its
-    annual mean, with a band spanning the seasonal cycle's minimum to maximum.
+    the right edge. Both fitted profiles are drawn at the true bin
+    elevations as their annual mean (exponential solid, linear dashed), the
+    better one by BIC with a band spanning its seasonal cycle's minimum to
+    maximum. A panel below gives every fit's equation, fitted values and
+    statistics.
 
     Parameters
     ----------
@@ -1042,7 +1333,10 @@ def plot_bias_by_elevation(
     centres = np.sort(medians["centre"].unique())
     values = annual["value"].values
     step = float(annual.attrs["step"])
-    fig, ax = plt.subplots(figsize=(8, max(5.0, 0.5 * centres.size + 2)), constrained_layout=True)
+    height = max(5.0, 0.5 * centres.size + 2)
+    fig, (ax, text_ax) = plt.subplots(
+        2, 1, figsize=(10, height + 2.0), height_ratios=[height, 2.0], constrained_layout=True
+    )
     for category, (color, shift) in CATEGORIES.items():
         rows = medians[(medians["category"] == category) & (medians["count"] > 1)]
         for centre, cells in zip(rows["centre"], rows["cells"]):
@@ -1062,13 +1356,22 @@ def plot_bias_by_elevation(
         if not rows.empty:
             ax.plot([], [], "s", color=color, alpha=0.7, label=category.replace("_", " "))
 
-        if category in fits.index:
-            fit = fits.loc[category].to_dict()
+        for fit in _fit_rows(fits, category):
             z_line = np.linspace(fit["z_min"], fit["z_max"], 200)
-            mean = fit["mean"] + fit["mean_per_km"] * z_line / 1000.0
-            amplitude, _ = seasonal_cycle(fit, z_line)
-            ax.fill_betweenx(z_line, mean - amplitude, mean + amplitude, color=color, alpha=0.15, lw=0, zorder=3)
-            ax.plot(mean, z_line, color=color, lw=2.2, zorder=4)
+            mean = annual_mean(fit, z_line)
+            if fit["best"]:
+                amplitude, _ = seasonal_cycle(fit, z_line)
+                ax.fill_betweenx(z_line, mean - amplitude, mean + amplitude, color=color, alpha=0.15, lw=0, zorder=3)
+            style = PROFILE_STYLES[fit["elevation_model"]]
+            ax.plot(
+                mean,
+                z_line,
+                color=color,
+                lw=2.2,
+                ls=style,
+                zorder=4,
+                label=f"{category.replace('_', ' ')}, {fit['elevation_model']}",
+            )
 
     edges = np.append(centres - bin_width / 2, centres[-1] + bin_width / 2)
     ax.axvline(0, color="k", lw=0.8)
@@ -1077,14 +1380,15 @@ def plot_bias_by_elevation(
     ax.set_xlabel("Level fit at the terrain − 2 m air temperature (K)")
     ax.set_ylabel(f"CARRA2 terrain elevation (m), {bin_width:g} m bins")
     ax.set_title(title or "Free-air extrapolation vs CARRA2 2 m temperature, every grid cell", fontsize=11)
-    ax.legend(loc="upper right", title="cell centre")
+    ax.legend(loc="upper right", title="cells and annual-mean fits", fontsize=8)
     ax.grid(axis="x", alpha=0.3)
+    _equation_panel(text_ax, fits)
     return fig
 
 
 def plot_seasonal_fit(daily: pd.DataFrame, fits: pd.DataFrame, min_cells: int = DEFAULT_MIN_CELLS) -> Figure:
     """
-    Plot the daily median bias against the day of the year, with the fitted cycle.
+    Plot the daily median bias against the day of the year, with the better fit's cycle.
 
     One panel per category. Each elevation bin's daily medians are dots and
     its fitted cycle a line, both coloured by the bin's elevation; years
@@ -1108,20 +1412,28 @@ def plot_seasonal_fit(daily: pd.DataFrame, fits: pd.DataFrame, min_cells: int = 
     used = daily[daily["cells"] >= min_cells]
     norm = matplotlib.colors.Normalize(float(used["centre"].min()), float(used["centre"].max()))
     cmap = matplotlib.colormaps["viridis"]
-    fig, axes = plt.subplots(1, len(CATEGORIES), figsize=(12, 4.8), sharey=True, constrained_layout=True)
+    fig = plt.figure(figsize=(13, 7.0), constrained_layout=True)
+    grid = fig.add_gridspec(2, len(CATEGORIES), height_ratios=[4.8, 1.8])
+    axes = [fig.add_subplot(grid[0, 0])]
+    axes += [fig.add_subplot(grid[0, i], sharey=axes[0]) for i in range(1, len(CATEGORIES))]
     days = np.arange(1, 366)
     # Day of the year each month starts on, in a 365-day year.
     month_starts = 1 + np.cumsum([0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30])
-    for ax, category in zip(np.atleast_1d(axes), CATEGORIES):
+    for ax, category in zip(axes, CATEGORIES):
         rows = used[used["category"] == category]
         doy = rows["fraction"].to_numpy() * 365.0 + 0.5
         ax.scatter(doy, rows["median"], c=cmap(norm(rows["centre"])), s=3, alpha=0.35, lw=0)
-        if category in fits.index:
-            fit = fits.loc[category].to_dict()
+        fit_rows = _fit_rows(fits, category)
+        if fit_rows:
+            fit = fit_rows[0]
             for centre in np.sort(rows["centre"].unique()):
                 curve = seasonal_curve(fit, centre, (days - 0.5) / 365.0)
                 ax.plot(days, curve, color=cmap(norm(centre)), lw=1.6)
-            ax.set_title(f"{category.replace('_', ' ')}: RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}", fontsize=10)
+            ax.set_title(
+                f"{category.replace('_', ' ')}, {fit['elevation_model']} profile: "
+                f"RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}",
+                fontsize=10,
+            )
         else:
             ax.set_title(f"{category.replace('_', ' ')}: no fit", fontsize=10)
         ax.axhline(0, color="k", lw=0.8)
@@ -1129,9 +1441,10 @@ def plot_seasonal_fit(daily: pd.DataFrame, fits: pd.DataFrame, min_cells: int = 
         ax.set_xlim(1, 366)
         ax.set_xlabel("Day of the year")
         ax.grid(alpha=0.3)
-    np.atleast_1d(axes)[0].set_ylabel("Daily median bias per elevation bin (K)")
+    axes[0].set_ylabel("Daily median bias per elevation bin (K)")
     fig.colorbar(matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap), ax=axes, label="Bin elevation (m)")
-    fig.suptitle("Free-air extrapolation vs CARRA2 2 m temperature: fit linear in elevation with a yearly cycle")
+    _equation_panel(fig.add_subplot(grid[1, :]), fits)
+    fig.suptitle("Free-air extrapolation vs CARRA2 2 m temperature: elevation profile with a yearly cycle")
     return fig
 
 
@@ -1464,7 +1777,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             plt.close(figure)
 
     if not fits.empty:
-        print(fits[[*COEFFICIENTS, "rmse", "r2", "n"]].round(3).to_string())
+        columns = ["rmse", "r2", "bic", "best"]
+        print(fits[columns].round(3).to_string())
+        for (category, model), fit in fits.iterrows():
+            print(f"{category:11s} {model:11s} {fit['equation']}")
     print(f"Results in {output}")
     return 0
 

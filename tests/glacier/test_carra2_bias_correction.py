@@ -257,6 +257,48 @@ def test_fit_seasonal_needs_spread_in_elevation_and_season():
     assert mod.fit_seasonal(z[:5], fraction[:5], bias[:5]) is None
 
 
+def test_fit_seasonal_recovers_an_exponential_profile():
+    """
+    Background, excess and decay height of an exponential profile come back from exact data.
+    """
+    z, fraction, _ = multi_year_sample()
+    truth = {"background": 1.8, "excess": 6.0, "scale_height": 1100.0}
+    seasonal = {key: TRUE_ON[key] for key in mod.SEASONAL_COEFFICIENTS}
+    angle = 2 * np.pi * fraction
+    bias = (
+        truth["background"]
+        + truth["excess"] * np.exp(-z / truth["scale_height"])
+        + (seasonal["cos"] + seasonal["cos_per_km"] * z / 1000) * np.cos(angle)
+        + (seasonal["sin"] + seasonal["sin_per_km"] * z / 1000) * np.sin(angle)
+    )
+    fit = mod.fit_seasonal(z, fraction, bias, elevation="exponential")
+    assert fit is not None and fit["elevation_model"] == "exponential"
+    assert fit["scale_height"] == pytest.approx(truth["scale_height"], rel=1e-3)
+    assert fit["background"] == pytest.approx(truth["background"], abs=1e-3)
+    assert fit["excess"] == pytest.approx(truth["excess"], abs=1e-3)
+    for name, value in seasonal.items():
+        assert fit[name] == pytest.approx(value, abs=1e-3), name
+    np.testing.assert_allclose(mod.seasonal_curve(fit, z, fraction), bias, atol=1e-3)
+    assert np.isnan(fit["mean"]) and np.isnan(fit["mean_per_km"])
+    # The straight line cannot follow the curve: a much worse BIC.
+    linear = mod.fit_seasonal(z, fraction, bias)
+    assert linear is not None and linear["bic"] > fit["bic"] + 100
+    with pytest.raises(ValueError, match="unknown elevation model"):
+        mod.fit_seasonal(z, fraction, bias, elevation="cubic")
+
+
+def test_equation_writes_the_fitted_values():
+    """
+    Write both profiles as equations with their numbers, signs as operators.
+    """
+    seasonal = {"cos": -2.0, "sin": 0.5, "cos_per_km": 0.75, "sin_per_km": -0.1}
+    linear = {"elevation_model": "linear", "mean": 6.0, "mean_per_km": -1.5, **seasonal}
+    assert mod.equation(linear) == "b = 6.00 − 1.50 z + (−2.00 + 0.75 z) cos 2πt + (0.50 − 0.10 z) sin 2πt"
+    exponential = {"elevation_model": "exponential", "background": 1.8, "excess": 6.2, "scale_height": 1044.0}
+    flat = {"cos": 1.0, "sin": 0.0, "cos_per_km": 0.0, "sin_per_km": 0.0}
+    assert mod.equation({**exponential, **flat}) == "b = 1.80 + 6.20 exp(−z / 1.04) + 1.00 cos 2πt + 0.00 sin 2πt"
+
+
 def test_seasonal_cycle_gives_amplitude_and_peak_day():
     """
     A pure sine of amplitude 2 peaks a quarter into the year; elevation can shift it.
@@ -476,8 +518,12 @@ def check_fit(fits: pd.DataFrame) -> None:
     Parameters
     ----------
     fits : pandas.DataFrame
-        ``bias_seasonal_fit.csv``.
+        ``bias_seasonal_fit.csv``, indexed by category and elevation model.
     """
+    assert set(fits.index.get_level_values("elevation_model")) == {"linear", "exponential"}
+    # The store is built linear in elevation, so the straight line is the better profile on glacier.
+    assert fits.loc[("on_glacier", "linear"), "best"]
+    fits = fits.xs("linear", level="elevation_model")
     for category, truth in (("on_glacier", TRUE_ON), ("off_glacier", TRUE_OFF)):
         fit = fits.loc[category]
         for name in ("mean_per_km", "cos_per_km", "sin_per_km"):
@@ -521,13 +567,13 @@ def test_main_recovers_the_built_in_bias(tmp_path):
     ):
         assert (out / name).exists(), name
 
-    check_fit(pd.read_csv(out / "bias_seasonal_fit.csv", index_col="category"))
+    check_fit(pd.read_csv(out / "bias_seasonal_fit.csv", index_col=["category", "elevation_model"]))
 
     daily = pd.read_csv(out / "bias_daily_medians.csv")
     assert daily["time"].nunique() == 731
 
     cycle = pd.read_csv(out / "bias_seasonal_by_elevation.csv")
-    off = cycle[cycle["category"] == "off_glacier"]
+    off = cycle[(cycle["category"] == "off_glacier") & (cycle["elevation_model"] == "linear")]
     np.testing.assert_allclose(off["amplitude"], 1.0, atol=0.03)
     np.testing.assert_allclose(off["annual_mean"], 1.5, atol=0.03)
 
@@ -554,7 +600,7 @@ def test_years_as_separate_stores_give_the_same_fit(tmp_path):
     glacier_outline().to_file(outlines)
     out = tmp_path / "out"
     assert mod.main([*map(str, stores), "--outlines", str(outlines), "--output-path", str(out)]) == 0
-    check_fit(pd.read_csv(out / "bias_seasonal_fit.csv", index_col="category"))
+    check_fit(pd.read_csv(out / "bias_seasonal_fit.csv", index_col=["category", "elevation_model"]))
     assert set(pd.read_csv(out / "bias_daily_medians.csv")["source"]) == {"carra2_daily_2004", "carra2_daily_2005"}
 
 
@@ -572,7 +618,7 @@ def test_main_with_one_cycle_for_all_elevations(tmp_path):
     glacier_outline().to_file(outlines)
     out = tmp_path / "out"
     assert mod.main([str(store), "--outlines", str(outlines), "--season", "constant", "--output-path", str(out)]) == 0
-    fits = pd.read_csv(out / "bias_seasonal_fit.csv", index_col="category")
+    fits = pd.read_csv(out / "bias_seasonal_fit.csv", index_col=["category", "elevation_model"])
     assert (fits[["cos_per_km", "sin_per_km"]] == 0).all().all()
     assert (fits["elevation_dependent"] == 0).all()
 

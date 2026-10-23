@@ -151,8 +151,10 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     year_fraction
     daily_medians
     fit_seasonal
+    annual_mean
     seasonal_curve
     seasonal_cycle
+    equation
     fit_categories
     seasonal_by_elevation
     plot_bias_by_elevation
