@@ -226,7 +226,7 @@ def process_carra2(
     cdo = Cdo()
     cdo.debug = True
 
-    # --- Step 1: per-year batches (setgrid, settaxis, monmean/monstd) ---
+    # --- Step 1: per-year batches (setgrid, settaxis, monmean) ---
 
     pr_sorted = sorted(precipitation_files)
     tas_sorted = sorted(temperature_files)
@@ -238,7 +238,7 @@ def process_carra2(
 
     def _process_carra2_batch(args):
         """
-        Process a single year-batch: fix grid/time, compute monmean/monstd, merge.
+        Process a single year-batch: fix grid/time, compute monmean, merge.
 
         Parameters
         ----------
@@ -274,31 +274,21 @@ def process_carra2(
             options="--reduce_dim -f nc4 -z zip_2",
         )
 
-        # Temperature: aggregate daily -> monthly std
-        tas_mstd = os.path.join(tmp, f"tas_mstd_{yr}.nc")
-        cdo_local.setattribute(
-            """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
-            input=f"""-chname,air_temp,air_temp_sd -monstd -setgrid,{grid} -chname,t2m,air_temp """
-            f"""-settbounds,1day -setreftime,{yr}-01-01 -settunits,days -settaxis,{yr}-01-01,00:00:00,1day {tas_f}""",
-            output=tas_mstd,
-            options="--reduce_dim -f nc4 -z zip_2",
-        )
-
-        # Merge pr + tas_mm + tas_mstd for this year
+        # Merge pr + tas_mm for this year
         cdo_local.merge(
-            input=f"{pr_fixed} {tas_mm} {tas_mstd}",
+            input=f"{pr_fixed} {tas_mm}",
             output=batch_out,
             options="-f nc4 -z zip_2",
         )
         # Clean up per-year intermediate files only (not the shared directory)
-        for f in (pr_fixed, tas_mm, tas_mstd):
+        for f in (pr_fixed, tas_mm):
             Path(f).unlink(missing_ok=True)
         return batch_out
 
     # Only process batches that don't already exist (unless force_overwrite)
     batches_to_run = [b for b in batches if (not check_xr_lazy(b[3])) or force_overwrite]
     if batches_to_run:
-        logger.info("CDO: processing %d year batches (setgrid + monmean/monstd)...", len(batches_to_run))
+        logger.info("CDO: processing %d year batches (setgrid + monmean)...", len(batches_to_run))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_process_carra2_batch, b): b for b in batches_to_run}
             for future in tqdm(cf_as_completed(futures), total=len(futures), desc="Processing CARRA2 batches"):
@@ -327,16 +317,6 @@ def process_carra2(
             options=f"-f nc4 -z zip_2 -P {max_workers}",
             returnXDataset=True,
         )
-
-        # Compute ymonstd for air_temp separately
-        logger.info("CDO: computing multi-year monthly std for air_temp...")
-        ds_std = cdo.remapycon(
-            str(target_grid_path.resolve()),
-            input=f"-selvar,air_temp_sd -ymonmean {merged_file}",
-            options=f"-f nc4 -z zip_2 -P {max_workers}",
-            returnXDataset=True,
-        )
-        ds["air_temp_sd"] = ds_std["air_temp_sd"]
 
         logger.info("CDO: done")
 
@@ -478,21 +458,8 @@ def process_hirham(
             output=merged,
             options="-f nc4 -z zip_2 -P 1",
         )
-        monmean = os.path.join(tmpdir, f"monmean_{year}.nc")
         cdo_local.monmean(
             input=merged,
-            output=monmean,
-            options="-f nc4 -z zip_2 -P 1",
-        )
-        monstd = os.path.join(tmpdir, f"monstd_{year}.nc")
-        cdo_local.setattribute(
-            """air_temp_sd@long_name="standard deviation of 2-m air temperature" """,
-            input=f"""-chname,air_temp,air_temp_sd -monstd -selvar,air_temp {merged}""",
-            output=monstd,
-            options="-f nc4 -z zip_2 -P 1",
-        )
-        cdo_local.merge(
-            input=f"{monmean} {monstd}",
             output=batch_out,
             options="-f nc4 -z zip_2 -P 1",
         )

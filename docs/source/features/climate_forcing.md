@@ -45,16 +45,15 @@ the prepare step that builds it.
 
 ## Temperature spread
 
-The CARRA2 and ERA5 forcing carry no `air_temp_sd`, the spread of the daily
-temperatures within a month. The positive-degree-day and dEBM surface models use
+No climate forcing -- CARRA2, ERA5, SNAP or KITP's -- carries `air_temp_sd`,
+the spread of the daily temperatures within a month. The positive-degree-day and dEBM surface models use
 a constant spread instead (`surface.pdd.std_dev.value`,
-`surface.debm_simple.std_dev.value`, 5 K in the packaged configs), the value their
+`surface.debm_simple.std_dev.value`, 5 K: PISM's default, set explicitly in most
+packaged configs), the value their
 degree-day and melt coefficients were calibrated with. CARRA2's own spread was
 about 1.5 K in summer, which with the classic degree-day factors cut the PDD
-melt by a factor of several near 0 °C. SNAP's forcing still carries a spread,
-and a run reads it from there when its config asks for
-`surface.*.std_dev.file`; a config that asks for it with CARRA2 or ERA5 stops
-when the run script is generated.
+melt by a factor of several near 0 °C. A config that still asks for a spread
+file (`surface.*.std_dev.file`) stops when the run script is generated.
 
 ## ERA5 regional stores
 

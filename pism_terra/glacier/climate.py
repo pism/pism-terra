@@ -1780,13 +1780,10 @@ def snap(
         ds = ds.sortby(["y", "x"])
 
         # Convert to PISM/ERA5 conventions (units PISM's atmosphere.given expects).
-        # ``air_temp_sd`` is an interannual standard deviation, so it stays a
-        # difference (no +273.15 offset). ``precipitation`` already arrives as a
-        # daily rate (kg m^-2 day^-1) from prepare_snap.
+        # ``precipitation`` already arrives as a daily rate (kg m^-2 day^-1) from
+        # prepare_snap.
         ds["air_temp"] = ds["air_temp"] + 273.15
         ds["air_temp"].attrs.update({"units": "kelvin", "standard_name": "air_temperature"})
-        if "air_temp_sd" in ds:
-            ds["air_temp_sd"].attrs.update({"units": "kelvin"})
         ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
         if "surface" in ds:
             ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
@@ -1819,7 +1816,7 @@ def snap(
 
         encoding = {
             v: {"_FillValue": None}
-            for v in ("x", "y", "surface", "air_temp", "air_temp_sd", "precipitation", "time", "time_bounds")
+            for v in ("x", "y", "surface", "air_temp", "precipitation", "time", "time_bounds")
             if v in ds
         }
         # A per-variable encoding dict replaces the variable's ``.encoding``, so
@@ -3855,7 +3852,6 @@ def prepare_snap(
         # passes through unchanged and stays time-invariant.
         ds_sel = ds.sel(time=slice(start, end))
         ds_weighted = ds_sel.groupby("time.month").mean("time").rename({"month": "time"})
-        ds_weighted["air_temp_sd"] = ds_sel["air_temp"].groupby("time.month").std("time").rename({"month": "time"})
         # The surface DEM is time-invariant; groupby broadcasts it across the 12
         # month groups, so collapse the redundant time dimension back to 2-D.
         if "surface" in ds_weighted and "time" in ds_weighted["surface"].dims:
@@ -3893,7 +3889,6 @@ def prepare_snap(
         ds_weighted["precipitation"] = ds_weighted["precipitation"] / ml
         ds_weighted["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
         ds_weighted["air_temp"].attrs.update({"units": "celsius"})
-        ds_weighted["air_temp_sd"].attrs.update({"units": "celsius"})
 
         # CRS + spatial dims + grid_mapping tags
         ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")
@@ -3910,7 +3905,6 @@ def prepare_snap(
                 "y",
                 "surface",
                 "air_temp",
-                "air_temp_sd",
                 "precipitation",
                 "time",
                 "time_bounds",
