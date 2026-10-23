@@ -125,9 +125,9 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     era5
     carra2
     carra2_monthly_mean
+    carra2_cutout
     snap
     prepare_carra2
-    prepare_carra2_for_group
     prepare_carra2_monthly_mean
     write_zarr_in_bands
 ```

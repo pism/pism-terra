@@ -76,16 +76,18 @@ and the years of the run and crops it to `era5_wgs84_<rgi_id>.nc`
 per-glacier download writes. When no store covers the glacier, or one lacks a
 year, the forcing is downloaded from CDS for that glacier as before.
 
-## CARRA2 caching
+## CARRA2 on its own grid
 
-`pism-glacier-prepare` pre-reprojects CARRA2 once per aggregate group and
-uploads `carra2_<rgi_id>.nc` to S3 under the project subtree
-(`<prefix>/<project_directory>/climate/`), since the result depends on that
-project's CRS. The merged `carra2.zarr` store itself is global and is shared
-across projects at `<prefix>/climate/`. The per-glacier
-{py:func}`~pism_terra.glacier.climate.carra2` call then downloads that single
-file instead of streaming the full Zarr — see
-{py:func}`~pism_terra.glacier.climate.prepare_carra2_for_group`.
+`pism-glacier-prepare` builds the merged `carra2.zarr` store and its
+`carra2_monthly_mean.zarr` climatology once, on CARRA2's own 2.5 km
+polar-stereographic grid, shared across projects at `<prefix>/climate/`.
+Staging a glacier ({py:func}`~pism_terra.glacier.climate.carra2`,
+{py:func}`~pism_terra.glacier.climate.carra2_monthly_mean`) cuts the box of
+its model domain out of the store, with three CARRA2 cells of margin on every
+side ({py:func}`~pism_terra.glacier.climate.carra2_cutout`), and writes it as
+it is, with CARRA2's projection in its grid mapping. Nothing is reprojected:
+PISM reads the projection from the file and interpolates the forcing onto the
+model grid, as it does for ERA5's latitude/longitude forcing.
 
 The runtime also fills missing years from the nearest available source year
 and attaches monthly `time_bnds` so PISM can interpret the data as monthly

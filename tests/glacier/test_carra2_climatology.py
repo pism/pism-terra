@@ -31,7 +31,6 @@ import pandas as pd
 import pytest
 import xarray as xr
 from pyproj import CRS, Transformer
-from rioxarray.raster_array import RasterArray
 
 from pism_terra.glacier import climate
 from pism_terra.glacier.climate import (
@@ -515,64 +514,22 @@ def _fake_carra2_store(years):
     return ds.rio.write_crs("EPSG:3413").rio.set_spatial_dims(x_dim="x", y_dim="y")
 
 
-class _NoPrebuiltS3:
-    """
-    Stand in for ``s3fs.S3FileSystem`` with no pre-reprojected CARRA2 file.
-
-    Parameters
-    ----------
-    *args, **kwargs
-        Accepted and ignored, like the real constructor's options.
-    """
-
-    def __init__(self, *args, **kwargs):
-        """
-        Accept the real constructor's options and ignore them.
-
-        Parameters
-        ----------
-        *args, **kwargs
-            Ignored.
-        """
-        _ = args, kwargs
-
-    def exists(self, uri):
-        """
-        Report that nothing exists, so ``carra2`` takes the reprojection path.
-
-        Parameters
-        ----------
-        uri : str
-            Ignored.
-
-        Returns
-        -------
-        bool
-            Always ``False``.
-        """
-        _ = uri
-        return False
-
-
 @pytest.mark.parametrize(
     "store_years, requested, source",
     [((1985, 1986, 1987, 1988), 1986, 1986), ((1985, 1990), 1987, 1985)],
 )
-def test_carra2_reprojects_only_the_source_years_it_uses(
+def test_carra2_cuts_out_only_the_source_years_it_uses(
     tmp_path, monkeypatch, capsys, store_years, requested, source
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """
-    Reproject only the months the requested years are filled from.
-
-    ``carra2`` used to reproject every step in the store and pick the requested
-    years afterwards: a one-year run read and warped the whole forty-year record.
+    Cut out only the months the requested years are filled from, values unchanged.
 
     Parameters
     ----------
     tmp_path : pathlib.Path
         Pytest-provided scratch directory.
     monkeypatch : pytest.MonkeyPatch
-        Replaces the S3 access and counts the reprojected steps.
+        Replaces the store access.
     capsys : pytest.CaptureFixture
         Captures the log naming the source years used.
     store_years : tuple of int
@@ -582,39 +539,76 @@ def test_carra2_reprojects_only_the_source_years_it_uses(
     source : int
         The store year that ``requested`` is filled from.
     """
-    reprojected_steps = []
-    real_reproject_match = RasterArray.reproject_match
-
-    def counting_reproject_match(self, *args, **kwargs):
-        """
-        Record the number of time steps, then reproject as usual.
-
-        Parameters
-        ----------
-        self : rioxarray.raster_array.RasterArray
-            The ``.rio`` accessor being reprojected.
-        *args, **kwargs
-            Passed on to the real ``reproject_match``.
-
-        Returns
-        -------
-        xarray.DataArray
-            The reprojected array.
-        """
-        reprojected_steps.append(self._obj.sizes.get("time", 0))  # pylint: disable=protected-access
-        return real_reproject_match(self, *args, **kwargs)
-
-    monkeypatch.setattr(climate.s3fs, "S3FileSystem", _NoPrebuiltS3)
     monkeypatch.setattr(climate, "open_carra2_zarr", lambda uri: _fake_carra2_store(store_years))
-    monkeypatch.setattr(RasterArray, "reproject_match", counting_reproject_match)
 
     with xr.open_dataset(_grid_file(tmp_path, CRS("EPSG:32634").to_wkt())) as grid:
         out_file = climate.carra2(grid, "RGI-test", years=[requested], path=tmp_path / "out")
 
     assert f"source years used: [{source}]" in capsys.readouterr().out
-    assert sum(reprojected_steps) == 12 * 2  # 12 months of air_temp and precipitation, nothing more
     with xr.open_dataset(out_file) as out:
         assert out.sizes["time"] == 12
         assert set(out["time"].dt.year.values) == {requested}
         expected = 100.0 * source + np.arange(1, 13)
         np.testing.assert_allclose(out["air_temp"].mean(dim=("x", "y")).values, expected)
+
+
+def test_carra2_stays_on_the_carra2_grid(tmp_path, monkeypatch):
+    """
+    Write CARRA2's own cells and projection around the domain, for PISM to regrid.
+
+    The model grid is UTM 34N at 100 m; the forcing must stay on the store's
+    2.5 km polar-stereographic cells, cover the domain with a margin, and say
+    so in its grid mapping.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    monkeypatch : pytest.MonkeyPatch
+        Replaces the store access.
+    """
+    store = _fake_carra2_store([1990])
+    monkeypatch.setattr(climate, "open_carra2_zarr", lambda uri: store)
+
+    with xr.open_dataset(_grid_file(tmp_path, CRS("EPSG:32634").to_wkt())) as grid:
+        bounds = (
+            float(grid.x_bnds.values[0][0]),
+            float(grid.y_bnds.values[0][0]),
+            float(grid.x_bnds.values[-1][-1]),
+            float(grid.y_bnds.values[-1][-1]),
+        )
+        out_file = climate.carra2(grid, "RGI-test", years=[1990], path=tmp_path / "out")
+        clim_store = store.groupby("time.month").mean("time").rename({"month": "time"})
+        clim_store = clim_store.rio.write_crs("EPSG:3413").rio.set_spatial_dims(x_dim="x", y_dim="y")
+        monkeypatch.setattr(climate, "open_carra2_zarr", lambda uri: clim_store)
+        clim_file = climate.carra2_monthly_mean(grid, "RGI-test", path=tmp_path / "out")
+
+    for path in (out_file, clim_file):
+        with xr.open_dataset(path, decode_coords="all") as out:
+            # Store cells, untouched: the x/y values are a contiguous run of the store's.
+            assert set(out["x"].values) <= set(store["x"].values)
+            assert set(out["y"].values) <= set(store["y"].values)
+            assert CRS(out.rio.crs) == CRS("EPSG:3413")
+            assert out["air_temp"].attrs.get("grid_mapping") or out["air_temp"].encoding.get("grid_mapping")
+            # The domain plus at least the margin lies inside the cut-out's cell centres.
+            to_store = Transformer.from_crs("EPSG:32634", "EPSG:3413", always_xy=True)
+            minx, miny, maxx, maxy = to_store.transform_bounds(*bounds, densify_pts=21)
+            assert out["x"].min() <= minx and out["x"].max() >= maxx
+            assert out["y"].min() <= miny and out["y"].max() >= maxy
+            assert out.sizes["time"] == 12
+
+
+def test_a_domain_outside_carra2_is_refused(tmp_path):
+    """
+    Refuse a cut-out of fewer than two cells: PISM cannot interpolate from it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    store = _fake_carra2_store([1990])
+    far = store.assign_coords(x=store["x"] + 1.0e7)
+    with xr.open_dataset(_grid_file(tmp_path, CRS("EPSG:32634").to_wkt())) as grid:
+        with pytest.raises(ValueError, match="outside the CARRA2 domain"):
+            climate.carra2_cutout(far, grid)
