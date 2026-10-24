@@ -1,0 +1,7 @@
+samples = 1
+method = "factorial"
+
+['calving.eigen_calving.K']
+
+choices = [1e16, 1e18, 1e20]
+distribution = "choices"

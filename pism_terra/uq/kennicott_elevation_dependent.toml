@@ -1,0 +1,26 @@
+# The mass-balance profile shifts as a unit: the ELA sits 1050 m above the
+# lower melt limit and the upper limit 1892 m above it, in every member. Only
+# the shift is sampled; the other two follow it.
+#
+# With a single sampled parameter the full-factorial grid is just its 7 levels,
+# taken in declaration order — so uq_0 is 700/1750/2592, uq_1 is 650/1700/2542,
+# and so on. Adding a second sampled parameter here would make the grid the
+# Cartesian product (7 x n rows); switch to the default LHS if that is not
+# wanted.
+samples = 7
+method = "factorial"
+
+['surface.elevation_dependent.z_M_min']
+
+distribution = "choices"
+choices = [700, 650, 600, 550, 500, 450, 400]
+
+['surface.elevation_dependent.z_ELA']
+
+derived_from = "surface.elevation_dependent.z_M_min"
+offset = 1050
+
+['surface.elevation_dependent.z_M_max']
+
+derived_from = "surface.elevation_dependent.z_M_min"
+offset = 1892

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+
+# Abort on the first failing leg. Without this a leg that dies still leaves
+# the next one to start on a missing input file — and pismi, whose Python
+# driver has no top-level catch, then deadlocks in MPI_Finalize and holds
+# the nodes until the job is cancelled.
+set -e
+
+ulimit -a
+
+{% if output_dirs %}
+# Output directories. A run staged through S3 arrives without them (a bucket
+# keeps no empty directories) and PISM does not create them itself.
+mkdir -p {{ output_dirs | join(" ") }}
+{% endif %}
+
+
+{% if run_init_str %}
+# ###############################################################################
+# INIT RUN
+# ###############################################################################
+
+mpirun -np  {{ ntasks | default(32) }} pism {{ run_init_str }}
+{% endif %}
+
+{% if inv_str %}
+# ###############################################################################
+# INVERSION RUN
+# ###############################################################################
+
+mpirun -np  {{ ntasks | default(32) }} pismi {{ inv_str }}
+{% endif %}
+
+{% if run_hist_str %}
+# ###############################################################################
+# HISTORICAL RUN
+# ###############################################################################
+
+# One writer rank beside the PISM ranks: pism_ismip7_writer is what turns the
+# {var} placeholder of the ISMIP7 spatial file name into one file per
+# variable. PISM's own output code writes a single file with the placeholder
+# left in its name, so the writer and -output.asynchronous go together.
+mpirun -np 1 pism_ismip7_writer -r 1 : -np {{ ntasks | default(32) }} pism {{ run_hist_str }} -output.asynchronous
+{% endif %}
+
+{% if run_proj_str %}
+# ###############################################################################
+# PROJECTION RUN
+# ###############################################################################
+
+mpirun -np 1 pism_ismip7_writer -r 1 : -np {{ ntasks | default(32) }} pism {{ run_proj_str }} -output.asynchronous
+{% endif %}
+
+{% if post_scalar_str %}
+# ###############################################################################
+# SCALAR POSTPROCESSING RUN
+# ###############################################################################
+
+# Split the product's scalar time series into one file per variable, as the
+# submission wants them; the compliance checker below expects these.
+{{ post_scalar_str }}
+{% endif %}
+
+
+{% if ism_checker_str %}
+# ###############################################################################
+# COMPLIANCE CHECKER
+# ###############################################################################
+
+# The checker reports; its findings are in the submission directory's
+# compliance_checker_log.txt and must not fail a run that has finished.
+{{ ism_checker_str }} || echo "compliance checker reported errors; see compliance_checker_log.txt"
+{% endif %}
+
+{% if post_process_str %}
+# ###############################################################################
+# POSTPROCESSING RUN
+# ###############################################################################
+
+{{ post_process_str }}
+{% endif %}
+
+{% if dh_str %}
+# ###############################################################################
+# DH POSTPROCESSING RUN
+# ###############################################################################
+
+{{ dh_str }}
+{% endif %}
