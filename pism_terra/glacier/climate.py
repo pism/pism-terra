@@ -96,6 +96,12 @@ CARRA2_PROJ = (
 # chunk per tile and variable; ``-1`` = single chunk.
 CARRA2_ZARR_CHUNKS = {"time": -1, "y": 256, "x": 256}
 
+#: CARRA2 cells of margin kept on every side of a glacier's domain when its
+#: forcing is cut out on CARRA2's own grid. PISM interpolates the forcing onto
+#: the model grid and needs source cells around every model cell; three 2.5 km
+#: cells also cover the slight rotation between the two projections.
+CARRA2_CUTOUT_PAD_CELLS = 3
+
 #: CDS name of CARRA2's snowfall: the solid part of ``total_precipitation``,
 #: published in the same monthly forecast-based product.
 CARRA2_SNOWFALL = "time_integral_of_total_solid_precipitation_flux"
@@ -1249,135 +1255,63 @@ def stamp_monthly_climatology_axis(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
-def prepare_carra2_for_group(
-    carra2_zarr: Path | str,
-    dst_crs: str,
-    geometry,
-    geometry_crs: str,
-    output_file: Path | str,
-    resolution: float = 2500.0,
-    force_overwrite: bool = False,
-) -> Path:
+def carra2_cutout(ds: xr.Dataset, target_grid: xr.Dataset, pad_cells: int = CARRA2_CUTOUT_PAD_CELLS) -> xr.Dataset:
     """
-    Pre-reproject the CARRA2 Zarr to a group's CRS and bbox; write NetCDF.
+    Cut a glacier's box out of a CARRA2 store, on CARRA2's own grid.
 
-    Produces a per-group cache that ``carra2()`` (in :mod:`pism_terra.glacier.stage`)
-    can download in a single GET instead of fetching the full pan-Arctic Zarr
-    and reprojecting on the fly for every glacier. Output stays at CARRA2's
-    native ~2.5 km resolution by default (much smaller than the typical
-    100 m boot grid) so the per-glacier ``carra2()`` step is then a cheap
-    bbox crop + light resample.
+    The bounds of ``target_grid`` are transformed into CARRA2's projection
+    (densified, so a rotated or curved edge is covered) and padded by
+    *pad_cells* CARRA2 cells on every side; the cells inside are selected as
+    they are. Nothing is reprojected: PISM reads the projection from the
+    file's grid mapping and interpolates the forcing onto the model grid.
 
     Parameters
     ----------
-    carra2_zarr : Path or str
-        Local path or ``s3://`` URI of the full CARRA2 Zarr store.
-    dst_crs : str
-        Target CRS for the group (e.g. ``"EPSG:3338"`` for Alaska).
-    geometry : shapely.geometry.base.BaseGeometry
-        The group's polygon/multipolygon (typically the aggregated complex's
-        ``geometry`` from ``rgi_c.gpkg``).
-    geometry_crs : str
-        CRS of ``geometry`` (e.g. ``"EPSG:4326"`` for an RGI-v7 entry).
-    output_file : Path or str
-        Path to write the NetCDF.
-    resolution : float, default ``2500.0``
-        Target grid spacing in ``dst_crs`` units (meters).
-    force_overwrite : bool, default ``False``
-        If True, regenerate even if the output already exists.
+    ds : xarray.Dataset
+        CARRA2 store from :func:`open_carra2_zarr`, with its CRS attached.
+    target_grid : xarray.Dataset
+        PISM grid of the glacier, with ``x_bnds``/``y_bnds`` and a grid mapping.
+    pad_cells : int, default :data:`CARRA2_CUTOUT_PAD_CELLS`
+        CARRA2 cells of margin on every side.
 
     Returns
     -------
-    pathlib.Path
-        Absolute path to the written NetCDF.
+    xarray.Dataset
+        The cut-out, lazily, on CARRA2's ``x``/``y`` and in its CRS.
+
+    Raises
+    ------
+    ValueError
+        If the cut-out has fewer than two cells along an axis: the domain lies
+        outside the store, and PISM cannot interpolate from a single row.
     """
-    output_file = Path(output_file)
-    if output_file.exists() and not force_overwrite and check_xr_lazy(output_file):
-        return output_file
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Build a target grid at `resolution` over the group's bounds.
-    geom_projected = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs(dst_crs)
-    x_bnds, y_bnds = get_bounds_from_geometry(geom_projected, buffer_dist=5_000.0, dx=1_000.0)
-    target_grid = create_domain(x_bnds, y_bnds, resolution=resolution, crs=dst_crs)
-
-    # Open the source Zarr (local or s3) with its spatial dims and CRS attached.
-    ds = open_carra2_zarr(carra2_zarr)
-
-    # Clip to group bounds in CARRA2 coords (cheap; just a .sel slice).
-    t = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
-    src_minx, src_miny, src_maxx, src_maxy = t.transform_bounds(x_bnds[0], y_bnds[0], x_bnds[1], y_bnds[1])
-    x_asc = bool(ds.x[-1] > ds.x[0])
-    y_asc = bool(ds.y[-1] > ds.y[0])
+    target_grid = _promote_grid_mapping(target_grid)
+    dst_crs = target_grid[target_grid.rio.grid_mapping].attrs["crs_wkt"]
+    bounds = (
+        float(target_grid.x_bnds.values[0][0]),
+        float(target_grid.y_bnds.values[0][0]),
+        float(target_grid.x_bnds.values[-1][-1]),
+        float(target_grid.y_bnds.values[-1][-1]),
+    )
+    transformer = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
+    minx, miny, maxx, maxy = transformer.transform_bounds(*bounds, densify_pts=21)
+    pad_x = pad_cells * float(abs(ds.x.values[1] - ds.x.values[0]))
+    pad_y = pad_cells * float(abs(ds.y.values[1] - ds.y.values[0]))
+    minx, maxx, miny, maxy = minx - pad_x, maxx + pad_x, miny - pad_y, maxy + pad_y
+    x_ascending = bool(ds.x[-1] > ds.x[0])
+    y_ascending = bool(ds.y[-1] > ds.y[0])
+    # ``.sel`` rather than ``rio.clip_box``: the latter applies spatial dims to
+    # every variable and trips over non-spatial helpers like ``time_bnds``.
     sub = ds.sel(
-        x=slice(src_minx, src_maxx) if x_asc else slice(src_maxx, src_minx),
-        y=slice(src_miny, src_maxy) if y_asc else slice(src_maxy, src_miny),
+        x=slice(minx, maxx) if x_ascending else slice(maxx, minx),
+        y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
     )
-
-    # Drop the grid-mapping placeholder and any broken non-spatial coords.
-    grid_mapping_names: set[str] = set()
-    for var in sub.data_vars:
-        gm = sub[var].attrs.get("grid_mapping") or sub[var].encoding.get("grid_mapping")
-        if gm:
-            grid_mapping_names.add(gm)
-    for c in list(sub.coords):
-        if c in ("x", "y", "spatial_ref"):
-            continue
-        if c in grid_mapping_names:
-            sub = sub.drop_vars(c, errors="ignore")
-            continue
-        try:
-            sub = sub.assign_coords({c: sub[c].compute()})
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            print(f"Coord {c!r} unreadable from Zarr ({exc}); dropping")
-            sub = sub.drop_vars(c, errors="ignore")
-    if "time" in sub.coords:
-        bounds_name = sub["time"].attrs.get("bounds")
-        if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
-            sub["time"].attrs.pop("bounds", None)
-
-    # rio.reproject_match walks every data variable; time_bnds has dims
-    # (time, bnds) and no x/y so it raises MissingSpatialDimensionError.
-    sub = sub.drop_vars("time_bnds", errors="ignore")
-
-    # Reproject onto the group's target grid. At 2.5 km × a regional bbox the
-    # full dataset fits comfortably in memory, so a single shot is fine.
-    out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
-    # inplace=True avoids deep-copying a multi-GiB dataset just to stamp metadata.
-    out = (
-        out.rio.write_crs(dst_crs, inplace=True)
-        .rio.write_grid_mapping(inplace=True)
-        .rio.write_coordinate_system(inplace=True)
-    )
-    out.attrs["Conventions"] = "CF-1.8"
-
-    # Clear stale encoding inherited from the Zarr source so netCDF4 doesn't
-    # see half-prescribed datetime encoding.
-    for name in list(out.coords) + list(out.data_vars):
-        for k in (
-            "dtype",
-            "_FillValue",
-            "units",
-            "calendar",
-            "chunks",
-            "preferred_chunks",
-        ):
-            out[name].encoding.pop(k, None)
-
-    # Drop the stale source grid mapping and stamp a single PISM-readable one,
-    # so the per-group cache (and the per-glacier file derived from it) carries
-    # the projection PISM needs to reproject the forcing on the fly.
-    out = _finalize_pism_crs(out, dst_crs)
-    if "time" in out.coords:
-        # CF time-axis identity so ncview/PISM recognise the time coordinate;
-        # the dimension itself is written unlimited below.
-        out["time"].attrs.update({"standard_name": "time", "long_name": "time", "axis": "T"})
-
-    encoding = compressed_encoding(out)
-    output_file.unlink(missing_ok=True)
-    unlimited = ["time"] if "time" in out.dims else None
-    out.to_netcdf(output_file, encoding=encoding, engine="h5netcdf", unlimited_dims=unlimited)
-    return output_file
+    if sub.sizes["x"] < 2 or sub.sizes["y"] < 2:
+        raise ValueError(
+            f"the domain's box ({minx:.0f}, {miny:.0f}, {maxx:.0f}, {maxy:.0f} in CARRA2 coordinates) "
+            f"selects {sub.sizes['x']} x {sub.sizes['y']} CARRA2 cells; is it outside the CARRA2 domain?"
+        )
+    return sub
 
 
 def carra2_monthly_mean(
@@ -1396,22 +1330,17 @@ def carra2_monthly_mean(
 
     The CARRA2 counterpart of :func:`era5_monthly_mean`: twelve fields, one per
     calendar month, on the periodic time axis PISM cycles for the length of the
-    run. The averaging happens once in
-    :func:`prepare_carra2_monthly_mean`; this only crops and reprojects.
-
-    Two sources are tried, cheapest first. If ``prepare`` pre-reprojected the
-    climatology for this glacier's group, that single small NetCDF is
-    downloaded and PISM interpolates onto the model grid at runtime. Otherwise
-    the pan-Arctic climatology store is opened and clipped — only 12 time steps,
-    so a single-shot reprojection is fine.
+    run. The averaging happens once in :func:`prepare_carra2_monthly_mean`;
+    this only cuts the glacier's box out of that store, on CARRA2's own grid
+    (:func:`carra2_cutout`). PISM interpolates the forcing onto the model grid.
 
     Parameters
     ----------
     target_grid : xarray.Dataset
-        Grid providing the destination CRS (via its grid mapping) and extent.
+        PISM grid of the glacier, providing its CRS (via its grid mapping) and
+        extent. Used to derive the box cut out of CARRA2.
     rgi_id : str
-        Glacier identifier, used in the output filename and to find the
-        pre-reprojected group file.
+        Glacier identifier, used in the output filename.
     years : list of int or Iterable of int, optional
         Accepted and ignored: the reference period is fixed when the
         climatology is built. Present so the climate builders share a signature.
@@ -1422,8 +1351,7 @@ def carra2_monthly_mean(
     prefix : str, default ``""``
         Shared S3 key prefix.
     project_directory : str or None, optional
-        Project subdirectory under *prefix*; the per-group file depends on the
-        project's CRS and is looked up there.
+        Accepted and ignored: the climatology store is shared by every project.
     force_overwrite : bool, default False
         If True, regenerate even when the output exists.
     **kwargs
@@ -1434,7 +1362,7 @@ def carra2_monthly_mean(
     pathlib.Path
         Path to the written NetCDF.
     """
-    _ = years, kwargs
+    _ = years, kwargs, project_directory
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -1448,48 +1376,14 @@ def carra2_monthly_mean(
         print(f"Using cached {out_file}")
         return out_file
 
-    target_grid = _promote_grid_mapping(target_grid)
-    mapping_var = target_grid.rio.grid_mapping
-    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
-
-    # Fast path: prepare.py pre-reprojects the climatology once per aggregate
-    # group. Fetch that and let PISM interpolate onto the model grid.
-    pre_key = f"{project_prefix(prefix, project_directory)}/climate/carra2_monthly_mean_{rgi_id}.nc".lstrip("/")
-    pre_uri = f"s3://{bucket}/{pre_key}"
-    fs = s3fs.S3FileSystem(anon=True)
-    if fs.exists(pre_uri):
-        print(f"Found precomputed {pre_uri}; downloading")
-        tmp_pre = path / f"_carra2_monthly_mean_pre_{rgi_id}.nc"
-        fs.get(pre_uri, str(tmp_pre))
-        with xr.open_dataset(tmp_pre) as pre:
-            out = pre.load()
-        tmp_pre.unlink(missing_ok=True)
-    else:
-        uri = f"s3://{bucket}/{prefix}/climate/carra2_monthly_mean.zarr".replace("//", "/").replace("s3:/", "s3://")
-        print(f"Opening {uri}")
-        ds = open_carra2_zarr(uri)
-        print(f"  opened zarr: vars={list(ds.data_vars)}, dims={dict(ds.sizes)}", flush=True)
-
-        bounds = (
-            float(target_grid.x_bnds.values[0][0]),
-            float(target_grid.y_bnds.values[0][0]),
-            float(target_grid.x_bnds.values[-1][-1]),
-            float(target_grid.y_bnds.values[-1][-1]),
-        )
-        transformer = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
-        minx, miny, maxx, maxy = transformer.transform_bounds(*bounds)
-        x_ascending = bool(ds.x[-1] > ds.x[0])
-        y_ascending = bool(ds.y[-1] > ds.y[0])
-        sub = ds.sel(
-            x=slice(minx, maxx) if x_ascending else slice(maxx, minx),
-            y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
-        )
-        print(f"  subset dims: {dict(sub.sizes)}", flush=True)
-
-        # The stale grid-mapping variable would trip reproject_match, which
-        # walks every variable expecting spatial dims.
-        sub = sub.drop_vars(["crs", "time_bnds", "time_bounds"], errors="ignore")
-        out = sub.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32").load()
+    uri = f"s3://{bucket}/{prefix}/climate/carra2_monthly_mean.zarr".replace("//", "/").replace("s3:/", "s3://")
+    print(f"Opening {uri}")
+    ds = open_carra2_zarr(uri)
+    print(f"  opened zarr: vars={list(ds.data_vars)}, dims={dict(ds.sizes)}", flush=True)
+    sub = carra2_cutout(ds, target_grid)
+    print(f"  cut-out on CARRA2's grid: {dict(sub.sizes)}", flush=True)
+    crs = ds.rio.crs.to_wkt()
+    out = sub.drop_vars(["crs", "spatial_ref", "time_bnds", "time_bounds"], errors="ignore").astype("float32").load()
 
     # Same per-variable fills as the full CARRA2 path: 0 K air temperature at
     # the masked corners would wreck PISM's energy balance, so use a plausible
@@ -1504,7 +1398,7 @@ def carra2_monthly_mean(
     for name in list(out.coords) + list(out.data_vars):
         for key in ("dtype", "_FillValue", "chunks", "preferred_chunks"):
             out[name].encoding.pop(key, None)
-    out = _finalize_pism_crs(out, dst_crs)
+    out = _finalize_pism_crs(out, crs)
 
     encoding = compressed_encoding(out)
     out_file.unlink(missing_ok=True)
@@ -1780,13 +1674,10 @@ def snap(
         ds = ds.sortby(["y", "x"])
 
         # Convert to PISM/ERA5 conventions (units PISM's atmosphere.given expects).
-        # ``air_temp_sd`` is an interannual standard deviation, so it stays a
-        # difference (no +273.15 offset). ``precipitation`` already arrives as a
-        # daily rate (kg m^-2 day^-1) from prepare_snap.
+        # ``precipitation`` already arrives as a daily rate (kg m^-2 day^-1) from
+        # prepare_snap.
         ds["air_temp"] = ds["air_temp"] + 273.15
         ds["air_temp"].attrs.update({"units": "kelvin", "standard_name": "air_temperature"})
-        if "air_temp_sd" in ds:
-            ds["air_temp_sd"].attrs.update({"units": "kelvin"})
         ds["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
         if "surface" in ds:
             ds["surface"].attrs.update({"units": "m", "standard_name": "surface_altitude"})
@@ -1819,7 +1710,7 @@ def snap(
 
         encoding = {
             v: {"_FillValue": None}
-            for v in ("x", "y", "surface", "air_temp", "air_temp_sd", "precipitation", "time", "time_bounds")
+            for v in ("x", "y", "surface", "air_temp", "precipitation", "time", "time_bounds")
             if v in ds
         }
         # A per-variable encoding dict replaces the variable's ``.encoding``, so
@@ -2024,18 +1915,19 @@ def carra2(
     force_overwrite: bool = False,
 ) -> Path:
     """
-    Subset and reproject CARRA2 reanalysis to a glacier's target grid.
+    Cut CARRA2 reanalysis out around a glacier's domain, on CARRA2's own grid.
 
-    Opens the cloud-hosted CARRA2 Zarr store on S3, lazily clips it to the
-    bounding box of ``target_grid`` (after transforming the box into CARRA2
-    coordinates), reprojects the subset onto ``target_grid``, and writes a
-    compressed NetCDF.
+    Opens the cloud-hosted CARRA2 Zarr store, cuts out the box of
+    ``target_grid`` plus a margin (:func:`carra2_cutout`), keeps the source
+    years the requested ones are filled from, and writes a compressed NetCDF
+    with CARRA2's projection. Nothing is reprojected: PISM reads the
+    projection from the file and interpolates the forcing onto the model grid.
 
     Parameters
     ----------
     target_grid : xarray.Dataset
-        Target grid dataset providing the destination CRS (via ``spatial_ref``)
-        and extent. Used to derive the bounding box for the CARRA2 subset.
+        PISM grid of the glacier, providing its CRS (via ``spatial_ref``) and
+        extent. Used to derive the box cut out of CARRA2.
     rgi_id : str
         Glacier identifier, e.g., ``"RGI2000-v7.0-C-01-10853"``. Used in the
         output filename.
@@ -2053,9 +1945,7 @@ def carra2(
         Shared S3 key prefix; the full URI becomes
         ``s3://<bucket>/<prefix>/climate/carra2.zarr``.
     project_directory : str or None, optional
-        Project subdirectory under *prefix*. The pre-reprojected per-group file
-        depends on that project's CRS, so it is looked up under
-        ``s3://<bucket>/<prefix>/<project_directory>/climate/carra2_<rgi_id>.nc``.
+        Accepted and ignored: the CARRA2 store is shared by every project.
     force_overwrite : bool, default ``False``
         If True, regenerate the output even if the cached NetCDF exists.
 
@@ -2069,16 +1959,18 @@ def carra2(
     FileNotFoundError
         If the Zarr store cannot be opened.
     ValueError
-        If ``target_grid`` lacks a CRS or the bbox cannot be transformed.
+        If ``target_grid`` lacks a CRS, or its box lies outside the CARRA2 domain.
 
     Notes
     -----
+    - The output is on CARRA2's 2.5 km polar-stereographic grid, not the
+      model grid; its grid mapping carries CARRA2's projection.
     - Output variables and their units are inherited from the source CARRA2
       Zarr store (typically ``air_temp`` in K, ``precipitation`` in
       kg m^-2 day^-1, and dimensionless ``surface_albedo``).
-    - Floating-point variables have NaNs filled with 0 for PISM; for
-      ``surface_albedo`` this only affects polar-night months (no insolation), where
-      the value is irrelevant.
+    - Floating-point NaNs are filled for PISM (260 K for ``air_temp``, 0
+      otherwise); for ``surface_albedo`` this only affects polar-night months
+      (no insolation), where the value is irrelevant.
     - Compression: zlib level 2 + shuffle.
     """
     path = Path(path)
@@ -2093,108 +1985,39 @@ def carra2(
         print(f"Using cached {carra2_filename}")
         return carra2_filename
 
-    # Bounding box of the target grid in its own (projected) CRS.
-    bounds = (
-        float(target_grid.x_bnds.values[0][0]),
-        float(target_grid.y_bnds.values[0][0]),
-        float(target_grid.x_bnds.values[-1][-1]),
-        float(target_grid.y_bnds.values[-1][-1]),
-    )
-    target_grid = _promote_grid_mapping(target_grid)
-    mapping_var = target_grid.rio.grid_mapping
-    dst_crs = target_grid[mapping_var].attrs["crs_wkt"]
-
-    # Fast path: prepare.py pre-reprojects CARRA2 once per S4F aggregate group
-    # and uploads ``carra2_<rgi_id>.nc`` (CARRA2 ~2.5 km, already in the
-    # group's CRS). If that file exists on S3, fetch it and let PISM handle
-    # interpolation onto the model grid at runtime.
-    pre_key = f"{project_prefix(prefix, project_directory)}/climate/carra2_{rgi_id}.nc".lstrip("/")
-    pre_uri = f"s3://{bucket}/{pre_key}"
-    fs = s3fs.S3FileSystem(anon=True)
-    if fs.exists(pre_uri):
-        print(f"Found precomputed {pre_uri}; downloading")
-        tmp_pre = path / f"_carra2_pre_{rgi_id}.nc"
-        fs.get(pre_uri, str(tmp_pre))
-        with xr.open_dataset(tmp_pre) as pre:
-            out = _carra2_fill_years_and_bounds(pre.load(), list(years))
-        for v in out.data_vars:
-            if np.issubdtype(out[v].dtype, np.floating):
-                out[v] = out[v].fillna(0)
-        for name in list(out.coords) + list(out.data_vars):
-            for k in (
-                "dtype",
-                "_FillValue",
-                "units",
-                "calendar",
-                "chunks",
-                "preferred_chunks",
-            ):
-                out[name].encoding.pop(k, None)
-        encoding: dict[str, dict[str, object]] = compressed_encoding(out)
-        encoding.update(
-            {
-                "time": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
-                "time_bnds": {
-                    "dtype": "int64",
-                    "units": "hours since 1978-01-01 00:00:00",
-                },
-            }
-        )
-        # Re-stamp the grid mapping (dropped by the fill/fillna above) so PISM
-        # can find the projection and reproject the forcing on the fly.
-        out = _finalize_pism_crs(out, dst_crs)
-        carra2_filename.unlink(missing_ok=True)
-        out.to_netcdf(carra2_filename, encoding=encoding, engine="h5netcdf", unlimited_dims=["time"])
-        tmp_pre.unlink(missing_ok=True)
-        return carra2_filename
-
+    _ = project_directory
     uri = f"s3://{bucket}/{prefix}/climate/carra2.zarr".replace("//", "/").replace("s3:/", "s3://")
     print(f"Opening {uri}")
     ds = open_carra2_zarr(uri)
     print(f"  opened zarr: vars={list(ds.data_vars)}, dims={dict(ds.sizes)}", flush=True)
     print(f"  CRS resolved: {ds.rio.crs}", flush=True)
+    crs = ds.rio.crs.to_wkt()
+    sub = carra2_cutout(ds, target_grid)
 
-    # Transform the target bbox into CARRA2 coordinates and clip there.
-    # Use .sel(x=slice, y=slice) instead of rio.clip_box because the latter
-    # tries to apply spatial dims to every Dataset variable and trips over
-    # non-spatial helpers like ``time_bnds``.
-    t = Transformer.from_crs(dst_crs, ds.rio.crs, always_xy=True)
-    minx, miny, maxx, maxy = t.transform_bounds(*bounds)
-    x_ascending = bool(ds.x[-1] > ds.x[0])
-    y_ascending = bool(ds.y[-1] > ds.y[0])
-    sub = ds.sel(
-        x=slice(minx, maxx) if x_ascending else slice(maxx, minx),
-        y=slice(miny, maxy) if y_ascending else slice(maxy, miny),
-    )
     # Keep only the source years the requested ``years`` are filled from, so
-    # the S3 reads and reprojection below cover those months and not the whole
-    # record. _carra2_fill_years_and_bounds picks the same years afterwards.
+    # the S3 reads cover those months and not the whole record.
+    # _carra2_fill_years_and_bounds picks the same years afterwards.
     years = list(years)
     src_year_of = sub["time"].dt.year.values
     needed = {_nearest_source_year(sorted(set(src_year_of.tolist())), int(y)) for y in years}
     sub = sub.isel(time=np.flatnonzero(np.isin(src_year_of, sorted(needed))))
     print(f"  source years used: {sorted(needed)}", flush=True)
-    print(f"  subset dims: {dict(sub.sizes)}", flush=True)
+    print(f"  cut-out on CARRA2's grid: {dict(sub.sizes)}", flush=True)
 
-    # rioxarray.reproject_match eagerly reads every non-spatial coord (via
-    # ``coord.values``). The published CARRA2 Zarr has at least one coord
-    # (e.g. time_bnds) whose stored chunk bytes don't match its declared
-    # dtype, so the lazy read aborts with a numpy-view error. Pre-load each
-    # non-spatial coord; drop the ones that don't survive.
-    #
-    # The grid-mapping placeholder (typically named ``crs`` or
-    # ``spatial_ref``) is dropped unconditionally — we already recovered the
-    # CRS into a clean rioxarray ``spatial_ref`` above and don't need the
-    # original 0-d variable's data.
+    # The published CARRA2 Zarr has at least one coord (e.g. time_bnds) whose
+    # stored chunk bytes don't match its declared dtype, so a lazy read aborts
+    # with a numpy-view error. Pre-load each non-spatial coord and drop the ones
+    # that don't survive; the grid-mapping placeholder goes too, since
+    # _finalize_pism_crs writes a fresh one.
     grid_mapping_names = set()
     for var in sub.data_vars:
         gm = sub[var].attrs.get("grid_mapping") or sub[var].encoding.get("grid_mapping")
         if gm:
             grid_mapping_names.add(gm)
     for c in list(sub.coords):
-        if c in ("x", "y", "spatial_ref"):
+        if c in ("x", "y"):
             continue
-        if c in grid_mapping_names:
+        if c in grid_mapping_names or c == "spatial_ref":
             sub = sub.drop_vars(c, errors="ignore")
             continue
         try:
@@ -2202,160 +2025,43 @@ def carra2(
         except Exception as exc:  # pylint: disable=broad-exception-caught
             print(f"Coord {c!r} unreadable from Zarr ({exc}); dropping")
             sub = sub.drop_vars(c, errors="ignore")
-    # If `time.bounds` pointed at a coord we just dropped, clear the attr too.
     if "time" in sub.coords:
         bounds_name = sub["time"].attrs.get("bounds")
         if bounds_name and bounds_name not in sub.coords and bounds_name not in sub.data_vars:
             sub["time"].attrs.pop("bounds", None)
+    out = sub.drop_vars(["time_bnds", "crs"], errors="ignore")
+    out = out.astype({name: "float32" for name in out.data_vars if np.issubdtype(out[name].dtype, np.floating)})
+    out.attrs["Conventions"] = "CF-1.8"
 
-    sub = sub.drop_vars("time_bnds", errors="ignore")
+    # Expand to all requested years (filling missing ones from the nearest
+    # source year) and attach CF time_bnds for PISM.
+    out = _carra2_fill_years_and_bounds(out, years)
+    # Per-variable NaN fills, for cells at the edge of the CARRA2 domain. 0 is
+    # fine for precipitation and orography, but 0 K air temperature would blow
+    # up PISM's energy balance, so use a plausible cold 260 K instead.
+    fill_defaults: dict[str, float] = {"air_temp": 260.0, "precipitation": 0.0, "orography": 0.0}
+    for v in out.data_vars:
+        if np.issubdtype(out[v].dtype, np.floating):
+            out[v] = out[v].fillna(fill_defaults.get(str(v), 0.0))
 
-    # Reproject the subset onto the target grid. Each reprojected batch is
-    # written to disk immediately so we don't hoard them all in RAM — for
-    # large aggregates the target grid can be enormous (100 m × 100s of km)
-    # and a single batch already costs many GB. We then assemble the per-
-    # variable results lazily from disk and merge into `out`.
-    #
-    # Suppress any registered dask Callback (e.g. ProgressBar from an outer
-    # scope) so the [#####] 100% lines don't interleave with the tqdm bar.
-    import tempfile  # pylint: disable=import-outside-toplevel
-
-    from dask.callbacks import Callback  # pylint: disable=import-outside-toplevel
-
-    # Size the per-batch reprojected buffer to ~200 MB. Each batch holds
-    # time_batch × target_y × target_x float32s in RAM after rasterio.warp,
-    # so the cap matters most for high-res, wide-bbox runs like S4F aggregates.
-    target_cells = int(target_grid.sizes["x"]) * int(target_grid.sizes["y"])
-    time_batch = max(1, min(24, 200_000_000 // (target_cells * 4)))
-    print(f"  target_grid: {dict(target_grid.sizes)}, time_batch={time_batch}", flush=True)
-    out_vars: dict[str, xr.DataArray] = {}
-    saved_callbacks = Callback.active.copy()
-    Callback.active.clear()
-    # Track every shard DataArray we lazy-open so we can close them
-    # explicitly before the TemporaryDirectory exit tries to unlink them.
-    # Without the explicit close, non-deterministic GC leaves file handles
-    # open and NFS / networked filesystems emit ``.nfs*`` lock files that
-    # then trip ``rmtree`` with ``ENOTEMPTY`` on the per-variable subdirs.
-    open_shards: list[xr.DataArray] = []
-    try:
-        with tempfile.TemporaryDirectory(prefix="carra2_reproj_", dir=str(path)) as tmp_dir_name:
-            tmp_dir = Path(tmp_dir_name)
-            for var_name in sub.data_vars:
-                da = sub[var_name]
-                print(f"  processing {var_name} dims={dict(da.sizes)}", flush=True)
-                if "time" not in da.dims or da.sizes["time"] <= time_batch:
-                    out_vars[var_name] = da.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype(
-                        "float32"
-                    )
-                    continue
-                n = da.sizes["time"]
-                var_dir = tmp_dir / var_name
-                var_dir.mkdir(parents=True, exist_ok=True)
-                batch_files: list[Path] = []
-                pbar = tqdm(
-                    range(0, n, time_batch),
-                    desc=f"Reprojecting {var_name}",
-                    unit="batch",
-                    leave=False,
-                )
-                for batch_idx, i in enumerate(pbar):
-                    chunk = da.isel(time=slice(i, i + time_batch)).compute()
-                    reproj = chunk.rio.reproject_match(target_grid, resampling=Resampling.bilinear).astype("float32")
-                    batch_path = var_dir / f"batch_{batch_idx:04d}.nc"
-                    # Clear inherited encoding before writing each shard.
-                    reproj.encoding = {}
-                    reproj.to_netcdf(batch_path, engine="h5netcdf")
-                    batch_files.append(batch_path)
-                    # Drop the in-memory copy so the next batch starts clean.
-                    del chunk, reproj
-                pbar.close()
-                # Lazy assemble: open each shard chunked, concat along time.
-                shards = [xr.open_dataarray(p, chunks={}) for p in batch_files]
-                open_shards.extend(shards)
-                out_vars[var_name] = xr.concat(shards, dim="time")
-            out = xr.Dataset(out_vars, attrs=sub.attrs)
-
-            # Stamp CRS metadata while everything is still lazy. inplace=True
-            # avoids deep-copying a multi-GiB dataset just to attach attrs.
-            out = (
-                out.rio.write_crs(dst_crs, inplace=True)
-                .rio.write_grid_mapping(inplace=True)
-                .rio.write_coordinate_system(inplace=True)
-            )
-            out.attrs["Conventions"] = "CF-1.8"
-
-            # Expand to all requested years (filling missing ones from the
-            # nearest source year) and attach CF time_bnds for PISM.
-            out = _carra2_fill_years_and_bounds(out, list(years))
-            # Per-variable NaN fills. 0 is physically fine for precipitation
-            # and orography (no precip / sea level at the masked corners),
-            # but plugging 0 into ``air_temp`` gives 0 K, which is
-            # unphysical and blows up PISM's energy balance. Use 260 K
-            # (well below any real surface temperature we'd care about
-            # preserving) so the corners have a plausible cold value.
-            fill_defaults: dict[str, float] = {
-                "air_temp": 260.0,
-                "precipitation": 0.0,
-                "orography": 0.0,
-            }
-            for v in out.data_vars:
-                if not np.issubdtype(out[v].dtype, np.floating):
-                    continue
-                fill_value = fill_defaults.get(str(v), 0.0)
-                out[v] = out[v].fillna(fill_value)
-
-            # Clear stale encoding inherited from the Zarr source so netCDF4
-            # doesn't see half-prescribed datetime encoding (e.g. dtype=int64
-            # with no units).
-            for name in list(out.coords) + list(out.data_vars):
-                for k in (
-                    "dtype",
-                    "_FillValue",
-                    "units",
-                    "calendar",
-                    "chunks",
-                    "preferred_chunks",
-                ):
-                    out[name].encoding.pop(k, None)
-
-            # Compressed NetCDF (zlib level 2 + shuffle for floats).
-            encoding_c: dict[str, dict[str, object]] = compressed_encoding(out)
-            encoding_c.update(
-                {
-                    "time": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
-                    "time_bnds": {
-                        "dtype": "int64",
-                        "units": "hours since 1978-01-01 00:00:00",
-                    },
-                }
-            )
-
-            # Re-stamp the grid mapping (dropped by the concat/fillna above) so
-            # PISM can find the projection and reproject the forcing on the fly.
-            out = _finalize_pism_crs(out, dst_crs)
-
-            # Stream from the per-batch shards straight into the final NetCDF
-            # — never materializing the full reprojected dataset in RAM, which
-            # for high-res grids over 50 years is easily 10+ GiB per variable.
-            # Writing here (inside the temp-dir context) keeps the shards alive
-            # for dask to read from.
-            carra2_filename.unlink(missing_ok=True)
-            out.to_netcdf(carra2_filename, encoding=encoding_c, engine="h5netcdf", unlimited_dims=["time"])
-
-            # Release every file handle *before* the TemporaryDirectory
-            # context manager runs its rmtree — otherwise networked-FS
-            # ``.nfs*`` lock files strand the per-variable subdirs and
-            # cleanup dies with ``ENOTEMPTY``.
-            out.close()
-            for shard in open_shards:
-                shard.close()
-            open_shards.clear()
-            out_vars.clear()
-            del out
-            gc.collect()
-    finally:
-        Callback.active.update(saved_callbacks)
-
+    # Clear stale encoding inherited from the Zarr source so netCDF4 doesn't
+    # see half-prescribed datetime encoding (e.g. dtype=int64 with no units).
+    for name in list(out.coords) + list(out.data_vars):
+        for k in ("dtype", "_FillValue", "units", "calendar", "chunks", "preferred_chunks"):
+            out[name].encoding.pop(k, None)
+    # One CF grid mapping with CARRA2's CRS, so PISM can find the projection and
+    # interpolate the forcing onto the model grid. Build the encoding after it:
+    # an explicit encoding replaces the variables' own, grid_mapping included.
+    out = _finalize_pism_crs(out, crs)
+    encoding: dict[str, dict[str, object]] = compressed_encoding(out)
+    encoding.update(
+        {
+            "time": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
+            "time_bnds": {"dtype": "int64", "units": "hours since 1978-01-01 00:00:00"},
+        }
+    )
+    carra2_filename.unlink(missing_ok=True)
+    out.to_netcdf(carra2_filename, encoding=encoding, engine="h5netcdf", unlimited_dims=["time"])
     return carra2_filename
 
 
@@ -3855,7 +3561,6 @@ def prepare_snap(
         # passes through unchanged and stays time-invariant.
         ds_sel = ds.sel(time=slice(start, end))
         ds_weighted = ds_sel.groupby("time.month").mean("time").rename({"month": "time"})
-        ds_weighted["air_temp_sd"] = ds_sel["air_temp"].groupby("time.month").std("time").rename({"month": "time"})
         # The surface DEM is time-invariant; groupby broadcasts it across the 12
         # month groups, so collapse the redundant time dimension back to 2-D.
         if "surface" in ds_weighted and "time" in ds_weighted["surface"].dims:
@@ -3893,7 +3598,6 @@ def prepare_snap(
         ds_weighted["precipitation"] = ds_weighted["precipitation"] / ml
         ds_weighted["precipitation"].attrs.update({"units": "kg m^-2 day^-1"})
         ds_weighted["air_temp"].attrs.update({"units": "celsius"})
-        ds_weighted["air_temp_sd"].attrs.update({"units": "celsius"})
 
         # CRS + spatial dims + grid_mapping tags
         ds_weighted = ds_weighted.rio.set_spatial_dims(x_dim="x", y_dim="y")
@@ -3910,7 +3614,6 @@ def prepare_snap(
                 "y",
                 "surface",
                 "air_temp",
-                "air_temp_sd",
                 "precipitation",
                 "time",
                 "time_bounds",

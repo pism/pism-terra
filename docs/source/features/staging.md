@@ -40,7 +40,7 @@ directory is what gets synced to S3 and addressed by the campaign config's
 │   └── <project_directory>/            # e.g. rgi, s4f
 │       ├── rgi/<project>_{c,g}.gpkg
 │       ├── ice_thickness/{frank,maffezzoli}/
-│       └── climate/carra2_<group>.nc, carra2_monthly_mean_<group>.nc
+│       └── climate/era5_<region>.zarr, era5_monthly_mean_<region>.zarr
 └── staging/                            # intermediates, never uploaded
 ```
 

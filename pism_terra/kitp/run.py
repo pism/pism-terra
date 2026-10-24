@@ -520,8 +520,6 @@ def run_single():
             "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.given.file": row["climate_file"],
             "ocean.given.file": row["ocean_file"],
-            "surface.pdd.std_dev.file": row["climate_file"],
-            "surface.debm_simple.std_dev.file": row["climate_file"],
             "surface.debm_simple.albedo_input.file": row["climate_file"],
         }
         outline_file = row["outline_file"] if "outline_file" in row else None
@@ -758,8 +756,6 @@ def run_ensemble():
             "atmosphere.elevation_change.file": row["boot_file"],
             "atmosphere.given.file": row["climate_file"],
             "ocean.given.file": row["ocean_file"],
-            "surface.pdd.std_dev.file": row["climate_file"],
-            "surface.debm_simple.std_dev.file": row["climate_file"],
             "surface.debm_simple.albedo_input.file": row["climate_file"],
         }
         row_uq.update(row.drop(labels=list(df.columns) + ["sample"]).to_dict())

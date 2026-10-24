@@ -66,7 +66,6 @@ from pism_terra.glacier.climate import (
     ERA5_CLIMATOLOGY_STEM,
     convert_many_tifs_concurrent,
     prepare_carra2,
-    prepare_carra2_for_group,
     prepare_carra2_monthly_mean,
     prepare_era5,
     prepare_era5_monthly_mean,
@@ -349,9 +348,7 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
             logger.info("Indexed rgi_id in %s: %s", rgi_file, index_geopackage(rgi_file))
 
     # Load the RGI outlines once if any consumer needs them.
-    need_outlines = bool(
-        {"ice_thickness_frank", "ice_thickness_maffezzoli", "dh_hugonnet", "era5"} & set(selected)
-    ) or ("carra2" in selected and bool(glacier_groups))
+    need_outlines = bool({"ice_thickness_frank", "ice_thickness_maffezzoli", "dh_hugonnet", "era5"} & set(selected))
     complexes = gpd.read_file(rgi_files["rgi_complexes"]) if need_outlines else None
     glaciers = gpd.read_file(rgi_files["rgi_glaciers"]) if need_outlines else None
 
@@ -461,47 +458,11 @@ def prepare(argv: Sequence[str] | None = None) -> dict[str, Any]:
         # Twelve-step monthly climatology over a fixed reference period. It is
         # in CARRA2's own CRS, so it is shared by every project like the store
         # it comes from; ``stage.carra2_monthly_mean()`` reads it.
-        carra2_climatology = prepare_carra2_monthly_mean(
+        prepare_carra2_monthly_mean(
             carra2_zarr=carra2_final,
             output_zarr=climate_path / "carra2_monthly_mean.zarr",
             force_overwrite=force_overwrite,
         )
-
-        if glacier_groups:
-            # For each group, pre-reproject CARRA2 to that group's CRS at
-            # CARRA2's native ~2.5 km resolution. Uploaded as
-            # ``carra2_<group>.nc`` so ``stage.carra2()`` can fetch a single
-            # small file per glacier instead of streaming the full Zarr and
-            # reprojecting every time. The result depends on the group's
-            # CRS, so it lives under the project directory. The climatology
-            # gets the same treatment for ``stage.carra2_monthly_mean()``.
-            assert complexes is not None  # loaded above (need_outlines)
-            project_climate_path = ensure_dir(paths["project_climate"])
-            for group_name in glacier_groups:
-                row = complexes.loc[complexes["rgi_id"] == group_name]
-                if row.empty:
-                    logger.warning(
-                        "Aggregate complex %s not found in %s; skipping CARRA2 prep",
-                        group_name,
-                        rgi_files["rgi_complexes"],
-                    )
-                    continue
-                group_crs = row["crs"].iloc[0]
-                if not isinstance(group_crs, str) or not group_crs:
-                    logger.warning("Aggregate complex %s has no CRS; skipping CARRA2 prep", group_name)
-                    continue
-                group_geom = row.geometry.iloc[0]
-                for source, stem in ((carra2_final, "carra2"), (carra2_climatology, "carra2_monthly_mean")):
-                    group_out = project_climate_path / f"{stem}_{group_name}.nc"
-                    logger.info("Preparing %s for group %s (%s) -> %s", stem, group_name, group_crs, group_out)
-                    prepare_carra2_for_group(
-                        carra2_zarr=source,
-                        dst_crs=group_crs,
-                        geometry=group_geom,
-                        geometry_crs=str(complexes.crs),
-                        output_file=group_out,
-                        force_overwrite=force_overwrite,
-                    )
 
     if "era5" in selected:
         # One store per region of the setup file, on ERA5's own

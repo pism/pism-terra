@@ -20,8 +20,8 @@ Daily CARRA2 forcing for one RGI7 glacier complex, on CARRA2's own grid.
 
 ``pism-s4f-carra2`` takes an RGI7 id, finds the outline, and downloads the
 daily CARRA2 means (CDS dataset ``reanalysis-pan-carra-means``) over the
-outline's bounding box: air temperature and geopotential on five pressure
-levels, the 2 m air temperature, snow depth, total precipitation, and the net
+outline's bounding box: air temperature and geopotential on the twelve
+pressure levels from 1000 to 500 hPa, the 2 m air temperature, snow depth, total precipitation, and the net
 and downward surface shortwave radiation. The geopotential is converted to the geometric height
 of each pressure level the way :mod:`pism_terra.glacier.climate` converts
 ERA5's geopotential, so a temperature profile can be read at a site's
@@ -60,6 +60,7 @@ encoding -- xarray otherwise picks their units independently.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -72,6 +73,7 @@ import numpy as np
 import pandas as pd
 import pyogrio
 import rioxarray  # noqa: F401  pylint: disable=unused-import
+import shapely
 import xarray as xr
 from pyproj import CRS, Transformer
 
@@ -98,13 +100,26 @@ REQUEST_DATASETS = {"orography": OROGRAPHY_DATASET}
 FIRST_YEAR = 1985
 LAST_YEAR = 2025
 
-#: Pressure levels of the temperature profile, hPa, bottom up.
-PRESSURE_LEVELS = (1000, 900, 800, 750, 500)
+#: Pressure levels of the temperature and geopotential profiles, hPa, bottom
+#: up: every level CDS offers for the daily means from 1000 to 500 hPa. Five
+#: alone leave a site high on a glacier with a single level above CARRA2's
+#: terrain, too few to fit a lapse rate through real air.
+PRESSURE_LEVELS = (1000, 950, 925, 900, 875, 850, 825, 800, 750, 700, 600, 500)
+
+#: How the levels are split into requests, by request-name suffix. The CDS
+#: cache is keyed on the request, so the five levels first downloaded keep
+#: their own unchanged request and are reused; the rest come in a second one.
+LEVEL_REQUESTS = {"": (1000, 900, 800, 750, 500), "_extra": (950, 925, 875, 850, 825, 700, 600)}
+
+#: Names CDS has used for the pressure axis.
+VERTICAL_NAMES = ("isobaricInhPa", "pressure_level", "level", "plev")
 
 #: Grid spacing and origin of the CARRA2 lattice, metres, from
 #: ``pism_terra/grids/carra2.txt``.
 GRID_SPACING = 2500.0
 GRID_ORIGIN = -3585000.0
+#: Cells along each axis of the CARRA2 domain, from the same file.
+GRID_SIZE = 2869
 
 #: How far a reprojected cell centre may sit from the lattice before the
 #: grid is declared not to be CARRA2's. A few metres of float noise is
@@ -304,7 +319,10 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
     from the request it could have joined so that a cache downloaded before
     it was added stays valid, and a sixth to :data:`OROGRAPHY_DATASET` for
     the static orography at a single analysis time (the first day of the
-    first year at 00:00; the field does not change). The pressure levels go under ``level_location``: that is the
+    first year at 00:00; the field does not change). Temperature and
+    geopotential are each split over two requests by
+    :data:`LEVEL_REQUESTS`, ``<name>`` and ``<name>_extra``, for the same
+    reason. The pressure levels go under ``level_location``: that is the
     key the pan-CARRA form uses, not ``pressure_level``. No ``area``: CDS
     ignores it for this dataset (the full grid comes back either way) and
     leaving it out lets every glacier share the same files.
@@ -327,14 +345,18 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
         "day": DAYS,
         "data_format": "netcdf",
     }
+    profiles = {}
+    for variable in ("temperature", "geopotential"):
+        for suffix, levels in LEVEL_REQUESTS.items():
+            profiles[f"{variable}{suffix}"] = {
+                **base,
+                "level_type": "pressure_levels",
+                "product_type": "analysis_based",
+                "variable": [variable],
+                "level_location": [str(p) for p in levels],
+            }
     return {
-        "temperature": {
-            **base,
-            "level_type": "pressure_levels",
-            "product_type": "analysis_based",
-            "variable": ["temperature"],
-            "level_location": [str(p) for p in PRESSURE_LEVELS],
-        },
+        **profiles,
         "snow": {
             **base,
             "level_type": "single_levels",
@@ -352,13 +374,6 @@ def build_requests(years: Iterable[int]) -> dict[str, dict[str, Any]]:
             "level_type": "single_levels",
             "product_type": "forecast_based",
             "variable": ["total_precipitation", "surface_net_solar_radiation", "surface_solar_radiation_downwards"],
-        },
-        "geopotential": {
-            **base,
-            "level_type": "pressure_levels",
-            "product_type": "analysis_based",
-            "variable": ["geopotential"],
-            "level_location": [str(p) for p in PRESSURE_LEVELS],
         },
         "orography": {
             "level_type": "single_levels",
@@ -487,9 +502,13 @@ def _spatial_dims(ds: xr.Dataset) -> tuple[str, str, str, str]:
     return lat, lon, y_dim, x_dim
 
 
-def _time_dim(ds: xr.Dataset, spatial: set[str], vertical: str | None = None) -> str:
+def _time_dim(ds: xr.Dataset, spatial: set[str], vertical: str | None = None) -> str | None:
     """
     Find the time dimension of a CDS file, whatever it is called this year.
+
+    A static field requested for a single analysis time (the orography)
+    comes back with ``time`` and ``valid_time`` as scalars, so it has no
+    time dimension at all; that is reported as None rather than an error.
 
     Parameters
     ----------
@@ -502,21 +521,57 @@ def _time_dim(ds: xr.Dataset, spatial: set[str], vertical: str | None = None) ->
 
     Returns
     -------
-    str
-        Its name.
+    str or None
+        Its name, or None when the file has only the spatial (and vertical)
+        dimensions.
 
     Raises
     ------
     ValueError
-        If no single remaining dimension is left to be time.
+        If more than one remaining dimension could be time.
     """
     for candidate in ("time", "valid_time"):
         if candidate in ds.dims:
             return candidate
     rest = [str(d) for d in ds.dims if str(d) not in spatial and str(d) != vertical]
+    if not rest:
+        return None
     if len(rest) != 1:
         raise ValueError(f"cannot tell which of {rest} is time")
     return rest[0]
+
+
+def _vertical_dim(ds: xr.Dataset) -> str | None:
+    """
+    Find the pressure axis of a CDS file, if it has one.
+
+    A request may carry any subset of :data:`PRESSURE_LEVELS`, so the axis is
+    recognised by its name or by its values being pressure levels, not by
+    its length.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        A CDS file.
+
+    Returns
+    -------
+    str or None
+        The dimension's name, or None for a single-level file.
+    """
+    for dim in map(str, ds.dims):
+        if dim in ("x", "y", "time", "valid_time"):
+            continue
+        if dim in VERTICAL_NAMES:
+            return dim
+        if dim in ds.coords:
+            try:
+                values = np.asarray(ds[dim].values, dtype="float64")
+            except (TypeError, ValueError):
+                continue
+            if values.size and np.isin(values, PRESSURE_LEVELS).all():
+                return dim
+    return None
 
 
 def normalize(ds: xr.Dataset, fields: Sequence[str], bbox: Sequence[float] | None = None) -> xr.Dataset:
@@ -590,22 +645,16 @@ def normalize(ds: xr.Dataset, fields: Sequence[str], bbox: Sequence[float] | Non
         if out.sizes["x"] == 0 or out.sizes["y"] == 0:
             raise ValueError(f"bbox {bbox} selects no cells of the CARRA2 domain")
 
-    vertical = next(
-        (
-            str(d)
-            for d in out.dims
-            if str(d) not in ("x", "y", "time", "valid_time") and out.sizes[d] == len(PRESSURE_LEVELS)
-        ),
-        None,
-    )
+    vertical = _vertical_dim(out)
     time_dim = _time_dim(out, {"x", "y"}, vertical)
-    if time_dim != "time":
+    if time_dim is not None and time_dim != "time":
         out = out.rename({time_dim: "time"})
     if vertical is not None:
         out = out.rename({vertical: "pressure_level"})
         levels = np.asarray(out["pressure_level"].values, dtype="float64")
-        if not np.allclose(np.sort(levels), np.sort(PRESSURE_LEVELS)):
-            raise ValueError(f"pressure levels {levels} are not {PRESSURE_LEVELS}")
+        unknown = levels[~np.isin(levels, PRESSURE_LEVELS)]
+        if unknown.size or np.unique(levels).size != levels.size:
+            raise ValueError(f"pressure levels {levels} are not distinct levels of {PRESSURE_LEVELS}")
         out = out.assign_coords(pressure_level=("pressure_level", levels)).sortby("pressure_level", ascending=False)
         out["pressure_level"].attrs.update(
             {
@@ -617,21 +666,26 @@ def normalize(ds: xr.Dataset, fields: Sequence[str], bbox: Sequence[float] | Non
             }
         )
 
-    # Daily means are stamped by day; stamp them at 00:00 and drop anything
-    # else. CDS files carry the forecast reference time as ``time`` and the
-    # valid time beside it; the valid time is the day the mean describes,
-    # which for a forecast-based field is not the reference time.
-    source = ds["valid_time"] if "valid_time" in ds.coords and ds["valid_time"].dims == (time_dim,) else out["time"]
-    stamps = np.asarray(source.values).astype("datetime64[D]").astype("datetime64[ns]")
-    out = out.assign_coords(time=("time", stamps)).sortby("time")
-    out = out.isel(time=~out.get_index("time").duplicated())
+    if time_dim is not None:
+        # Daily means are stamped by day; stamp them at 00:00 and drop
+        # anything else. CDS files carry the forecast reference time as
+        # ``time`` and the valid time beside it; the valid time is the day
+        # the mean describes, which for a forecast-based field is not the
+        # reference time.
+        valid = ds["valid_time"] if "valid_time" in ds.coords else None
+        source = valid if valid is not None and valid.dims == (time_dim,) else out["time"]
+        stamps = np.asarray(source.values).astype("datetime64[D]").astype("datetime64[ns]")
+        out = out.assign_coords(time=("time", stamps)).sortby("time")
+        out = out.isel(time=~out.get_index("time").duplicated())
+    # A static field keeps no time at all: its scalar ``time``/``valid_time``
+    # go with the other leftovers, so it merges as a plain (y, x) field.
     out = out.drop_vars(
         [v for v in out.coords if v not in ("time", "pressure_level", "y", "x", "latitude", "longitude")]
     )
     for name in fields:
-        out[name] = out[name].transpose(
-            "time", *(["pressure_level"] if "pressure_level" in out[name].dims else []), "y", "x"
-        )
+        leading = ["time"] if "time" in out[name].dims else []
+        vertical_dims = ["pressure_level"] if "pressure_level" in out[name].dims else []
+        out[name] = out[name].transpose(*leading, *vertical_dims, "y", "x")
     return out
 
 
@@ -703,6 +757,8 @@ def download(
 
 REQUEST_FIELDS = {
     "temperature": ["air_temp"],
+    "temperature_extra": ["air_temp"],
+    "geopotential_extra": ["geopotential"],
     "snow": ["snow_depth"],
     "surface_temperature": ["air_temp_2m"],
     "forecast": ["precipitation", "surface_net_solar_radiation", "surface_solar_radiation_downwards"],
@@ -773,6 +829,108 @@ def geopotential_to_elevation(ds: xr.Dataset) -> xr.Dataset:
     return ds.drop_vars("geopotential").assign(geopotential_height=height)
 
 
+def _stack_levels(parts: list[xr.Dataset]) -> xr.Dataset:
+    """
+    Join parts of one profile that hold different pressure levels.
+
+    Parameters
+    ----------
+    parts : list of xarray.Dataset
+        Normalized parts with the same fields; a single part is returned as is.
+
+    Returns
+    -------
+    xarray.Dataset
+        One dataset on every level of the parts, bottom up.
+
+    Raises
+    ------
+    ValueError
+        If the parts have no pressure axis or share a level.
+    """
+    if len(parts) == 1:
+        return parts[0]
+    if any("pressure_level" not in part.dims for part in parts):
+        raise ValueError("only pressure-level parts of one field can be stacked")
+    stacked = xr.concat(
+        parts, dim="pressure_level", data_vars="minimal", coords="minimal", compat="override", join="exact"
+    )
+    if stacked.get_index("pressure_level").has_duplicates:
+        raise ValueError(f"pressure levels requested twice: {stacked['pressure_level'].values}")
+    stacked = stacked.sortby("pressure_level", ascending=False)
+    stacked["pressure_level"].attrs = dict(parts[0]["pressure_level"].attrs)
+    return stacked
+
+
+def outline_outside_domain(outline: gpd.GeoDataFrame) -> float:
+    """
+    Measure how much of an outline lies outside the CARRA2 domain.
+
+    Parameters
+    ----------
+    outline : geopandas.GeoDataFrame
+        Outline in any CRS.
+
+    Returns
+    -------
+    float
+        Fraction of the outline's area, 0 to 1, outside the domain's edge
+        (the outer edge of its outermost cells).
+    """
+    half = GRID_SPACING / 2
+    edge = GRID_ORIGIN + (GRID_SIZE - 1) * GRID_SPACING + half
+    domain = shapely.box(GRID_ORIGIN - half, GRID_ORIGIN - half, edge, edge)
+    shapes = outline.to_crs(CRS.from_proj4(CARRA2_PROJ)).geometry.make_valid()
+    area = float(shapes.area.sum())
+    if area == 0:
+        return 0.0
+    return float(1.0 - shapes.intersection(domain).area.sum() / area)
+
+
+def _on_common_grid(parts: dict[str, xr.Dataset]) -> dict[str, xr.Dataset]:
+    """
+    Cut every part to the grid cells all of them share.
+
+    CDS does not deliver every field on the same grid: the daily snow depth
+    has come on 2880 x 2880 cells, eleven rows and columns past the 2869 x
+    2869 of the others. Inside the domain they coincide, so where a clip
+    reaches the edge the extra cells are dropped rather than left to break
+    the merge.
+
+    Parameters
+    ----------
+    parts : dict of str to xarray.Dataset
+        Normalized parts on ``(…, y, x)``, by name.
+
+    Returns
+    -------
+    dict of str to xarray.Dataset
+        The parts on the shared ``y`` and ``x``.
+
+    Raises
+    ------
+    ValueError
+        If the parts share no cell.
+    """
+    x = functools.reduce(np.intersect1d, [part["x"].values for part in parts.values()])
+    y = functools.reduce(np.intersect1d, [part["y"].values for part in parts.values()])
+    if x.size == 0 or y.size == 0:
+        raise ValueError("the downloaded files share no grid cell")
+    common = {}
+    for name, part in parts.items():
+        if part.sizes["x"] != x.size or part.sizes["y"] != y.size:
+            logger.warning(
+                "%s: %d x %d cells cut to the %d x %d the other files share",
+                name,
+                part.sizes["y"],
+                part.sizes["x"],
+                y.size,
+                x.size,
+            )
+        common[name] = part.sel(x=x, y=y)
+    return common
+
+
 def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) -> xr.Dataset:
     """
     Merge the downloaded files into one dataset on CARRA2's grid.
@@ -789,14 +947,19 @@ def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) 
     xarray.Dataset
         Every field, with time bounds and the CARRA2 CRS attached.
     """
-    parts = []
+    parts = {}
     for name, paths in files.items():
         yearly = [normalize(xr.open_dataset(p, chunks={}), REQUEST_FIELDS[name], bbox) for p in sorted(paths)]
         part = xr.concat(yearly, dim="time", data_vars="minimal", coords="minimal", compat="override", join="exact")
         # The orography has one time step of its own; make it static before
         # the merge insists every part share the daily axis.
-        parts.append(orography_to_static(geopotential_to_elevation(part)))
-    ds = xr.merge(parts, join="exact", compat="override")
+        parts[name] = orography_to_static(geopotential_to_elevation(part))
+    # Requests that deliver the same fields on different pressure levels (see
+    # LEVEL_REQUESTS) are stacked into one profile before the merge.
+    groups: dict[tuple[str, ...], list[xr.Dataset]] = {}
+    for name, part in _on_common_grid(parts).items():
+        groups.setdefault(tuple(REQUEST_FIELDS[name]), []).append(part)
+    ds = xr.merge([_stack_levels(group) for group in groups.values()], join="exact", compat="override")
     ds = add_time_bounds(ds)
     # rioxarray records the grid mapping in each variable's *encoding*, and
     # xarray writes that out as the CF ``grid_mapping`` attribute; setting the
@@ -875,7 +1038,8 @@ def run(
     Raises
     ------
     ValueError
-        If the years are out of range or reversed.
+        If the years are out of range or reversed, or the outline lies
+        entirely outside the CARRA2 domain.
     """
     if not FIRST_YEAR <= start <= end <= LAST_YEAR:
         raise ValueError(f"years must satisfy {FIRST_YEAR} <= start <= end <= {LAST_YEAR}, got {start}..{end}")
@@ -896,17 +1060,29 @@ def run(
     else:
         print(f"Fetching the RGI7 region archive for {rgi_id} from NSIDC...", flush=True)
     outline = load_outline(rgi_id, rgi_file, cache_path=output_path)
+    outside = outline_outside_domain(outline)
+    if outside > 0.999:
+        raise ValueError(f"{rgi_id} lies outside the CARRA2 domain")
+    if outside > 0:
+        message = (
+            f"WARNING: {100 * outside:.1f}% of the {rgi_id} outline's area lies outside the CARRA2 domain; "
+            "the store covers only the part inside."
+        )
+        logger.warning(message)
+        print(message, flush=True)
     area = area_from_outline(outline, margin_km)
     bbox = bbox_from_outline(outline, margin_km)
     logger.info("%s: area N %.2f W %.2f S %.2f E %.2f, years %d-%d", rgi_id, *area, start, end)
     print(f"Area N {area[0]} W {area[1]} S {area[2]} E {area[3]}, years {start}-{end}", flush=True)
     print(
-        "Submitting 6 CDS requests (temperature and geopotential on pressure levels, 2 m temperature, "
-        "snow depth, precipitation + radiation, and one analysis of the orography).",
+        f"Submitting {len(build_requests([start]))} CDS requests (temperature and geopotential on "
+        f"{len(PRESSURE_LEVELS)} pressure levels, two requests each; 2 m temperature; snow depth; "
+        "precipitation + radiation; and one analysis of the orography).",
         flush=True,
     )
     print(
-        "CDS returns the whole pan-Arctic domain (over 1 GB per year across the daily five); the files are cached",
+        "CDS returns the whole pan-Arctic domain (about 100 GB per year across the daily requests); the files are "
+        "cached",
         flush=True,
     )
     print(

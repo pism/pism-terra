@@ -125,11 +125,43 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     era5
     carra2
     carra2_monthly_mean
+    carra2_cutout
     snap
     prepare_carra2
-    prepare_carra2_for_group
     prepare_carra2_monthly_mean
     write_zarr_in_bands
+```
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.carra2_bias_correction
+
+.. autosummary::
+    :toctree: generated/
+
+    open_carra2
+    read_vector
+    fit_to_ground
+    ground_bias
+    glacier_mask
+    value_edges
+    bias_histograms
+    histogram_quantiles
+    annual_histograms
+    binned_medians
+    year_fraction
+    daily_medians
+    fit_seasonal
+    annual_mean
+    seasonal_curve
+    seasonal_cycle
+    equation
+    fit_categories
+    seasonal_by_elevation
+    plot_bias_by_elevation
+    plot_seasonal_fit
+    site_bias
+    plot_sites_pooled
+    plot_sites
 ```
 
 ### Ice thickness

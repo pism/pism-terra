@@ -157,8 +157,6 @@ model = "debm_enhanced"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
 'surface.models' = "debm_simple"
 
 [surface.options.debm_enhanced]
@@ -171,8 +169,6 @@ model = "debm_enhanced"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.5
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.file' = "none"
-'surface.debm_simple.std_dev.periodic' = "yes"
 'surface.models' = "debm_simple"
 
 [calving]
