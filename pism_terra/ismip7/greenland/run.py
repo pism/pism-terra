@@ -898,7 +898,7 @@ def _render_forward_run(
     debug: bool = False,
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
-    sample: int | None = None,
+    sample: int | str | None = None,
     pism_config_cdl: str | Path | None = None,
     proj_overrides: Mapping[str, object] | None = None,
     run_index: int | None = None,
@@ -952,7 +952,7 @@ def _render_forward_run(
         into the run dictionary and thus into the generated command line. If
         ``uq`` contains a key ``"sample"``, it is used (when ``sample`` is
         not provided) to suffix output filenames and scripts.
-    sample : int or None, optional
+    sample : int or str or None, optional
         Ensemble member identifier. If not provided, and ``uq`` has
         ``"sample"``, that value is used. The value changes the filename
         stem used for outputs (e.g., ``..._id_0042``). If neither is
@@ -1055,8 +1055,14 @@ def _render_forward_run(
         # the (gcm, experiment_id) pair the counter happens to resolve to.
         # The init leg is tagged separately, below, and stays keyed on the GCM
         # alone so counters sharing a forcing GCM reuse one init state.
+        # An ensemble runs the counter once per UQ draw, so the draw joins the
+        # name; without it every member would write the same script and outputs.
         counter = cfg.run_info.counter
-        name_options = f"id_{counter}" if counter else f"id_{sample}_{experiment}"
+        if counter:
+            _, draw = split_sample_id(sample)
+            name_options = f"id_{counter}" if draw is None else f"id_{counter}{UQ_SEPARATOR}{draw}"
+        else:
+            name_options = f"id_{sample}_{experiment}"
 
     uq_clean = normalize_row(uq) if uq is not None else {}
     # Prefer explicit `sample` arg; else default from uq['sample']
@@ -1182,7 +1188,7 @@ def _render_inverse_run(
     debug: bool = False,
     *,
     uq: Mapping[str, object] | pd.Series | None = None,
-    sample: int | None = None,
+    sample: int | str | None = None,
     pism_config_cdl: str | Path | None = None,
     proj_overrides: Mapping[str, object] | None = None,
     run_index: int | None = None,
@@ -1248,7 +1254,7 @@ def _render_inverse_run(
         (``run_fwd``) dicts own them; e.g. ``inverse.file`` propagates into
         ``inv_str`` only, while historical forcing files reach both the
         init and forward legs.
-    sample : int or None, optional
+    sample : int or str or None, optional
         Ensemble member identifier. If not provided, and ``uq`` has
         ``"sample"``, that value is used. Changes the filename stem used
         for outputs (e.g., ``..._id_0042``).

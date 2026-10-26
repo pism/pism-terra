@@ -820,6 +820,36 @@ def test_forward_script_is_named_after_the_counter(tmp_path):
         assert "id_MRI-ESM2-0_ssp370" not in leg
 
 
+def test_counter_ensemble_members_get_their_own_scripts(tmp_path):
+    """
+    Each UQ draw of a counter-driven ensemble writes its own script and outputs.
+
+    Named by the counter alone, every member of a 20-sample ensemble wrote
+    ``submit_g900m_id_C003.sh`` and the last one overwrote the rest.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided temporary output directory.
+    """
+    cfg = _c003_with_init(tmp_path)
+    for draw in (0, 1):
+        _render_forward_run(
+            cfg,
+            TEMPLATE_DIR / "debug-ismip7.j2",
+            None,
+            path=tmp_path,
+            sample=f"MRI-ESM2-0_uq_{draw}",
+            proj_overrides={"atmosphere.given.file": "proj_climate.nc"},
+        )
+    scripts = sorted((tmp_path / "run_scripts").glob("submit_*.sh"))
+    assert [s.name.rsplit("_id_", 1)[1] for s in scripts] == ["C003_uq_0.sh", "C003_uq_1.sh"]
+    for draw, script in enumerate(scripts):
+        _, hist, proj = _legs(script.read_text())
+        for leg in (hist, proj):
+            assert f"id_C003_uq_{draw}_" in leg
+
+
 def test_forward_script_without_a_counter_keeps_the_pathway_name(tmp_path):
     """
     A single-pathway run has no counter, so it is still named by the pathway.
@@ -1642,11 +1672,7 @@ def test_ec2_template_launches_the_writer_and_splits_the_scalars(tmp_path):
     tmp_path : pathlib.Path
         Pytest-provided temporary output directory.
     """
-    # ``sample`` is annotated as an int but the runner takes a GCM name, as
-    # every other test passes through the untyped ``_render_forward``.
-    _render_forward_run(
-        C003, TEMPLATE_DIR / "ec2_ismip7.j2", None, path=tmp_path, sample="CESM2-WACCM"  # type: ignore[arg-type]
-    )
+    _render_forward_run(C003, TEMPLATE_DIR / "ec2_ismip7.j2", None, path=tmp_path, sample="CESM2-WACCM")
     (script,) = (tmp_path / "run_scripts").glob("submit_*.sh")
     text = script.read_text()
     # The options are rendered over backslash-continued lines; join them back
