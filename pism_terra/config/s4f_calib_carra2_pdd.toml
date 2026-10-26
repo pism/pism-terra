@@ -259,6 +259,15 @@ model = "given"
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = "yes"
 'atmosphere.models' = "given,elevation_change,carra2_bias"
+'atmosphere.carra2_bias.background' = 1.81
+'atmosphere.carra2_bias.cos' = -1.57
+'atmosphere.carra2_bias.cos_gradient' = 0.47
+'atmosphere.carra2_bias.excess' = 4.21
+'atmosphere.carra2_bias.scale_height' = 970.0
+'atmosphere.carra2_bias.sin' = -0.28
+'atmosphere.carra2_bias.sin_gradient' = 0.07
+'atmosphere.carra2_bias.z_max' = 5250
+'atmosphere.carra2_bias.z_min' = 750
 
 [ocean]
 

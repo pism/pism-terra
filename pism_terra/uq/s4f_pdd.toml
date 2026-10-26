@@ -1,5 +1,11 @@
 samples = 12
 
+['atmosphere.carra2_bias.background']
+
+loc = 0.5
+scale = 2.0
+distribution = "uniform"
+
 ['atmosphere.elevation_change.temperature_lapse_rate']
 
 loc = 5.0
@@ -12,7 +18,6 @@ loc = 0.008791208791208791
 scale = 0.004395604395604396
 a = -1
 b = 1
-
 distribution = "truncnorm"
 
 ['surface.pdd.factor_snow']
