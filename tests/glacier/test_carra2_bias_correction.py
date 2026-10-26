@@ -287,6 +287,39 @@ def test_fit_seasonal_recovers_an_exponential_profile():
         mod.fit_seasonal(z, fraction, bias, elevation="cubic")
 
 
+@pytest.mark.parametrize("elevation", ["linear", "exponential"])
+def test_median_fit_ignores_a_warm_tail(elevation):
+    """
+    With rare large positive outliers the median fit follows the bulk; the mean fit is pulled up.
+
+    Parameters
+    ----------
+    elevation : str
+        Annual profile, which also generates the data.
+    """
+    z, fraction, bias = multi_year_sample()
+    if elevation == "exponential":
+        # Replace the linear profile by an exponential one the fit can represent.
+        bias = bias - TRUE_ON["mean"] - TRUE_ON["mean_per_km"] * z / 1000 + 1.8 + 6.0 * np.exp(-z / 1100.0)
+    rng = np.random.default_rng(0)
+    # A tenth of the days get 5-15 K on top: the warm tail of the daily medians.
+    tail = np.where(rng.random(bias.size) < 0.1, rng.uniform(5.0, 15.0, bias.size), 0.0)
+    noisy = bias + tail
+    median = mod.fit_seasonal(z, fraction, noisy, elevation=elevation, loss="median")
+    mean = mod.fit_seasonal(z, fraction, noisy, elevation=elevation, loss="mean")
+    clean = mod.fit_seasonal(z, fraction, bias, elevation=elevation)
+    assert median is not None and mean is not None and clean is not None
+    assert median["loss"] == "median" and mean["loss"] == "mean"
+    levels = np.arange(500.0, 4000.0, 250.0)
+    # Nine days in ten sit on the clean model, so the median fit lands on it.
+    np.testing.assert_allclose(mod.annual_mean(median, levels), mod.annual_mean(clean, levels), atol=0.05)
+    # The mean takes in the tail: 0.1 * 10 K = 1 K higher.
+    np.testing.assert_allclose(mod.annual_mean(mean, levels) - mod.annual_mean(clean, levels), 1.0, atol=0.2)
+    assert median["mae"] < mean["mae"] and median["rmse"] > mean["rmse"]
+    with pytest.raises(ValueError, match="unknown fit"):
+        mod.fit_seasonal(z, fraction, noisy, loss="mode")
+
+
 def test_equation_writes_the_fitted_values():
     """
     Write both profiles as equations with their numbers, signs as operators.
@@ -336,7 +369,7 @@ def test_histogram_quantiles_match_numpy():
 
 def test_histograms_do_not_depend_on_tiling(tmp_path):
     """
-    Small odd tiles in parallel count exactly what one tile does; sea-level cells are left out.
+    Small odd tiles in parallel count exactly what one tile does; low cells are left out on request.
 
     Parameters
     ----------
@@ -345,8 +378,9 @@ def test_histograms_do_not_depend_on_tiling(tmp_path):
     """
     ds = mod.open_carra2(synthetic_store(tmp_path / "store.zarr"))
     on_glacier = mod.glacier_mask(ds, glacier_outline())
-    whole = mod.bias_histograms(ds, on_glacier, tile=256, ntasks=1)
-    tiled = mod.bias_histograms(ds, on_glacier, tile=7, ntasks=3, time_block=2)
+    # min_elevation=None keeps every cell, whatever the default cut-off.
+    whole = mod.bias_histograms(ds, on_glacier, tile=256, ntasks=1, min_elevation=None)
+    tiled = mod.bias_histograms(ds, on_glacier, tile=7, ntasks=3, time_block=2, min_elevation=None)
     np.testing.assert_array_equal(whole["counts"].values, tiled["counts"].values)
     np.testing.assert_array_equal(whole["cells"].values, tiled["cells"].values)
     assert int(whole["cells"].sum()) == NX * NY and whole.attrs["n_sea"] == 0
@@ -581,6 +615,25 @@ def test_main_recovers_the_built_in_bias(tmp_path):
     low = site[site["site"] == "low"].sort_values("time")
     expected = true_bias(TRUE_ON, OROGRAPHY[0, 2], fraction_of_year(pd.DatetimeIndex(low["time"])))
     np.testing.assert_allclose(low["bias"], expected, atol=1e-3)
+
+
+def test_main_fits_the_mean(tmp_path):
+    """
+    ``--fit mean`` recovers the built-in bias too, and records the loss.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    store = synthetic_store(tmp_path / "carra2_daily_test.zarr", "2004-01-01", "2005-12-31")
+    outlines = tmp_path / "outlines.gpkg"
+    glacier_outline().to_file(outlines)
+    out = tmp_path / "out"
+    assert mod.main([str(store), "--outlines", str(outlines), "--output-path", str(out), "--fit", "mean"]) == 0
+    fits = pd.read_csv(out / "bias_seasonal_fit.csv", index_col=["category", "elevation_model"])
+    assert set(fits["loss"]) == {"mean"}
+    check_fit(fits)
 
 
 def test_years_as_separate_stores_give_the_same_fit(tmp_path):

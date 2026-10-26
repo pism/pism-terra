@@ -34,12 +34,15 @@ in summer.
 outlines, splits the cells into on and off glacier by whether the cell
 centre lies inside an outline, and bins them by terrain elevation. The bias
 changes with elevation and with the season, so per category the daily median
-bias of each bin is fitted with an annual-mean elevation profile plus one
+bias of each bin is fitted with an annual elevation profile plus one
 seasonal cycle (period one year) whose amplitude and phase may also change
 linearly with elevation; see :func:`fit_seasonal`. Two profiles are fitted
 and compared by BIC: a straight line, and a bias decaying exponentially
 with elevation toward a constant, which follows the strong excess over the
-lower glacier that levels off higher up. Several years pool into one cycle. It writes the medians, the fit and the fitted cycle per bin as
+lower glacier that levels off higher up. The fit follows the median by
+default (least absolute deviations), which is not pulled up by the few days
+of large bias in the daily medians' long warm tail; ``--fit mean`` makes it
+follow the mean instead (least squares). Several years pool into one cycle. It writes the medians, the fit and the fitted cycle per bin as
 CSV, and figures of the bias against elevation and against the day of the
 year. Given point sites as well, it also samples the stores there and plots
 the bias per month, pooled and per site.
@@ -57,7 +60,7 @@ import logging
 import math
 import tempfile
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -70,7 +73,7 @@ import pandas as pd
 import s3fs
 import xarray as xr
 from matplotlib.figure import Figure
-from scipy.optimize import minimize_scalar
+from scipy.optimize import linprog, minimize_scalar
 from tqdm.auto import tqdm
 
 from pism_terra.grids import sample_points
@@ -103,7 +106,7 @@ HIST_RANGE = (-30.0, 50.0)
 
 #: CARRA2's terrain over the sea lies at about 0 m (slightly below, in
 #: places); cells below this many metres are taken for sea and left out.
-DEFAULT_MIN_ELEVATION = 5.0
+DEFAULT_MIN_ELEVATION = 500.0
 
 #: Tile size in grid cells: the chunk size pism-s4f-carra2 writes, so each
 #: tile reads exactly one chunk of every field.
@@ -114,10 +117,20 @@ DEFAULT_TIME_BLOCK = 31
 
 #: Annual-mean elevation profiles :func:`fit_seasonal` knows; both are fitted.
 ELEVATION_MODELS = ("linear", "exponential")
+#: What the fit follows: the mean (least squares) or the median (least
+#: absolute deviations).
+FIT_LOSSES = ("mean", "median")
+#: The median: the daily medians have a long warm tail, and a mean fit sits
+#: half a kelvin above the typical day.
+DEFAULT_FIT_LOSS = "median"
+#: Decay heights tried before the bounded refinement, per loss. Each median
+#: fit is a linear programme, so its scan is coarser; the refinement still
+#: finds the optimum within the bracket the scan picks.
+SCALE_HEIGHT_SCAN = {"mean": 121, "median": 41}
 
 #: Range of decay heights the exponential profile is scanned over, m. A fit
 #: at the upper end has found no curvature: it is a straight line.
-SCALE_HEIGHT_RANGE = (50.0, 20_000.0)
+SCALE_HEIGHT_RANGE = (500.0, 4_000.0)
 
 #: Line style of each profile in the elevation figure.
 PROFILE_STYLES = {"linear": "--", "exponential": "-"}
@@ -781,12 +794,51 @@ def _least_squares(columns: list[np.ndarray], y: np.ndarray) -> tuple[np.ndarray
     return coef, float(residual @ residual)
 
 
+def _least_absolute(columns: list[np.ndarray], y: np.ndarray) -> tuple[np.ndarray, float]:
+    """
+    Solve a linear least-absolute-deviations problem, which follows the median.
+
+    Solved exactly through the dual of the linear programme
+    ``min sum |y - X b|``: ``max y^T d`` subject to ``X^T d = 0`` and
+    ``-1 <= d <= 1``. It has one constraint per coefficient rather than one
+    per value, which makes it some fifty times faster than the primal on a
+    few thousand daily medians; the coefficients are the negated marginals
+    of its equality constraints.
+
+    Parameters
+    ----------
+    columns : list of numpy.ndarray
+        Regressors.
+    y : numpy.ndarray
+        Values.
+
+    Returns
+    -------
+    coef : numpy.ndarray
+        Coefficients, in the order of *columns*.
+    sae : float
+        Sum of absolute residuals.
+
+    Raises
+    ------
+    RuntimeError
+        If the solver fails.
+    """
+    design = np.column_stack(columns)
+    result = linprog(-y, A_eq=design.T, b_eq=np.zeros(design.shape[1]), bounds=(-1.0, 1.0), method="highs")
+    if not result.success:
+        raise RuntimeError(f"least-absolute-deviations fit failed: {result.message}")
+    coef = -np.asarray(result.eqlin.marginals, dtype=float)
+    return coef, float(np.abs(y - design @ coef).sum())
+
+
 def fit_seasonal(
     z: Sequence[float] | np.ndarray | pd.Series,
     fraction: Sequence[float] | np.ndarray | pd.Series,
     y: Sequence[float] | np.ndarray | pd.Series,
     elevation_dependent: bool = True,
     elevation: str = "linear",
+    loss: str = DEFAULT_FIT_LOSS,
 ) -> dict[str, Any] | None:
     """
     Fit a bias that changes with elevation and follows one seasonal cycle.
@@ -806,7 +858,10 @@ def fit_seasonal(
       which a straight line cannot follow.
 
     Without *elevation_dependent* the ``_per_km`` seasonal terms are zero.
-    For a given H everything is linear least squares; H is found by a scan
+    With *loss* ``"mean"`` the fit minimises the squared residuals and
+    follows the mean; with ``"median"`` it minimises the absolute residuals
+    and follows the median, which a long tail of large values does not pull
+    along. For a given H the problem is linear either way; H is found by a scan
     over :data:`SCALE_HEIGHT_RANGE` refined with a bounded 1-D minimisation;
     an H at the top of that range means the data show no curvature. The period
     is one year, so data from several years pool into one cycle.
@@ -822,26 +877,34 @@ def fit_seasonal(
     elevation_dependent : bool, default True
         Let the seasonal amplitude and phase vary linearly with elevation.
     elevation : {"linear", "exponential"}, default "linear"
-        Annual-mean profile.
+        Annual profile.
+    loss : {"mean", "median"}, default :data:`DEFAULT_FIT_LOSS`
+        What the fit follows: least squares or least absolute deviations.
 
     Returns
     -------
     dict or None
-        ``elevation_model``; the profile's coefficients (``mean`` and
+        ``elevation_model``, ``loss``; the profile's coefficients (``mean`` and
         ``mean_per_km``, or ``background``, ``excess`` and ``scale_height``
         in m; the other model's are NaN); the coefficients of
-        :data:`SEASONAL_COEFFICIENTS`; ``rmse`` (K), ``r2``, ``bic``,
-        ``n_parameters`` and ``n``. None when there are no more values than
+        :data:`SEASONAL_COEFFICIENTS`; ``rmse`` and ``mae`` (K), ``r2``,
+        ``bic`` (Gaussian residuals for the mean fit, Laplace for the
+        median fit, so compare BIC within one loss only), ``n_parameters``
+        and ``n``. None when there are no more values than
         coefficients, or the values span a single elevation or a single day
         of the year.
 
     Raises
     ------
     ValueError
-        If *elevation* is not one of :data:`ELEVATION_MODELS`.
+        If *elevation* is not one of :data:`ELEVATION_MODELS`, or *loss* not
+        one of :data:`FIT_LOSSES`.
     """
     if elevation not in ELEVATION_MODELS:
         raise ValueError(f"unknown elevation model {elevation!r}; use one of {ELEVATION_MODELS}")
+    if loss not in FIT_LOSSES:
+        raise ValueError(f"unknown fit {loss!r}; use one of {FIT_LOSSES}")
+    solve = _least_squares if loss == "mean" else _least_absolute
     z_arr = np.asarray(z, dtype=float)
     f_arr = np.asarray(fraction, dtype=float)
     y_arr = np.asarray(y, dtype=float)
@@ -857,7 +920,7 @@ def fit_seasonal(
 
         def sse_at(log_h: float) -> float:
             """
-            Sum of squared residuals for a decay height.
+            The fit's objective for a decay height.
 
             Parameters
             ----------
@@ -867,19 +930,32 @@ def fit_seasonal(
             Returns
             -------
             float
-                The sum.
+                Sum of squared (mean) or absolute (median) residuals.
             """
-            return _least_squares(_elevation_columns(z_arr, "exponential", 10.0**log_h) + seasonal, y_arr)[1]
+            return solve(_elevation_columns(z_arr, "exponential", 10.0**log_h) + seasonal, y_arr)[1]
 
-        grid = np.linspace(math.log10(SCALE_HEIGHT_RANGE[0]), math.log10(SCALE_HEIGHT_RANGE[1]), 121)
+        grid = np.linspace(
+            math.log10(SCALE_HEIGHT_RANGE[0]), math.log10(SCALE_HEIGHT_RANGE[1]), SCALE_HEIGHT_SCAN[loss]
+        )
         best = int(np.argmin([sse_at(g) for g in grid]))
         low, high = grid[max(best - 1, 0)], grid[min(best + 1, grid.size - 1)]
         scale_height = 10.0 ** float(minimize_scalar(sse_at, bounds=(low, high), method="bounded").x)
 
-    coef, sse = _least_squares(_elevation_columns(z_arr, elevation, scale_height) + seasonal, y_arr)
+    columns = _elevation_columns(z_arr, elevation, scale_height) + seasonal
+    coef, objective = solve(columns, y_arr)
+    residual = y_arr - np.column_stack(columns) @ coef
+    sse, sae = float(residual @ residual), float(np.abs(residual).sum())
     n = y_arr.size
     sst = float(((y_arr - y_arr.mean()) ** 2).sum())
-    fit: dict[str, Any] = {"elevation_model": elevation}
+    # -2 log L up to a constant: Gaussian residuals for the mean fit, Laplace
+    # for the median fit, each at its maximum-likelihood scale.
+    if objective <= 0:
+        bic = -math.inf
+    elif loss == "mean":
+        bic = n * math.log(sse / n) + n_parameters * math.log(n)
+    else:
+        bic = 2 * n * math.log(sae / n) + n_parameters * math.log(n)
+    fit: dict[str, Any] = {"elevation_model": elevation, "loss": loss}
     if elevation == "linear":
         fit.update({"mean": float(coef[0]), "mean_per_km": float(coef[1])})
         fit.update({"background": math.nan, "excess": math.nan, "scale_height": math.nan})
@@ -891,8 +967,9 @@ def fit_seasonal(
     fit.update(
         {
             "rmse": math.sqrt(sse / n),
+            "mae": sae / n,
             "r2": 1.0 - sse / sst if sst > 0 else math.nan,
-            "bic": n * math.log(sse / n) + n_parameters * math.log(n) if sse > 0 else -math.inf,
+            "bic": bic,
             "n_parameters": float(n_parameters),
             "n": float(n),
         }
@@ -1082,6 +1159,7 @@ def fit_categories(
     min_cells: int = DEFAULT_MIN_CELLS,
     elevation_dependent: bool = True,
     models: Sequence[str] = ELEVATION_MODELS,
+    loss: str = DEFAULT_FIT_LOSS,
 ) -> pd.DataFrame:
     """
     Fit the seasonal model to the daily medians, per category and elevation profile.
@@ -1096,6 +1174,8 @@ def fit_categories(
         See :func:`fit_seasonal`.
     models : sequence of str, default :data:`ELEVATION_MODELS`
         Elevation profiles to fit, see :func:`fit_seasonal`.
+    loss : {"mean", "median"}, default :data:`DEFAULT_FIT_LOSS`
+        What the fits follow, see :func:`fit_seasonal`.
 
     Returns
     -------
@@ -1110,7 +1190,7 @@ def fit_categories(
     for category in CATEGORIES:
         used = daily[(daily["category"] == category) & (daily["cells"] >= min_cells)]
         for model in models:
-            fit = fit_seasonal(used["centre"], used["fraction"], used["median"], elevation_dependent, model)
+            fit = fit_seasonal(used["centre"], used["fraction"], used["median"], elevation_dependent, model, loss)
             if fit is None:
                 logger.warning(
                     "%s: too few daily medians with %d or more cells for a seasonal fit", category, min_cells
@@ -1206,6 +1286,25 @@ def seasonal_by_elevation(fits: pd.DataFrame, centres: Sequence[float] | np.ndar
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=columns)
 
 
+def fit_label(fit: Mapping[str, Any]) -> str:
+    """
+    Summarise a fit's quality by the statistic it minimised.
+
+    Parameters
+    ----------
+    fit : Mapping
+        A fit from :func:`fit_seasonal` or a row of :func:`fit_categories`.
+
+    Returns
+    -------
+    str
+        RMSE for a mean fit, MAE for a median fit, then R².
+    """
+    if fit.get("loss", "mean") == "median":
+        return f"MAE {fit['mae']:.2f} K, R² {fit['r2']:.2f}"
+    return f"RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}"
+
+
 def _equation_panel(ax: Any, fits: pd.DataFrame) -> None:
     """
     Write every fit's equation and statistics into an empty axes.
@@ -1226,7 +1325,7 @@ def _equation_panel(ax: Any, fits: pd.DataFrame) -> None:
             note = "   H at its limit: no curvature, a straight line"
         lines.append(
             f"{'★' if fit['best'] else ' '} {fit['category'].replace('_', ' ')}, {fit['elevation_model']}:"
-            f"  RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}, BIC {fit['bic']:.0f}{note}"
+            f"  {fit_label(fit)}, BIC {fit['bic']:.0f}{note}"
         )
         lines.append(f"    {fit['equation']}")
     ax.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=7, transform=ax.transAxes)
@@ -1380,7 +1479,8 @@ def plot_bias_by_elevation(
     ax.set_xlabel("Level fit at the terrain − 2 m air temperature (K)")
     ax.set_ylabel(f"CARRA2 terrain elevation (m), {bin_width:g} m bins")
     ax.set_title(title or "Free-air extrapolation vs CARRA2 2 m temperature, every grid cell", fontsize=11)
-    ax.legend(loc="upper right", title="cells and annual-mean fits", fontsize=8)
+    loss = str(fits["loss"].iloc[0]) if "loss" in fits and not fits.empty else "mean"
+    ax.legend(loc="upper right", title=f"cells and annual {loss} fits", fontsize=8)
     ax.grid(axis="x", alpha=0.3)
     _equation_panel(text_ax, fits)
     return fig
@@ -1430,8 +1530,7 @@ def plot_seasonal_fit(daily: pd.DataFrame, fits: pd.DataFrame, min_cells: int = 
                 curve = seasonal_curve(fit, centre, (days - 0.5) / 365.0)
                 ax.plot(days, curve, color=cmap(norm(centre)), lw=1.6)
             ax.set_title(
-                f"{category.replace('_', ' ')}, {fit['elevation_model']} profile: "
-                f"RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}",
+                f"{category.replace('_', ' ')}, {fit['elevation_model']} profile: " f"{fit_label(fit)}",
                 fontsize=10,
             )
         else:
@@ -1691,6 +1790,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Cells whose CARRA2 terrain lies below this (m) are taken for sea and left out; 'none' keeps all.",
     )
     parser.add_argument(
+        "--fit",
+        choices=FIT_LOSSES,
+        default=DEFAULT_FIT_LOSS,
+        help="Fit the daily medians' mean (least squares) or their median (least absolute deviations).",
+    )
+    parser.add_argument(
         "--hist-step", type=float, default=DEFAULT_HIST_STEP, help="Bin width of the bias histograms (K)."
     )
     parser.add_argument(
@@ -1753,7 +1858,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     annual = annual_histograms(hists)
     medians = binned_medians(annual)
     daily = pd.concat(dailies, ignore_index=True)
-    fits = fit_categories(daily, min_cells=args.min_cells, elevation_dependent=args.season == "elevation")
+    fits = fit_categories(
+        daily, min_cells=args.min_cells, elevation_dependent=args.season == "elevation", loss=args.fit
+    )
     cycle = seasonal_by_elevation(fits, annual["centre"].values)
     medians.to_csv(output / "bias_by_elevation_medians.csv", index=False)
     daily.to_csv(output / "bias_daily_medians.csv", index=False)
@@ -1777,7 +1884,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             plt.close(figure)
 
     if not fits.empty:
-        columns = ["rmse", "r2", "bic", "best"]
+        columns = ["rmse", "mae", "r2", "bic", "best"]
         print(fits[columns].round(3).to_string())
         for (category, model), fit in fits.iterrows():
             print(f"{category:11s} {model:11s} {fit['equation']}")
