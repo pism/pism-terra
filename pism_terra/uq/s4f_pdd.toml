@@ -1,11 +1,5 @@
 samples = 12
 
-['atmosphere.carra2_bias.background']
-
-loc = 0.5
-scale = 2.0
-distribution = "uniform"
-
 ['atmosphere.elevation_change.temperature_lapse_rate']
 
 loc = 5.0

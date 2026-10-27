@@ -253,12 +253,6 @@ model = "given"
 
 [atmosphere.options.given_carra2bias]
 
-'atmosphere.elevation_change.file' = "none"
-'atmosphere.elevation_change.periodic' = "yes"
-'atmosphere.elevation_change.temperature_lapse_rate' = 6.0
-'atmosphere.given.file' = "none"
-'atmosphere.given.periodic' = "yes"
-'atmosphere.models' = "given,elevation_change,carra2_bias"
 'atmosphere.carra2_bias.background' = 1.81
 'atmosphere.carra2_bias.cos' = -1.57
 'atmosphere.carra2_bias.cos_gradient' = 0.47
@@ -268,6 +262,12 @@ model = "given"
 'atmosphere.carra2_bias.sin_gradient' = 0.07
 'atmosphere.carra2_bias.z_max' = 5250
 'atmosphere.carra2_bias.z_min' = 750
+'atmosphere.elevation_change.file' = "none"
+'atmosphere.elevation_change.periodic' = "yes"
+'atmosphere.elevation_change.temperature_lapse_rate' = 6.0
+'atmosphere.given.file' = "none"
+'atmosphere.given.periodic' = "yes"
+'atmosphere.models' = "given,elevation_change,carra2_bias"
 
 [ocean]
 
