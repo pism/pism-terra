@@ -42,6 +42,6 @@ distribution = "uniform"
 
 ['surface.pdd.std_dev.value']
 
-loc = 1.5
-scale = 3.5
+loc = 0
+scale = 2
 distribution = "uniform"
