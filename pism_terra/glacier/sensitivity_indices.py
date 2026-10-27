@@ -15,6 +15,7 @@ the file, and ``sensitivity_indices_summary.csv`` at the top level.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -30,6 +31,7 @@ from pism_terra.sensitivity import (
     DEFAULT_N_RESAMPLES,
     DEFAULT_TARGET,
     FREQUENCIES,
+    PARAM_DIM,
     analyze_scalar_files,
 )
 
@@ -37,6 +39,10 @@ logger = logging.getLogger(__name__)
 
 RGI_PATTERN = re.compile(r"(RGI2000-v7\.0-[A-Z]-\d{2}-\d+)")
 KINDS = ("C", "G")
+#: Settings of a run and what happened to each complex, for the report to document.
+SETTINGS_FILE = "sensitivity_indices_settings.json"
+#: Confidence level of the bootstrap half-widths (SALib's default).
+CONF_LEVEL = 0.95
 
 
 def find_scalar_files(run_dir: Path | str, kind: str) -> dict[str, list[Path]]:
@@ -109,27 +115,38 @@ def run_pipeline(
     ------
     FileNotFoundError
         If no complex has enough processed members.
+
+    Notes
+    -----
+    The settings and, per complex and kind, the number of member files and
+    of members and parameters analyzed (or why the complex was skipped) go
+    to :data:`SETTINGS_FILE`, written even when nothing could be analyzed.
     """
     run_dir = Path(run_dir).expanduser()
     output_path = Path(output_path).expanduser()
     output_path.mkdir(parents=True, exist_ok=True)
     summaries = []
+    complexes: list[dict[str, object]] = []
     for kind in kinds:
         groups = find_scalar_files(run_dir, kind)
         logger.info("%d complex(es) with scalar_%s files below %s", len(groups), kind, run_dir)
         for rgi_id, files in groups.items():
+            entry: dict[str, object] = {"rgi_id": rgi_id, "kind": kind, "n_files": len(files)}
+            complexes.append(entry)
             if len(files) < min_members:
                 logger.warning(
                     "%s/%s: only %d member(s), fewer than %d, skipped", rgi_id, kind, len(files), min_members
                 )
+                entry["skipped"] = f"fewer than {min_members} members"
                 continue
             try:
                 uq_df = load_uq_parameters(run_dir, rgi_id)
             except FileNotFoundError as err:
                 logger.warning("%s: %s, skipped", rgi_id, err)
+                entry["skipped"] = "no uq.csv"
                 continue
             logger.info("%s/%s: %d members", rgi_id, kind, len(files))
-            _, summary = analyze_scalar_files(
+            ds, summary = analyze_scalar_files(
                 files,
                 uq_df,
                 output_dir=rgi_output_dir(output_path, rgi_id),
@@ -141,9 +158,20 @@ def run_pipeline(
                 n_jobs=n_jobs,
                 title_prefix=f"{rgi_id} ({kind}) ",
             )
+            entry.update({"n_members": int(ds.attrs["n_members"]), "n_parameters": int(ds.sizes[PARAM_DIM])})
             summary.insert(0, "kind", kind)
             summary.insert(0, "rgi_id", rgi_id)
             summaries.append(summary)
+    settings = {
+        "target": target,
+        "frequency": freq,
+        "num_resamples": num_resamples,
+        "seed": seed,
+        "min_members": min_members,
+        "conf_level": CONF_LEVEL,
+        "complexes": complexes,
+    }
+    (output_path / SETTINGS_FILE).write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     if not summaries:
         raise FileNotFoundError(f"no complex below {run_dir} has {min_members} or more processed members")
     summary = pd.concat(summaries, ignore_index=True)

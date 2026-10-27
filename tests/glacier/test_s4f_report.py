@@ -259,3 +259,31 @@ def test_usgs_pages_show_the_note(tmp_path: Path) -> None:
     for collect in (s4f_report.collect_usgs_stakes, s4f_report.collect_usgs_glaciers):
         collected = collect(tmp_path, tmp_path)
         assert [n["title"] for n in collected["notes"]] == ["How the numbers are calculated"]
+
+
+def test_sensitivity_note_documents_the_run(tmp_path: Path) -> None:
+    """
+    The sensitivity page explains the estimator with the run's target, resamples and skipped complexes.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    """
+    settings = {
+        "target": "ice_mass",
+        "frequency": "yearly",
+        "num_resamples": 50,
+        "min_members": 8,
+        "conf_level": 0.95,
+        "complexes": [
+            {"rgi_id": "RGI2000-v7.0-C-01-00001", "kind": "C", "n_files": 2, "skipped": "fewer than 8 members"},
+            {"rgi_id": "RGI2000-v7.0-C-01-00002", "kind": "G", "n_files": 40, "n_members": 40, "n_parameters": 5},
+        ],
+    }
+    (tmp_path / s4f_report.sensitivity_indices.SETTINGS_FILE).write_text(json.dumps(settings))
+    note = s4f_report.collect_sensitivity(tmp_path, tmp_path)["notes"][0]
+    assert note["title"] == "How the indices are calculated"
+    for text in ("<code>ice_mass</code>", "averaged to calendar years", "50 times", "95%", "1.96", "fewer than 8"):
+        assert text in note["html"], text
+    assert "<td>40</td><td>40</td><td>5</td>" in note["html"]

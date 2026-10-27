@@ -28,8 +28,10 @@ import traceback
 from argparse import SUPPRESS, ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from html import escape
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 import pandas as pd
@@ -490,6 +492,100 @@ def collect_usgs_stakes(output_dir: Path, base: Path) -> dict[str, Any]:
     }
 
 
+FREQUENCY_TEXT = {
+    "yearly": "averaged to calendar years",
+    "monthly": "averaged to calendar months",
+    "none": "used at the times the files hold",
+}
+
+
+def sensitivity_method_note(output_dir: Path) -> dict[str, str]:
+    """
+    Explain how the sensitivity indices are calculated, with this run's settings.
+
+    Parameters
+    ----------
+    output_dir : Path
+        ``<report>/sensitivity_indices``, holding the settings the tool wrote.
+
+    Returns
+    -------
+    dict
+        ``{"title", "html"}`` for the page.
+    """
+    settings: dict[str, Any] = {}
+    path = output_dir / sensitivity_indices.SETTINGS_FILE
+    if path.is_file():
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    target = escape(str(settings.get("target", sensitivity_indices.DEFAULT_TARGET)))
+    freq = str(settings.get("frequency", "yearly"))
+    resamples = settings.get("num_resamples", 100)
+    min_members = settings.get("min_members", 8)
+    conf = float(settings.get("conf_level", sensitivity_indices.CONF_LEVEL))
+    parts = [
+        "" if path.is_file() else "<p><em>The tool wrote no settings file, so the defaults are assumed below.</em></p>",
+        "<h4>1. Ensemble</h4>",
+        "<p>Each member of the UQ ensemble is one draw of the uncertain parameters, listed in the complex's "
+        "<code>uq.csv</code>. Its response is read from the post-processed scalar files, <code>scalar_C_*</code> "
+        "for the whole complex and <code>scalar_G_*</code> for each of its glaciers, as the variable "
+        f"<code>{target}</code>, {FREQUENCY_TEXT.get(freq, escape(freq))}. A complex with fewer than "
+        f"{min_members} finished members is skipped: the estimator needs comfortably more members than "
+        "parameters, and with fewer members than parameters plus two no index is computed at all.</p>",
+        "<h4>2. Indices</h4>",
+        "<p>The indices are computed separately at every time step, from the members' parameter values and "
+        "responses alone (the <em>given-data</em> method of Plischke et al. 2013, SALib's "
+        "<code>delta.analyze</code>), so no special sampling design is needed. For each parameter the members are "
+        "sorted by its value and split into classes of equal size, about N<sup>1/4</sup> of them for N members "
+        "up to a few hundred (at most 48). The first-order Sobol index <code>S1</code> is the share of the response variance "
+        "explained by that parameter alone: the variance of the class means of the response, weighted by class "
+        "size, over the total variance. Borgonovo's <code>delta</code> asks how much the whole distribution of "
+        "the response shifts when the parameter is known: half the area between the response's density within a "
+        "class and its overall density (both kernel estimates), averaged over the classes. It is 0 for a "
+        "parameter without influence and 1 at most, and catches effects on the spread or shape of the response "
+        "that leave its variance alone. Both are dimensionless. The <code>S1</code> of all parameters add up to "
+        "1 at most; what is missing is due to interactions between parameters.</p>",
+        "<h4>3. Confidence bands</h4>",
+        f"<p>The members are resampled with replacement {resamples} times; the shaded bands are the index plus "
+        f"or minus {conf:.0%} confidence half-widths, {_z(conf):.2f} times the standard deviation over the "
+        "resamples. With a few dozen members, <code>delta</code> of a parameter without influence can still come "
+        "out clearly above zero; compare parameters with that in mind.</p>",
+        "<h4>4. Summary columns</h4>",
+        "<p>In the per-complex CSV files, <code>S1_mean</code> and <code>delta_mean</code> average the index over "
+        "all time steps, <code>S1_last</code> and <code>delta_last</code> over the last 10.</p>",
+    ]
+    complexes = settings.get("complexes", [])
+    if complexes:
+        rows = "".join(
+            f"<tr><td>{escape(str(c['rgi_id']))}</td><td>{escape(str(c['kind']))}</td>"
+            f"<td>{c['n_files']}</td><td>{c.get('n_members', '')}</td><td>{c.get('n_parameters', '')}</td>"
+            f"<td>{escape(str(c.get('skipped', '')))}</td></tr>"
+            for c in complexes
+        )
+        parts.append(
+            '<div class="table-wrap"><table class="table"><thead><tr><th>complex</th><th>kind</th>'
+            "<th>member files</th><th>members analyzed</th><th>parameters</th><th>skipped</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
+        )
+    return {"title": "How the indices are calculated", "html": "".join(parts)}
+
+
+def _z(conf_level: float) -> float:
+    """
+    Two-sided standard-normal quantile of a confidence level.
+
+    Parameters
+    ----------
+    conf_level : float
+        Confidence level, e.g. 0.95.
+
+    Returns
+    -------
+    float
+        The quantile, 1.96 for 0.95.
+    """
+    return float(NormalDist().inv_cdf(0.5 + conf_level / 2))
+
+
 def collect_sensitivity(output_dir: Path, base: Path) -> dict[str, Any]:
     """
     Gather the sensitivity-index outputs for their page.
@@ -510,7 +606,12 @@ def collect_sensitivity(output_dir: Path, base: Path) -> dict[str, Any]:
     # Figures only: the summary and per-glacier index tables run to hundreds of
     # rows and stay in the CSV files next to the figures.
     glaciers = _glacier_sections(output_dir, base)
-    return {"tables": [], "sections": glaciers, "n_glaciers": len(glaciers)}
+    return {
+        "tables": [],
+        "sections": glaciers,
+        "n_glaciers": len(glaciers),
+        "notes": [sensitivity_method_note(output_dir)],
+    }
 
 
 COLLECTORS = {
