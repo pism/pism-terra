@@ -27,8 +27,11 @@ a winter balance ``bw`` measured at the spring visit and an annual balance
 sub-seasonal ``db`` between two visits. A stake records the surface mass
 balance at one spot, so its model counterpart is the surface mass balance of
 the grid cell the stake sits in — ``surface_accumulation_flux`` minus
-``surface_runoff_flux`` — integrated over exactly the interval between the
-visits. This module samples every monthly ``spatial_*.nc`` file under a run
+``surface_runoff_flux`` — integrated over the interval between the visits.
+A winter or annual balance is measured against the previous summer surface,
+so its model counterpart starts at the summer surface the model reaches
+after the previous fall visit rather than at the visit itself (see
+:func:`summer_surface`). This module samples every monthly ``spatial_*.nc`` file under a run
 directory at the stake locations, integrates the balances, scores them per
 site and pooled per glacier, and writes per glacier a figure with a panel per
 site, a modelled-against-observed scatter, a balance-against-elevation
@@ -36,6 +39,7 @@ gradient plot per season with two-piece linear fits hinged at the ELA, and a
 NetCDF file into a ``<rgi_id>`` sub-directory.
 """
 
+import json
 import logging
 import math
 import re
@@ -63,6 +67,7 @@ from pism_terra.glacier.usgs import (
     OBS_STYLE,
     RHO_WATER,
     SEASON_DATE_COLUMNS,
+    SKILL_MIN_YEARS,
     SKIPPED_GLACIERS,
     SPECIFIC_LABEL,
     SPECIFIC_UNITS,
@@ -116,6 +121,15 @@ STAKE_MODEL_STYLE = {
 SPATIAL_PATTERN = "spatial_*.nc"
 #: The ``_<start>_<end>.nc`` every PISM-TERRA output file name ends in.
 SPAN_PATTERN = re.compile(r"_(\d{4})-(\d{2})-(\d{2})_(\d{4})-(\d{2})-(\d{2})\.nc$")
+#: Where the modelled winter and annual balances start: at the summer surface
+#: the model reaches after the previous fall visit, or at the visit itself.
+START_AT = ("summer_surface", "visit")
+#: How far past the fall visit the modelled summer surface is looked for.
+SUMMER_SURFACE_SEARCH_DAYS = 120
+#: Settings of a run, written next to its tables for the report to document.
+SETTINGS_FILE = "usgs_benchmark_stakes_settings.json"
+#: How far the modelled winter and annual balances start past the fall visit.
+MODEL_START_FILE = "usgs_benchmark_stakes_model_start.csv"
 TABLE_COLUMNS = [
     "glacier",
     "site",
@@ -123,8 +137,10 @@ TABLE_COLUMNS = [
     "variable",
     "start",
     "end",
+    "model_start",
     "obs",
     "model",
+    "model_from_visit",
     "elevation",
     "usurf",
     "visit",
@@ -472,12 +488,56 @@ def _mean_over(values: xr.DataArray, start: pd.Timestamp, end: pd.Timestamp) -> 
     return float(np.average(data[keep], weights=weights[keep]))
 
 
+def summer_surface(
+    smb: xr.DataArray,
+    visit: pd.Timestamp,
+    end: pd.Timestamp,
+    search_days: float = SUMMER_SURFACE_SEARCH_DAYS,
+) -> pd.Timestamp:
+    """
+    The modelled summer surface after a fall visit.
+
+    A winter or annual balance is measured against the previous summer
+    surface, the lowest the surface gets at the end of the melt season. A
+    visit before the melt season ends -- July on the Juneau Icefield, August
+    or September elsewhere -- leaves later melt out of the measurement, so
+    the model's balance should start where its own balance since the visit
+    is lowest: the visit itself, or a month end up to *search_days* later.
+
+    Parameters
+    ----------
+    smb : xarray.DataArray
+        Monthly balance rate with ``month_start``/``month_end`` coordinates.
+    visit : pandas.Timestamp
+        The fall visit opening the interval.
+    end : pandas.Timestamp
+        The visit closing it; the summer surface falls before it.
+    search_days : float, optional
+        How far past the visit to look.
+
+    Returns
+    -------
+    pandas.Timestamp
+        The visit, or the month end with the lowest balance since the visit;
+        the earliest on a tie. The visit when the record does not cover the
+        search window.
+    """
+    ends = pd.DatetimeIndex(smb["month_end"].values)
+    limit = min(visit + pd.Timedelta(days=search_days), end)
+    candidates = ends[(ends > visit) & (ends < limit)]
+    balances = np.array([integrate_rate(smb, visit, t) for t in candidates])
+    if balances.size == 0 or np.isnan(balances).any() or balances.min() >= 0.0:
+        return visit
+    return pd.Timestamp(candidates[int(np.argmin(balances))])
+
+
 def stake_balances(
     sampled: xr.Dataset | None,
     stakes: pd.DataFrame,
     subseasonal: pd.DataFrame | None = None,
     glacier_wide: xr.Dataset | None = None,
     run: str = NO_RUN,
+    start_at: str = "summer_surface",
 ) -> pd.DataFrame:
     """
     Integrate the modelled balance over each measurement's own interval.
@@ -497,6 +557,11 @@ def stake_balances(
         year stands in for a missing previous fall visit.
     run : str, optional
         Label of the run the samples come from.
+    start_at : {"summer_surface", "visit"}, default "summer_surface"
+        Where the modelled ``bw`` and ``ba`` start: at the summer surface
+        the model reaches after the previous fall visit (see
+        :func:`summer_surface`), which is what the stake measures against,
+        or at the visit itself.
 
     Returns
     -------
@@ -506,14 +571,23 @@ def stake_balances(
         from the site's previous fall visit (else the previous balance
         year's ``Ba_Date``) to the spring visit, ``bs`` from spring to fall
         (observed as ``ba − bw``), ``ba`` from the previous fall to this
-        fall, ``db`` between the two visits; ``usurf`` is the modelled
-        surface over the same interval.
+        fall, ``db`` between the two visits; ``model_start`` is where the
+        modelled balance starts, ``model_from_visit`` the modelled balance
+        from the visit instead, and ``usurf`` the modelled surface from
+        ``model_start`` to the end of the interval.
+
+    Raises
+    ------
+    ValueError
+        If *start_at* is not one of :data:`START_AT`.
 
     Notes
     -----
     Intervals the model record does not fully cover give a NaN model value
     (see :func:`pism_terra.glacier.usgs.integrate_rate`).
     """
+    if start_at not in START_AT:
+        raise ValueError(f"start_at must be one of {START_AT}, got {start_at!r}")
     ba_dates: dict[int, pd.Timestamp] = {}
     if glacier_wide is not None and "Ba_Date" in glacier_wide:
         for year, date in zip(glacier_wide["time"].values, pd.to_datetime(glacier_wide["Ba_Date"].values)):
@@ -539,7 +613,7 @@ def stake_balances(
         at = sampled.sel(site=site)
         return at["smb"], at["usurf"] if "usurf" in at else None
 
-    def integrate(smb, usurf, start, end) -> tuple[float, float]:
+    def integrate(smb, usurf, start, end, from_surface=False) -> tuple[float, float, Any, float]:
         """
         Integrate the balance and average the surface over an interval.
 
@@ -551,17 +625,23 @@ def stake_balances(
             Surface elevation.
         start, end : pandas.Timestamp
             Interval.
+        from_surface : bool, default False
+            Start at the modelled summer surface after *start* instead.
 
         Returns
         -------
-        tuple of float
-            ``(balance, surface)``.
+        tuple
+            ``(balance, surface, model_start, from_visit)``, the last the
+            balance from *start* itself.
         """
         if smb is None or pd.isna(start) or pd.isna(end) or end <= start:
-            return float("nan"), float("nan")
+            return float("nan"), float("nan"), pd.NaT, float("nan")
+        from_visit = integrate_rate(smb, start, end)
+        if from_surface:
+            start = summer_surface(smb, start, end)
         balance = integrate_rate(smb, start, end)
         surface = _mean_over(usurf, start, end) if usurf is not None else float("nan")
-        return balance, surface
+        return balance, surface, start, from_visit
 
     rows: list[dict[str, Any]] = []
     for (glacier, site_name), group in stakes.groupby(["glacier", "site_name"], sort=True):
@@ -581,7 +661,8 @@ def stake_balances(
                 ("bs", ba_obs - bw_obs, (spring, fall)),
                 ("ba", ba_obs, (start, fall)),
             ):
-                model, surface = integrate(smb, usurf, *interval)
+                from_surface = start_at == "summer_surface" and var != "bs"
+                model, surface, model_start, from_visit = integrate(smb, usurf, *interval, from_surface=from_surface)
                 if np.isnan(obs) and np.isnan(model):
                     continue
                 rows.append(
@@ -592,8 +673,10 @@ def stake_balances(
                         "variable": var,
                         "start": interval[0],
                         "end": interval[1],
+                        "model_start": model_start,
                         "obs": obs,
                         "model": model,
+                        "model_from_visit": from_visit,
                         "elevation": elevation,
                         "usurf": surface,
                         "visit": -1,
@@ -605,7 +688,7 @@ def stake_balances(
         for row in subseasonal.itertuples(index=True):
             site = f"{row.glacier}:{row.site_name}"
             smb, usurf = series(site)
-            model, surface = integrate(smb, usurf, row.Date1, row.Date2)
+            model, surface, model_start, from_visit = integrate(smb, usurf, row.Date1, row.Date2)
             obs = float(row.db) if pd.notna(row.db) else np.nan
             if np.isnan(obs) and np.isnan(model):
                 continue
@@ -617,8 +700,10 @@ def stake_balances(
                     "variable": "db",
                     "start": row.Date1,
                     "end": row.Date2,
+                    "model_start": model_start,
                     "obs": obs,
                     "model": model,
+                    "model_from_visit": from_visit,
                     "elevation": (
                         float(row.Elevation) if hasattr(row, "Elevation") and pd.notna(row.Elevation) else np.nan
                     ),
@@ -628,6 +713,53 @@ def stake_balances(
                 }
             )
     return pd.DataFrame(rows, columns=TABLE_COLUMNS)
+
+
+MODEL_START_COLUMNS = [
+    "variable",
+    "n",
+    "n_shifted",
+    "median_shift_days",
+    "max_shift_days",
+    "median_shifted_balance",
+]
+
+
+def model_start_shifts(table: pd.DataFrame) -> pd.DataFrame:
+    """
+    How far past the fall visit the modelled winter and annual balances start.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        Rows from :func:`stake_balances` for one glacier (all runs).
+
+    Returns
+    -------
+    pandas.DataFrame
+        :data:`MODEL_START_COLUMNS`, one row per ``bw``/``ba``: modelled
+        values ``n``, how many start past the visit ``n_shifted``, the
+        median and largest shift in days, and ``median_shifted_balance``,
+        the median balance (m w.e.) the model accumulates between the visit
+        and its summer surface where it does -- the melt the stake does not
+        see, as a negative number.
+    """
+    rows = []
+    for var in ("bw", "ba"):
+        sub = table[(table["variable"] == var) & table["model"].notna() & table["model_start"].notna()]
+        days = (pd.to_datetime(sub["model_start"]) - pd.to_datetime(sub["start"])).dt.days
+        left_out = (sub["model_from_visit"] - sub["model"])[days > 0]
+        rows.append(
+            {
+                "variable": var,
+                "n": len(sub),
+                "n_shifted": int((days > 0).sum()),
+                "median_shift_days": float(days.median()) if len(days) else np.nan,
+                "max_shift_days": float(days.max()) if len(days) else np.nan,
+                "median_shifted_balance": float(left_out.median()) if len(left_out) else np.nan,
+            }
+        )
+    return pd.DataFrame(rows, columns=MODEL_START_COLUMNS)
 
 
 def _model_line(table: pd.DataFrame) -> pd.DataFrame:
@@ -1197,8 +1329,9 @@ def to_dataset(table: pd.DataFrame, sampled: Sequence[xr.Dataset] = ()) -> xr.Da
     -------
     xarray.Dataset
         ``bw``/``bs``/``ba`` observed on ``(site, time)`` (balance years)
-        with ``<var>_model`` and ``usurf`` on ``(run, site, time)``, the
-        interval bounds as ``<var>_start``/``<var>_end``, the stake
+        with ``<var>_model``, ``<var>_model_start`` and ``usurf`` on
+        ``(run, site, time)``, the measured interval bounds as
+        ``<var>_start``/``<var>_end``, the stake
         ``elevation``; sub-seasonal ``db``/``db_model`` on a ``visit``
         dimension numbered like the rows of the release's sub-seasonal table. Site ``lon``/``lat``/``x``/``y`` are attached when
         *sampled* provides them.
@@ -1230,12 +1363,18 @@ def to_dataset(table: pd.DataFrame, sampled: Sequence[xr.Dataset] = ()) -> xr.Da
                 out[f"{var}_{column}"] = xr.DataArray.from_series(sub.set_index(["site", "year"])[column]).rename(
                     {"year": "time"}
                 )
-            model = seasonal[seasonal["variable"] == var].set_index(["run", "site", "year"])["model"]
-            out[f"{var}_model"] = xr.DataArray.from_series(model).rename({"year": "time"}).reindex(run=runs)
+            modelled = seasonal[seasonal["variable"] == var].set_index(["run", "site", "year"])
+            out[f"{var}_model"] = xr.DataArray.from_series(modelled["model"]).rename({"year": "time"}).reindex(run=runs)
             out[f"{var}_model"].attrs = {
                 "units": SPECIFIC_UNITS,
                 "long_name": f"modelled {STAKE_VARS[var]} balance (m w.e.)",
             }
+            out[f"{var}_model_start"] = (
+                xr.DataArray.from_series(pd.to_datetime(modelled["model_start"]))
+                .rename({"year": "time"})
+                .reindex(run=runs)
+            )
+            out[f"{var}_model_start"].attrs = {"long_name": f"start of the modelled {STAKE_VARS[var]} balance"}
         annual = seasonal[seasonal["variable"] == "ba"] if (seasonal["variable"] == "ba").any() else seasonal
         out["elevation"] = xr.DataArray.from_series(
             annual.drop_duplicates(subset=["site", "year"]).set_index(["site", "year"])["elevation"]
@@ -1285,6 +1424,7 @@ def _sample_one_file(
     subseasonal: dict[str, pd.DataFrame],
     glacier_wide: dict[str, xr.Dataset],
     method: str,
+    start_at: str = "summer_surface",
 ) -> tuple[dict[str, pd.DataFrame], dict[str, xr.Dataset], dict[tuple[str, str], int]] | None:
     """
     Sample one spatial file at every stake and integrate its balances.
@@ -1310,6 +1450,9 @@ def _sample_one_file(
         Glacier-wide balances per glacier.
     method : {"nearest", "linear"}
         How the grid is sampled at a stake (see :func:`sample_points`).
+    start_at : {"summer_surface", "visit"}, default "summer_surface"
+        Where the modelled winter and annual balances start (see
+        :func:`stake_balances`).
 
     Returns
     -------
@@ -1341,7 +1484,7 @@ def _sample_one_file(
         at = sampled.sel(site=sampled["glacier"].values == glacier)
         logger.info("%s: %d sites of %s sampled", label, at.sizes["site"], glacier)
         tables[str(glacier)] = stake_balances(
-            at, stakes[glacier], subseasonal.get(glacier), glacier_wide.get(glacier), run=label
+            at, stakes[glacier], subseasonal.get(glacier), glacier_wide.get(glacier), run=label, start_at=start_at
         )
         samples[str(glacier)] = at
         if "thk" in at:
@@ -1357,6 +1500,7 @@ def run_pipeline(
     output_dir: Path | str = ".",
     rgi_file: Path | str | None = None,
     method: str = "nearest",
+    start_at: str = "summer_surface",
     n_jobs: int = 1,
     force_overwrite: bool = False,
     plot_years: tuple[float | None, float | None] = (None, None),
@@ -1378,6 +1522,9 @@ def run_pipeline(
         Outline file to match against instead of the downloaded regions.
     method : {"nearest", "linear"}, optional
         How the grid is sampled at a stake (see :func:`sample_points`).
+    start_at : {"summer_surface", "visit"}, optional
+        Where the modelled winter and annual balances start (see
+        :func:`stake_balances`).
     n_jobs : int, optional
         Worker processes used to sample the spatial files (see
         :func:`pism_terra.glacier.usgs.map_files`).
@@ -1445,6 +1592,7 @@ def run_pipeline(
         subseasonal,
         glacier_wide,
         method,
+        start_at,
         n_jobs=n_jobs,
         desc="Sampling spatial files",
     ):
@@ -1459,6 +1607,7 @@ def run_pipeline(
             ice_free[key] = max(ice_free.get(key, 0), months)
 
     figures: list[str | None] = []
+    shifts: list[pd.DataFrame] = []
     n_runs: list[int] = []
     n_stakes: list[int] = []
     n_sampled: list[int] = []
@@ -1477,6 +1626,8 @@ def run_pipeline(
             if tables[glacier]
             else stake_balances(None, stakes[glacier], subseasonal.get(glacier), glacier_wide.get(glacier))
         )
+        if tables[glacier]:
+            shifts.append(model_start_shifts(table).assign(glacier=glacier, rgi_id=row.rgi_id))
         glacier_dir = rgi_output_dir(output_dir, row.rgi_id)
         series = pd.Series(ice_free, dtype=float) if ice_free else None
         if series is not None:
@@ -1511,6 +1662,19 @@ def run_pipeline(
     gradient_columns = ["glacier", "rgi_id", *GRADIENT_COLUMNS]
     gradient_table = pd.concat(gradients, ignore_index=True) if gradients else pd.DataFrame(columns=gradient_columns)
     gradient_table[gradient_columns].to_csv(output_dir / "usgs_benchmark_stakes_gradients.csv", index=False)
+    shift_columns = ["glacier", "rgi_id", *MODEL_START_COLUMNS]
+    shift_table = pd.concat(shifts, ignore_index=True) if shifts else pd.DataFrame(columns=shift_columns)
+    shift_table[shift_columns].to_csv(output_dir / MODEL_START_FILE, index=False)
+    settings = {
+        "sampling": method,
+        "start_at": start_at,
+        "summer_surface_search_days": SUMMER_SURFACE_SEARCH_DAYS,
+        "n_files": len(files),
+        "rho_water": RHO_WATER,
+        "skill_min_years": SKILL_MIN_YEARS,
+        "gradient_min_points": GRADIENT_MIN_POINTS,
+    }
+    (output_dir / SETTINGS_FILE).write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     return matches
 
 
@@ -1557,6 +1721,13 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         default="nearest",
         help="Sample the nearest cell, or interpolate bilinearly from the four neighbours.",
     )
+    parser.add_argument(
+        "--start-at",
+        choices=("summer-surface", "visit"),
+        default="summer-surface",
+        help="Start the modelled winter and annual balances at the summer surface the model reaches after the "
+        "previous fall visit (what the stake measures against), or at the visit itself.",
+    )
     add_ntasks_argument(
         parser,
         default=4,
@@ -1589,6 +1760,7 @@ def main(argv: Sequence[str] | None = None) -> pd.DataFrame:
         output_dir=output_dir,
         rgi_file=args.rgi_glacier_file,
         method=args.method,
+        start_at=args.start_at.replace("-", "_"),
         n_jobs=args.n_jobs,
         force_overwrite=args.force_overwrite,
         plot_years=(plot_year(args.plot_start), plot_year(args.plot_end)),

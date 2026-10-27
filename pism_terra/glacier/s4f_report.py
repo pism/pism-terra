@@ -18,6 +18,7 @@ outputs already on disk and ``--skip`` leaves a tool out.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -282,6 +283,37 @@ def collect_importance(output_dir: Path, base: Path) -> dict[str, Any]:
     }
 
 
+GLACIER_METHOD_NOTE = {
+    "title": "How the numbers are calculated",
+    "html": "<h4>1. Observations</h4>"
+    "<p>The USGS benchmark-glacier release publishes geodetically calibrated glacier-wide winter "
+    "(<code>Bw</code>), summer (<code>Bs</code>) and annual (<code>Ba</code>) balances in m w.e. A balance year "
+    "runs from one annual minimum to the next, both dated in the release (<code>Ba_Date</code>), and is split "
+    "at the winter maximum (<code>Bw_Date</code>). Each glacier is assigned the RGI v7 outline holding most of "
+    "its stakes, or the outline nearest their centroid within 5 km (<em>USGS glaciers matched to RGI</em>).</p>"
+    "<h4>2. Model series</h4>"
+    "<p>The model values come from the post-processed per-glacier scalar files (<code>scalar_G_*.nc</code>) of "
+    "that RGI outline. <code>surface</code> rows integrate <code>tendency_of_ice_mass_due_to_surface_mass_flux"
+    "</code>, the mass a stake network can see, over the release's own dates: <code>Bw</code> from the "
+    "previous year's <code>Ba_Date</code> to this year's <code>Bw_Date</code>, <code>Bs</code> from there to "
+    "this year's <code>Ba_Date</code>, and <code>Ba = Bw + Bs</code>. Monthly values are weighted by the days "
+    "they share with the season, so this needs monthly output; a season the model record does not fully cover "
+    "is left out. The <code>total</code> row is the annual mean of <code>tendency_of_ice_mass</code>, which "
+    "also holds discharge and flow across the outline.</p>"
+    "<h4>3. Per unit area</h4>"
+    "<p>Model mass changes (Gt) are divided by the model's own ice area of the balance year (the ice-covered "
+    "fraction <code>sftgif</code> summed over the outline times the cell area; the outline area where the file "
+    "has no <code>sftgif</code>; the observed area where it has neither) and the density of water, 1000 kg "
+    "m<sup>-3</sup>, giving m w.e. like the observations.</p>"
+    "<h4>4. Ensemble and skill</h4>"
+    "<p>With several runs the median over runs is scored. Over the balance years both sides have: <code>n"
+    "</code> their number; <code>r</code> the Pearson correlation (with at least 3 years that are not "
+    "constant); <code>mae</code> the mean of |model &minus; observed|; <code>bias</code> the mean of model "
+    "&minus; observed, so a negative bias is too little accumulation or too much melt. All in m w.e. per "
+    "year.</p>",
+}
+
+
 def collect_usgs_glaciers(output_dir: Path, base: Path) -> dict[str, Any]:
     """
     Gather the USGS glacier benchmark outputs for its page.
@@ -307,7 +339,116 @@ def collect_usgs_glaciers(output_dir: Path, base: Path) -> dict[str, Any]:
         if t
     ]
     glaciers = _glacier_sections(output_dir, base)
-    return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers)}
+    return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers), "notes": [GLACIER_METHOD_NOTE]}
+
+
+START_AT_TEXT = {
+    "summer_surface": "<p>A winter or annual balance is measured against the <em>previous summer surface</em>, "
+    "the lowest the surface gets at the end of the melt season, not against the surface on the day of the fall "
+    "visit. A visit before the melt season ends (July on the Juneau Icefield, August or September elsewhere) "
+    "therefore leaves the melt that follows it out of the measurement: on the next visit it is below the "
+    "summer surface the stake is read against. The modelled <code>bw</code> and <code>ba</code> start where the "
+    "model's own balance since the fall visit is lowest: the visit itself, or the end of a month up to "
+    "{days} days later (and before the closing visit). Where the model accumulates from the visit on, the start "
+    "stays at the visit. <code>bs</code> and <code>db</code> start at the visit. The table "
+    "<em>Start of the modelled winter and annual balances</em> below says how far the starts moved and how much "
+    "balance that left out; <code>model_from_visit</code> in the per-glacier CSV files is each balance "
+    "integrated from the visit instead.</p>",
+    "visit": "<p>The modelled <code>bw</code> and <code>ba</code> start on the day of the previous fall visit, "
+    "so melt between the visit and the end of the melt season is counted, although the stake, read against "
+    "the previous summer surface, does not see it. Run with <code>--start-at summer-surface</code> to start "
+    "at the modelled summer surface instead.</p>",
+}
+
+
+def stake_method_note(output_dir: Path) -> dict[str, str]:
+    """
+    Explain how every number on the stake page is calculated, with this run's settings.
+
+    Parameters
+    ----------
+    output_dir : Path
+        ``<report>/usgs_stakes``, holding the settings the benchmark wrote.
+
+    Returns
+    -------
+    dict
+        ``{"title", "html"}`` for the page.
+    """
+    settings: dict[str, Any] = {}
+    path = output_dir / usgs_benchmark_stakes.SETTINGS_FILE
+    if path.is_file():
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    sampling = settings.get("sampling", "nearest")
+    start_at = settings.get("start_at", "visit")
+    days = settings.get("summer_surface_search_days", usgs_benchmark_stakes.SUMMER_SURFACE_SEARCH_DAYS)
+    rho = settings.get("rho_water", 1000.0)
+    min_years = settings.get("skill_min_years", 3)
+    min_points = settings.get("gradient_min_points", usgs_benchmark_stakes.GRADIENT_MIN_POINTS)
+    n_files = f" ({settings['n_files']} files)" if "n_files" in settings else ""
+    sampled = (
+        "the value of the grid cell the stake lies in"
+        if sampling == "nearest"
+        else "a bilinear interpolation of the four surrounding cells (the stake's own cell where one of them has "
+        "no value; the ice mask is always the stake's own cell)"
+    )
+    html = [
+        (
+            ""
+            if path.is_file()
+            else "<p><em>The benchmark wrote no settings file, so the defaults of an older "
+            "version are assumed below: nearest-cell sampling and balances from the visit date.</em></p>"
+        ),
+        "<h4>1. Stakes and glaciers</h4>",
+        "<p>The stake positions and measurements are the USGS benchmark-glacier release (glaciological data: "
+        "<code>bw</code> at the spring visit, <code>ba</code> at the fall visit, sub-seasonal <code>db</code> "
+        "between two visits). Each glacier is assigned the RGI v7 outline holding most of its stakes, or the "
+        "outline nearest their centroid within 5 km (<em>USGS glaciers matched to RGI</em>).</p>",
+        "<h4>2. Model values at a stake</h4>",
+        f"<p>Every monthly <code>spatial_*.nc</code> file under the run directory is read at the stakes, as "
+        f"{sampled}{n_files}; files that end before "
+        "the first measurement (initialisation legs) are left out. The surface mass balance rate is "
+        f"<code>(surface_accumulation_flux &minus; surface_runoff_flux) / &rho;<sub>w</sub></code> with "
+        f"&rho;<sub>w</sub> = {rho:g} kg m<sup>-3</sup>, in m w.e. per year; without those two fields, "
+        "<code>tendency_of_ice_mass_due_to_surface_mass_flux</code> divided by the cell area and "
+        "&rho;<sub>w</sub>. Accumulation is the snowfall and runoff the melt that does not refreeze; rain "
+        "does not enter the balance. Months in which the model has no ice at the stake "
+        "(<code>thk</code> &le; 0) have no value, and an interval containing such a month has no modelled "
+        "balance.</p>",
+        "<h4>3. Intervals</h4>",
+        "<p>Each measurement is compared with the model over its own interval: <code>bw</code> from the "
+        "previous fall visit (or, without one, the previous balance year's glacier-wide <code>Ba_Date</code>) "
+        "to the spring visit; <code>bs</code> from the spring to the fall visit, observed as "
+        "<code>ba &minus; bw</code>; <code>ba</code> from the previous to this fall visit; <code>db</code> "
+        "between its two visits. The monthly rates are integrated with each month weighted by the days it "
+        "shares with the interval, divided by 365; an interval the model record does not fully cover has no "
+        "modelled value.</p>",
+        "<h4>4. Start of the modelled winter and annual balances</h4>",
+        START_AT_TEXT.get(start_at, "").format(days=days),
+        "<h4>5. Ensemble</h4>",
+        "<p>Each spatial file is one run. With several runs the scores, scatter and gradient plots use the "
+        "median over the runs of each measurement, and the time series show the 5&ndash;95 % range over runs "
+        "as a band.</p>",
+        "<h4>6. Skill scores</h4>",
+        "<p>Per site, and pooled over all sites of a glacier (<code>site = all</code>), per season, over the "
+        "measurements with both an observed and a modelled value: <code>n</code> their number; <code>r</code> "
+        f"the Pearson correlation (only with at least {min_years} values that are not constant); "
+        "<code>mae</code> the mean of |model &minus; observed|; <code>bias</code> the mean of "
+        "model &minus; observed, so a negative bias is too little accumulation or too much melt; "
+        "<code>elevation_offset</code> the mean modelled surface over the interval minus the stake's surveyed "
+        "elevation; <code>n_ice_free_months</code> the months the model had no ice at the stake. All balances "
+        "are in m w.e.</p>",
+        "<h4>7. Balance gradients</h4>",
+        "<p>For each season the observed and the modelled balances (ensemble median) are fitted against the "
+        "stake elevations with two straight lines that meet at zero balance, the ELA: "
+        "<code>b(z) = k<sub>below</sub> (z &minus; ELA)</code> below it and <code>k<sub>above</sub> "
+        "(z &minus; ELA)</code> above. For each candidate ELA the slopes are a least-squares fit; the ELA with "
+        "the smallest squared misfit is kept, searched over the stakes' elevation range widened by that range "
+        f"on either side, with at least {min_points} stakes on each side that has any. <code>ela_in_range</code> "
+        "is 1 when the ELA lies between the lowest and highest stake; the gradients are in m w.e. per m, "
+        "<code>rmse</code> in m w.e.</p>",
+    ]
+    return {"title": "How the numbers are calculated", "html": "".join(html)}
 
 
 def collect_usgs_stakes(output_dir: Path, base: Path) -> dict[str, Any]:
@@ -331,12 +472,22 @@ def collect_usgs_stakes(output_dir: Path, base: Path) -> dict[str, Any]:
         for t in (
             _table(output_dir / "usgs_benchmark_stakes_skill.csv", "Skill scores", "skill"),
             _table(output_dir / "usgs_benchmark_stakes_gradients.csv", "Balance gradients", "gradients"),
+            _table(
+                output_dir / usgs_benchmark_stakes.MODEL_START_FILE,
+                "Start of the modelled winter and annual balances",
+                "model-start",
+            ),
             _table(output_dir / "usgs_benchmark_stakes_rgi_match.csv", "USGS glaciers matched to RGI", "matches"),
         )
         if t
     ]
     glaciers = _glacier_sections(output_dir, base, [("*_gradient.csv", "Gradient fits")])
-    return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers)}
+    return {
+        "tables": tables,
+        "sections": glaciers,
+        "n_glaciers": len(glaciers),
+        "notes": [stake_method_note(output_dir)],
+    }
 
 
 def collect_sensitivity(output_dir: Path, base: Path) -> dict[str, Any]:

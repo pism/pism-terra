@@ -1,5 +1,6 @@
 """Run pism-s4f-report on a synthetic project, with the USGS tools stubbed."""
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -222,3 +223,39 @@ def test_no_run_renders_existing_outputs_and_skip_marks_tools(project: Path, mon
     index = (out / "index.html").read_text(encoding="utf-8")
     assert index.count('class="status ok"') == 3 and 'class="status skipped"' in index
     assert s4f_report.cli([str(project), "--output-path", str(out), "--no-run"]) == 0
+
+
+def test_stake_note_documents_the_settings_of_the_run(tmp_path: Path) -> None:
+    """
+    The stake page explains the summer-surface start with the run's search window, or assumes the visit.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    """
+    settings = {"sampling": "linear", "start_at": "summer_surface", "summer_surface_search_days": 90, "n_files": 7}
+    (tmp_path / s4f_report.usgs_benchmark_stakes.SETTINGS_FILE).write_text(json.dumps(settings))
+    note = s4f_report.stake_method_note(tmp_path)
+    assert note["title"] == "How the numbers are calculated"
+    for text in ("previous summer surface", "90 days", "bilinear", "(7 files)", "model &minus; observed"):
+        assert text in note["html"], text
+
+    older = tmp_path / "older"
+    older.mkdir()
+    html = s4f_report.stake_method_note(older)["html"]
+    assert "no settings file" in html and "start on the day of the previous fall visit" in html
+
+
+def test_usgs_pages_show_the_note(tmp_path: Path) -> None:
+    """
+    The collected stake and glacier pages carry their method notes.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    """
+    for collect in (s4f_report.collect_usgs_stakes, s4f_report.collect_usgs_glaciers):
+        collected = collect(tmp_path, tmp_path)
+        assert [n["title"] for n in collected["notes"]] == ["How the numbers are calculated"]

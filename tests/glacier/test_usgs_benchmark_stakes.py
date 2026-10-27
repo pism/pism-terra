@@ -24,6 +24,7 @@ has a closed form, one column the model never had ice in, and two stakes
 placed on cell centres from the grid itself. No network access.
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -193,9 +194,15 @@ def fixture_stake_release(tmp_path: Path) -> dict[str, Path]:
     return {"data": data, "sites": sites}
 
 
-def expected_balances() -> dict[str, float]:
+def expected_balances(start_at: str = "summer_surface") -> dict[str, float]:
     """
     Closed-form balances at stake A in 2001 (fall 2000-09-15 to fall 2001-09-15).
+
+    Parameters
+    ----------
+    start_at : {"summer_surface", "visit"}, default "summer_surface"
+        Where the modelled winter and annual balances start: the summer
+        surface is 1 October, after the runoff of 15-30 September.
 
     Returns
     -------
@@ -203,15 +210,17 @@ def expected_balances() -> dict[str, float]:
         ``bw``, ``bs``, ``ba`` and ``db`` in m w.e.
     """
     winter_days = 31 + 30 + 31 + 31 + 28 + 31 + 30  # October to April
-    bw = (ACCUMULATION * winter_days - RUNOFF * 16) / 365 / 1000  # 15-30 September is runoff
+    late_runoff = RUNOFF * 16 if start_at == "visit" else 0.0  # 15-30 September is runoff
+    bw = (ACCUMULATION * winter_days - late_runoff) / 365 / 1000
     bs = -RUNOFF * (31 + 30 + 31 + 31 + 14) / 365 / 1000  # 1 May to 15 September
     return {"bw": bw, "bs": bs, "ba": bw + bs, "db": -RUNOFF * 30 / 365 / 1000}
 
 
+@pytest.mark.parametrize("start_at", ["summer_surface", "visit"])
 @pytest.mark.parametrize("method", ["nearest", "linear"])
-def test_sampling_and_integration(tmp_path, stake_release, method):
+def test_sampling_and_integration(tmp_path, stake_release, method, start_at):
     """
-    The stake's cell is integrated over exactly the measured interval; the bare column gives NaN.
+    The stake's cell is integrated over the measured interval; the bare column gives NaN.
 
     Parameters
     ----------
@@ -221,6 +230,8 @@ def test_sampling_and_integration(tmp_path, stake_release, method):
         The synthetic release.
     method : str
         Sampling method.
+    start_at : str
+        Where the winter and annual balances start.
     """
     file = spatial_file(tmp_path / "spatial_g100m_X_id_0_2000-01-01_2002-01-01.nc")
     sites = usgs.load_sites(stake_release["sites"])
@@ -239,11 +250,14 @@ def test_sampling_and_integration(tmp_path, stake_release, method):
     np.testing.assert_allclose(sampled["usurf"].sel(site="Foo:A").values, 1500.0 + 10.0 * STAKE_CELL[1], atol=0.1)
     np.testing.assert_allclose(sampled["lon"].sel(site="Foo:A"), lonlat(*STAKE_CELL)[0])
 
-    table = ubs.stake_balances(sampled, stakes, subseasonal, run="test")
+    table = ubs.stake_balances(sampled, stakes, subseasonal, run="test", start_at=start_at)
     at_a = table[(table["site"] == "A") & (table["year"] == 2001)].set_index("variable")
-    expected = expected_balances()
+    expected = expected_balances(start_at)
     for var, value in expected.items():
         assert at_a.loc[var, "model"] == pytest.approx(value, abs=1e-9), var
+    surface = pd.Timestamp("2000-10-01") if start_at == "summer_surface" else pd.Timestamp("2000-09-15")
+    assert at_a.loc["bw", "model_start"] == surface and at_a.loc["ba", "model_start"] == surface
+    assert at_a.loc["bs", "model_start"] == at_a.loc["bs", "start"]
     assert at_a.loc["bs", "obs"] == pytest.approx(-0.7 - 0.5)
     assert at_a.loc["ba", "usurf"] == pytest.approx(1520.0, abs=0.1)
     # 2000 has no previous fall visit, so no winter or annual model value; summer still integrates
@@ -300,6 +314,63 @@ def test_previous_fall_falls_back_to_the_glacier_wide_date(tmp_path, stake_relea
     table = ubs.stake_balances(sampled, stakes, glacier_wide=wide).set_index(["site", "variable"])
     assert table.loc[("A", "bw"), "model"] == pytest.approx(expected_balances()["bw"])
     assert ubs.stake_balances(sampled, stakes).set_index(["site", "variable"])["model"].isna().loc[("A", "bw")]
+
+
+def monthly_rate(values: dict[str, float], start: str = "2000-01-01", months: int = 24) -> xr.DataArray:
+    """
+    A monthly balance rate, zero except in the listed months.
+
+    Parameters
+    ----------
+    values : dict of str to float
+        Rate (m w.e./yr) by month, keyed ``"YYYY-MM"``.
+    start : str, default "2000-01-01"
+        First month.
+    months : int, default 24
+        Length of the record.
+
+    Returns
+    -------
+    xarray.DataArray
+        The rate with ``month_start``/``month_end`` coordinates.
+    """
+    starts = pd.date_range(start, periods=months, freq="MS")
+    rate = [values.get(f"{s:%Y-%m}", 0.0) for s in starts]
+    return xr.DataArray(
+        rate,
+        dims="time",
+        coords={"month_start": ("time", starts), "month_end": ("time", starts.shift(1, freq="MS"))},
+    )
+
+
+def test_summer_surface_is_the_lowest_balance_after_the_visit():
+    """
+    Melt after the visit moves the start to where it stops; snow on a visit day leaves it there.
+    """
+    visit, spring = pd.Timestamp("2000-08-15"), pd.Timestamp("2001-05-01")
+    melt = monthly_rate({"2000-08": -3.0, "2000-09": -1.0, "2000-10": 1.0, "2000-11": 1.0})
+    assert ubs.summer_surface(melt, visit, spring) == pd.Timestamp("2000-10-01")
+    snow = monthly_rate({"2000-08": 1.0, "2000-09": 1.0})
+    assert ubs.summer_surface(snow, visit, spring) == visit
+    # melt that goes on past the search window is cut off at its end
+    late = monthly_rate({m: -1.0 for m in ("2000-08", "2000-09", "2000-10", "2000-11", "2000-12", "2001-01")})
+    assert ubs.summer_surface(late, visit, spring, search_days=60) == pd.Timestamp("2000-10-01")
+    # the summer surface never reaches the spring visit
+    assert ubs.summer_surface(late, visit, pd.Timestamp("2000-09-01")) == visit
+
+
+def test_stake_balances_rejects_an_unknown_start(stake_release):
+    """
+    ``start_at`` is one of :data:`~pism_terra.glacier.usgs_benchmark_stakes.START_AT`.
+
+    Parameters
+    ----------
+    stake_release : dict of str to Path
+        The synthetic release.
+    """
+    stakes = usgs.load_measurements(stake_release["data"], "Foo")
+    with pytest.raises(ValueError, match="start_at"):
+        ubs.stake_balances(None, stakes, start_at="spring")
 
 
 def test_skill_per_site_and_pooled():
@@ -418,6 +489,18 @@ def test_cli_end_to_end(tmp_path, stake_release, usgs_rgi, monkeypatch):
     np.testing.assert_allclose(out["db_model"].values, expected["db"])
     np.testing.assert_allclose(out["lon"].sel(site="A"), lonlat(*STAKE_CELL)[0])
     assert out.attrs["rgi_id"] == GLACIER_A
+    assert (out["ba_model_start"].sel(site="A", time=2001).values == np.datetime64("2000-10-01")).all()
+
+    # The settings and the start shifts are written for the report to document.
+    settings = json.loads((output_dir / ubs.SETTINGS_FILE).read_text())
+    assert settings["start_at"] == "summer_surface" and settings["sampling"] == "nearest"
+    shifts = pd.read_csv(output_dir / ubs.MODEL_START_FILE).set_index("variable")
+    assert shifts.loc["ba", "median_shift_days"] == 16  # 15 September to 1 October
+    late_runoff = -RUNOFF * 16 / 365 / 1000
+    assert shifts.loc["ba", "median_shifted_balance"] == pytest.approx(late_runoff)
+    table = pd.read_csv(glacier_dir / f"{stem}.csv")
+    annual = table[(table["site"] == "A") & (table["year"] == 2001) & (table["variable"] == "ba")]
+    np.testing.assert_allclose(annual["model_from_visit"] - annual["model"], late_runoff)
 
     # Observations alone still produce the per-site figure.
     obs_only = tmp_path / "obs_only"
