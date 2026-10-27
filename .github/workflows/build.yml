@@ -35,7 +35,9 @@ jobs:
       contents: read
       packages: write
     with:
-      build_args: ${{ inputs.pism_tag }}
+      # docker build-args are "NAME=value" lines; without a pism_tag (push, PR)
+      # pass none so the Dockerfile's default PISM_TAG applies.
+      build_args: ${{ inputs.pism_tag && format('PISM_TAG={0}', inputs.pism_tag) || '' }}
       version_tag: ${{ needs.call-version-info-workflow.outputs.version_tag }}
       user: ${{ github.actor }}
     secrets:
