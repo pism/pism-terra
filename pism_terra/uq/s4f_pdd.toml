@@ -1,4 +1,4 @@
-samples = 12
+samples = 36
 
 ['atmosphere.elevation_change.temperature_lapse_rate']
 
@@ -38,4 +38,10 @@ distribution = "uniform"
 
 loc = 0.2
 scale = 0.6
+distribution = "uniform"
+
+['surface.pdd.std_dev.value']
+
+loc = 1.5
+scale = 3.5
 distribution = "uniform"
