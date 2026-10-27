@@ -58,7 +58,7 @@ velocity = "none"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
-'output.spatial.times' = "monthly"
+'output.spatial.times' = "weekly"
 'output.spatial.vars' = "climatic_mass_balance,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,debm_insolation_driven_melt_flux,debm_temperature_driven_melt_flux,debm_offset_melt_flux,snow_depth,surface_albedo,insolation,thk"
 
 [grid]
