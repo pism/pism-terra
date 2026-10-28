@@ -1,7 +1,41 @@
-samples = 20
+samples = 50
 
 ['calving.vonmises_calving.sigma_max']
 
 loc = 350000
 scale = 400000
+distribution = "uniform"
+
+['frontal_melt.routing.parameter_a']
+
+loc = 4e-4
+scale = 2e-4
+
+['frontal_melt.routing.parameter_b']
+
+loc = 0.2
+scale = 0.2
+
+['ocean.plume.power_alpha']
+
+loc = 0.3
+scale = 0.3
+distribution = "uniform"
+
+['ocean.plume.drag_coefficient']
+
+loc = 1e-3
+scale = 2e-3
+distribution = "uniform"
+
+['ocean.plume.length_scale_factor']
+
+loc = 0.1
+scale = 0.25
+distribution = "uniform"
+
+['ocean.plume.melt_rate_parameter']
+
+loc = 1
+scale = 4
 distribution = "uniform"
