@@ -501,7 +501,15 @@ def run_single():
     input_path = Path(data_path) if data_path is not None else path / Path(s3_path)
     input_path.mkdir(parents=True, exist_ok=True)
 
-    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite, data_path=data_path)
+    df = stage(
+        campaign_config,
+        s3_bucket,
+        s3_path,
+        path,
+        force_overwrite=force_overwrite,
+        data_path=data_path,
+        resolution=resolution or cfg.model_dump(by_alias=True)["grid"]["resolution"],
+    )
 
     f = Figlet(font="standard")
     banner = f.renderText("pism-terra")
@@ -702,7 +710,15 @@ def run_ensemble():
     s3_path = f"""{s3_prefix}/{version}"""
     input_path = Path(data_path) if data_path is not None else path / Path(s3_path)
     input_path.mkdir(parents=True, exist_ok=True)
-    df = stage(campaign_config, s3_bucket, s3_path, path, force_overwrite=force_overwrite, data_path=data_path)
+    df = stage(
+        campaign_config,
+        s3_bucket,
+        s3_path,
+        path,
+        force_overwrite=force_overwrite,
+        data_path=data_path,
+        resolution=resolution or cfg.model_dump(by_alias=True)["grid"]["resolution"],
+    )
 
     seed = 42
     rng = np.random.default_rng(seed=seed)

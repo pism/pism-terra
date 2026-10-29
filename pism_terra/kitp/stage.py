@@ -39,6 +39,7 @@ from tqdm.auto import tqdm
 
 from pism_terra.aws import local_to_s3, s3_to_local
 from pism_terra.config import load_config
+from pism_terra.ismip7.greenland.stage import select_retreat_file
 from pism_terra.workflow import check_dataset_fully, check_xr_fully, check_xr_lazy
 
 xr.set_options(keep_attrs=True)
@@ -51,6 +52,7 @@ def stage(
     output_path: str | Path,
     force_overwrite: bool = False,
     data_path: str | Path | None = None,
+    resolution: int | float | str | None = None,
 ) -> pd.DataFrame:
     """
     Stage KITP Greenland inputs and return a file index.
@@ -98,6 +100,10 @@ def stage(
         reuse to save disk); when ``None``, they go to ``<output-path>/<prefix>`` as
         before. Files already present are not re-downloaded, so pointing several
         runs at the same ``data_path`` stages the data once.
+    resolution : int, float, str or None, default ``None``
+        The run's grid resolution (``"1800m"``). Selects the front-retreat mask
+        built for that grid; with ``None`` the configured ``retreat_file`` is
+        staged as is.
 
     Returns
     -------
@@ -138,7 +144,9 @@ def stage(
     boot_file = input_path / Path(config["boot_file"])
     heatflux_file = input_path / Path(config["heatflux_file"])
     regrid_file = input_path / Path(config["regrid_file"])
-    retreat_file = input_path / Path(config["retreat_file"])
+    retreat_file = input_path / Path(
+        select_retreat_file(config["retreat_file"], resolution, input_path, bucket, prefix)
+    )
     ocean_file = input_path / Path(config["ocean_file"])
     outline_file = input_path / Path(config["outline_file"])
 
