@@ -25,6 +25,33 @@ ISMIP7 variable. The other directories next to it in `output/` (`basins/`,
 `observations/`, the per-job `Cxxx/` copies) are working products and stay in the cloud
 bucket.
 
+### Merge per-job output first
+
+A project such as `2026_10_ppe` can hold its output per job, in
+`<project>/<job-id>/output/`, rather than in `<project>/output/`. Merge the job directories
+into `<project>/output/` before you upload. This takes write access to `pism-cloud-data`.
+The copy happens inside S3 and leaves the job directories in place:
+
+```bash
+BASE=s3://pism-cloud-data/ismip7_production/<project>
+aws s3 ls "$BASE/" | awk '$1 == "PRE" && $2 != "output/" {print $2}' | tr -d / | while read -r h; do
+  aws s3 sync "$BASE/$h/output/" "$BASE/output/" --exclude "basins/postprocess_flux.log" --only-show-errors || echo "FAILED $h"
+done
+```
+
+The merge is safe to rerun, and it adds a second copy of the data to the bucket.
+
+- **Check for files with the same name.** Files that share a path in different job
+  directories overwrite each other. In `2026_10_ppe`, `uq.csv` and the files in
+  `observations/` are identical across jobs. Each `basins/postprocess_flux.log` is different,
+  so it is excluded and stays in its job directory.
+- **Check for incomplete jobs.** The merged tree no longer shows which job a file came from,
+  so count the files per job first. Of the 52 job directories in `2026_10_ppe`, 42 held the
+  usual 77 files in `GrIS/` and the other 10 held fewer.
+- **Expect failed-run files in `state/`.** Files named `*_mass_transport_failed.nc` are merged
+  with the rest, so exclude them when you read `state/`. They are not in `GrIS/` and are not
+  uploaded.
+
 ## Before you start
 
 - A Source Cooperative account that is a member of the `ismip` organization with write

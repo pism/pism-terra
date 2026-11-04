@@ -102,19 +102,19 @@ EXPS_OPTS: dict[str, dict[str, Any]] = {
     "futSST-pdSIC_pdSST-pdSIC": {
         "color": (0.9290, 0.6940, 0.1250),
         "ls": "solid",
-        "lw": 0.75,
+        "lw": 0.5,
         "title": "Global SST warming",
     },
     "pdSST-futArcSIC_pdSST-pdSIC": {
         "color": (0.5210, 0.0860, 0.8190),
         "ls": "solid",
-        "lw": 0.75,
+        "lw": 0.5,
         "title": "Arctic sea ice loss (AGCM + 2m ice)",
     },
     "futSST-futArcSIC-SUM_pdSST-pdSIC": {
         "color": (0.2310, 0.6660, 0.1960),
         "ls": "solid",
-        "lw": 0.75,
+        "lw": 0.5,
         "title": "Global SST warming + SIC loss (AGCM + 2m ice)",
     },
 }
