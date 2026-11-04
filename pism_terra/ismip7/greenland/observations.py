@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import datetime
 import logging
-import shutil
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 from typing import Sequence
@@ -55,6 +54,7 @@ import xarray as xr
 
 from pism_terra.download import download_earthaccess, download_file, save_netcdf
 from pism_terra.log import setup_logging
+from pism_terra.workflow import place_files
 
 logger = logging.getLogger(__name__)
 
@@ -380,46 +380,6 @@ def prepare_observations(
             logger.error("Could not prepare the %s observations: %s", label, exc)
 
     return place_files(output_path, products)
-
-
-def place_files(output_path: Path | str, files: Sequence[Path | str]) -> list[Path]:
-    """
-    Copy observation files into a run's ``output/observations`` directory.
-
-    Everything a run is compared against afterwards lives in that one
-    directory, whether it was built here (the mass-balance products) or
-    staged with the inputs (the observed thickness change named by
-    ``campaign.dh_files``), so the analysis tools find it beside the output
-    without knowing where the inputs went.
-
-    Parameters
-    ----------
-    output_path : Path or str
-        Run directory; the files land in ``<output_path>/output/observations``.
-    files : sequence of Path or str
-        Files to copy. A missing one is logged and skipped: the run's inputs
-        must not fail over data that is only wanted for the analysis.
-
-    Returns
-    -------
-    list of pathlib.Path
-        The copies, in the order given, without the ones that were missing.
-    """
-    destination = Path(output_path) / "output" / "observations"
-    destination.mkdir(parents=True, exist_ok=True)
-    placed = []
-    for source in map(Path, files):
-        if not source.is_file():
-            logger.warning("No observation file at %s; not placed", source)
-            continue
-        target = destination / source.name
-        # copy2 rather than a link: the source may be a shared directory that
-        # outlives, or is cleaned independently of, this run.
-        if not (target.exists() and target.samefile(source)):
-            shutil.copy2(source, target)
-        logger.info("Placed %s", target)
-        placed.append(target)
-    return placed
 
 
 def main(argv: Sequence[str] | None = None) -> int:

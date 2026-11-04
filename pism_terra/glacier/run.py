@@ -40,7 +40,7 @@ from pism_terra.config import PASS_THROUGH_SECTIONS, JobConfig, load_config, loa
 from pism_terra.download import file_localizer
 from pism_terra.glacier.execute import find_first_and_execute
 from pism_terra.glacier.observations import DH_END, DH_START
-from pism_terra.glacier.stage import campaign_years, stage_glacier
+from pism_terra.glacier.stage import campaign_years, place_observations, stage_glacier
 from pism_terra.inversion import forward_leg_from_inversion
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
@@ -1652,6 +1652,7 @@ def _run(*, kind: str) -> None:
         # under this data path, not one per glacier.
         rgi_cache_path=in_base,
     )
+    place_observations(campaign_config, rgi_id, input_path, staging_path, glacier_path)
 
     if uq_file is not None:
         rows_df = _build_ensemble_df(df, uq_file, output_path, options.posterior_file, samples=options.samples)

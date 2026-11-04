@@ -66,6 +66,7 @@ from pism_terra.workflow import (
     check_xr_fully,
     check_xr_lazy,
     drop_geotransform_attr,
+    place_files,
     stamp_grid_mapping,
 )
 
@@ -632,6 +633,48 @@ def stage_glacier(
 
     df = pd.concat(dfs).reset_index(drop=True)
     return df
+
+
+def place_observations(
+    config: Mapping,
+    rgi_id: str,
+    input_path: Path | str,
+    staging_path: Path | str,
+    path: Path | str,
+) -> list[Path]:
+    """
+    Copy a glacier's staged observations beside the run's output.
+
+    Staging writes ``obs_{rgi_id}.nc`` to the input directory, which may be a
+    shared ``data_path``, and caches the dh raster in the staging directory.
+    The analysis compares a run against both, so they are copied into
+    ``<path>/output/observations`` and the output tree is self-describing
+    wherever it is synced to.
+
+    Parameters
+    ----------
+    config : Mapping
+        Campaign config; the dh raster is placed only when ``dh`` names a
+        dataset (not ``"none"``).
+    rgi_id : str
+        Glacier complex, naming the staged files.
+    input_path : Path or str
+        Where ``obs_{rgi_id}.nc`` was staged.
+    staging_path : Path or str
+        Where the dh raster ``{rgi_id}_dh.tif`` was cached.
+    path : Path or str
+        Run directory of the glacier, ``<output_path>/<rgi_id>``.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The copies; a file that was not staged is logged and left out.
+    """
+    files = [Path(input_path) / f"obs_{rgi_id}.nc"]
+    dh = config.get("dh", "none")
+    if dh and dh != "none":
+        files.append(Path(staging_path) / f"{rgi_id}_dh.tif")
+    return place_files(path, files)
 
 
 def main():
