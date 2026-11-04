@@ -59,7 +59,7 @@ velocity = "none"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
 'output.spatial.times' = "weekly"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,usurf,pdd_fluxes,thk"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,usurf,pdd_fluxes,thk,ice_mass"
 
 [grid]
 
