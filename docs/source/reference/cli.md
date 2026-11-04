@@ -82,10 +82,17 @@ runnable as `python -m <module>`. The full list lives in
     scatter, balance-elevation gradient plots per season with two-piece fits
     hinged at the ELA, and a NetCDF per glacier under `<rgi_id>/`, plus
     per-site and pooled skill scores.
+* - `pism-glacier-usgs-benchmark-annual`
+  - Plot the release's annual glacier-wide balances as bars with the
+    cumulative balance and the latest year's rank and percentile, one figure
+    per glacier (Fig. 2 of the USGS Benchmark Glaciers Executive Summary),
+    plus a summary table. Observations only; no RGI matching.
 * - `pism-glacier-usgs-generate-geopackage`
   - Write the USGS benchmark-glacier stake measurements (m w.e., typed
     dates) to a GeoPackage with `sites`, `stakes` and `subseasonal` layers.
 ```
+
+The four USGS commands are described in {doc}`../features/usgs_benchmark`.
 
 Both run commands take `RGI_ID CONFIG_FILE TEMPLATE_FILE` plus an *optional*
 `UQ_FILE` positional: omit it for a single run, supply it to render one script

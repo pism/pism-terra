@@ -62,6 +62,7 @@ features/velocities
 features/run_configuration
 features/uncertainty_quantification
 features/postprocessing
+features/usgs_benchmark
 ```
 
 

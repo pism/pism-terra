@@ -201,6 +201,7 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     :toctree: generated/
 
     load_sites
+    uncertainty_var
     load_glacier_wide
     parse_dates
     load_measurements
@@ -208,12 +209,22 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     match_rgi_ids
     rgi_output_dir
     find_model_files
+    datetime_encoding
+    map_files
     open_pism
     grid_spacing
     run_label
+    unique_run_labels
+    to_timestamp
+    year_of
+    plot_year
+    apply_plot_years
+    mean_years
+    month_edges
     interval_edges
     is_monthly
     integrate_rate
+    ensemble_line
     score
     format_skill
 ```
@@ -225,6 +236,7 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     :toctree: generated/
 
     to_mass_rate
+    load_model_data
     load_model_series
     model_seasonal_balances
     ice_area
@@ -245,6 +257,10 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     stake_points
     sample_points
     point_smb_rate
+    first_measurement
+    ends_before
+    summer_surface
+    model_start_shifts
     stake_balances
     stake_skill
     plot_stakes
@@ -264,6 +280,19 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
 
     build_stake_layers
     write_stake_geopackage
+```
+
+```{eval-rst}
+.. currentmodule:: pism_terra.glacier.usgs_benchmark_annual
+
+.. autosummary::
+    :toctree: generated/
+
+    display_name
+    annual_summary
+    balance_limit
+    plot_annual_balance
+    run_pipeline
 ```
 
 ### Run generation & post-processing
