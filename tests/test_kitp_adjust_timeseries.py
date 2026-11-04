@@ -1,8 +1,8 @@
 """
 Tests for the KITP timeseries adjustment.
 
-The adjustment trims spin-up, restamps the surviving years as 1..N and
-subtracts each cumulative variable's value at year 1, so that runs starting at
+The adjustment trims spin-up, restamps the surviving years as 0..N-1 and
+subtracts each cumulative variable's value at year 0, so that runs starting at
 different model times can be compared directly.
 """
 
@@ -15,6 +15,7 @@ import xarray as xr
 from pism_terra.kitp.adjust_kitp_timeseries import (
     DEFAULT_VARIABLES,
     adjust_kitp_timeseries,
+    select_glacier,
     trim_spinup,
     write_outputs,
 )
@@ -55,15 +56,15 @@ def monthly_run(first_year: int = 1, last_year: int = 320) -> xr.Dataset:
     return ds
 
 
-def test_trims_spinup_and_restamps_from_year_one():
+def test_trims_spinup_and_restamps_from_year_zero():
     """
-    Only the requested window survives, renumbered from year 1.
+    Only the requested window survives, renumbered from year 0.
     """
     out = adjust_kitp_timeseries(monthly_run(), spinup_end_year=11, window_end_year=311)
 
     assert out.sizes["time"] == 301
-    assert out["time"].values[0] == cftime.DatetimeNoLeap(1, 1, 1)
-    assert out["time"].values[-1] == cftime.DatetimeNoLeap(301, 1, 1)
+    assert out["time"].values[0] == cftime.DatetimeNoLeap(0, 1, 1)
+    assert out["time"].values[-1] == cftime.DatetimeNoLeap(300, 1, 1)
     # The bounds variable and its dimension cannot survive resampling.
     assert "time_bounds" not in out.variables
     assert "nv" not in out.dims
@@ -114,7 +115,10 @@ def test_empty_window_is_rejected():
 
 def test_write_outputs_writes_both_forms(tmp_path):
     """
-    The NetCDF and the CSV carry the same numbers.
+    The NetCDF carries the timeseries and the CSV its sea-level equivalent.
+
+    The CSV holds ``sle`` alone, indexed by the position in the kept window,
+    which is the model year since the window is stamped from year 0.
 
     Parameters
     ----------
@@ -125,16 +129,20 @@ def test_write_outputs_writes_both_forms(tmp_path):
     netcdf = tmp_path / "nested" / "kitp.nc"
     csv = tmp_path / "nested" / "kitp.csv"
 
-    df = write_outputs(out, netcdf, csv)
+    write_outputs(out, netcdf, csv)
 
     assert netcdf.exists() and csv.exists()
-    # No stray index column: the time coordinate is a named column.
-    from_disk = pd.read_csv(csv)
-    assert from_disk.columns[0] == "time"
-    assert not any(col.startswith("Unnamed") for col in from_disk.columns)
-    np.testing.assert_allclose(from_disk["ice_mass"].values, df["ice_mass"].values)
+    from_disk = pd.read_csv(csv, index_col=0)
+    assert list(from_disk.columns) == ["sle"]
+    np.testing.assert_array_equal(from_disk.index.values, np.arange(out.sizes["time"]))
+    expected = -out["ice_mass_glacierized"].values / 1e12 / 361.8
+    np.testing.assert_allclose(from_disk["sle"].values, expected)
+    # Normalised at year 0, so the sea-level contribution starts at zero.
+    assert from_disk["sle"].iloc[0] == 0.0
 
-    with xr.open_dataset(netcdf, decode_times=xr.coders.CFDatetimeCoder(use_cftime=True)) as back:
+    with xr.open_dataset(
+        netcdf, decode_times=xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
+    ) as back:
         np.testing.assert_allclose(back["ice_mass"].values, out["ice_mass"].values)
         assert back.sizes["time"] == out.sizes["time"]
 
@@ -150,4 +158,93 @@ def test_trim_spinup_keeps_everything_after_the_spinup():
     assert short.sizes["time"] == 139
     assert long_run.sizes["time"] == 389
     for out in (short, long_run):
-        assert out["time"].values[0] == cftime.DatetimeNoLeap(1, 1, 1)
+        assert out["time"].values[0] == cftime.DatetimeNoLeap(0, 1, 1)
+
+
+def basin_run(names: tuple[str, ...] = ("NW", "GIS", "SE")) -> xr.Dataset:
+    """
+    Build a basin-wise timeseries: one :func:`monthly_run` per glacier.
+
+    Each glacier's values are scaled by its position plus one, so the
+    selected glacier is recognisable from the numbers.
+
+    Parameters
+    ----------
+    names : tuple of str, default ("NW", "GIS", "SE")
+        The ``glacier_id_name`` of each glacier, in order.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with a ``glacier_id`` axis labelled by ``glacier_id_name``,
+        as the basin-wise scalar post-processing writes it.
+    """
+    run = monthly_run().drop_vars("time_bounds")
+    ds = xr.concat([run * (k + 1) for k in range(len(names))], dim="glacier_id")
+    return ds.assign_coords(glacier_id=np.arange(len(names)), glacier_id_name=("glacier_id", list(names)))
+
+
+@pytest.mark.parametrize(("name", "factor"), [(None, 2), ("GIS", 2), ("SE", 3)])
+def test_select_glacier_picks_by_name_with_gis_by_default(name, factor):
+    """
+    Keep the named glacier, or ``GIS`` when none is named, and drop the axis.
+
+    Parameters
+    ----------
+    name : str or None
+        Requested ``glacier_id_name``.
+    factor : int
+        Scale of the glacier expected to be kept.
+    """
+    ds = basin_run()
+
+    out = select_glacier(ds, name)
+
+    assert "glacier_id" not in out.dims
+    np.testing.assert_allclose(out["ice_mass"].values, monthly_run()["ice_mass"].values * factor)
+
+
+def test_select_glacier_rejects_an_unknown_name():
+    """
+    A misspelled name fails up front, listing the names that exist.
+    """
+    with pytest.raises(ValueError, match=r"no glacier_id_name 'XX' in the input; available: \['NW', 'GIS', 'SE'\]"):
+        select_glacier(basin_run(), "XX")
+
+
+def test_select_glacier_without_the_axis_returns_the_input(caplog):
+    """
+    A timeseries without ``glacier_id`` passes through; a named glacier is reported as ignored.
+
+    Parameters
+    ----------
+    caplog : pytest.LogCaptureFixture
+        Captures the warning.
+    """
+    ds = monthly_run()
+
+    assert select_glacier(ds) is ds
+    assert select_glacier(ds, "GIS") is ds
+    assert "ignoring glacier_id_name 'GIS'" in caplog.text
+
+
+def test_write_outputs_writes_the_selected_glacier_to_the_csv(tmp_path):
+    """
+    The CSV holds the chosen glacier and the NetCDF keeps all of them.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    out = trim_spinup(basin_run())
+    netcdf, csv = tmp_path / "kitp.nc", tmp_path / "kitp.csv"
+
+    write_outputs(out, netcdf, csv, glacier_id_name="SE")
+
+    expected = -out["ice_mass_glacierized"].isel(glacier_id=2).values / 1e12 / 361.8
+    np.testing.assert_allclose(pd.read_csv(csv)["sle"].values, expected)
+    with xr.open_dataset(
+        netcdf, decode_times=xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
+    ) as back:
+        assert back.sizes["glacier_id"] == 3

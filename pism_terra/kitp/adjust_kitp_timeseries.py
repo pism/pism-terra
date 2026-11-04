@@ -20,8 +20,8 @@ Put a KITP scalar timeseries on a comparable footing.
 
 A KITP run spends its first years settling after initialisation, and its time
 axis starts wherever the run did. Both make runs awkward to compare with each
-other. This module trims the spin-up, restamps what is left as years 1..N, and
-subtracts each cumulative variable's value at year 1 so every series starts at
+other. This module trims the spin-up, restamps what is left as years 0..N-1,
+and subtracts each cumulative variable's value at year 0 so every series starts at
 zero.
 
 The result is written as both NetCDF and CSV — the same numbers in the shape
@@ -49,6 +49,10 @@ DEFAULT_VARIABLES = ["ice_mass", "ice_mass_glacierized"]
 SPINUP_END_YEAR = 11
 WINDOW_END_YEAR = 311
 
+# The glacier written to the CSV when the input has a ``glacier_id`` axis
+# (basin-wise scalar output) and none is named: the whole ice sheet.
+DEFAULT_GLACIER_ID_NAME = "GIS"
+
 
 def adjust_kitp_timeseries(
     ds: xr.Dataset,
@@ -57,7 +61,7 @@ def adjust_kitp_timeseries(
     window_end_year: int = WINDOW_END_YEAR,
 ) -> xr.Dataset:
     """
-    Trim spin-up, restamp the time axis from year 1, and normalise to its start.
+    Trim spin-up, restamp the time axis from year 0, and normalise to its start.
 
     Parameters
     ----------
@@ -76,7 +80,7 @@ def adjust_kitp_timeseries(
     Returns
     -------
     xarray.Dataset
-        Yearly means over the kept window, with ``time`` running from year 1
+        Yearly means over the kept window, with ``time`` running from year 0
         and the requested variables starting at zero.
 
     Raises
@@ -92,8 +96,9 @@ def adjust_kitp_timeseries(
 
     ds = trim_spinup(ds, spinup_end_year=spinup_end_year, window_end_year=window_end_year)
 
-    ds = normalize_timeseries(ds, variables, cftime.DatetimeNoLeap(1, 1, 1))
-    logger.info("Normalised %s to zero at year 1", ", ".join(variables))
+    # The reference is the first kept year, which trim_spinup stamps year 0.
+    ds = normalize_timeseries(ds, variables, cftime.DatetimeNoLeap(0, 1, 1))
+    logger.info("Normalised %s to zero at year 0", ", ".join(variables))
     return ds
 
 
@@ -103,7 +108,7 @@ def trim_spinup(
     window_end_year: int | None = WINDOW_END_YEAR,
 ) -> xr.Dataset:
     """
-    Drop the spin-up years, average to years, and restamp the rest from year 1.
+    Drop the spin-up years, average to years, and restamp the rest from year 0.
 
     A run's first years are still settling after initialisation, and its time
     axis starts wherever the run did. Discarding the former and renumbering
@@ -124,7 +129,7 @@ def trim_spinup(
     Returns
     -------
     xarray.Dataset
-        Yearly means over the kept window, with ``time`` running from year 1.
+        Yearly means over the kept window, with ``time`` running from year 0.
 
     Raises
     ------
@@ -141,12 +146,60 @@ def trim_spinup(
         )
 
     ds = ds.resample(time="YS").mean()
-    ds["time"] = [cftime.DatetimeNoLeap(year, 1, 1) for year in range(1, len(ds.time) + 1)]
-    logger.info("Dropped the first %d years; kept %d, restamped from year 1", spinup_end_year - 1, ds.sizes["time"])
+    ds["time"] = [cftime.DatetimeNoLeap(year, 1, 1) for year in range(0, len(ds.time))]
+    logger.info("Dropped the first %d years; kept %d, restamped from year 0", spinup_end_year - 1, ds.sizes["time"])
     return ds
 
 
-def write_outputs(ds: xr.Dataset, outfile: str | Path, outcsv: str | Path) -> pd.DataFrame:
+def select_glacier(ds: xr.Dataset, glacier_id_name: str | None = None) -> xr.Dataset:
+    """
+    Pick one glacier out of a timeseries with a ``glacier_id`` axis.
+
+    Basin-wise scalar output carries one series per glacier along
+    ``glacier_id``, labelled by the ``glacier_id_name`` coordinate. A
+    timeseries without that axis is returned unchanged.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Timeseries, with or without a ``glacier_id`` axis.
+    glacier_id_name : str or None, optional
+        Name of the glacier to keep. Defaults to
+        :data:`DEFAULT_GLACIER_ID_NAME` when the axis exists.
+
+    Returns
+    -------
+    xarray.Dataset
+        The chosen glacier's series without the ``glacier_id`` axis, or
+        ``ds`` itself when it has none.
+
+    Raises
+    ------
+    ValueError
+        If ``ds`` has a ``glacier_id`` axis but no ``glacier_id_name``
+        coordinate, or if no glacier has the requested name.
+    """
+    if "glacier_id" not in ds.dims:
+        if glacier_id_name is not None:
+            logger.warning("No glacier_id axis in the input; ignoring glacier_id_name %r", glacier_id_name)
+        return ds
+    if "glacier_id_name" not in ds.variables:
+        raise ValueError("the input has a glacier_id axis but no glacier_id_name to select by")
+
+    name = DEFAULT_GLACIER_ID_NAME if glacier_id_name is None else glacier_id_name
+    names = [str(n) for n in ds["glacier_id_name"].values]
+    if name not in names:
+        raise ValueError(f"no glacier_id_name {name!r} in the input; available: {names}")
+    logger.info("Selecting glacier_id_name %s", name)
+    return ds.isel(glacier_id=names.index(name))
+
+
+def write_outputs(
+    ds: xr.Dataset,
+    outfile: str | Path,
+    outcsv: str | Path,
+    glacier_id_name: str | None = None,
+) -> pd.DataFrame:
     """
     Write the adjusted timeseries as NetCDF and as a flat CSV.
 
@@ -155,9 +208,13 @@ def write_outputs(ds: xr.Dataset, outfile: str | Path, outcsv: str | Path) -> pd
     ds : xarray.Dataset
         Adjusted timeseries from :func:`adjust_kitp_timeseries`.
     outfile : str or pathlib.Path
-        Destination NetCDF file. Parent directories are created.
+        Destination NetCDF file, with every glacier. Parent directories are
+        created.
     outcsv : str or pathlib.Path
         Destination CSV file. Parent directories are created.
+    glacier_id_name : str or None, optional
+        Glacier written to the CSV when ``ds`` has a ``glacier_id`` axis; see
+        :func:`select_glacier`.
 
     Returns
     -------
@@ -171,9 +228,12 @@ def write_outputs(ds: xr.Dataset, outfile: str | Path, outcsv: str | Path) -> pd
     logger.info("Writing %s", outfile)
     ds.to_netcdf(outfile)
 
+    ds = select_glacier(ds, glacier_id_name)
+    ds["sle"] = -ds["ice_mass_glacierized"] / 1e12 / 361.8
     df = ds.to_dataframe().reset_index()
+    df = df["sle"]
     logger.info("Writing %s", outcsv)
-    df.to_csv(outcsv, index=False)
+    df.to_csv(outcsv, index=True)
     return df
 
 
@@ -204,6 +264,13 @@ def main():
         default=WINDOW_END_YEAR,
     )
     parser.add_argument(
+        "--glacier-id-name",
+        help="Glacier written to the CSV when the input has a glacier_id axis, by its glacier_id_name; "
+        f"{DEFAULT_GLACIER_ID_NAME} when unset. The NetCDF keeps every glacier.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "INFILE",
         help="input scalar timeseries (NetCDF).",
         nargs=1,
@@ -224,7 +291,7 @@ def main():
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
     ds = xr.open_dataset(options.INFILE[0], decode_times=time_coder)
     # A char-array config blob has no place in a dataframe.
     ds = ds.drop_vars("pism_config", errors="ignore")
@@ -235,7 +302,7 @@ def main():
         spinup_end_year=options.spinup_end_year,
         window_end_year=options.window_end_year,
     )
-    write_outputs(adjusted, options.OUTFILE[0], options.OUTCSV[0])
+    write_outputs(adjusted, options.OUTFILE[0], options.OUTCSV[0], glacier_id_name=options.glacier_id_name)
 
 
 if __name__ == "__main__":
