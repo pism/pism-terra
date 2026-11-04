@@ -2,10 +2,13 @@
 
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyogrio
 import pytest
 import xarray as xr
+from shapely.geometry import box
 
 from pism_terra.glacier import importance_sampling as gis
 
@@ -175,3 +178,34 @@ def test_parse_variable_defaults_the_uncertainty() -> None:
     assert gis.parse_variable("v:speed:speed_sigma") == ("v", "speed", "speed_sigma")
     with pytest.raises(ValueError):
         gis.parse_variable("usurf")
+
+
+def test_outline_is_projected_onto_the_grid_and_drawn(tmp_path: Path) -> None:
+    """
+    The staged complex outline is read in the grid's CRS and drawn on the best-member maps.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    """
+    crs = "EPSG:3338"
+    obs = xr.Dataset(
+        {"dh": (("y", "x"), np.zeros((20, 20)), {"units": "m", "grid_mapping": "spatial_ref"})},
+        coords=_grid(20, 100.0),
+    )
+    obs["spatial_ref"] = xr.DataArray(0, attrs={"crs_wkt": gpd.GeoSeries([], crs=crs).crs.to_wkt()})
+    obs_file = tmp_path / "obs.nc"
+    obs.to_netcdf(obs_file)
+    # Written in geographic coordinates, as staging does.
+    outline = gpd.GeoDataFrame({"crs": [crs]}, geometry=[box(500.0, 500.0, 1500.0, 1500.0)], crs=crs)
+    pyogrio.write_dataframe(outline.to_crs("EPSG:4326"), tmp_path / "rgi-C.gpkg")
+
+    projected = gis.load_outline(tmp_path / "rgi-C.gpkg", obs_file)
+    assert projected is not None and projected.crs == crs
+    np.testing.assert_allclose(projected.total_bounds, [500.0, 500.0, 1500.0, 1500.0], atol=1e-3)
+    assert gis.load_outline(tmp_path / "missing.gpkg", obs_file) is None
+
+    png = tmp_path / "best.png"
+    gis.plot_best_member(obs["dh"], obs["dh"], "Best", png, outline=projected)
+    assert png.exists()
