@@ -52,6 +52,10 @@ from pism_terra.ismip7.naming import (
     member_ids,
     split_sample_id,
 )
+from pism_terra.ismip7.ppe_table import (  # noqa: F401  # re-exported
+    MEMBER_ID_COLUMNS,
+    MEMBERS_CSV,
+)
 from pism_terra.sampling import generate_samples
 from pism_terra.workflow import (
     add_profile_option,
@@ -333,24 +337,6 @@ def _build_init_leg(
         validate_pism_options(run_init, pism_config_cdl)
 
     return dict2str(sort_dict_by_key(without_unset_retreat(run_init))), state_init, init_tag
-
-
-#: Per-run record of what each ``set_counter`` was, written beside the run
-#: scripts. The protocol's counter "links to entries in a spreadsheet
-#: specifying parameter and modelling choices for this particular
-#: experiment"; this is that spreadsheet.
-MEMBERS_CSV = "ismip7_members.csv"
-
-#: Columns that identify the run, before the sampled parameters.
-MEMBER_ID_COLUMNS = (
-    "set_counter",
-    "ism_member_id",
-    "forcing_member_id",
-    "esm_id",
-    "experiment_id",
-    "set_id",
-    "uq_draw",
-)
 
 
 def is_ismip7_run(cfg) -> bool:

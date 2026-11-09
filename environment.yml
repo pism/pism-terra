@@ -36,6 +36,7 @@ dependencies:
   - hdf5
   - netCDF4
   - numpy
+  - openpyxl
   - pandas
   - pint-xarray
   - pyamg

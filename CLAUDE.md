@@ -76,6 +76,7 @@ pism-glacier-stage RGI_ID RGI_FILE CONFIG_FILE    # Stage glacier inputs
 pism-glacier-run RGI_ID RGI_FILE CONFIG_FILE TEMPLATE_FILE  # Generate single run
 pism-glacier-run-ensemble RGI_ID RGI_FILE CONFIG_FILE TEMPLATE_FILE UQ_FILE  # Generate ensemble
 pism-glacier-postprocess TOML_FILE                # Post-process results
+pism-ismip7-ppe-table PATH_OR_S3_URI              # Excel appendix describing a PPE (runs, status, members, priors)
 ```
 
 ## Architecture
