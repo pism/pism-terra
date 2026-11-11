@@ -81,7 +81,7 @@ from pism_terra.log import setup_logging
 from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.workflow import dataset_crs
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pism_terra.glacier.carra2_bias_correction")
 
 #: Variables a CARRA2 store must have.
 REQUIRED_VARS = ("air_temp", "geopotential_height", "air_temp_2m", "orography")
