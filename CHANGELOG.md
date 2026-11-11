@@ -154,6 +154,9 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `glacier.execute` no longer accepts a `--job-id` parameter and now stages files based on the full S3 URI of `RUN_SCIPT`, if needed.
 - Per-region scalar output (ISMIP7 Greenland, KITP, and glacier post-processing) is now readable by CDO: `time` is written as the first dimension, and the region dimension (`basin` / `RGIid`) is a positional integer index whose labels live in a companion `basin_name` / `RGIid_name` coordinate. **Migration:** label selection now needs `ds.set_index(basin="basin_name").sel(basin="GIS")`. Previously CDO refused these files outright with `Time must be the first dimension!` followed by `Unsupported file structure`.
 
+### Removed
+- `pism-carra2-bias-correction --sites` and the site outputs it wrote (`site_bias.csv`, `site_bias_monthly.png`, `site_bias_per_site.png`), with `site_bias`, `plot_sites_pooled` and `plot_sites`; also the packaged `data/kennicott-points.gpkg` it was used with.
+
 ### Fixed
 - `pism-postprocess-spatial` takes `--crs`, for an input file without a grid mapping, like `pism-postprocess-scalar` and `pism-postprocess-dh`. It had no such option and ignored unknown options, so `--crs EPSG:3413` changed nothing while the error asked for it; unknown options are now refused.
 - `pism-s4f-report` (`usgs_benchmark_stakes`) failed with "cannot convert a DataFrame with a non-unique MultiIndex" when one stake, year and season appeared twice for a run. Two outputs of one member in one run directory (a rerun at another resolution or for another span) got the same run label (`usgs.run_label` leaves out resolution and span); they are now named by their paths with a warning (`usgs.unique_run_labels`, also used by `usgs_benchmark_glaciers`), and `to_dataset` keeps the first of any rows that still repeat, with a warning, as it does for the observations.

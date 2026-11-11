@@ -44,8 +44,7 @@ default (least absolute deviations), which is not pulled up by the few days
 of large bias in the daily medians' long warm tail; ``--fit mean`` makes it
 follow the mean instead (least squares). Several years pool into one cycle. It writes the medians, the fit and the fitted cycle per bin as
 CSV, and figures of the bias against elevation and against the day of the
-year. Given point sites as well, it also samples the stores there and plots
-the bias per month, pooled and per site.
+year.
 
 The bias is never held for the whole domain: the store is read one chunk
 of the grid at a time and the bias counted into histograms per day,
@@ -53,7 +52,7 @@ category and elevation bin (see :func:`bias_histograms`), so memory depends
 on the chunk, not on the domain or the number of years. Cells at sea level
 are taken for sea and left out (``--min-elevation``).
 
-Stores, outlines and sites may each be a local path or an ``s3://`` URI.
+Stores and outlines may each be a local path or an ``s3://`` URI.
 """
 
 import logging
@@ -76,7 +75,6 @@ from matplotlib.figure import Figure
 from scipy.optimize import linprog, minimize_scalar
 from tqdm.auto import tqdm
 
-from pism_terra.grids import sample_points
 from pism_terra.log import setup_logging
 from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.workflow import dataset_crs
@@ -273,7 +271,7 @@ def fit_to_ground(
     Fit ``T = a + b z`` through the pressure levels and evaluate it at the ground.
 
     The fit is ordinary least squares along *dim*, separately for every other
-    index (day, cell or site). CARRA2 reports temperatures on levels below
+    index (day or cell). CARRA2 reports temperatures on levels below
     its terrain too, but those are extrapolated, not air; *below* limits how
     many of them enter the fit.
 
@@ -286,7 +284,7 @@ def fit_to_ground(
         height rises along *dim*.
     ground : xarray.DataArray
         Height the fit is evaluated at, m, broadcastable against the others
-        (the orography, on a grid or at sites).
+        (the orography).
     below : int or None, default :data:`DEFAULT_BELOW`
         Levels below the ground used besides every level above it: 0 uses
         only levels above the ground, None every level.
@@ -1547,128 +1545,6 @@ def plot_seasonal_fit(daily: pd.DataFrame, fits: pd.DataFrame, min_cells: int = 
     return fig
 
 
-def site_bias(ds: xr.Dataset, sites: gpd.GeoDataFrame, below: int | None = DEFAULT_BELOW) -> pd.DataFrame | None:
-    """
-    Sample a store at point sites and compute the daily bias there.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        CARRA2 store.
-    sites : geopandas.GeoDataFrame
-        Points with a CRS, labelled by a ``site`` column or their index.
-    below : int or None, default :data:`DEFAULT_BELOW`
-        See :func:`fit_to_ground`.
-
-    Returns
-    -------
-    pandas.DataFrame or None
-        ``site``, ``time``, ``orography`` and ``bias``; None when no site
-        lies inside the store's grid.
-    """
-    try:
-        points = sample_points(ds, sites, variables=list(REQUIRED_VARS))
-    except ValueError as exc:
-        logger.warning("no site sampled: %s", exc)
-        return None
-    points = points.load()
-    bias = ground_bias(points, below=below)
-    frame = bias.to_dataframe().reset_index()[["site", "time", "bias"]]
-    orography = points["orography"].to_series()
-    frame["orography"] = frame["site"].map(orography)
-    return frame
-
-
-def _monthly_violins(ax: Any, rows: pd.DataFrame) -> None:
-    """
-    Draw one grey violin per month of a bias table.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-        Axes to draw on.
-    rows : pandas.DataFrame
-        Rows with ``time`` and ``bias``.
-    """
-    months = pd.to_datetime(rows["time"]).dt.month
-    data = {m: rows.loc[months == m, "bias"].dropna().to_numpy() for m in range(1, 13)}
-    present = [m for m, values in data.items() if values.size > 1]
-    if present:
-        parts = ax.violinplot(
-            [data[m] for m in present], positions=present, widths=0.85, showmedians=True, showextrema=False
-        )
-        _style_violins(parts, "0.8")
-    ax.axhline(0, color="k", lw=0.8)
-    ax.set_xticks(range(1, 13), MONTH_LABELS)
-    ax.grid(axis="y", alpha=0.3)
-
-
-def plot_sites_pooled(frame: pd.DataFrame) -> Figure:
-    """
-    Plot the bias per month for all sites pooled, with each site's monthly median.
-
-    Parameters
-    ----------
-    frame : pandas.DataFrame
-        Output of :func:`site_bias`.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        The figure.
-    """
-    fig, ax = plt.subplots(figsize=(11, 5), constrained_layout=True)
-    _monthly_violins(ax, frame)
-    sites = list(dict.fromkeys(frame["site"]))
-    medians = frame.assign(month=pd.to_datetime(frame["time"]).dt.month).groupby(["site", "month"])["bias"].median()
-    offsets = np.linspace(-0.25, 0.25, len(sites)) if len(sites) > 1 else [0.0]
-    for color, dx, site in zip(matplotlib.colormaps["tab10"].colors, offsets, sites):
-        series = medians.loc[site]
-        ax.plot(series.index + dx, series.to_numpy(), "o", ms=5, color=color, mec="k", mew=0.4, label=str(site))
-    ax.set_ylabel("Level fit at the terrain − 2 m air temperature (K)")
-    ax.set_title("Free-air extrapolation vs CARRA2 2 m temperature, all sites pooled", fontsize=11)
-    ax.legend(title="site median", ncol=3, fontsize=8, loc="upper left")
-    return fig
-
-
-def plot_sites(frame: pd.DataFrame, ncols: int = 2) -> Figure:
-    """
-    Plot the bias per month in one panel per site.
-
-    Parameters
-    ----------
-    frame : pandas.DataFrame
-        Output of :func:`site_bias`.
-    ncols : int, default 2
-        Panels per row.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        The figure.
-    """
-    sites = list(dict.fromkeys(frame["site"]))
-    nrows = math.ceil(len(sites) / ncols)
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(5.5 * ncols, 3.3 * nrows), sharex=True, sharey=True, constrained_layout=True
-    )
-    axes = np.atleast_1d(axes).ravel()
-    for ax, site in zip(axes, sites):
-        rows = frame[frame["site"] == site]
-        _monthly_violins(ax, rows)
-        ax.set_title(
-            f"{site}  (CARRA2 terrain {rows['orography'].iloc[0]:.0f} m, "
-            f"annual median {rows['bias'].median():+.1f} K)",
-            fontsize=10,
-        )
-    for ax in axes[len(sites) :]:
-        ax.set_visible(False)
-    for ax in axes[::ncols]:
-        ax.set_ylabel("Fit at terrain − 2 m T (K)")
-    fig.suptitle("Free-air extrapolation vs CARRA2 2 m temperature, per site")
-    return fig
-
-
 def _source_name(path: str | Path) -> str:
     """
     Name a store by its file name, without the extension.
@@ -1748,7 +1624,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = (
         "Compare CARRA2's free-air temperature, fitted through the pressure levels and carried down to the "
-        "terrain, with its 2 m air temperature: on and off glacier, by elevation, and optionally at sites."
+        "terrain, with its 2 m air temperature: on and off glacier, by elevation."
     )
     parser.add_argument(
         "CARRA2", nargs="+", help="Daily CARRA2 stores from pism-s4f-carra2 (.zarr or NetCDF), local or s3://."
@@ -1759,7 +1635,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="Glacier outline files (GeoPackage, shapefile, ...), local or s3://.",
     )
-    parser.add_argument("--sites", default=None, help="Point sites to plot the monthly bias at, local or s3://.")
     parser.add_argument("--output-path", type=Path, default=Path("carra2_bias"), help="Directory for the results.")
     parser.add_argument("--bin-width", type=float, default=DEFAULT_BIN_WIDTH, help="Width of the elevation bins (m).")
     parser.add_argument(
@@ -1817,10 +1692,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     setup_logging(output / "carra2_bias_correction.log")
 
     outlines = read_vectors(args.outlines, anon=args.anon)
-    sites = read_vector(args.sites, anon=args.anon) if args.sites else None
     logger.info("%d outlines from %s", len(outlines), args.outlines)
 
-    hists, dailies, site_frames = [], [], []
+    hists, dailies = [], []
     for path in args.CARRA2:
         print(f"Reading {path}...", flush=True)
         ds = open_carra2(path, anon=args.anon)
@@ -1850,10 +1724,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         hists.append(hist)
         dailies.append(daily_medians(hist, source))
-        if sites is not None:
-            frame = site_bias(ds, sites, below=args.below)
-            if frame is not None:
-                site_frames.append(frame.assign(source=source))
 
     annual = annual_histograms(hists)
     medians = binned_medians(annual)
@@ -1872,16 +1742,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         figure.savefig(output / name, dpi=args.dpi)
         plt.close(figure)
-
-    if site_frames:
-        frame = pd.concat(site_frames, ignore_index=True)
-        frame.to_csv(output / "site_bias.csv", index=False)
-        for name, figure in (
-            ("site_bias_monthly.png", plot_sites_pooled(frame)),
-            ("site_bias_per_site.png", plot_sites(frame)),
-        ):
-            figure.savefig(output / name, dpi=args.dpi)
-            plt.close(figure)
 
     if not fits.empty:
         columns = ["rmse", "mae", "r2", "bic", "best"]

@@ -159,9 +159,6 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
     seasonal_by_elevation
     plot_bias_by_elevation
     plot_seasonal_fit
-    site_bias
-    plot_sites_pooled
-    plot_sites
 ```
 
 ### Ice thickness

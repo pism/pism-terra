@@ -35,7 +35,7 @@ import pandas as pd
 import pytest
 import rioxarray  # noqa: F401  pylint: disable=unused-import
 import xarray as xr
-from shapely.geometry import Point, box
+from shapely.geometry import box
 
 from pism_terra.glacier import carra2_bias_correction as mod
 
@@ -580,14 +580,9 @@ def test_main_recovers_the_built_in_bias(tmp_path):
     store = synthetic_store(tmp_path / "carra2_daily_test.zarr", "2004-01-01", "2005-12-31")
     outlines = tmp_path / "outlines.gpkg"
     glacier_outline().to_file(outlines)
-    sites = tmp_path / "sites.gpkg"
-    points = gpd.GeoDataFrame(
-        {"site": ["low", "high"]}, geometry=[Point(X[2], Y[-2]), Point(X[-3], Y[-2])], crs=CRS
-    ).to_crs("EPSG:4326")
-    points.to_file(sites)
     out = tmp_path / "out"
 
-    assert mod.main([str(store), "--outlines", str(outlines), "--sites", str(sites), "--output-path", str(out)]) == 0
+    assert mod.main([str(store), "--outlines", str(outlines), "--output-path", str(out)]) == 0
     for name in (
         "bias_by_elevation.png",
         "bias_seasonal_fit.png",
@@ -595,9 +590,6 @@ def test_main_recovers_the_built_in_bias(tmp_path):
         "bias_daily_medians.csv",
         "bias_seasonal_fit.csv",
         "bias_seasonal_by_elevation.csv",
-        "site_bias.csv",
-        "site_bias_monthly.png",
-        "site_bias_per_site.png",
     ):
         assert (out / name).exists(), name
 
@@ -610,11 +602,6 @@ def test_main_recovers_the_built_in_bias(tmp_path):
     off = cycle[(cycle["category"] == "off_glacier") & (cycle["elevation_model"] == "linear")]
     np.testing.assert_allclose(off["amplitude"], 1.0, atol=0.03)
     np.testing.assert_allclose(off["annual_mean"], 1.5, atol=0.03)
-
-    site = pd.read_csv(out / "site_bias.csv", parse_dates=["time"])
-    low = site[site["site"] == "low"].sort_values("time")
-    expected = true_bias(TRUE_ON, OROGRAPHY[0, 2], fraction_of_year(pd.DatetimeIndex(low["time"])))
-    np.testing.assert_allclose(low["bias"], expected, atol=1e-3)
 
 
 def test_main_fits_the_mean(tmp_path):
