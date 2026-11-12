@@ -17,6 +17,43 @@ conda activate pism-terra
 python -m pip install -e .
 ```
 
+### Required environment workaround: `LD_PRELOAD` libz
+
+On affected conda-forge envs, `liborc.so` (a transitive dep of `pyarrow`) re-exports
+zlib's full deflate API as global symbols. When libgdal calls `deflateInit_` during
+GeoTIFF compression — including the in-memory `MemoryFile` writes that
+`dem_stitcher` uses to mosaic DEM tiles — the dynamic loader binds it to liborc's
+internal copy instead of `libz.so.1`. The two implementations have incompatible
+heap layouts, so any subsequent realloc/free on that buffer corrupts the heap
+and the next unrelated `_int_malloc` aborts with:
+
+```
+Fatal glibc error: malloc.c:4241 (_int_malloc): assertion failed:
+    (unsigned long) (size) >= (unsigned long) (nb)
+```
+
+Workaround: preload conda's libz so it wins symbol resolution. The repo's
+`environment.yml` does **not** wire this up automatically — you need it in your
+shell, ideally as an env activation hook:
+
+```bash
+mkdir -p $CONDA_PREFIX/etc/conda/activate.d $CONDA_PREFIX/etc/conda/deactivate.d
+cat > $CONDA_PREFIX/etc/conda/activate.d/zz-libz-preload.sh <<'EOF'
+export _PISM_TERRA_OLD_LD_PRELOAD="$LD_PRELOAD"
+export LD_PRELOAD="$CONDA_PREFIX/lib/libz.so.1${LD_PRELOAD:+:$LD_PRELOAD}"
+EOF
+cat > $CONDA_PREFIX/etc/conda/deactivate.d/zz-libz-preload.sh <<'EOF'
+export LD_PRELOAD="$_PISM_TERRA_OLD_LD_PRELOAD"
+unset _PISM_TERRA_OLD_LD_PRELOAD
+EOF
+```
+
+Verify: `nm -D --defined-only $CONDA_PREFIX/lib/liborc.so | grep -c "T deflate"`.
+A non-zero result means the leak is still present and `LD_PRELOAD` is required.
+Once it returns `0` (after a future liborc rebuild), the preload can be removed.
+
+Tracking: see https://github.com/conda-forge/orc-feedstock/issues for upstream.
+
 ## Commands
 
 ### Running Tests

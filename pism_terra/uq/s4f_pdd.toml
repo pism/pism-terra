@@ -1,0 +1,42 @@
+samples = 12
+
+['atmosphere.elevation_change.temperature_lapse_rate']
+
+loc = 5.0
+scale = 2.0
+distribution = "uniform"
+
+['surface.pdd.factor_ice']
+
+loc = 0.008791208791208791
+scale = 0.004395604395604396
+a = -1
+b = 1
+
+distribution = "truncnorm"
+
+['surface.pdd.factor_snow']
+
+loc = 0.004395604395604396
+scale = 0.0016483516483516484
+a = -1.2
+b = 1.2
+distribution = "truncnorm"
+
+['surface.pdd.air_temp_all_precip_as_snow']
+
+loc = 271.15
+scale = 1
+distribution = "uniform"
+
+['surface.pdd.air_temp_all_precip_as_rain']
+
+loc = 273.15
+scale = 4
+distribution = "uniform"
+
+['surface.pdd.refreeze']
+
+loc = 0.2
+scale = 0.6
+distribution = "uniform"

@@ -1,4 +1,4 @@
-samples = 9
+bsamples = 9
 mapping = {"atmosphere.given.file"= "climate_file", "surface.given.file"= "climate_file"}
 
 ['surface.pdd.factor_ice']
