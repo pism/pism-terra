@@ -146,6 +146,8 @@ model = "pdd"
 
 [surface.options.pdd]
 
+'surface.debris.ice_melt_scaling.file' = "none"
+'surface.debris.thickness.file' = ""
 'surface.models' = "pdd"
 'surface.pdd.air_temp_all_precip_as_rain' = 275.15
 'surface.pdd.air_temp_all_precip_as_snow' = 273.15

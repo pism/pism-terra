@@ -248,8 +248,9 @@ def assemble_debris(
     Returns
     -------
     xarray.Dataset
-        Variables ``debris_thickness`` (``m``), ``debris_melt_factor``
-        (``1``) and ``debris_input_rate`` (``m year^-1``, zero for now) on
+        Variables ``debris_thickness`` (``m``), ``debris_melt_factor`` and
+        its copy ``ice_melt_scaling_factor`` (``1``), and
+        ``debris_input_rate`` (``m year^-1``, zero for now) on
         ``target_grid``. No ``standard_name`` is set — CF has none
         for these fields, and PISM refuses input files where two variables
         share one.
@@ -276,8 +277,22 @@ def assemble_debris(
         "long_name": "rate of debris input from the surrounding terrain (solid debris thickness)",
         "comment": "placeholder: no debris input",
     }
+    # PISM's ``surface.debris.ice_melt_scaling.file`` reads the factor under
+    # this name; the PDD and debm_simple models multiply ice melt by it.
+    ice_melt_scaling = melt_factor.copy()
+    ice_melt_scaling.attrs = {
+        "units": "1",
+        "long_name": "multiplicative scaling factor for ice melt",
+        "comment": "copy of debris_melt_factor, named for surface.debris.ice_melt_scaling.file",
+        "source": _SOURCE,
+    }
     return xr.Dataset(
-        {"debris_thickness": thickness, "debris_melt_factor": melt_factor, "debris_input_rate": input_rate}
+        {
+            "debris_thickness": thickness,
+            "debris_melt_factor": melt_factor,
+            "ice_melt_scaling_factor": ice_melt_scaling,
+            "debris_input_rate": input_rate,
+        }
     )
 
 
@@ -404,7 +419,8 @@ def debris_from_grid(
     -------
     xarray.Dataset
         Dataset with ``debris_thickness`` (``m``), ``debris_melt_factor``
-        (``1``) and ``debris_input_rate`` (``m year^-1``) on ``target_grid``
+        and its copy ``ice_melt_scaling_factor`` (``1``), and
+        ``debris_input_rate`` (``m year^-1``) on ``target_grid``
         and a length-1 unlimited ``time`` axis.
     """
     print("")
@@ -413,12 +429,13 @@ def debris_from_grid(
 
     if check_xr_lazy(path) and not force_overwrite:
         cached = xr.open_dataset(path)
-        if "debris_input_rate" in cached:
+        missing = [name for name in ("debris_input_rate", "ice_melt_scaling_factor") if name not in cached]
+        if not missing:
             logger.info("Using cached debris file %s", path)
             return cached
-        # Staged before the input rate existed: rebuild (the tifs are cached).
+        # Staged before these fields existed: rebuild (the tifs are cached).
         cached.close()
-        logger.info("Cached debris file %s has no debris_input_rate; regenerating", path)
+        logger.info("Cached debris file %s has no %s; regenerating", path, ", ".join(missing))
 
     path = Path(path)
     path.unlink(missing_ok=True)

@@ -126,6 +126,11 @@ def test_debris_file_carries_a_zero_input_rate(tmp_path: Path, monkeypatch):
         assert rate.attrs["units"] == "m year^-1"
         assert float(np.abs(rate).max()) == 0.0
         assert "time_bnds" in ds
+        # PISM's surface.debris.ice_melt_scaling.file reads the factor under this name.
+        scaling = ds["ice_melt_scaling_factor"]
+        assert scaling.dims == ("time", "y", "x")
+        assert scaling.attrs["units"] == "1"
+        np.testing.assert_allclose(scaling, ds["debris_melt_factor"])
         boot = add_debris_to_boot(xr.Dataset(coords={"x": grid["x"], "y": grid["y"]}), ds.load())
     assert "debris_input_rate" not in boot
     assert "debris_thickness" in boot

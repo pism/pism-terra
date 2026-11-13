@@ -102,12 +102,13 @@ def _debris_transport_on(run: Mapping[str, object]) -> bool:
 
 def _require_debris_input(run: Mapping[str, object]) -> None:
     """
-    Stop when the debris transport model is on but no debris file was staged.
+    Stop when a debris option needs the debris file but none was staged.
 
-    The config carries ``debris.transport.input.file = "none"`` as a
-    placeholder that staging fills with ``debris_{rgi_id}.nc``; it only does
-    so when ``campaign.debris`` names a dataset. Left as ``"none"``, PISM would
-    try to open a file of that name.
+    The config carries ``debris.transport.input.file = "none"`` (debris
+    transport) and ``surface.debris.ice_melt_scaling.file = "none"`` (debris
+    melt scaling) as placeholders that staging fills with
+    ``debris_{rgi_id}.nc``; it only does so when ``campaign.debris`` names a
+    dataset. Left as ``"none"``, PISM would try to open a file of that name.
 
     Parameters
     ----------
@@ -117,8 +118,15 @@ def _require_debris_input(run: Mapping[str, object]) -> None:
     Raises
     ------
     ValueError
-        If the placeholder is still in place with the debris model on.
+        If a placeholder is still in place: the melt scaling one at all, the
+        transport one with the debris transport model on.
     """
+    if str(run.get("surface.debris.ice_melt_scaling.file", "")).strip().lower() == "none":
+        raise ValueError(
+            "surface.debris.ice_melt_scaling.file is still 'none': no debris file was staged. Set "
+            'campaign.debris (e.g. debris = "rounce") so pism-glacier-stage writes debris_{rgi_id}.nc '
+            "and the run points at it, or pick a surface model without debris melt scaling."
+        )
     if not _debris_transport_on(run):
         return
     if str(run.get("debris.transport.input.file", "")).strip().lower() == "none":
@@ -1711,8 +1719,11 @@ def _run(*, kind: str) -> None:
         # The staged debris file carries the debris input rate; configs
         # without a [debris] section skip the override.
         debris_file = row["debris_file"] if "debris_file" in row else None
+        # It also holds ``ice_melt_scaling_factor``, which the PDD and
+        # debm_simple models read to scale ice melt under debris.
         if isinstance(debris_file, (str, Path)) and str(debris_file).strip():
             uq_overrides["debris.transport.input.file"] = debris_file
+            uq_overrides["surface.debris.ice_melt_scaling.file"] = debris_file
 
         outline_file = row["outline_file"] if "outline_file" in row else None
         # Keep numeric sample ids as ints (``id_0``) but preserve string period

@@ -322,16 +322,25 @@ def dict2str(d: dict) -> str:
     -------
     str
         A string representation of the dictionary, where each key-value pair is
-        formatted as `-key value` and pairs are separated by spaces.
+        formatted as ``-key value`` indented by two spaces, one per line,
+        with every line but the last ending in a shell line continuation
+        (two spaces and ``\\``).
+
+    Notes
+    -----
+    An empty ``*.file`` option (e.g. ``surface.debris.thickness.file = ""``)
+    is left out: PISM's default for every file option is already empty, and
+    a bare ``-surface.debris.thickness.file`` stops PISM with "requires an
+    argument". Other empty values stay bare flags (``-regional``).
 
     Examples
     --------
-    >>> d = {"a": 1, "b": 2}
-    >>> dict2str(d)
-    '-a 1
-     -b 2'
+    >>> print(dict2str({"a": 1, "b": 2}))
+      -a 1  \\
+      -b 2
     """
-    return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
+    kept = {k: v for k, v in d.items() if not (str(k).endswith(".file") and str(v).strip() == "")}
+    return """  \\\n""".join(f"  -{k} {v}" for k, v in kept.items())
 
 
 def filter_overrides_by_config(

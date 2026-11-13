@@ -42,6 +42,7 @@ def render(tmp_path: Path, debris_file: str | None) -> str:
     }
     if debris_file is not None:
         uq["debris.transport.input.file"] = debris_file
+        uq["surface.debris.ice_melt_scaling.file"] = debris_file
     _render_forward_run(
         RGI_ID,
         CONFIG,
@@ -69,6 +70,24 @@ def test_every_leg_reads_the_staged_debris_file(tmp_path):
     assert "-debris.models transport" in script
     assert script.count(f"-debris.transport.input.file {DEBRIS_FILE}") == script.count("-debris.models transport")
     assert "-debris.transport.input.file none" not in script
+
+
+def test_every_leg_scales_ice_melt_with_the_staged_debris_file(tmp_path):
+    """
+    The melt-scaling placeholder is replaced by the debris file in every leg.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    """
+    script = render(tmp_path, DEBRIS_FILE)
+    legs = script.count("-surface.models pdd")
+    assert legs >= 1
+    assert script.count(f"-surface.debris.ice_melt_scaling.file {DEBRIS_FILE}") == legs
+    assert "-surface.debris.ice_melt_scaling.file none" not in script
+    # PISM refuses both debris inputs at once; the empty thickness option is left at its default.
+    assert "-surface.debris.thickness.file" not in script
 
 
 def test_a_debris_run_without_a_staged_file_is_refused(tmp_path):
