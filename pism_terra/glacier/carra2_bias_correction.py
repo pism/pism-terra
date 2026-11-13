@@ -66,6 +66,12 @@ where the 2 m air is held near 0 degC over melting ice, it is variance to
 add to a PDD or dEBM ``std_dev`` in quadrature; negative, the 2 m air
 varies more than the free air and the corrected forcing already has too much.
 
+A third checks that the fit is a property of the region rather than of
+the years it saw: the first and second halves of the record, in whole
+years, are fitted apart and their fitted biases compared (see
+:func:`half_record_stability`). Coefficients that differ between regions
+by much more than between halves are worth setting per region.
+
 Stores and outlines may each be a local path or an ``s3://`` URI.
 """
 
@@ -1501,6 +1507,123 @@ def ceiling_fit(
     return pd.DataFrame.from_dict(rows, orient="index", columns=columns).rename_axis("category")
 
 
+def split_years(daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """
+    Split the daily medians into the first and the second half of their years.
+
+    Whole calendar years go to each half, so both see every season equally
+    often; with an odd number of years the second half gets the extra one.
+
+    Parameters
+    ----------
+    daily : pandas.DataFrame
+        Output of :func:`daily_medians`, one or several stores concatenated.
+
+    Returns
+    -------
+    tuple of pandas.DataFrame or None
+        The earlier and the later years, or None with fewer than two years.
+    """
+    years = pd.to_datetime(daily["time"]).dt.year
+    distinct = np.unique(years)
+    if distinct.size < 2:
+        return None
+    first = years < distinct[distinct.size // 2]
+    return daily[first], daily[~first]
+
+
+def half_record_stability(
+    daily: pd.DataFrame,
+    min_cells: int = DEFAULT_MIN_CELLS,
+    elevation_dependent: bool = True,
+    loss: str = DEFAULT_FIT_LOSS,
+    harmonics: int = DEFAULT_HARMONICS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fit the first and the second half of the record apart and compare the fitted biases.
+
+    The difference between the halves is what the fit changes from one
+    stretch of years to the next: a bias that differs between regions by
+    much more than this is a regional signal, not interannual weather. Both
+    halves' fits are evaluated on every elevation bin both cover and every
+    day of a 365-day year, and their difference split into the annual mean
+    and the seasonal cycle, so that ``rms_diff² = annual_rms_diff² +
+    cycle_rms_diff²``.
+
+    Parameters
+    ----------
+    daily : pandas.DataFrame
+        Output of :func:`daily_medians`, one or several stores concatenated.
+    min_cells : int, default :data:`DEFAULT_MIN_CELLS`
+        See :func:`fit_categories`.
+    elevation_dependent : bool, default True
+        See :func:`fit_seasonal`.
+    loss : {"mean", "median"}, default :data:`DEFAULT_FIT_LOSS`
+        See :func:`fit_seasonal`.
+    harmonics : int, default :data:`DEFAULT_HARMONICS`
+        See :func:`ceiling_fit`.
+
+    Returns
+    -------
+    halves : pandas.DataFrame
+        The fits of :func:`fit_categories` for each half, indexed by
+        ``(half, category, elevation_model)``, with the ``years`` each covers.
+    stability : pandas.DataFrame
+        Indexed by ``(category, elevation_model)``: ``years_first`` and
+        ``years_second``, the elevation range compared (``z_min``,
+        ``z_max``), and the second half's bias minus the first's (K):
+        ``rms_diff``, ``annual_rms_diff``, ``cycle_rms_diff``,
+        ``max_abs_diff``, and ``jja_diff``, the mean over June to August.
+        Both are empty with fewer than two years.
+    """
+    index = pd.MultiIndex.from_arrays([[], []], names=["category", "elevation_model"])
+    split = split_years(daily)
+    if split is None:
+        logger.warning("fewer than two years: no half-record stability check")
+        return pd.DataFrame(), pd.DataFrame(index=index)
+    fits, years = {}, {}
+    for half, part in zip(("first", "second"), split):
+        span = pd.to_datetime(part["time"]).dt.year
+        years[half] = f"{span.min()}-{span.max()}"
+        fits[half] = fit_categories(part, min_cells, elevation_dependent, loss=loss, harmonics=harmonics)
+        fits[half]["years"] = years[half]
+    halves = pd.concat(fits, names=["half"])
+
+    fraction = (np.arange(365) + 0.5) / 365.0
+    summer = (fraction >= 151 / 365) & (fraction < 243 / 365)
+    rows = []
+    for key in fits["first"].index.intersection(fits["second"].index):
+        first = {**fits["first"].loc[key].to_dict(), "elevation_model": key[1]}
+        second = {**fits["second"].loc[key].to_dict(), "elevation_model": key[1]}
+        lo, hi = max(first["z_min"], second["z_min"]), min(first["z_max"], second["z_max"])
+        centres = np.unique(daily.loc[daily["category"] == key[0], "centre"])
+        z = centres[(centres >= lo) & (centres <= hi)]
+        if z.size == 0:
+            continue
+        diff = seasonal_curve(second, z[:, None], fraction[None, :]) - seasonal_curve(
+            first, z[:, None], fraction[None, :]
+        )
+        annual = diff.mean(axis=1, keepdims=True)
+        rows.append(
+            {
+                "category": key[0],
+                "elevation_model": key[1],
+                "years_first": years["first"],
+                "years_second": years["second"],
+                "z_min": float(z.min()),
+                "z_max": float(z.max()),
+                "rms_diff": float(np.sqrt((diff**2).mean())),
+                "annual_rms_diff": float(np.sqrt((annual**2).mean())),
+                "cycle_rms_diff": float(np.sqrt(((diff - annual) ** 2).mean())),
+                "max_abs_diff": float(np.abs(diff).max()),
+                "jja_diff": float(diff[:, summer].mean()),
+            }
+        )
+    if not rows:
+        return halves, pd.DataFrame(index=index)
+    return halves, pd.DataFrame(rows).set_index(["category", "elevation_model"])
+
+
 def _signed_sqrt(value: np.ndarray | float) -> np.ndarray:
     """
     Take the square root of the magnitude, keeping the sign.
@@ -2162,11 +2285,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not fits.empty:
         fits["sigma_extra"] = pooled_sigma_extra(fits, annual)
     cycle = seasonal_by_elevation(fits, annual["centre"].values)
+    halves, stability = half_record_stability(
+        daily,
+        min_cells=args.min_cells,
+        elevation_dependent=args.season == "elevation",
+        loss=args.fit,
+        harmonics=args.harmonics,
+    )
     medians.to_csv(output / "bias_by_elevation_medians.csv", index=False)
     daily.to_csv(output / "bias_daily_medians.csv", index=False)
     fits.to_csv(output / "bias_seasonal_fit.csv")
     cycle.to_csv(output / "bias_seasonal_by_elevation.csv", index=False)
     variance.to_csv(output / "bias_variance_by_elevation.csv", index=False)
+    if not stability.empty:
+        halves.to_csv(output / "bias_seasonal_fit_halves.csv")
+        stability.to_csv(output / "bias_half_stability.csv")
     for name, figure in (
         ("bias_by_elevation.png", plot_bias_by_elevation(annual, medians, fits, bin_width=args.bin_width)),
         ("bias_seasonal_fit.png", plot_seasonal_fit(daily, fits, min_cells=args.min_cells)),
@@ -2179,6 +2312,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(fits[columns].round(3).to_string())
         for (category, model), fit in fits.iterrows():
             print(f"{category:11s} {model:11s} {fit['equation']}")
+    if not stability.empty:
+        first, second = stability[["years_first", "years_second"]].iloc[0]
+        print(f"Second half ({second}) minus first half ({first}) of the fitted bias, K:")
+        columns = ["rms_diff", "annual_rms_diff", "cycle_rms_diff", "max_abs_diff", "jja_diff"]
+        print(stability[columns].round(3).to_string())
     print(f"Results in {output}")
     return 0
 

@@ -820,3 +820,48 @@ def test_tiles_follow_the_store_chunks(tmp_path):
     np.testing.assert_array_equal(chunked["counts"].values, whole["counts"].values)
     np.testing.assert_array_equal(chunked["cell_days"].values, whole["cell_days"].values)
     np.testing.assert_allclose(chunked["anomaly_ss"].values, whole["anomaly_ss"].values, rtol=1e-8, atol=1e-6)
+
+
+def test_split_years_keeps_whole_years():
+    """
+    The halves split at a year boundary, the extra year going to the second; one year cannot be split.
+    """
+    time = pd.date_range("2004-01-01", "2006-12-31", freq="D")
+    daily = pd.DataFrame({"time": time})
+    split = mod.split_years(daily)
+    assert split is not None
+    first, second = split
+    assert set(first["time"].dt.year) == {2004}
+    assert set(second["time"].dt.year) == {2005, 2006}
+    assert mod.split_years(daily[daily["time"].dt.year == 2005]) is None
+
+
+def test_half_record_stability_sees_a_shift(tmp_path):
+    """
+    The same bias in both halves differs by nothing; a 1 K warmer second half shows up as 1 K in the annual mean.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    store = synthetic_store(tmp_path / "store.zarr", "2004-01-01", "2005-12-31")
+    outlines = tmp_path / "outlines.gpkg"
+    glacier_outline().to_file(outlines)
+    out = tmp_path / "out"
+    assert mod.main([str(store), "--outlines", str(outlines), "--output-path", str(out)]) == 0
+    stability = pd.read_csv(out / "bias_half_stability.csv", index_col=["category", "elevation_model"])
+    assert set(stability.index.get_level_values("category")) == {"on_glacier", "off_glacier"}
+    assert (stability["years_first"] == "2004-2004").all()
+    assert (stability["max_abs_diff"] < 0.05).all()
+    halves = pd.read_csv(out / "bias_seasonal_fit_halves.csv", index_col=["half", "category", "elevation_model"])
+    assert set(halves.index.get_level_values("half")) == {"first", "second"}
+
+    daily = pd.read_csv(out / "bias_daily_medians.csv")
+    later = pd.to_datetime(daily["time"]).dt.year == 2005
+    daily.loc[later, "median"] += 1.0
+    _, shifted = mod.half_record_stability(daily)
+    linear = shifted.xs("linear", level="elevation_model")
+    np.testing.assert_allclose(linear["annual_rms_diff"], 1.0, atol=0.05)
+    np.testing.assert_allclose(linear["jja_diff"], 1.0, atol=0.05)
+    assert (linear["cycle_rms_diff"] < 0.05).all()
