@@ -26,6 +26,7 @@ and not off it. The script has to give that bias back, from one store
 spanning a leap year and the next, and from the same two years as two stores.
 """
 
+import math
 import shutil
 from pathlib import Path
 
@@ -103,7 +104,13 @@ def true_bias(coef: dict[str, float], z: np.ndarray, fraction: np.ndarray) -> np
     )
 
 
-def synthetic_store(path: Path, start: str = "2005-06-01", end: str = "2005-06-03") -> Path:
+def synthetic_store(
+    path: Path,
+    start: str = "2005-06-01",
+    end: str = "2005-06-03",
+    anomaly: np.ndarray | None = None,
+    response: float = 1.0,
+) -> Path:
     """
     Write a small store laid out like one from ``pism-s4f-carra2``.
 
@@ -113,6 +120,11 @@ def synthetic_store(path: Path, start: str = "2005-06-01", end: str = "2005-06-0
         Store to write.
     start, end : str
         First and last day, inclusive.
+    anomaly : numpy.ndarray or None, optional
+        Daily weather added to the air at every level and everywhere, K.
+    response : float, default 1.0
+        Fraction of *anomaly* the 2 m air on glacier follows; off glacier it
+        follows all of it.
 
     Returns
     -------
@@ -127,6 +139,11 @@ def synthetic_store(path: Path, start: str = "2005-06-01", end: str = "2005-06-0
     bias = np.broadcast_to(true_bias(TRUE_OFF, OROGRAPHY, fraction), (time.size, NY, NX)).copy()
     bias[:, GLACIER_ROWS] = true_bias(TRUE_ON, OROGRAPHY[GLACIER_ROWS], fraction)
     t2m = t_ground[None] - bias
+    if anomaly is not None:
+        air_temp = air_temp + anomaly[:, None, None, None]
+        follows = np.ones((NY, NX))
+        follows[GLACIER_ROWS] = response
+        t2m = t2m + anomaly[:, None, None] * follows
     ds = xr.Dataset(
         {
             "air_temp": (("time", "pressure_level", "y", "x"), air_temp.astype("float32"), {"units": "K"}),
@@ -604,9 +621,9 @@ def test_main_recovers_the_built_in_bias(tmp_path):
     np.testing.assert_allclose(off["annual_mean"], 1.5, atol=0.03)
 
 
-def test_main_fits_the_mean(tmp_path):
+def test_main_fits_the_median(tmp_path):
     """
-    ``--fit mean`` recovers the built-in bias too, and records the loss.
+    ``--fit median`` recovers the built-in bias too, and records the loss; the default fits the mean.
 
     Parameters
     ----------
@@ -617,10 +634,11 @@ def test_main_fits_the_mean(tmp_path):
     outlines = tmp_path / "outlines.gpkg"
     glacier_outline().to_file(outlines)
     out = tmp_path / "out"
-    assert mod.main([str(store), "--outlines", str(outlines), "--output-path", str(out), "--fit", "mean"]) == 0
+    assert mod.main([str(store), "--outlines", str(outlines), "--output-path", str(out), "--fit", "median"]) == 0
     fits = pd.read_csv(out / "bias_seasonal_fit.csv", index_col=["category", "elevation_model"])
-    assert set(fits["loss"]) == {"mean"}
+    assert set(fits["loss"]) == {"median"}
     check_fit(fits)
+    assert mod.DEFAULT_FIT_LOSS == "mean"
 
 
 def test_years_as_separate_stores_give_the_same_fit(tmp_path):
@@ -681,3 +699,124 @@ def test_main_selects_months(tmp_path):
     assert set(months) == {6}
     with pytest.raises(ValueError, match="no days"):
         mod.main([str(store), "--outlines", str(outlines), "--months", "1", "--output-path", str(tmp_path / "jan")])
+
+
+def harmonic_residual_variance(fraction: np.ndarray, values: np.ndarray, harmonics: int) -> float:
+    """
+    Compute the variance left after a least-squares harmonic fit, independently of the module.
+
+    Parameters
+    ----------
+    fraction : numpy.ndarray
+        Fractions of the year.
+    values : numpy.ndarray
+        Values.
+    harmonics : int
+        Harmonics of the year.
+
+    Returns
+    -------
+    float
+        Mean squared residual.
+    """
+    angle = 2 * np.pi * fraction
+    design = np.column_stack(
+        [np.ones_like(angle)] + [f(k * angle) for k in range(1, harmonics + 1) for f in (np.cos, np.sin)]
+    )
+    residual = values - design @ np.linalg.lstsq(design, values, rcond=None)[0]
+    return float(residual @ residual / values.size)
+
+
+def test_variance_diagnostics_see_a_damped_surface(tmp_path):
+    """
+    2 m air following half the free air's weather on glacier gives a positive sigma_extra, all of it a zero one.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    time = pd.date_range("2004-01-01", "2005-12-31", freq="D")
+    anomaly = np.random.default_rng(0).normal(0.0, 3.0, time.size)
+    store = synthetic_store(tmp_path / "store.zarr", "2004-01-01", "2005-12-31", anomaly=anomaly, response=0.5)
+    ds = mod.open_carra2(store)
+    on_glacier = mod.glacier_mask(ds, glacier_outline())
+    whole = mod.bias_histograms(ds, on_glacier, tile=256, min_elevation=None)
+    tiled = mod.bias_histograms(ds, on_glacier, tile=7, ntasks=3, time_block=5, min_elevation=None)
+    np.testing.assert_allclose(whole["anomaly_ss"].values, tiled["anomaly_ss"].values, rtol=1e-8, atol=1e-6)
+    np.testing.assert_array_equal(whole["cell_days"].values, tiled["cell_days"].values)
+
+    variance = mod.variance_by_elevation(whole).set_index(["category", "centre"])
+    expected = harmonic_residual_variance(fraction_of_year(time), anomaly, mod.DEFAULT_HARMONICS)
+    # store precision is float32: a few mK on ~300 K
+    np.testing.assert_allclose(variance["sigma_free"], math.sqrt(expected), rtol=1e-3)
+    on, off = variance.loc["on_glacier"], variance.loc["off_glacier"]
+    np.testing.assert_allclose(on["sigma_t2m"], 0.5 * math.sqrt(expected), rtol=1e-3)
+    np.testing.assert_allclose(on["sigma_bias"], 0.5 * math.sqrt(expected), rtol=1e-3)
+    np.testing.assert_allclose(on["sigma_extra"], math.sqrt(0.75 * expected), rtol=1e-3)
+    np.testing.assert_allclose(off["sigma_extra"], 0.0, atol=0.02)
+    np.testing.assert_allclose(off["sigma_bias"], 0.0, atol=0.02)
+
+
+def test_main_writes_the_diagnostics(tmp_path):
+    """
+    The fit table carries r2_ceiling and sigma_extra; the ceiling is never below the mean fit's R².
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    time = pd.date_range("2004-01-01", "2005-12-31", freq="D")
+    anomaly = np.random.default_rng(1).normal(0.0, 3.0, time.size)
+    store = synthetic_store(tmp_path / "store.zarr", "2004-01-01", "2005-12-31", anomaly=anomaly, response=0.5)
+    outlines = tmp_path / "outlines.gpkg"
+    glacier_outline().to_file(outlines)
+    out = tmp_path / "out"
+    assert mod.main([str(store), "--outlines", str(outlines), "--output-path", str(out), "--fit", "mean"]) == 0
+    fits = pd.read_csv(out / "bias_seasonal_fit.csv", index_col=["category", "elevation_model"])
+    assert (fits["r2_ceiling"] >= fits["r2"] - 1e-9).all()
+    assert (fits["r2_ceiling"] < 1.0).all()
+    assert (fits.loc["on_glacier", "sigma_extra"] > 1.0).all()
+    assert (fits.loc["off_glacier", "sigma_extra"].abs() < 0.05).all()
+    variance = pd.read_csv(out / "bias_variance_by_elevation.csv")
+    assert set(variance["category"]) == {"on_glacier", "off_glacier"}
+
+
+def test_ceiling_is_perfect_without_weather(tmp_path):
+    """
+    A bias of elevation and season alone leaves nothing for the ceiling fit, and no anomalies.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    store = synthetic_store(tmp_path / "carra2_daily_test.zarr", "2004-01-01", "2005-12-31")
+    outlines = tmp_path / "outlines.gpkg"
+    glacier_outline().to_file(outlines)
+    out = tmp_path / "out"
+    assert mod.main([str(store), "--outlines", str(outlines), "--output-path", str(out)]) == 0
+    fits = pd.read_csv(out / "bias_seasonal_fit.csv", index_col=["category", "elevation_model"])
+    np.testing.assert_allclose(fits["r2_ceiling"], 1.0, atol=1e-3)
+    np.testing.assert_allclose(fits["sigma_extra"], 0.0, atol=0.02)
+
+
+def test_tiles_follow_the_store_chunks(tmp_path):
+    """
+    By default the store is read in tiles of its own chunks, and the totals do not depend on the tiling.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    ds = mod.open_carra2(synthetic_store(tmp_path / "store.zarr", "2005-01-01", "2005-03-31")).chunk({"y": 8, "x": 16})
+    assert mod.store_tile(ds) == (8, 16)
+    assert mod.store_tile(ds.load()) == (mod.TILE, mod.TILE)
+    on_glacier = mod.glacier_mask(ds, glacier_outline())
+    chunked = mod.bias_histograms(ds, on_glacier, ntasks=3, min_elevation=None)
+    whole = mod.bias_histograms(ds, on_glacier, tile=256, ntasks=1, min_elevation=None)
+    np.testing.assert_array_equal(chunked["counts"].values, whole["counts"].values)
+    np.testing.assert_array_equal(chunked["cell_days"].values, whole["cell_days"].values)
+    np.testing.assert_allclose(chunked["anomaly_ss"].values, whole["anomaly_ss"].values, rtol=1e-8, atol=1e-6)
