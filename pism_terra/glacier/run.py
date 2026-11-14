@@ -100,15 +100,67 @@ def _debris_transport_on(run: Mapping[str, object]) -> bool:
     return "transport" in [m.strip() for m in models.split(",")]
 
 
+#: Surface options that read the staged debris file. PISM takes one or the
+#: other: ``thickness`` turns ``debris_thickness`` into a melt factor
+#: (Verhaegen et al.), ``ice_melt_scaling`` reads ``ice_melt_scaling_factor``.
+DEBRIS_SURFACE_FILE_OPTIONS = ("surface.debris.thickness.file", "surface.debris.ice_melt_scaling.file")
+
+
+def _is_placeholder(value: object) -> bool:
+    """
+    Tell whether a config value is the ``"none"`` placeholder that staging fills in.
+
+    Parameters
+    ----------
+    value : object
+        The config value.
+
+    Returns
+    -------
+    bool
+        ``True`` for ``"none"`` in any case and spacing.
+    """
+    return isinstance(value, str) and value.strip().lower() == "none"
+
+
+def _fill_debris_placeholders(overrides: Mapping[str, object], options: Mapping[str, object]) -> dict[str, object]:
+    """
+    Keep the staged debris file only for the debris surface options the config asks to fill.
+
+    The run offers the staged debris file to both
+    :data:`DEBRIS_SURFACE_FILE_OPTIONS`; a surface model takes it where its
+    config holds the ``"none"`` placeholder. An empty value means the option
+    is unused and stays so, since PISM refuses both set at once.
+
+    Parameters
+    ----------
+    overrides : Mapping[str, object]
+        Overrides already filtered to the options of *options*.
+    options : Mapping[str, object]
+        The config's options for the leg.
+
+    Returns
+    -------
+    dict[str, object]
+        *overrides* without the debris surface options *options* leaves unset.
+    """
+    return {
+        key: value
+        for key, value in overrides.items()
+        if key not in DEBRIS_SURFACE_FILE_OPTIONS or _is_placeholder(options.get(key, ""))
+    }
+
+
 def _require_debris_input(run: Mapping[str, object]) -> None:
     """
     Stop when a debris option needs the debris file but none was staged.
 
     The config carries ``debris.transport.input.file = "none"`` (debris
-    transport) and ``surface.debris.ice_melt_scaling.file = "none"`` (debris
-    melt scaling) as placeholders that staging fills with
-    ``debris_{rgi_id}.nc``; it only does so when ``campaign.debris`` names a
-    dataset. Left as ``"none"``, PISM would try to open a file of that name.
+    transport) and ``surface.debris.thickness.file`` or
+    ``surface.debris.ice_melt_scaling.file = "none"`` (debris melt scaling)
+    as placeholders that staging fills with ``debris_{rgi_id}.nc``; it only
+    does so when ``campaign.debris`` names a dataset. Left as ``"none"``, PISM
+    would try to open a file of that name.
 
     Parameters
     ----------
@@ -118,18 +170,19 @@ def _require_debris_input(run: Mapping[str, object]) -> None:
     Raises
     ------
     ValueError
-        If a placeholder is still in place: the melt scaling one at all, the
+        If a placeholder is still in place: a melt scaling one at all, the
         transport one with the debris transport model on.
     """
-    if str(run.get("surface.debris.ice_melt_scaling.file", "")).strip().lower() == "none":
-        raise ValueError(
-            "surface.debris.ice_melt_scaling.file is still 'none': no debris file was staged. Set "
-            'campaign.debris (e.g. debris = "rounce") so pism-glacier-stage writes debris_{rgi_id}.nc '
-            "and the run points at it, or pick a surface model without debris melt scaling."
-        )
+    for option in DEBRIS_SURFACE_FILE_OPTIONS:
+        if _is_placeholder(run.get(option, "")):
+            raise ValueError(
+                f"{option} is still 'none': no debris file was staged. Set "
+                'campaign.debris (e.g. debris = "rounce") so pism-glacier-stage writes debris_{rgi_id}.nc '
+                "and the run points at it, or pick a surface model without debris melt scaling."
+            )
     if not _debris_transport_on(run):
         return
-    if str(run.get("debris.transport.input.file", "")).strip().lower() == "none":
+    if _is_placeholder(run.get("debris.transport.input.file", "")):
         raise ValueError(
             "debris.models = transport but no debris file was staged, so debris.transport.input.file is still "
             "'none'. Set campaign.debris (e.g. debris = \"rounce\") so pism-glacier-stage writes "
@@ -600,7 +653,7 @@ def _build_init_leg(
         # ``surface.force_to_thickness.file none`` whenever the main leg had
         # no forcing, and with the config's value of any sampled parameter.
         init_overrides, _ = filter_overrides_by_config(dict(overrides or {}), init_surface.keys())
-        init_surface.update(init_overrides)
+        init_surface.update(_fill_debris_placeholders(init_overrides, init_surface))
         run_init.update(init_surface)
 
     # A spin-up rarely needs the fields as often as the run of interest.
@@ -913,8 +966,8 @@ def _render_inverse_run(
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to both runtime dicts (these should be dotted PISM flags)
-    run.update(run_overrides)
-    inv.update(inv_overrides)
+    run.update(_fill_debris_placeholders(run_overrides, run))
+    inv.update(_fill_debris_placeholders(inv_overrides, inv))
     _require_debris_input(run)
     _require_spread_file(run)
 
@@ -1254,7 +1307,7 @@ def _render_forward_run(
     if skipped:
         print(f"Skipping uq overrides not in config: {skipped}")
     # Apply to runtime dict (these should be dotted PISM flags)
-    run.update(overrides)
+    run.update(_fill_debris_placeholders(overrides, run))
     _require_debris_input(run)
     _require_spread_file(run)
 
@@ -1719,11 +1772,13 @@ def _run(*, kind: str) -> None:
         # The staged debris file carries the debris input rate; configs
         # without a [debris] section skip the override.
         debris_file = row["debris_file"] if "debris_file" in row else None
-        # It also holds ``ice_melt_scaling_factor``, which the PDD and
-        # debm_simple models read to scale ice melt under debris.
+        # It also holds ``debris_thickness`` and ``ice_melt_scaling_factor``,
+        # either of which the PDD and debm_simple models read to scale ice
+        # melt under debris; each config's "none" placeholder picks one.
         if isinstance(debris_file, (str, Path)) and str(debris_file).strip():
             uq_overrides["debris.transport.input.file"] = debris_file
-            uq_overrides["surface.debris.ice_melt_scaling.file"] = debris_file
+            for option in DEBRIS_SURFACE_FILE_OPTIONS:
+                uq_overrides[option] = debris_file
 
         outline_file = row["outline_file"] if "outline_file" in row else None
         # Keep numeric sample ids as ints (``id_0``) but preserve string period
