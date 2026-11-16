@@ -22,6 +22,7 @@ The release, outlines and scalar-file writer come from ``conftest.py``;
 nothing touches the network.
 """
 
+import cftime
 import numpy as np
 import pandas as pd
 import pytest
@@ -306,3 +307,41 @@ def test_skipped_glaciers_do_not_reach_the_benchmark(tmp_path, usgs_release, usg
 
     matches = pd.read_csv(output_dir / "usgs_benchmark_rgi_match.csv")
     assert matches["glacier"].tolist() == ["Foo"]
+
+
+def test_tendencies_are_derived_when_a_run_did_not_write_them():
+    """
+    Weekly ``ice_mass`` and PDD fluxes stand in for the missing mass tendencies.
+
+    The S4F PDD calibrations left PISM's ``mass_fluxes`` out of their spatial
+    output; their per-glacier files are weekly, with no ``time_bounds``.
+    """
+    week = 7 * 86400.0
+    stamps = [cftime.DatetimeProlepticGregorian(2010, 1, d, 12) for d in (4, 11, 18, 25)]
+    ds = xr.Dataset(
+        {
+            # loses 2e9 kg a week
+            "ice_mass": (("time", "glacier_id"), np.array([[10e9], [8e9], [6e9], [4e9]]), {"units": "kg"}),
+            # summed over the outline's cells, as the post-processing does
+            "surface_accumulation_flux": (("time", "glacier_id"), np.full((4, 1), 3.0), {"units": "kg m^-2 year^-1"}),
+            "surface_runoff_flux": (("time", "glacier_id"), np.full((4, 1), 5.0), {"units": "kg m^-2 year^-1"}),
+        },
+        coords={"time": ("time", stamps), "glacier_id": ("glacier_id", [GLACIER_A])},
+    )
+    out = ub.with_derived_tendencies(ds, (100.0, 50.0))
+
+    rate = out[ub.MODEL_VAR].sel(glacier_id=GLACIER_A)
+    assert np.isnan(rate.values[0])
+    np.testing.assert_allclose(rate.values[1:], -2e9 / week)
+    assert out[ub.MODEL_VAR].attrs["units"] == "kg s^-1"
+    gt_per_year = rate.pint.quantify().pint.to("Gt/year").pint.dequantify()
+    np.testing.assert_allclose(gt_per_year.values[1:], -2e9 / week * 365 * 86400 / 1e12, rtol=1e-3)
+
+    smb = out[ub.MODEL_SEASONAL_VAR].sel(glacier_id=GLACIER_A)
+    np.testing.assert_allclose(smb.values, (3.0 - 5.0) * 100.0 * 50.0)
+    assert out[ub.MODEL_SEASONAL_VAR].attrs["units"] == "kg year^-1"
+
+    # Written by the run: left alone. No grid spacing: no surface flux.
+    written = ds.assign({ub.MODEL_VAR: ds["ice_mass"] * 0 + 1.0})
+    assert (ub.with_derived_tendencies(written, None)[ub.MODEL_VAR] == 1.0).all()
+    assert ub.MODEL_SEASONAL_VAR not in ub.with_derived_tendencies(ds, None)

@@ -869,8 +869,13 @@ def interval_edges(ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
     Reporting interval of each time step.
 
     Taken from the file's ``time_bounds`` when it has decoded bounds, which
-    is exact whatever the reporting frequency; otherwise from the stamps,
-    assuming monthly means stamped mid-month (:func:`month_edges`).
+    is exact whatever the reporting frequency; otherwise from the stamps.
+    Stamps about a month apart are taken for monthly means stamped mid-month
+    (:func:`month_edges`). Closer ones -- the weekly output of the S4F
+    calibrations, whose per-glacier scalar files carry no bounds -- are means
+    stamped mid-interval, so each interval runs from the midpoint with the
+    previous stamp to the midpoint with the next. Counting a weekly mean as a
+    whole calendar month inflated seasonal balances about four-fold.
 
     Parameters
     ----------
@@ -888,7 +893,14 @@ def interval_edges(ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
         starts = np.array([to_timestamp(t) for t in bounds[:, 0]])
         ends = np.array([to_timestamp(t) for t in bounds[:, 1]])
         return starts, ends
-    return month_edges(ds["time"].values)
+    times = ds["time"].values
+    stamps = [to_timestamp(t) for t in times]
+    if len(stamps) < 2 or np.median([(b - a).days for a, b in zip(stamps[:-1], stamps[1:])]) >= 25:
+        return month_edges(times)
+    middles = [a + (b - a) / 2 for a, b in zip(stamps[:-1], stamps[1:])]
+    first = stamps[0] - (middles[0] - stamps[0])
+    last = stamps[-1] + (stamps[-1] - middles[-1])
+    return np.array([first, *middles]), np.array([*middles, last])
 
 
 def is_monthly(times: np.ndarray) -> bool:

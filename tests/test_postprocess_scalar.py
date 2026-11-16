@@ -41,6 +41,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pytest
 import rioxarray  # pylint: disable=unused-import
 import xarray as xr
@@ -481,6 +482,40 @@ def test_glacierized_mass_uses_the_configured_ice_free_thickness(tmp_path, basin
             assert np.nansum(at_default[:, mask]) > np.nansum(glacierized[:, mask])
     finally:
         scalar.close()
+
+
+def test_process_file_keeps_the_time_bounds(tmp_path, basins, outlinefile):
+    """
+    ``time_bounds`` survive the reduction, so readers need not guess the reporting interval.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest-provided scratch directory.
+    basins : geopandas.GeoDataFrame
+        Mouginot basin outlines fixture.
+    outlinefile : pathlib.Path
+        Path to the outline GeoPackage handed to ``process_file``.
+    """
+    from dask.distributed import Client  # pylint: disable=import-outside-toplevel
+
+    ds = synthetic_greenland(basins, n_time=2)
+    # Weekly means, stamped mid-week, as the S4F calibrations write them.
+    starts = pd.to_datetime(["2010-01-01", "2010-01-08"])
+    ds = ds.assign_coords(time=("time", starts + pd.Timedelta(hours=84)))
+    ds["time_bounds"] = (("time", "nv"), np.stack([starts, starts + pd.Timedelta(days=7)], axis=1))
+    ds["time"].attrs["bounds"] = "time_bounds"
+    infile = tmp_path / "spatial.nc"
+    outfile = tmp_path / "basin.nc"
+    ds.to_netcdf(infile, engine="h5netcdf")
+
+    with Client(processes=False, n_workers=1, threads_per_worker=2, dashboard_address=None) as client:
+        process_file(infile, outfile, outlinefile, client)
+
+    with xr.open_dataset(outfile) as scalar:
+        assert scalar["time"].attrs["bounds"] == "time_bounds"
+        assert scalar["time_bounds"].dims == ("time", "nv")
+        np.testing.assert_array_equal(scalar["time_bounds"].values, ds["time_bounds"].values)
 
 
 def test_resolve_outfile_names_a_file_inside_a_directory(tmp_path):

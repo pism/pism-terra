@@ -81,6 +81,7 @@ from pism_terra.glacier.usgs import (
     plot_year,
     rgi_output_dir,
     score,
+    to_timestamp,
     uncertainty_var,
     unique_run_labels,
 )
@@ -96,6 +97,60 @@ MODEL_VAR = "tendency_of_ice_mass"
 #: discharge move mass around without a stake seeing it, so the surface flux is
 #: the like-for-like variable — not the total ``MODEL_VAR`` tendency.
 MODEL_SEASONAL_VAR = "tendency_of_ice_mass_due_to_surface_mass_flux"
+
+
+def with_derived_tendencies(ds: xr.Dataset, spacing: tuple[float, float] | None) -> xr.Dataset:
+    """
+    Derive the mass tendencies from other fields when a run did not write them.
+
+    Runs whose spatial output leaves out PISM's ``mass_fluxes`` (the S4F PDD
+    calibrations up to November 2026) still have ``ice_mass`` and the PDD
+    fluxes. From them:
+
+    - :data:`MODEL_VAR` is the change in ``ice_mass`` between consecutive
+      reports over the time between them (the first report has none). It
+      includes ice flowing across the outline, as ``tendency_of_ice_mass``
+      does.
+    - :data:`MODEL_SEASONAL_VAR` is ``surface_accumulation_flux -
+      surface_runoff_flux``, which for the PDD model is the surface mass
+      balance, times the cell area: the post-processing sums these per-area
+      fluxes over the outline's cells.
+
+    Variables the dataset already has are left alone.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Per-glacier scalar dataset with region labels restored.
+    spacing : tuple of float or None
+        ``(dx, dy)`` in metres from :func:`pism_terra.glacier.usgs.grid_spacing`;
+        without it the surface flux cannot be derived.
+
+    Returns
+    -------
+    xarray.Dataset
+        *ds*, with whichever tendencies could be derived added.
+    """
+    if MODEL_VAR not in ds and "ice_mass" in ds and ds.sizes.get("time", 0) > 1:
+        stamps = [to_timestamp(t) for t in ds["time"].values]
+        seconds = np.array([(b - a).total_seconds() for a, b in zip(stamps[:-1], stamps[1:])])
+        mass = ds["ice_mass"]
+        change = mass.diff("time", label="upper") / xr.DataArray(
+            seconds, dims="time", coords={"time": mass["time"][1:]}
+        )
+        rate = change.reindex(time=mass["time"])
+        rate.attrs = {"units": "kg s^-1", "long_name": "rate of change of ice mass, from ice_mass"}
+        ds = ds.assign({MODEL_VAR: rate})
+    fluxes = ("surface_accumulation_flux", "surface_runoff_flux")
+    if MODEL_SEASONAL_VAR not in ds and all(name in ds for name in fluxes) and spacing is not None:
+        dx, dy = spacing
+        smb = (ds[fluxes[0]] - ds[fluxes[1]]) * dx * dy
+        smb.attrs = {
+            "units": "kg year^-1",
+            "long_name": "surface mass balance flux, from surface_accumulation_flux - surface_runoff_flux",
+        }
+        ds = ds.assign({MODEL_SEASONAL_VAR: smb})
+    return ds
 
 
 def to_mass_rate(ds: xr.Dataset) -> xr.Dataset:
@@ -439,6 +494,7 @@ def _extract_one_file(
         names = ds[REGION_DIM].values
         if names.dtype.kind == "S":
             ds = ds.assign_coords({REGION_DIM: names.astype(str)})
+        ds = with_derived_tendencies(ds, spacing)
         present = set(ds[REGION_DIM].values.tolist())
         if MODEL_VAR in ds:
             for rgi_id in rgi_ids:

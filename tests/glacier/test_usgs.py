@@ -160,6 +160,21 @@ def test_interval_edges_prefer_decoded_bounds():
     assert usgs.is_monthly(np.array(stamps))
 
 
+def test_interval_edges_of_sub_monthly_stamps_without_bounds():
+    """
+    Weekly means stamped mid-week, with no bounds, cover their week, not their calendar month.
+    """
+    stamps = [cftime.DatetimeProlepticGregorian(2010, 1, d, 12) for d in (4, 11, 18, 25)]
+    ds = xr.Dataset(coords={"time": ("time", stamps)})
+    starts, ends = usgs.interval_edges(ds)
+    assert list(starts) == list(pd.to_datetime(["2010-01-01", "2010-01-08", "2010-01-15", "2010-01-22"]))
+    assert list(ends) == list(pd.to_datetime(["2010-01-08", "2010-01-15", "2010-01-22", "2010-01-29"]))
+
+    # A rate of 1 per year over four weeks integrates to 28 days' worth.
+    rate = xr.DataArray(np.ones(4), dims="time").assign_coords(month_start=("time", starts), month_end=("time", ends))
+    assert usgs.integrate_rate(rate, pd.Timestamp("2010-01-01"), pd.Timestamp("2010-01-29")) == pytest.approx(28 / 365)
+
+
 def test_run_label_keeps_ensemble_members_apart():
     """
     ``id_<n>`` and ``uq_<m>`` tokens both make it into the label.

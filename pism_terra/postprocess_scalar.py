@@ -513,8 +513,12 @@ def process_file(
     scalar.attrs["aggregate"] = aggregate
 
     logger.info("Writing %s", outfile)
-    # Keep non-spatial vars (e.g. pism_config)
-    extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims]
+    # Keep non-spatial vars (e.g. pism_config), and the time bounds: without
+    # them a reader has to guess each record's reporting interval from the
+    # stamps, and the USGS benchmarks once guessed a calendar month for weekly
+    # output.
+    bounds = ds_non_spatial["time"].attrs.get("bounds") if "time" in ds_non_spatial.coords else None
+    extra_vars = [v for v in ds_non_spatial.data_vars if "time" not in ds_non_spatial[v].dims or v == bounds]
     if extra_vars:
         scalar = xr.merge([scalar, ds_non_spatial[extra_vars].compute()])
     # The grid mapping describes a grid this output no longer has.
