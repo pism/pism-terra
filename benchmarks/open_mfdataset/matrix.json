@@ -1,0 +1,21 @@
+[
+ {"layouts": ["A_pism_today","B_postproc_default","C_exp_id_char"], "engine": "netcdf4", "parallel": "threads", "preprocess": "full"},
+ {"layouts": ["A_pism_today","B_postproc_default","C_exp_id_char"], "engine": "netcdf4", "parallel": "none", "preprocess": "full"},
+ {"layouts": ["A_pism_today"], "engine": "h5netcdf", "parallel": "threads", "preprocess": "full"},
+ {"layouts": ["A_pism_today"], "engine": "h5netcdf", "parallel": "none", "preprocess": "full"},
+ {"layouts": ["A_pism_today"], "engine": "netcdf4", "parallel": "processes", "preprocess": "full"},
+ {"layouts": ["A_pism_today"], "engine": "netcdf4", "parallel": "distributed", "preprocess": "full"},
+ {"layouts": ["A_pism_today"], "engine": "h5netcdf", "parallel": "distributed", "preprocess": "full"},
+ {"layouts": ["D_uq_id_int","E_uq_id_fixed_time","F_uq_id_json_cfg","G_uq_id_no_cfg"], "engine": "netcdf4", "parallel": "none", "preprocess": "full"},
+ {"layouts": ["D_uq_id_int","E_uq_id_fixed_time","F_uq_id_json_cfg","G_uq_id_no_cfg"], "engine": "netcdf4", "parallel": "none", "preprocess": "none"},
+ {"layouts": ["D_uq_id_int","E_uq_id_fixed_time","F_uq_id_json_cfg","G_uq_id_no_cfg"], "engine": "netcdf4", "parallel": "none", "preprocess": "light"},
+ {"layouts": ["F_uq_id_json_cfg","G_uq_id_no_cfg"], "engine": "h5netcdf", "parallel": "none", "preprocess": "none"},
+ {"layouts": ["A_pism_today","F_uq_id_json_cfg"], "engine": "netcdf4", "parallel": "none", "preprocess": "full", "combine": "nested", "fast-combine": true},
+ {"layouts": ["F_uq_id_json_cfg"], "engine": "netcdf4", "parallel": "none", "preprocess": "none", "combine": "nested", "fast-combine": true},
+ {"layouts": ["F_uq_id_json_cfg"], "engine": "netcdf4", "parallel": "none", "preprocess": "none", "combine": "nested", "fast-combine": true, "no-decode": true},
+ {"layouts": ["F_uq_id_json_cfg"], "engine": "netcdf4", "parallel": "none", "preprocess": "none", "chunks": "auto"},
+ {"layouts": ["F_uq_id_json_cfg"], "engine": "netcdf4", "parallel": "none", "preprocess": "none", "chunks": "none"},
+ {"layouts": ["F_uq_id_json_cfg"], "engine": "netcdf4", "parallel": "distributed", "preprocess": "none"},
+ {"layouts": ["F_uq_id_json_cfg"], "engine": "netcdf4", "parallel": "distributed", "preprocess": "none", "combine": "nested", "fast-combine": true},
+ {"layouts": ["F_uq_id_json_cfg"], "engine": "netcdf4", "parallel": "processes", "preprocess": "none", "combine": "nested", "fast-combine": true}
+]

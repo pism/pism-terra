@@ -1,0 +1,29 @@
+samples = 150
+
+['surface.pdd.std_dev.value']
+
+loc = 2.5
+scale = 5.0
+distribution = "uniform"
+
+['surface.pdd.factor_ice']
+
+loc = 0.008791208791208791
+scale = 0.004395604395604396
+a = -1
+b = 1
+distribution = "truncnorm"
+
+['surface.pdd.factor_snow']
+
+loc = 0.004395604395604396
+scale = 0.0016483516483516484
+a = -1.2
+b = 1.2
+distribution = "truncnorm"
+
+['surface.pdd.refreeze']
+
+loc = 0.2
+scale = 0.6
+distribution = "uniform"

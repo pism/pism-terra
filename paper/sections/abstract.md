@@ -1,0 +1,1 @@
+pism-terra automates the staging of inputs, the configuration and the execution of simulations with the Parallel Ice Sheet Model (PISM) for any glacier in the Randolph Glacier Inventory and for the Greenland ice sheet. TODO.

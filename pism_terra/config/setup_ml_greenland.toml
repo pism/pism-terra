@@ -1,0 +1,30 @@
+ismip7_to_pism = {"acabf" = "climatic_mass_balance", "dacabfdz" = "climatic_mass_balance_gradient", "mrro" = "runoff_rate", "dmrrodz" = "runoff_rate_gradient", "ts" = "ice_surface_temp", "dtsdz" = "ice_surface_temp_gradient", "tf" = "theta_ocean", "so" = "salinity_ocean", "geothermal_heat_flux1" = "bheatflx"}
+version = "v2"
+bucket = "pism-cloud-data"
+prefix = "ml/input"
+ice_sheet = "GrIS"
+
+[domain]
+
+# Bounds computed with ``pism_terra.domain.get_bounds`` from the 150 m grid of
+# GreenlandObsISMIP7-v1.3.nc (cell-edge extent x [-653000, 879700],
+# y [-3384500, -632600]): same centre, with width and height rounded up to a
+# multiple of 216 km (8 x 13 tiles), so that one domain serves many
+# resolutions. Every divisor of 216 km fits evenly, e.g. 150, 300, 450, 600,
+# 900, 1200, 1500, 1800, 2400, 3000, 3600, 4500, 4800, 6000, 9000, 18000 m.
+# Reproduce with:
+#   get_bounds(ds, base_resolution=150,
+#              multipliers=[1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 16, 18, 20, 24, 30, 32])
+crs = "EPSG:3413"
+resolution = "450m"
+x_bounds = [-750650.0, 977350.0]
+y_bounds = [-3412550.0, -604550.0]
+
+[gcms]
+
+'CESM2-WACCM' = {historical = {start = 1900, end = 2014, version = 2}}
+
+[forcing]
+
+climate = {fields = ["acabf", "dacabfdz", "mrro", "ts", "dmrrodz", "dtsdz"], short_hand = "SDBN1-1000m"}
+ocean = {fields = ["tf", "so"], short_hand = "ocean-1000m"}

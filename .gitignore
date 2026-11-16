@@ -321,3 +321,6 @@ tags
 [._]*.un~
 
 # End of https://www.toptal.com/developers/gitignore/api/python,jupyternotebooks,vim,jetbrains
+
+# Figures made by paper/Makefile (make figures) from the case-study data
+docs/source/paper/figures/

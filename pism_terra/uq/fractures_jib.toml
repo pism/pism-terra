@@ -1,0 +1,7 @@
+samples = 1
+method = "factorial"
+
+[fracture_density.initiation_threshold]
+
+choices = [75e3, 100e3, 125e3]
+distribution = "choices"

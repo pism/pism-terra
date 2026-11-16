@@ -1,0 +1,23 @@
+samples = 20
+
+['surface.debm_simple.c1']
+
+loc = 29
+scale = 20
+a = -1
+b = 1
+distribution = "truncnorm"
+
+['surface.debm_simple.c2']
+
+loc = -93
+scale = 50
+a = -1.5
+b = 1.5
+distribution = "truncnorm"
+
+['surface.debm_simple.refreeze']
+
+loc = 0.2
+scale = 0.6
+distribution = "uniform"

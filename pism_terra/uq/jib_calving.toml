@@ -1,0 +1,12 @@
+samples = 1
+method = "factorial"
+
+['calving.eigen_calving.K']
+
+choices = [1e16, 1e18, 1e20]
+distribution = "choices"
+
+['calving.vonmises_calving.sigma_max']
+
+choices = [3.5e5, 4.0e5, 4.5e5, 5.0e5]
+distribution = "choices"
