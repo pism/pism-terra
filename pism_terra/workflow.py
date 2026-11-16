@@ -28,10 +28,11 @@ import hashlib
 import logging
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Mapping, TypeVar
+from typing import Any, Iterable, Mapping, Sequence, TypeVar
 
 import jinja2
 import jinja2.meta
@@ -321,16 +322,25 @@ def dict2str(d: dict) -> str:
     -------
     str
         A string representation of the dictionary, where each key-value pair is
-        formatted as `-key value` and pairs are separated by spaces.
+        formatted as ``-key value`` indented by two spaces, one per line,
+        with every line but the last ending in a shell line continuation
+        (two spaces and ``\\``).
+
+    Notes
+    -----
+    An empty ``*.file`` option (e.g. ``surface.debris.thickness.file = ""``)
+    is left out: PISM's default for every file option is already empty, and
+    a bare ``-surface.debris.thickness.file`` stops PISM with "requires an
+    argument". Other empty values stay bare flags (``-regional``).
 
     Examples
     --------
-    >>> d = {"a": 1, "b": 2}
-    >>> dict2str(d)
-    '-a 1
-     -b 2'
+    >>> print(dict2str({"a": 1, "b": 2}))
+      -a 1  \\
+      -b 2
     """
-    return """  \\\n""".join(f"  -{k} {v}" for k, v in d.items())
+    kept = {k: v for k, v in d.items() if not (str(k).endswith(".file") and str(v).strip() == "")}
+    return """  \\\n""".join(f"  -{k} {v}" for k, v in kept.items())
 
 
 def filter_overrides_by_config(
@@ -949,8 +959,8 @@ def check_xr_lazy(path: Path | str, verbose: bool = True) -> bool:
     """
     p = Path(path).resolve()
     is_ok: bool
-    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-    delta_coder = xr.coders.CFTimedeltaCoder()
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
+    delta_coder = xr.coders.CFTimedeltaCoder()  # pylint: disable=no-member
     try:
         ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_lazy(ds)  # your sampled checker
@@ -1000,8 +1010,8 @@ def check_xr_fully(path: Path | str) -> bool:
     """
     p = Path(path).resolve()
     is_ok: bool
-    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
-    delta_coder = xr.coders.CFTimedeltaCoder()
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)  # pylint: disable=no-member
+    delta_coder = xr.coders.CFTimedeltaCoder()  # pylint: disable=no-member
     try:
         ds = xr.open_dataset(p, decode_times=time_coder, decode_timedelta=delta_coder)
         check_dataset_fully(ds)  # your full-load checker
@@ -1547,3 +1557,43 @@ def drop_grid_mapping(ds: xr.Dataset) -> xr.Dataset:
         var.attrs.pop("grid_mapping", None)
         var.encoding.pop("grid_mapping", None)
     return ds
+
+
+def place_files(output_path: Path | str, files: Sequence[Path | str]) -> list[Path]:
+    """
+    Copy observation files into a run's ``output/observations`` directory.
+
+    Everything a run is compared against afterwards lives in that one
+    directory, whether it was built for the analysis (the ISMIP7 mass-balance
+    products) or staged with the inputs (the ISMIP7 ``campaign.dh_files``, a
+    glacier's ``obs_{rgi_id}.nc`` and dh raster), so the analysis tools find
+    it beside the output without knowing where the inputs went.
+
+    Parameters
+    ----------
+    output_path : Path or str
+        Run directory; the files land in ``<output_path>/output/observations``.
+    files : sequence of Path or str
+        Files to copy. A missing one is logged and skipped: the run's inputs
+        must not fail over data that is only wanted for the analysis.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The copies, in the order given, without the ones that were missing.
+    """
+    destination = Path(output_path) / "output" / "observations"
+    destination.mkdir(parents=True, exist_ok=True)
+    placed = []
+    for source in map(Path, files):
+        if not source.is_file():
+            logger.warning("No observation file at %s; not placed", source)
+            continue
+        target = destination / source.name
+        # copy2 rather than a link: the source may be a shared directory that
+        # outlives, or is cleaned independently of, this run.
+        if not (target.exists() and target.samefile(source)):
+            shutil.copy2(source, target)
+        logger.info("Placed %s", target)
+        placed.append(target)
+    return placed

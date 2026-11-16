@@ -61,10 +61,15 @@ encoding -- xarray otherwise picks their units independently.
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
+import multiprocessing
 import re
+import shutil
+import warnings
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Iterable, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -76,13 +81,19 @@ import rioxarray  # noqa: F401  pylint: disable=unused-import
 import shapely
 import xarray as xr
 from pyproj import CRS, Transformer
+from tqdm.auto import tqdm
 
 from pism_terra.download import carra_download_request
-from pism_terra.glacier.climate import CARRA2_PROJ
+from pism_terra.glacier.climate import CARRA2_PROJ, write_zarr_in_bands
 from pism_terra.glacier.rgi import prepare_rgi_region
 from pism_terra.log import setup_logging
 from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.vector import get_glacier_from_rgi_id
+
+# The store is consolidated on purpose (consumers open it with
+# consolidated=True); zarr warns about that on every write. Set at import so
+# the spawned clip_files workers inherit it too.
+warnings.filterwarnings("ignore", message="Consolidated metadata is currently not part", category=UserWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +197,17 @@ FIELDS: dict[str, dict[str, Any]] = {
 }
 
 TIME_ENCODING = {"dtype": "int64", "units": "hours since 1850-01-01 00:00:00", "calendar": "standard"}
-ZARR_CHUNKS = {"time": -1, "pressure_level": -1, "y": 256, "x": 256}
+# Every chunk holds a cell's whole record, while the downloads hold one year of
+# the whole domain each, so writing the store is a rechunk of the entire
+# record. It is written one row of chunks at a time to bound memory: a
+# ten-year band of 64 rows is about 8 GB per pressure-level field, where
+# writing the whole store at once ran a 123 GB machine out of memory.
+ZARR_CHUNKS = {"time": -1, "pressure_level": -1, "y": 64, "x": 64}
+# Concurrent processes for clip_files. Each holds one block of one file, a
+# couple of GB for the pressure-level fields of an S4F-sized outline.
+DEFAULT_CLIP_WORKERS = 8
+# Days per read in clip_file when a file is not chunked along time.
+CLIP_TIME_BLOCK = 32
 
 
 def parse_rgi_id(rgi_id: str) -> tuple[str, str]:
@@ -689,6 +710,170 @@ def normalize(ds: xr.Dataset, fields: Sequence[str], bbox: Sequence[float] | Non
     return out
 
 
+def _bbox_slices(ds: xr.Dataset, bbox: Sequence[float]) -> dict[str, slice]:
+    """
+    Index ranges of a CDS file's own spatial dims that fall inside ``bbox``.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        A CDS file.
+    bbox : sequence of float
+        ``(x_min, x_max, y_min, y_max)`` in CARRA2 metres.
+
+    Returns
+    -------
+    dict
+        Spatial dim name to slice, inclusive of cells on the box's edges as
+        the ``sel`` in :func:`normalize` is.
+
+    Raises
+    ------
+    ValueError
+        If the box selects no cell.
+    """
+    lat, lon, y_dim, x_dim = _spatial_dims(ds)
+    x, y = projected_axes(ds[lat].values, ds[lon].values)
+    x_min, x_max, y_min, y_max = bbox
+    ix = slice(int(np.searchsorted(x, x_min, "left")), int(np.searchsorted(x, x_max, "right")))
+    iy = slice(int(np.searchsorted(y, y_min, "left")), int(np.searchsorted(y, y_max, "right")))
+    if ix.start >= ix.stop or iy.start >= iy.stop:
+        raise ValueError(f"bbox {bbox} selects no cells of the CARRA2 domain")
+    return {y_dim: iy, x_dim: ix}
+
+
+def clip_file(path: Path | str, fields: Sequence[str], bbox: Sequence[float], dest: Path | str) -> Path:
+    """
+    Cut ``bbox`` out of one CDS file into a normalized Zarr store on local disk.
+
+    The CDS files are deflated in chunks of a few dozen days by a few hundred
+    cells, and decompression is serialized behind the HDF5 library's lock. Read
+    lazily one 64-row band at a time, as :func:`write_store` would, every chunk
+    is inflated once per band it overlaps -- on a network share that ran at
+    40 MB/s. Here the file is read one block of its own time chunking at a
+    time, so every chunk the box touches is inflated once, and
+    :func:`clip_files` runs one process per file to get around the lock.
+
+    Parameters
+    ----------
+    path : Path or str
+        A CDS file.
+    fields : sequence of str
+        Keys of :data:`FIELDS` expected in it.
+    bbox : sequence of float
+        ``(x_min, x_max, y_min, y_max)`` in CARRA2 metres.
+    dest : Path or str
+        Store to create. It is written under a temporary name and renamed
+        when complete, so an existing ``dest`` is always whole.
+
+    Returns
+    -------
+    pathlib.Path
+        ``dest``.
+    """
+    dest = Path(dest)
+    if dest.exists():
+        return dest
+    partial = dest.with_name(dest.name + ".partial")
+    shutil.rmtree(partial, ignore_errors=True)
+    with xr.open_dataset(path, decode_timedelta=False) as ds:
+        window = _bbox_slices(ds, bbox)
+        vertical = _vertical_dim(ds)
+        time_dim = _time_dim(ds, set(window), vertical)
+        blocks: list[slice | None] = [None]
+        if time_dim is not None:
+            source = ds[_find(ds, fields[0])]
+            chunksizes = source.encoding.get("chunksizes")
+            step = int(chunksizes[source.dims.index(time_dim)]) if chunksizes else CLIP_TIME_BLOCK
+            blocks = [slice(t, t + step) for t in range(0, ds.sizes[time_dim], step)]
+        for block in blocks:
+            selection = dict(window)
+            if block is not None and time_dim is not None:
+                selection[time_dim] = block
+            part = normalize(ds.isel(selection).load(), fields)
+            for var in part.variables.values():
+                var.encoding = {}
+            if block is not None and block.start > 0:
+                part.to_zarr(partial, mode="a", append_dim="time", consolidated=False)
+                continue
+            encoding: dict[str, dict[str, Any]] = {}
+            for name in fields:
+                sizes = {**part[name].sizes, "y": 64}
+                encoding[name] = {
+                    "dtype": "float32",
+                    "chunks": tuple(min(sizes[d], part.sizes[d]) for d in part[name].dims),
+                }
+            if "time" in part.dims:
+                encoding["time"] = dict(TIME_ENCODING)
+            part.to_zarr(partial, mode="w", consolidated=False, encoding=encoding)
+    partial.rename(dest)
+    return dest
+
+
+def clip_files(
+    files: dict[str, list[Path]],
+    bbox: Sequence[float],
+    work_path: Path | str,
+    workers: int = DEFAULT_CLIP_WORKERS,
+) -> dict[str, list[Path]]:
+    """
+    Clip every downloaded file to ``bbox`` on local disk, several at a time.
+
+    Parameters
+    ----------
+    files : dict
+        Request name to per-year files, as :func:`download` returns.
+    bbox : sequence of float
+        ``(x_min, x_max, y_min, y_max)`` in CARRA2 metres.
+    work_path : Path or str
+        Directory for the clipped stores; one already there from an earlier
+        run with the same box is reused.
+    workers : int, optional
+        Concurrent processes.
+
+    Returns
+    -------
+    dict
+        Request name to the clipped stores, in the order of ``files``.
+    """
+    work_path = Path(work_path)
+    work_path.mkdir(parents=True, exist_ok=True)
+    jobs = {(name, path): work_path / f"{Path(path).stem}.zarr" for name, paths in files.items() for path in paths}
+    # Spawned, not forked: the parent already runs zarr's and dask's threads,
+    # and a fork of a threaded process can deadlock in the child.
+    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+        futures = [
+            pool.submit(clip_file, path, REQUEST_FIELDS[name], bbox, dest)
+            for (name, path), dest in jobs.items()
+            if not dest.exists()  # clipped by an earlier run
+        ]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Clipping", unit="file"):
+            future.result()
+    return {name: [jobs[(name, path)] for path in paths] for name, paths in files.items()}
+
+
+def _clip_path(work_path: Path | str, rgi_id: str, bbox: Sequence[float]) -> Path:
+    """
+    Name the directory of one outline's clipped files.
+
+    Parameters
+    ----------
+    work_path : Path or str
+        Local scratch directory.
+    rgi_id : str
+        RGI7 id.
+    bbox : sequence of float
+        The box the files are clipped to; a changed margin gets new files.
+
+    Returns
+    -------
+    pathlib.Path
+        ``<work_path>/clipped_<rgi_id>_<digest>``.
+    """
+    digest = hashlib.sha1(",".join(f"{v:.0f}" for v in bbox).encode()).hexdigest()[:8]
+    return Path(work_path) / f"clipped_{rgi_id}_{digest}"
+
+
 def add_time_bounds(ds: xr.Dataset) -> xr.Dataset:
     """
     Give daily stamps the day they cover.
@@ -938,18 +1123,41 @@ def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) 
     Parameters
     ----------
     files : dict
-        Request name to per-year files, as :func:`download` returns.
+        Request name to per-year files, as :func:`download` returns, or the
+        clipped stores :func:`clip_files` made of them.
     bbox : sequence of float or None, optional
-        ``(x_min, x_max, y_min, y_max)`` in CARRA2 metres to keep.
+        ``(x_min, x_max, y_min, y_max)`` in CARRA2 metres to keep. Clipped
+        stores are already cut to it.
 
     Returns
     -------
     xarray.Dataset
         Every field, with time bounds and the CARRA2 CRS attached.
     """
+
+    def open_part(path: Path, fields: Sequence[str]) -> xr.Dataset:
+        """
+        Open one part in the store's layout.
+
+        Parameters
+        ----------
+        path : Path
+            A CDS file, or a store :func:`clip_file` made of one.
+        fields : sequence of str
+            Keys of :data:`FIELDS` in it.
+
+        Returns
+        -------
+        xarray.Dataset
+            The part, normalized and cut to ``bbox``.
+        """
+        if Path(path).suffix == ".zarr":
+            return xr.open_zarr(path, consolidated=False)
+        return normalize(xr.open_dataset(path, chunks={}), fields, bbox)
+
     parts = {}
     for name, paths in files.items():
-        yearly = [normalize(xr.open_dataset(p, chunks={}), REQUEST_FIELDS[name], bbox) for p in sorted(paths)]
+        yearly = [open_part(p, REQUEST_FIELDS[name]) for p in sorted(paths)]
         part = xr.concat(yearly, dim="time", data_vars="minimal", coords="minimal", compat="override", join="exact")
         # The orography has one time step of its own; make it static before
         # the merge insists every part share the daily axis.
@@ -973,14 +1181,16 @@ def assemble(files: dict[str, list[Path]], bbox: Sequence[float] | None = None) 
 
 def write_store(ds: xr.Dataset, store: Path | str) -> Path:
     """
-    Write the dataset as a consolidated Zarr store.
+    Write the dataset as a consolidated Zarr store, one band of rows at a time.
 
     Parameters
     ----------
     ds : xarray.Dataset
         Assembled dataset.
     store : Path or str
-        Store path; replaced if present.
+        Store path; replaced if present. The store is written under a
+        temporary name and renamed when complete: :func:`run` takes an
+        existing store as done, and a run killed half way left one behind.
 
     Returns
     -------
@@ -988,13 +1198,18 @@ def write_store(ds: xr.Dataset, store: Path | str) -> Path:
         The store.
     """
     store = Path(store)
+    partial = store.with_name(store.name + ".partial")
     chunks = {k: v for k, v in ZARR_CHUNKS.items() if k in ds.dims}
     ds = ds.chunk(chunks)
     encoding: dict[str, dict[str, Any]] = {"time": dict(TIME_ENCODING), "time_bounds": dict(TIME_ENCODING)}
-    for name in ds.data_vars:
-        ds[name].encoding.pop("chunks", None)
-        ds[name].encoding.pop("preferred_chunks", None)
-    ds.to_zarr(store, mode="w", consolidated=True, encoding=encoding)
+    # Coordinates too: the 2-D latitude/longitude of a clipped part come with
+    # the chunking zarr picked for them, which the store's does not match.
+    for var in ds.variables.values():
+        var.encoding.pop("chunks", None)
+        var.encoding.pop("preferred_chunks", None)
+    write_zarr_in_bands(ds, partial, encoding=encoding, dim="y", band_size=ds.chunksizes["y"][0])
+    shutil.rmtree(store, ignore_errors=True)
+    partial.rename(store)
     logger.info("Wrote %s", store)
     return store
 
@@ -1009,6 +1224,8 @@ def run(
     margin_km: float = DEFAULT_MARGIN_KM,
     max_workers: int = 4,
     force_overwrite: bool = False,
+    work_path: Path | str | None = None,
+    clip_workers: int = DEFAULT_CLIP_WORKERS,
 ) -> Path:
     """
     Download and write the daily CARRA2 store for one glacier.
@@ -1029,6 +1246,14 @@ def run(
         Concurrent CDS requests.
     force_overwrite : bool, optional
         Re-download and rewrite.
+    work_path : Path or str or None, optional
+        Scratch directory on a fast local disk. When given, every file is
+        first clipped to the outline's box there (see :func:`clip_files`) and
+        the store is built from the clipped files, which are removed once it
+        is written. When None, the store is built from the downloads
+        directly, which is much slower when they sit on a network share.
+    clip_workers : int, optional
+        Concurrent processes for the clipping.
 
     Returns
     -------
@@ -1090,7 +1315,12 @@ def run(
         flush=True,
     )
     files = download(range(start, end + 1), output_path / "cds", max_workers, force_overwrite)
-    print("Clipping to the outline and assembling the store...", flush=True)
+    clip_path = None
+    if work_path is not None:
+        clip_path = _clip_path(work_path, rgi_id, bbox)
+        print(f"Clipping the downloads to the outline under {clip_path}...", flush=True)
+        files = clip_files(files, bbox, clip_path, clip_workers)
+    print("Assembling the store...", flush=True)
     ds = assemble(files, bbox)
     ds.attrs.update(
         {
@@ -1102,7 +1332,10 @@ def run(
             "Conventions": "CF-1.8",
         }
     )
-    return write_store(ds, store)
+    write_store(ds, store)
+    if clip_path is not None:
+        shutil.rmtree(clip_path)
+    return store
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1134,6 +1367,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser, default=4, help_text="Concurrent CDS requests.", dest="max_workers", deprecated=("--max-workers",)
     )
     parser.add_argument("--force-overwrite", action="store_true", help="Re-download and rewrite.")
+    parser.add_argument(
+        "--work-path",
+        type=Path,
+        default=None,
+        help="Scratch directory on a fast local disk to clip the downloads into before building the store; "
+        "much faster when --output-path is a network share. Needs roughly 10 GB per year for an S4F-sized outline.",
+    )
+    parser.add_argument(
+        "--clip-workers", type=int, default=DEFAULT_CLIP_WORKERS, help="Concurrent processes for the clipping."
+    )
     parser.add_argument("RGI_ID", help="RGI7 id, e.g. RGI2000-v7.0-C-01-12784.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -1148,6 +1391,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         margin_km=args.margin_km,
         max_workers=args.max_workers,
         force_overwrite=args.force_overwrite,
+        work_path=args.work_path,
+        clip_workers=args.clip_workers,
     )
     print(store)
     return 0

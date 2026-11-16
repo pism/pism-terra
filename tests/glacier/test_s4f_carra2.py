@@ -538,6 +538,42 @@ def test_run_writes_a_clipped_store_on_the_carra2_grid(tmp_path: Path, fake_down
     assert ds.rio.crs is not None and CRS(ds.rio.crs) == CARRA2_CRS
 
 
+def test_run_with_a_work_path_writes_the_same_store(
+    tmp_path: Path, fake_download, outline, monkeypatch: pytest.MonkeyPatch
+):  # pylint: disable=unused-argument
+    """
+    Clipping to local disk first changes how the store is built, not what is in it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    fake_download : dict
+        Recorded requests.
+    outline : geopandas.GeoDataFrame
+        The outline.
+    monkeypatch : pytest.MonkeyPatch
+        Patch fixture; small read blocks so that the clipped stores are
+        appended to, not written in one go.
+    """
+    monkeypatch.setattr(mod, "CLIP_TIME_BLOCK", 2)
+    rgi_file = tmp_path / "outline.gpkg"
+    outline.to_file(rgi_file)
+    rgi_id = "RGI2000-v7.0-C-01-12784"
+    # Clipped first: both runs fake their downloads into the same files, and
+    # the direct run keeps its open.
+    work = tmp_path / "work"
+    clipped = mod.run(rgi_id, tmp_path / "clipped", rgi_file=rgi_file, start=1990, end=1991, work_path=work)
+    direct = mod.run(rgi_id, tmp_path / "direct", rgi_file=rgi_file, start=1990, end=1991)
+
+    expected = xr.open_zarr(direct, consolidated=True, decode_coords="all")
+    actual = xr.open_zarr(clipped, consolidated=True, decode_coords="all")
+    xr.testing.assert_identical(actual, expected)
+    # The clipped files are scratch: gone once the store is written.
+    assert not any(work.iterdir())
+    assert not clipped.with_name(clipped.name + ".partial").exists()
+
+
 def test_forecast_fields_are_stamped_by_valid_time(
     tmp_path: Path, fake_download, outline
 ):  # pylint: disable=unused-argument
@@ -594,6 +630,34 @@ def test_time_and_bounds_share_one_encoding(tmp_path: Path, fake_download, outli
     assert raw["time"].attrs["units"].startswith("hours since 1850-01-01")
     assert raw["time"].dtype == np.int64
     assert raw["time"].values[0] == raw["time_bounds"].values[0, 0]
+
+
+def test_write_store_ignores_the_chunking_coordinates_bring_along(tmp_path: Path):
+    """
+    Rechunk coordinates as well as fields: a clipped part's 2-D latitude keeps zarr's own chunks.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+    """
+    ny, nx = 130, 70
+    ds = xr.Dataset(
+        {"air_temp_2m": (("time", "y", "x"), np.zeros((3, ny, nx), "float32"))},
+        coords={
+            "time": ("time", pd.date_range("1990-01-01", periods=3).values),
+            "y": ("y", np.arange(ny) * 2500.0),
+            "x": ("x", np.arange(nx) * 2500.0),
+            "latitude": (("y", "x"), np.zeros((ny, nx))),
+        },
+    )
+    ds = mod.add_time_bounds(ds).chunk({"time": 1, "y": 50, "x": 35})
+    # As xr.open_zarr leaves it on a store written with zarr's default chunks.
+    ds["latitude"].encoding["chunks"] = (50, 35)
+    store = mod.write_store(ds, tmp_path / "store.zarr")
+    out = xr.open_zarr(store, consolidated=True)
+    assert out["latitude"].encoding["chunks"] == (64, 64)
+    assert not (tmp_path / "store.zarr.partial").exists()
 
 
 def test_an_unknown_pressure_level_is_an_error():

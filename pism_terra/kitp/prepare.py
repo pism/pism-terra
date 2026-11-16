@@ -44,7 +44,11 @@ from pyfiglet import Figlet
 from tqdm.auto import tqdm
 
 from pism_terra.domain import create_domain
-from pism_terra.ismip7.greenland.forcing import prepare_observations
+from pism_terra.ismip7.greenland.forcing import (
+    CALFIN_RESOLUTIONS,
+    prepare_calfin_snapshot,
+    prepare_observations,
+)
 from pism_terra.kitp.forcing import (
     baseline_with_anomalies,
     prepare_anomalies,
@@ -62,7 +66,7 @@ xr.set_options(keep_attrs=True)
 logger = logging.getLogger(__name__)
 
 # Datasets the KITP Greenland prepare can process, in execution order.
-KITP_DATASETS = ["grid", "observations", "ocean", "baseline", "anomalies"]
+KITP_DATASETS = ["grid", "observations", "ocean", "baseline", "anomalies", "calfin"]
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
@@ -91,6 +95,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         - ``"boot_file"`` : Path — observation-derived boot NetCDF.
         - ``"heatflux_file"`` : Path — geothermal heat-flux NetCDF.
         - ``"baseline_file"`` : Path — baseline climatology NetCDF.
+        - ``"retreat_files"`` : dict — CALFIN front-retreat NetCDF per resolution (m).
     """
 
     parser = ArgumentParser()
@@ -106,6 +111,19 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         help="Parallel tasks.",
         type=int,
         default=8,
+    )
+    parser.add_argument(
+        "--calfin-resolutions",
+        metavar="RES[,RES...]",
+        default=",".join(str(r) for r in CALFIN_RESOLUTIONS),
+        help="Grid resolutions (m) the CalFin retreat mask is built at in the 'calfin' step. "
+        "The setup's own resolution is always included.",
+    )
+    parser.add_argument(
+        "--calfin-date",
+        metavar="YYYY-MM",
+        default="2007-07",
+        help="Month of the CalFin front the 'calfin' masks hold for the whole run.",
     )
     add_include_argument(parser, KITP_DATASETS)
     parser.add_argument("CONFIG_FILE", nargs=1)
@@ -268,6 +286,31 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         else:
             logger.warning("Anomalies produced without a baseline; skipping baseline_with_anomalies merge.")
 
+    # --- CalFin front, fixed at one summer month ---
+    # KITP runs on an idealized 365_day axis from year 1, so the mask is a
+    # single record whose bounds cover the whole run rather than the dated
+    # monthly series the ISMIP7 runs read.
+    retreat_files: dict[int, Path] = {}
+    if "calfin" in selected:
+        logger.info("-" * 120)
+        logger.info("Calfin Glacier Fronts Files")
+        logger.info("-" * 120)
+        calfin_resolutions = sorted({int(r) for r in args.calfin_resolutions.split(",") if r.strip()} | {resolution})
+        retreat_files = prepare_calfin_snapshot(
+            stage_path,
+            calfin_resolutions,
+            x_bnds=x_bnds,
+            y_bnds=y_bnds,
+            date=args.calfin_date,
+            start="0001-01-01",
+            end="1001-01-01",
+            calendar="365_day",
+            calfin_path=output_path / Path("calfin"),
+            force_overwrite=force_overwrite,
+        )
+        for v in retreat_files.values():
+            check_xr_lazy(v)
+
     # Ship only the outputs produced by the selected datasets.
     input_files: list = []
     if "grid" in selected:
@@ -278,6 +321,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     if ocean_forcing_file is not None:
         input_files.append(ocean_forcing_file)
     input_files += combined_files
+    input_files += list(retreat_files.values())
 
     s3_output_path = output_path / Path(config["prefix"]) / Path(config["version"])
     s3_output_path.mkdir(parents=True, exist_ok=True)
@@ -295,6 +339,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         "boot_file": obs_files.get("boot_file"),
         "heatflux_file": obs_files.get("heatflux_file"),
         "baseline_file": baseline_file,
+        "retreat_files": retreat_files,
     }
 
 

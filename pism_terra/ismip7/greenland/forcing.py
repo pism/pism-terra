@@ -1656,6 +1656,35 @@ def download_calfin(result_dir: Path | str, product: str = "polygons") -> Path:
     return shp
 
 
+def _load_calfin(tmp_path: Path | str, crs: str = "EPSG:3413") -> tuple[gpd.GeoDataFrame, gpd.GeoSeries]:
+    """
+    Read the CALFIN front polygons and the outline the ice may fill.
+
+    Parameters
+    ----------
+    tmp_path : Path or str
+        Directory the CALFIN shapefile is downloaded to (or already sits in).
+    crs : str, default "EPSG:3413"
+        CRS both are returned in.
+
+    Returns
+    -------
+    tuple
+        ``(calfin, outline)``: the front polygons indexed by ``Date`` (sorted,
+        geometries made valid), and the IMBIE basins united with every front.
+    """
+    retreat_file = download_calfin(tmp_path, "polygons")
+    imbie = gpd.read_file("s3://pism-cloud-data/ismip7_greenland_extra/GRE_Basins_IMBIE2_v1.3_w_shelves.gpkg").to_crs(
+        crs
+    )
+    calfin = gpd.read_file(retreat_file).to_crs(crs)
+    calfin["Date"] = pd.DatetimeIndex(calfin["Date"])
+    calfin = calfin.set_index("Date").sort_index()
+    calfin.geometry = calfin.geometry.make_valid()
+    imbie_union = imbie.dissolve().union(calfin.dissolve())
+    return calfin, imbie_union
+
+
 def prepare_calfin(
     output_path: Path | str,
     resolutions: int | Sequence[int],
@@ -1729,25 +1758,8 @@ def prepare_calfin(
 
         tmp_path = output_path.parent / Path("calfin")
 
-        retreat_file = download_calfin(tmp_path, "polygons")
-
         crs = "EPSG:3413"
-
-        # Load reference data and CALFIN
-        imbie = gpd.read_file(
-            "s3://pism-cloud-data/ismip7_greenland_extra/GRE_Basins_IMBIE2_v1.3_w_shelves.gpkg"
-        ).to_crs(crs)
-        calfin = gpd.read_file(retreat_file).to_crs(crs)
-
-        # Prepare CALFIN timestamps and geometry
-        calfin["Date"] = pd.DatetimeIndex(calfin["Date"])
-        calfin = calfin.set_index("Date").sort_index()
-        calfin.geometry = calfin.geometry.make_valid()
-        calfin_dissolved = calfin.dissolve()
-
-        # Create base union geometry
-        imbie_dissolved = imbie.dissolve()
-        imbie_union = imbie_dissolved.union(calfin_dissolved)
+        calfin, imbie_union = _load_calfin(tmp_path, crs=crs)
 
         # Step 1: Group by month and dissolve each group
         groups = [(date, df) for date, df in calfin.groupby(pd.Grouper(freq=freq)) if len(df) > 0]
@@ -1804,6 +1816,190 @@ def prepare_calfin(
     # last bound in 2019, and the call is a no-op once it does not.
     for target in targets.values():
         extend_final_time_bound(target)
+    return targets
+
+
+def calfin_snapshot_filename(resolution: int, year: int, start: str, end: str) -> str:
+    """
+    Name of the CalFin retreat mask that holds one date's front for a whole run.
+
+    Parameters
+    ----------
+    resolution : int
+        Grid resolution in meters.
+    year : int
+        Year of the CALFIN front the mask shows.
+    start, end : str
+        Time bounds of its single record, ``YYYY-MM-DD``.
+
+    Returns
+    -------
+    str
+        ``pism_g<resolution>m_frontretreat_calfin_<year>_<start>-<end>.nc``.
+    """
+    return f"pism_g{int(resolution)}m_frontretreat_calfin_{int(year)}_{start}-{end}.nc"
+
+
+def write_single_record(
+    source: Path | str,
+    output_file: Path | str,
+    start: str,
+    end: str,
+    calendar: str = "365_day",
+    source_date: str | None = None,
+) -> Path:
+    """
+    Rewrite a one-record mask with a single time entry spanning ``[start, end)``.
+
+    The mask a dated rasterization wrote is moved to ``start`` in ``calendar``,
+    so a run on an idealized time axis (year 1 onwards, no leap days) reads the
+    one observed front for its whole length.
+
+    Parameters
+    ----------
+    source : Path or str
+        NetCDF with one ``land_ice_area_fraction_retreat`` record.
+    output_file : Path or str
+        File to write.
+    start, end : str
+        Bounds of the record, ``YYYY-MM-DD``; the record sits at ``start``.
+    calendar : str, default "365_day"
+        CF calendar of the time axis.
+    source_date : str or None, optional
+        Date of the observed front, kept as an attribute.
+
+    Returns
+    -------
+    pathlib.Path
+        ``output_file``.
+    """
+    units = f"days since {start}"
+
+    def to_num(date: str) -> float:
+        """
+        Convert a ``YYYY-MM-DD`` date to a number on the output time axis.
+
+        Parameters
+        ----------
+        date : str
+            Date, ``YYYY-MM-DD``.
+
+        Returns
+        -------
+        float
+            Days since ``start`` in ``calendar``.
+        """
+        y, m, d = (int(v) for v in date.split("-"))
+        return float(cftime.date2num(cftime.datetime(y, m, d, calendar=calendar), units, calendar))
+
+    with xr.open_dataset(source, decode_times=False) as src:
+        ds = src.load()
+    if ds.sizes["time"] != 1:
+        raise ValueError(f"{source} has {ds.sizes['time']} records, expected 1")
+    ds = ds.assign_coords(
+        time=xr.DataArray(
+            [to_num(start)],
+            dims="time",
+            attrs={"units": units, "calendar": calendar, "axis": "T", "standard_name": "time", "bounds": "time_bnds"},
+        )
+    )
+    ds["time_bnds"] = xr.DataArray([[to_num(start), to_num(end)]], dims=("time", "nv"))
+    if source_date is not None:
+        ds["land_ice_area_fraction_retreat"].attrs["source_date"] = source_date
+    encoding: dict = {var: {"_FillValue": None} for var in list(ds.data_vars) + list(ds.coords)}
+    encoding["land_ice_area_fraction_retreat"].update({"zlib": True, "complevel": 2})
+    ds.to_netcdf(output_file, encoding=encoding, engine="h5netcdf")
+    return Path(output_file)
+
+
+def prepare_calfin_snapshot(
+    output_path: Path | str,
+    resolutions: int | Sequence[int],
+    x_bnds: list | np.ndarray,
+    y_bnds: list | np.ndarray,
+    date: str = "2007-07",
+    start: str = "0001-01-01",
+    end: str = "1001-01-01",
+    calendar: str = "365_day",
+    calfin_path: Path | str | None = None,
+    force_overwrite: bool = False,
+) -> dict[int, Path]:
+    """
+    Build CalFin retreat masks that hold one month's front, one per resolution.
+
+    The mask is the monthly record :func:`prepare_calfin` writes for ``date``
+    (every front observed up to the end of that month cut out of the outline),
+    but stored as a single record over ``[start, end)`` in ``calendar`` for
+    runs on an idealized time axis that should keep that front throughout.
+
+    Parameters
+    ----------
+    output_path : Path or str
+        Directory for output files.
+    resolutions : int or sequence of int
+        Grid resolutions in meters. Each must divide both domain extents.
+    x_bnds, y_bnds : list or numpy.ndarray
+        Domain bounds.
+    date : str, default "2007-07"
+        Month of the front, ``YYYY-MM``.
+    start, end : str, default "0001-01-01", "1001-01-01"
+        Time bounds of the single record.
+    calendar : str, default "365_day"
+        CF calendar of the time axis.
+    calfin_path : Path or str or None, optional
+        Directory the CALFIN shapefile goes to; default ``<output_path>/../calfin``.
+    force_overwrite : bool, default False
+        If True, rebuild even if the output files already exist.
+
+    Returns
+    -------
+    dict of int to Path
+        Output NetCDF per resolution.
+
+    Raises
+    ------
+    ValueError
+        If a resolution does not tile the domain, or no front was observed by ``date``.
+    """
+    if isinstance(resolutions, (int, float)):
+        resolutions = [int(resolutions)]
+    resolutions = [int(r) for r in resolutions]
+    x_extent = abs(float(x_bnds[1]) - float(x_bnds[0]))
+    y_extent = abs(float(y_bnds[1]) - float(y_bnds[0]))
+    off_grid = [
+        r
+        for r in resolutions
+        if not (math.isclose(x_extent / r, round(x_extent / r)) and math.isclose(y_extent / r, round(y_extent / r)))
+    ]
+    if off_grid:
+        raise ValueError(
+            f"the domain ({x_extent:.0f} m x {y_extent:.0f} m) is not a whole number of cells at {off_grid} m; "
+            "a retreat mask PISM has to interpolate is worse than none"
+        )
+
+    month = pd.Period(date, freq="M")
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+    targets = {r: output_path / calfin_snapshot_filename(r, month.year, start, end) for r in resolutions}
+    todo = [r for r in resolutions if force_overwrite or not check_xr_lazy(targets[r])]
+    if not todo:
+        return targets
+
+    logger.info("Building CalFin %s retreat masks at %s m", month, ", ".join(str(r) for r in todo))
+    tmp_path = Path(calfin_path) if calfin_path is not None else output_path.parent / Path("calfin")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    crs = "EPSG:3413"
+    calfin, imbie_union = _load_calfin(tmp_path, crs=crs)
+    retreated = calfin.loc[: month.end_time]
+    if retreated.empty:
+        raise ValueError(f"CALFIN has no front observed by {month}")
+    logger.info("%d CALFIN fronts up to %s", len(retreated), month)
+    dated = rasterize_retreat_masks(
+        tmp_path, month.start_time, retreated[["geometry"]], imbie_union, x_bnds, y_bnds, todo, crs=crs
+    )
+    for r in todo:
+        write_single_record(dated[r], targets[r], start, end, calendar=calendar, source_date=str(month))
+        logger.info("Wrote %s", targets[r].resolve())
     return targets
 
 

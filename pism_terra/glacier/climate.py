@@ -53,6 +53,7 @@ from pyproj import Transformer
 from rasterio.enums import Resampling
 from scipy.spatial import cKDTree
 from tqdm.auto import tqdm
+from tqdm.dask import TqdmCallback
 
 from pism_terra.aws import project_prefix
 from pism_terra.domain import create_domain, get_bounds_from_geometry
@@ -992,7 +993,10 @@ def write_zarr_in_bands(
     for start in tqdm(range(0, size, band_size), desc=f"Writing {store.name}", unit="band"):
         region = slice(start, min(start + band_size, size))
         band = ds.isel({dim: region}).drop_vars(static)
-        band.to_zarr(store, mode="r+", region={dim: region}, consolidated=True)
+        # A band can take the better part of an hour; the inner bar counts its
+        # dask tasks so a slow band is distinguishable from a stalled one.
+        with TqdmCallback(desc=f"{dim} {region.start}-{region.stop}", leave=False, position=1):
+            band.to_zarr(store, mode="r+", region={dim: region}, consolidated=True)
     return store
 
 

@@ -18,6 +18,7 @@ outputs already on disk and ``--skip`` leaves a tool out.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -27,8 +28,10 @@ import traceback
 from argparse import SUPPRESS, ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from html import escape
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 import pandas as pd
@@ -282,6 +285,37 @@ def collect_importance(output_dir: Path, base: Path) -> dict[str, Any]:
     }
 
 
+GLACIER_METHOD_NOTE = {
+    "title": "How the numbers are calculated",
+    "html": "<h4>1. Observations</h4>"
+    "<p>The USGS benchmark-glacier release publishes geodetically calibrated glacier-wide winter "
+    "(<code>Bw</code>), summer (<code>Bs</code>) and annual (<code>Ba</code>) balances in m w.e. A balance year "
+    "runs from one annual minimum to the next, both dated in the release (<code>Ba_Date</code>), and is split "
+    "at the winter maximum (<code>Bw_Date</code>). Each glacier is assigned the RGI v7 outline holding most of "
+    "its stakes, or the outline nearest their centroid within 5 km (<em>USGS glaciers matched to RGI</em>).</p>"
+    "<h4>2. Model series</h4>"
+    "<p>The model values come from the post-processed per-glacier scalar files (<code>scalar_G_*.nc</code>) of "
+    "that RGI outline. <code>surface</code> rows integrate <code>tendency_of_ice_mass_due_to_surface_mass_flux"
+    "</code>, the mass a stake network can see, over the release's own dates: <code>Bw</code> from the "
+    "previous year's <code>Ba_Date</code> to this year's <code>Bw_Date</code>, <code>Bs</code> from there to "
+    "this year's <code>Ba_Date</code>, and <code>Ba = Bw + Bs</code>. Monthly values are weighted by the days "
+    "they share with the season, so this needs monthly output; a season the model record does not fully cover "
+    "is left out. The <code>total</code> row is the annual mean of <code>tendency_of_ice_mass</code>, which "
+    "also holds discharge and flow across the outline.</p>"
+    "<h4>3. Per unit area</h4>"
+    "<p>Model mass changes (Gt) are divided by the model's own ice area of the balance year (the ice-covered "
+    "fraction <code>sftgif</code> summed over the outline times the cell area; the outline area where the file "
+    "has no <code>sftgif</code>; the observed area where it has neither) and the density of water, 1000 kg "
+    "m<sup>-3</sup>, giving m w.e. like the observations.</p>"
+    "<h4>4. Ensemble and skill</h4>"
+    "<p>With several runs the median over runs is scored. Over the balance years both sides have: <code>n"
+    "</code> their number; <code>r</code> the Pearson correlation (with at least 3 years that are not "
+    "constant); <code>mae</code> the mean of |model &minus; observed|; <code>bias</code> the mean of model "
+    "&minus; observed, so a negative bias is too little accumulation or too much melt. All in m w.e. per "
+    "year.</p>",
+}
+
+
 def collect_usgs_glaciers(output_dir: Path, base: Path) -> dict[str, Any]:
     """
     Gather the USGS glacier benchmark outputs for its page.
@@ -307,7 +341,116 @@ def collect_usgs_glaciers(output_dir: Path, base: Path) -> dict[str, Any]:
         if t
     ]
     glaciers = _glacier_sections(output_dir, base)
-    return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers)}
+    return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers), "notes": [GLACIER_METHOD_NOTE]}
+
+
+START_AT_TEXT = {
+    "summer_surface": "<p>A winter or annual balance is measured against the <em>previous summer surface</em>, "
+    "the lowest the surface gets at the end of the melt season, not against the surface on the day of the fall "
+    "visit. A visit before the melt season ends (July on the Juneau Icefield, August or September elsewhere) "
+    "therefore leaves the melt that follows it out of the measurement: on the next visit it is below the "
+    "summer surface the stake is read against. The modelled <code>bw</code> and <code>ba</code> start where the "
+    "model's own balance since the fall visit is lowest: the visit itself, or the end of a month up to "
+    "{days} days later (and before the closing visit). Where the model accumulates from the visit on, the start "
+    "stays at the visit. <code>bs</code> and <code>db</code> start at the visit. The table "
+    "<em>Start of the modelled winter and annual balances</em> below says how far the starts moved and how much "
+    "balance that left out; <code>model_from_visit</code> in the per-glacier CSV files is each balance "
+    "integrated from the visit instead.</p>",
+    "visit": "<p>The modelled <code>bw</code> and <code>ba</code> start on the day of the previous fall visit, "
+    "so melt between the visit and the end of the melt season is counted, although the stake, read against "
+    "the previous summer surface, does not see it. Run with <code>--start-at summer-surface</code> to start "
+    "at the modelled summer surface instead.</p>",
+}
+
+
+def stake_method_note(output_dir: Path) -> dict[str, str]:
+    """
+    Explain how every number on the stake page is calculated, with this run's settings.
+
+    Parameters
+    ----------
+    output_dir : Path
+        ``<report>/usgs_stakes``, holding the settings the benchmark wrote.
+
+    Returns
+    -------
+    dict
+        ``{"title", "html"}`` for the page.
+    """
+    settings: dict[str, Any] = {}
+    path = output_dir / usgs_benchmark_stakes.SETTINGS_FILE
+    if path.is_file():
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    sampling = settings.get("sampling", "nearest")
+    start_at = settings.get("start_at", "visit")
+    days = settings.get("summer_surface_search_days", usgs_benchmark_stakes.SUMMER_SURFACE_SEARCH_DAYS)
+    rho = settings.get("rho_water", 1000.0)
+    min_years = settings.get("skill_min_years", 3)
+    min_points = settings.get("gradient_min_points", usgs_benchmark_stakes.GRADIENT_MIN_POINTS)
+    n_files = f" ({settings['n_files']} files)" if "n_files" in settings else ""
+    sampled = (
+        "the value of the grid cell the stake lies in"
+        if sampling == "nearest"
+        else "a bilinear interpolation of the four surrounding cells (the stake's own cell where one of them has "
+        "no value; the ice mask is always the stake's own cell)"
+    )
+    html = [
+        (
+            ""
+            if path.is_file()
+            else "<p><em>The benchmark wrote no settings file, so the defaults of an older "
+            "version are assumed below: nearest-cell sampling and balances from the visit date.</em></p>"
+        ),
+        "<h4>1. Stakes and glaciers</h4>",
+        "<p>The stake positions and measurements are the USGS benchmark-glacier release (glaciological data: "
+        "<code>bw</code> at the spring visit, <code>ba</code> at the fall visit, sub-seasonal <code>db</code> "
+        "between two visits). Each glacier is assigned the RGI v7 outline holding most of its stakes, or the "
+        "outline nearest their centroid within 5 km (<em>USGS glaciers matched to RGI</em>).</p>",
+        "<h4>2. Model values at a stake</h4>",
+        f"<p>Every monthly <code>spatial_*.nc</code> file under the run directory is read at the stakes, as "
+        f"{sampled}{n_files}; files that end before "
+        "the first measurement (initialisation legs) are left out. The surface mass balance rate is "
+        f"<code>(surface_accumulation_flux &minus; surface_runoff_flux) / &rho;<sub>w</sub></code> with "
+        f"&rho;<sub>w</sub> = {rho:g} kg m<sup>-3</sup>, in m w.e. per year; without those two fields, "
+        "<code>tendency_of_ice_mass_due_to_surface_mass_flux</code> divided by the cell area and "
+        "&rho;<sub>w</sub>. Accumulation is the snowfall and runoff the melt that does not refreeze; rain "
+        "does not enter the balance. Months in which the model has no ice at the stake "
+        "(<code>thk</code> &le; 0) have no value, and an interval containing such a month has no modelled "
+        "balance.</p>",
+        "<h4>3. Intervals</h4>",
+        "<p>Each measurement is compared with the model over its own interval: <code>bw</code> from the "
+        "previous fall visit (or, without one, the previous balance year's glacier-wide <code>Ba_Date</code>) "
+        "to the spring visit; <code>bs</code> from the spring to the fall visit, observed as "
+        "<code>ba &minus; bw</code>; <code>ba</code> from the previous to this fall visit; <code>db</code> "
+        "between its two visits. The monthly rates are integrated with each month weighted by the days it "
+        "shares with the interval, divided by 365; an interval the model record does not fully cover has no "
+        "modelled value.</p>",
+        "<h4>4. Start of the modelled winter and annual balances</h4>",
+        START_AT_TEXT.get(start_at, "").format(days=days),
+        "<h4>5. Ensemble</h4>",
+        "<p>Each spatial file is one run. With several runs the scores, scatter and gradient plots use the "
+        "median over the runs of each measurement, and the time series show the 5&ndash;95 % range over runs "
+        "as a band.</p>",
+        "<h4>6. Skill scores</h4>",
+        "<p>Per site, and pooled over all sites of a glacier (<code>site = all</code>), per season, over the "
+        "measurements with both an observed and a modelled value: <code>n</code> their number; <code>r</code> "
+        f"the Pearson correlation (only with at least {min_years} values that are not constant); "
+        "<code>mae</code> the mean of |model &minus; observed|; <code>bias</code> the mean of "
+        "model &minus; observed, so a negative bias is too little accumulation or too much melt; "
+        "<code>elevation_offset</code> the mean modelled surface over the interval minus the stake's surveyed "
+        "elevation; <code>n_ice_free_months</code> the months the model had no ice at the stake. All balances "
+        "are in m w.e.</p>",
+        "<h4>7. Balance gradients</h4>",
+        "<p>For each season the observed and the modelled balances (ensemble median) are fitted against the "
+        "stake elevations with two straight lines that meet at zero balance, the ELA: "
+        "<code>b(z) = k<sub>below</sub> (z &minus; ELA)</code> below it and <code>k<sub>above</sub> "
+        "(z &minus; ELA)</code> above. For each candidate ELA the slopes are a least-squares fit; the ELA with "
+        "the smallest squared misfit is kept, searched over the stakes' elevation range widened by that range "
+        f"on either side, with at least {min_points} stakes on each side that has any. <code>ela_in_range</code> "
+        "is 1 when the ELA lies between the lowest and highest stake; the gradients are in m w.e. per m, "
+        "<code>rmse</code> in m w.e.</p>",
+    ]
+    return {"title": "How the numbers are calculated", "html": "".join(html)}
 
 
 def collect_usgs_stakes(output_dir: Path, base: Path) -> dict[str, Any]:
@@ -331,12 +474,116 @@ def collect_usgs_stakes(output_dir: Path, base: Path) -> dict[str, Any]:
         for t in (
             _table(output_dir / "usgs_benchmark_stakes_skill.csv", "Skill scores", "skill"),
             _table(output_dir / "usgs_benchmark_stakes_gradients.csv", "Balance gradients", "gradients"),
+            _table(
+                output_dir / usgs_benchmark_stakes.MODEL_START_FILE,
+                "Start of the modelled winter and annual balances",
+                "model-start",
+            ),
             _table(output_dir / "usgs_benchmark_stakes_rgi_match.csv", "USGS glaciers matched to RGI", "matches"),
         )
         if t
     ]
     glaciers = _glacier_sections(output_dir, base, [("*_gradient.csv", "Gradient fits")])
-    return {"tables": tables, "sections": glaciers, "n_glaciers": len(glaciers)}
+    return {
+        "tables": tables,
+        "sections": glaciers,
+        "n_glaciers": len(glaciers),
+        "notes": [stake_method_note(output_dir)],
+    }
+
+
+FREQUENCY_TEXT = {
+    "yearly": "averaged to calendar years",
+    "monthly": "averaged to calendar months",
+    "none": "used at the times the files hold",
+}
+
+
+def sensitivity_method_note(output_dir: Path) -> dict[str, str]:
+    """
+    Explain how the sensitivity indices are calculated, with this run's settings.
+
+    Parameters
+    ----------
+    output_dir : Path
+        ``<report>/sensitivity_indices``, holding the settings the tool wrote.
+
+    Returns
+    -------
+    dict
+        ``{"title", "html"}`` for the page.
+    """
+    settings: dict[str, Any] = {}
+    path = output_dir / sensitivity_indices.SETTINGS_FILE
+    if path.is_file():
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    target = escape(str(settings.get("target", sensitivity_indices.DEFAULT_TARGET)))
+    freq = str(settings.get("frequency", "yearly"))
+    resamples = settings.get("num_resamples", 100)
+    min_members = settings.get("min_members", 8)
+    conf = float(settings.get("conf_level", sensitivity_indices.CONF_LEVEL))
+    parts = [
+        "" if path.is_file() else "<p><em>The tool wrote no settings file, so the defaults are assumed below.</em></p>",
+        "<h4>1. Ensemble</h4>",
+        "<p>Each member of the UQ ensemble is one draw of the uncertain parameters, listed in the complex's "
+        "<code>uq.csv</code>. Its response is read from the post-processed scalar files, <code>scalar_C_*</code> "
+        "for the whole complex and <code>scalar_G_*</code> for each of its glaciers, as the variable "
+        f"<code>{target}</code>, {FREQUENCY_TEXT.get(freq, escape(freq))}. A complex with fewer than "
+        f"{min_members} finished members is skipped: the estimator needs comfortably more members than "
+        "parameters, and with fewer members than parameters plus two no index is computed at all.</p>",
+        "<h4>2. Indices</h4>",
+        "<p>The indices are computed separately at every time step, from the members' parameter values and "
+        "responses alone (the <em>given-data</em> method of Plischke et al. 2013, SALib's "
+        "<code>delta.analyze</code>), so no special sampling design is needed. For each parameter the members are "
+        "sorted by its value and split into classes of equal size, about N<sup>1/4</sup> of them for N members "
+        "up to a few hundred (at most 48). The first-order Sobol index <code>S1</code> is the share of the response variance "
+        "explained by that parameter alone: the variance of the class means of the response, weighted by class "
+        "size, over the total variance. Borgonovo's <code>delta</code> asks how much the whole distribution of "
+        "the response shifts when the parameter is known: half the area between the response's density within a "
+        "class and its overall density (both kernel estimates), averaged over the classes. It is 0 for a "
+        "parameter without influence and 1 at most, and catches effects on the spread or shape of the response "
+        "that leave its variance alone. Both are dimensionless. The <code>S1</code> of all parameters add up to "
+        "1 at most; what is missing is due to interactions between parameters.</p>",
+        "<h4>3. Confidence bands</h4>",
+        f"<p>The members are resampled with replacement {resamples} times; the shaded bands are the index plus "
+        f"or minus {conf:.0%} confidence half-widths, {_z(conf):.2f} times the standard deviation over the "
+        "resamples. With a few dozen members, <code>delta</code> of a parameter without influence can still come "
+        "out clearly above zero; compare parameters with that in mind.</p>",
+        "<h4>4. Summary columns</h4>",
+        "<p>In the per-complex CSV files, <code>S1_mean</code> and <code>delta_mean</code> average the index over "
+        "all time steps, <code>S1_last</code> and <code>delta_last</code> over the last 10.</p>",
+    ]
+    complexes = settings.get("complexes", [])
+    if complexes:
+        rows = "".join(
+            f"<tr><td>{escape(str(c['rgi_id']))}</td><td>{escape(str(c['kind']))}</td>"
+            f"<td>{c['n_files']}</td><td>{c.get('n_members', '')}</td><td>{c.get('n_parameters', '')}</td>"
+            f"<td>{escape(str(c.get('skipped', '')))}</td></tr>"
+            for c in complexes
+        )
+        parts.append(
+            '<div class="table-wrap"><table class="table"><thead><tr><th>complex</th><th>kind</th>'
+            "<th>member files</th><th>members analyzed</th><th>parameters</th><th>skipped</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
+        )
+    return {"title": "How the indices are calculated", "html": "".join(parts)}
+
+
+def _z(conf_level: float) -> float:
+    """
+    Two-sided standard-normal quantile of a confidence level.
+
+    Parameters
+    ----------
+    conf_level : float
+        Confidence level, e.g. 0.95.
+
+    Returns
+    -------
+    float
+        The quantile, 1.96 for 0.95.
+    """
+    return float(NormalDist().inv_cdf(0.5 + conf_level / 2))
 
 
 def collect_sensitivity(output_dir: Path, base: Path) -> dict[str, Any]:
@@ -359,7 +606,12 @@ def collect_sensitivity(output_dir: Path, base: Path) -> dict[str, Any]:
     # Figures only: the summary and per-glacier index tables run to hundreds of
     # rows and stay in the CSV files next to the figures.
     glaciers = _glacier_sections(output_dir, base)
-    return {"tables": [], "sections": glaciers, "n_glaciers": len(glaciers)}
+    return {
+        "tables": [],
+        "sections": glaciers,
+        "n_glaciers": len(glaciers),
+        "notes": [sensitivity_method_note(output_dir)],
+    }
 
 
 COLLECTORS = {

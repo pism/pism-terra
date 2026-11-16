@@ -51,7 +51,7 @@ from pism_terra.workflow import pism_config_value
 
 logger = logging.getLogger("pism_terra.glacier.usgs")
 
-DEFAULT_DATA_DIR = "~/base/pism-terra/usgs_benchmark"
+DEFAULT_DATA_DIR = "~/usgs_benchmark"
 
 # Glaciers of the release that are left out of the benchmarks: South Cascade
 # (Washington) and Sperry (Montana) lie in RGI region 2, which Snow4Flow does

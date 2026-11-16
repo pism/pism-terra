@@ -1,5 +1,6 @@
 """Sensitivity indices of ensemble time series, and the project-level CLI."""
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -161,8 +162,35 @@ def test_project_pipeline_writes_the_usgs_like_layout(project: Path) -> None:
     ds = xr.open_dataset(out / rgi / "sensitivity_G_ice_mass.nc")
     assert ds.attrs["target"] == "ice_mass" and ds.sizes["glacier"] == 2
 
+    settings = json.loads((out / gsi.SETTINGS_FILE).read_text())
+    assert settings["frequency"] == "none" and settings["num_resamples"] == 5 and settings["conf_level"] == 0.95
+    assert {(c["kind"], c["n_files"], c["n_members"], c["n_parameters"]) for c in settings["complexes"]} == {
+        ("C", 12, 12, uq_columns(project)),
+        ("G", 12, 12, uq_columns(project)),
+    }
+
+    # Nothing analyzed: the settings still say why, for the report.
     with pytest.raises(FileNotFoundError, match="processed members"):
         gsi.run_pipeline(project, output_path=project / "none", min_members=50)
+    skipped = json.loads((project / "none" / gsi.SETTINGS_FILE).read_text())["complexes"]
+    assert {c["skipped"] for c in skipped} == {"fewer than 50 members"}
+
+
+def uq_columns(project: Path) -> int:
+    """
+    Number of parameters in the project's ``uq.csv``.
+
+    Parameters
+    ----------
+    project : Path
+        Synthetic project fixture.
+
+    Returns
+    -------
+    int
+        Parameter columns, without the member id.
+    """
+    return len(pd.read_csv(project / "RGI2000-v7.0-C-01-00001" / "output" / "uq.csv").columns) - 1
 
 
 def test_file_cli_finds_uq_csv_above_the_files(project: Path) -> None:

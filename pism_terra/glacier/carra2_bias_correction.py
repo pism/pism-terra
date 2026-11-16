@@ -34,15 +34,19 @@ in summer.
 outlines, splits the cells into on and off glacier by whether the cell
 centre lies inside an outline, and bins them by terrain elevation. The bias
 changes with elevation and with the season, so per category the daily median
-bias of each bin is fitted with an annual-mean elevation profile plus one
+bias of each bin is fitted with an annual elevation profile plus one
 seasonal cycle (period one year) whose amplitude and phase may also change
 linearly with elevation; see :func:`fit_seasonal`. Two profiles are fitted
 and compared by BIC: a straight line, and a bias decaying exponentially
 with elevation toward a constant, which follows the strong excess over the
-lower glacier that levels off higher up. Several years pool into one cycle. It writes the medians, the fit and the fitted cycle per bin as
+lower glacier that levels off higher up. The fit follows the mean by
+default (least squares): PISM adds the bias to a daily-mean temperature
+that PDD and dEBM integrate around, so the warm tail of large bias -- the
+melt days -- has to count. ``--fit median`` makes it follow the median
+instead (least absolute deviations), the typical day, which that tail does
+not pull up. Several years pool into one cycle. It writes the medians, the fit and the fitted cycle per bin as
 CSV, and figures of the bias against elevation and against the day of the
-year. Given point sites as well, it also samples the stores there and plots
-the bias per month, pooled and per site.
+year.
 
 The bias is never held for the whole domain: the store is read one chunk
 of the grid at a time and the bias counted into histograms per day,
@@ -50,16 +54,35 @@ category and elevation bin (see :func:`bias_histograms`), so memory depends
 on the chunk, not on the domain or the number of years. Cells at sea level
 are taken for sea and left out (``--min-elevation``).
 
-Stores, outlines and sites may each be a local path or an ``s3://`` URI.
+Two diagnostics say how much a fit of this kind can do and what it leaves
+to the melt model. ``r2_ceiling`` is the R² of each bin's own smooth
+seasonal climatology (see :func:`ceiling_fit`), the best any bias of
+elevation and season alone can reach: the rest is weather. ``sigma_extra``
+(see :func:`variance_by_elevation`) is the day-to-day spread of the
+free-air temperature at the ground that the corrected forcing -- the 2 m
+temperature plus the bias, as PISM's ``carra2_bias`` applies it -- lacks,
+with anomalies taken per cell from its own seasonal cycle: positive, as
+where the 2 m air is held near 0 degC over melting ice, it is variance to
+add to a PDD or dEBM ``std_dev`` in quadrature; negative, the 2 m air
+varies more than the free air and the corrected forcing already has too much.
+
+A third checks that the fit is a property of the region rather than of
+the years it saw: the first and second halves of the record, in whole
+years, are fitted apart and their fitted biases compared (see
+:func:`half_record_stability`). Coefficients that differ between regions
+by much more than between halves are worth setting per region.
+
+Stores and outlines may each be a local path or an ``s3://`` URI.
 """
 
 import logging
 import math
 import tempfile
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import geopandas as gpd
@@ -70,15 +93,14 @@ import pandas as pd
 import s3fs
 import xarray as xr
 from matplotlib.figure import Figure
-from scipy.optimize import minimize_scalar
+from scipy.optimize import linprog, minimize_scalar
 from tqdm.auto import tqdm
 
-from pism_terra.grids import sample_points
 from pism_terra.log import setup_logging
 from pism_terra.ntasks_option import add_ntasks_argument
 from pism_terra.workflow import dataset_crs
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pism_terra.glacier.carra2_bias_correction")
 
 #: Variables a CARRA2 store must have.
 REQUIRED_VARS = ("air_temp", "geopotential_height", "air_temp_2m", "orography")
@@ -103,10 +125,11 @@ HIST_RANGE = (-30.0, 50.0)
 
 #: CARRA2's terrain over the sea lies at about 0 m (slightly below, in
 #: places); cells below this many metres are taken for sea and left out.
-DEFAULT_MIN_ELEVATION = 5.0
+DEFAULT_MIN_ELEVATION = 500.0
 
-#: Tile size in grid cells: the chunk size pism-s4f-carra2 writes, so each
-#: tile reads exactly one chunk of every field.
+#: Tile size in grid cells for a store that is not chunked; a chunked one is
+#: read in tiles of its own chunks (see :func:`store_tile`), so each tile
+#: reads exactly one chunk of every field.
 TILE = 256
 
 #: Days whose bias is computed at once within a tile.
@@ -114,16 +137,41 @@ DEFAULT_TIME_BLOCK = 31
 
 #: Annual-mean elevation profiles :func:`fit_seasonal` knows; both are fitted.
 ELEVATION_MODELS = ("linear", "exponential")
+#: What the fit follows: the mean (least squares) or the median (least
+#: absolute deviations).
+FIT_LOSSES = ("mean", "median")
+#: The mean: the bias corrects a daily-mean forcing, so its long warm tail
+#: counts, and a median fit would sit about half a kelvin too cold.
+DEFAULT_FIT_LOSS = "mean"
+#: Decay heights tried before the bounded refinement, per loss. Each median
+#: fit is a linear programme, so its scan is coarser; the refinement still
+#: finds the optimum within the bracket the scan picks.
+SCALE_HEIGHT_SCAN = {"mean": 121, "median": 41}
 
 #: Range of decay heights the exponential profile is scanned over, m. A fit
 #: at the upper end has found no curvature: it is a straight line.
-SCALE_HEIGHT_RANGE = (50.0, 20_000.0)
+SCALE_HEIGHT_RANGE = (500.0, 4_000.0)
 
 #: Line style of each profile in the elevation figure.
 PROFILE_STYLES = {"linear": "--", "exponential": "-"}
 
 #: Seasonal coefficients of the model, see :func:`fit_seasonal`.
 SEASONAL_COEFFICIENTS = ("cos", "sin", "cos_per_km", "sin_per_km")
+
+#: Harmonics of the year in the per-bin and per-cell climatologies behind the
+#: diagnostics (see :func:`ceiling_fit` and :func:`variance_by_elevation`):
+#: smooth enough not to fit the weather, flexible enough to follow any
+#: realistic seasonal shape.
+DEFAULT_HARMONICS = 3
+
+#: Fewer cell-days than this many times the climatology's coefficients leave
+#: a cell out of the variance diagnostics: too short to tell weather from season.
+MIN_DAYS_PER_COEFFICIENT = 2
+
+#: Temperatures whose day-to-day anomalies :func:`variance_by_elevation`
+#: compares: the 2 m air, the free air carried down to the ground, and their
+#: difference, the bias.
+ANOMALY_QUANTITIES = ("t2m", "free", "bias")
 
 #: Default number of CARRA2 levels below the terrain each daily fit may use.
 #: With five levels a high site has a single level above CARRA2's terrain,
@@ -260,7 +308,7 @@ def fit_to_ground(
     Fit ``T = a + b z`` through the pressure levels and evaluate it at the ground.
 
     The fit is ordinary least squares along *dim*, separately for every other
-    index (day, cell or site). CARRA2 reports temperatures on levels below
+    index (day or cell). CARRA2 reports temperatures on levels below
     its terrain too, but those are extrapolated, not air; *below* limits how
     many of them enter the fit.
 
@@ -273,7 +321,7 @@ def fit_to_ground(
         height rises along *dim*.
     ground : xarray.DataArray
         Height the fit is evaluated at, m, broadcastable against the others
-        (the orography, on a grid or at sites).
+        (the orography).
     below : int or None, default :data:`DEFAULT_BELOW`
         Levels below the ground used besides every level above it: 0 uses
         only levels above the ground, None every level.
@@ -408,9 +456,15 @@ def _tile_counts(
     edges: np.ndarray,
     below: int | None,
     time_block: int,
-) -> tuple[np.ndarray, int]:
+    harmonics: int = DEFAULT_HARMONICS,
+) -> tuple[np.ndarray, int, np.ndarray, np.ndarray]:
     """
     Histogram the daily bias of one tile per category and elevation bin.
+
+    Alongside, every cell's 2 m and free-air temperatures are regressed on
+    *harmonics* harmonics of the year, from sums accumulated block by block,
+    so the day-to-day anomalies' sums of squares come without holding a
+    cell's whole series (see :func:`variance_by_elevation`).
 
     Parameters
     ----------
@@ -428,6 +482,8 @@ def _tile_counts(
         See :func:`fit_to_ground`.
     time_block : int
         Days computed at once; bounds the temporaries of the fit.
+    harmonics : int, default :data:`DEFAULT_HARMONICS`
+        Harmonics of each cell's seasonal cycle.
 
     Returns
     -------
@@ -435,6 +491,14 @@ def _tile_counts(
         ``(time, category, centre, value)`` counts.
     clipped : int
         Values beyond the histogram's range, counted in its end bins.
+    anomaly_ss : numpy.ndarray
+        ``(quantity, category, centre)`` sums over cells and days of the
+        squared anomalies from each cell's cycle, for the quantities of
+        :data:`ANOMALY_QUANTITIES`, K².
+    cell_days : numpy.ndarray
+        ``(category, centre)`` cell-days behind *anomaly_ss*; cells with
+        fewer than :data:`MIN_DAYS_PER_COEFFICIENT` days per coefficient are
+        left out.
     """
     n_days, n_values = tile.sizes["time"], edges.size - 1
     n_groups = len(CATEGORIES) * n_centres
@@ -444,19 +508,128 @@ def _tile_counts(
     shape = (n_days, len(CATEGORIES), n_centres, n_values)
     counts = np.zeros(n_days * n_groups * n_values, dtype=np.int64)
     clipped = 0
+    anomaly_ss = np.zeros((len(ANOMALY_QUANTITIES), n_groups))
+    cell_days = np.zeros(n_groups)
     if not keep.any():
-        return counts.reshape(shape), clipped
+        return (
+            counts.reshape(shape),
+            clipped,
+            anomaly_ss.reshape((-1, len(CATEGORIES), n_centres)),
+            cell_days.reshape((len(CATEGORIES), n_centres)),
+        )
+    # Per cell: the Gram matrix of the harmonic basis over the days with data,
+    # the basis times each temperature, and the temperatures' (cross) products.
+    n_cells, n_basis = int(keep.sum()), 1 + 2 * harmonics
+    gram = np.zeros((n_cells, n_basis, n_basis))
+    basis_t2m = np.zeros((n_cells, n_basis))
+    basis_free = np.zeros((n_cells, n_basis))
+    ss_t2m, ss_free, ss_cross, n = (np.zeros(n_cells) for _ in range(4))
+    fraction = year_fraction(tile["time"].values)
     for start in range(0, n_days, time_block):
         block = tile.isel(time=slice(start, start + time_block))
-        values = ground_bias(block, below=below).transpose("time", "y", "x").values[:, keep]
+        fit = fit_to_ground(block["air_temp"], block["geopotential_height"], block["orography"], below=below)
+        # Centred on 0 degC so the sums keep their precision.
+        free = fit["t_ground"].transpose("time", "y", "x").values[:, keep].astype(float) - 273.15
+        t2m = block["air_temp_2m"].transpose("time", "y", "x").values[:, keep].astype(float) - 273.15
+        values = free - t2m
         finite = np.isfinite(values)
+
+        phi = np.column_stack(_harmonic_columns(fraction[start : start + values.shape[0]], harmonics))
+        mask = finite.astype(float)
+        free0, t2m0 = np.where(finite, free, 0.0), np.where(finite, t2m, 0.0)
+        gram += np.einsum("tcp,tq->cpq", mask[:, :, None] * phi[:, None, :], phi)
+        basis_t2m += np.einsum("tc,tp->cp", t2m0, phi)
+        basis_free += np.einsum("tc,tp->cp", free0, phi)
+        ss_t2m += (t2m0**2).sum(0)
+        ss_free += (free0**2).sum(0)
+        ss_cross += (t2m0 * free0).sum(0)
+        n += mask.sum(0)
+
         index = np.floor((np.where(finite, values, edges[0]) - edges[0]) / step)
         clipped += int((finite & ((index < 0) | (index >= n_values))).sum())
         index = np.clip(index, 0, n_values - 1).astype(np.int64)
-        day = start + np.arange(values.shape[0], dtype=np.int64)[:, None]
+        # Count only this block's days: a bincount over the whole record would
+        # allocate the full histogram for every block.
+        day = np.arange(values.shape[0], dtype=np.int64)[:, None]
         flat = ((day * n_groups + group[None, :]) * n_values + index)[finite]
-        counts += np.bincount(flat, minlength=counts.size)
-    return counts.reshape(shape), clipped
+        offset = start * n_groups * n_values
+        size = values.shape[0] * n_groups * n_values
+        counts[offset : offset + size] += np.bincount(flat, minlength=size)
+
+    rss = _residual_sums(gram, basis_t2m, basis_free, ss_t2m, ss_free, ss_cross)
+    valid = n >= MIN_DAYS_PER_COEFFICIENT * n_basis
+    for k, values in enumerate(rss):
+        anomaly_ss[k] = np.bincount(group, weights=np.where(valid, np.maximum(values, 0.0), 0.0), minlength=n_groups)
+    cell_days[:] = np.bincount(group, weights=np.where(valid, n, 0.0), minlength=n_groups)
+    return (
+        counts.reshape(shape),
+        clipped,
+        anomaly_ss.reshape((-1, len(CATEGORIES), n_centres)),
+        cell_days.reshape((len(CATEGORIES), n_centres)),
+    )
+
+
+def _residual_sums(
+    gram: np.ndarray,
+    basis_t2m: np.ndarray,
+    basis_free: np.ndarray,
+    ss_t2m: np.ndarray,
+    ss_free: np.ndarray,
+    ss_cross: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Turn accumulated sums into the residual sums of squares of per-cell regressions.
+
+    For values ``y`` regressed on a basis ``phi``, the residual sum of
+    squares is ``S - c^T G^+ c`` with ``S = sum y²``, ``c = sum phi y`` and the
+    Gram matrix ``G = sum phi phi^T``; the cross term of two series follows alike.
+
+    Parameters
+    ----------
+    gram : numpy.ndarray
+        ``(cell, basis, basis)`` Gram matrices over each cell's days with data.
+    basis_t2m, basis_free : numpy.ndarray
+        ``(cell, basis)`` basis times the 2 m and the free-air temperature.
+    ss_t2m, ss_free, ss_cross : numpy.ndarray
+        ``(cell,)`` sums of the squares and of the product of the two.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        Residual sums of squares of the 2 m temperature, the free-air
+        temperature and the bias (free air minus 2 m), per cell, K².
+    """
+    inverse = np.linalg.pinv(gram, rcond=1e-10, hermitian=True)
+    coef_t2m = np.einsum("cpq,cq->cp", inverse, basis_t2m)
+    coef_free = np.einsum("cpq,cq->cp", inverse, basis_free)
+    rss_t2m = ss_t2m - np.einsum("cp,cp->c", basis_t2m, coef_t2m)
+    rss_free = ss_free - np.einsum("cp,cp->c", basis_free, coef_free)
+    rss_cross = ss_cross - np.einsum("cp,cp->c", basis_t2m, coef_free)
+    return rss_t2m, rss_free, rss_free + rss_t2m - 2.0 * rss_cross
+
+
+def store_tile(ds: xr.Dataset) -> tuple[int, int]:
+    """
+    Find the tile that reads every field of a store one chunk at a time.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        CARRA2 store opened lazily, from :func:`open_carra2`.
+
+    Returns
+    -------
+    tuple of int
+        Chunk size along ``y`` and ``x``, the smallest over the fields that
+        have both; :data:`TILE` along a dimension no field is chunked in.
+    """
+    sizes: dict[str, list[int]] = {"y": [], "x": []}
+    for var in ds.data_vars.values():
+        chunks = var.chunksizes
+        for dim, found in sizes.items():
+            if dim in chunks:
+                found.append(int(chunks[dim][0]))
+    return min(sizes["y"], default=TILE), min(sizes["x"], default=TILE)
 
 
 def bias_histograms(
@@ -468,19 +641,22 @@ def bias_histograms(
     min_elevation: float | None = DEFAULT_MIN_ELEVATION,
     ntasks: int = 1,
     time_block: int = DEFAULT_TIME_BLOCK,
-    tile: int = TILE,
+    tile: int | None = None,
     progress: bool = False,
+    harmonics: int = DEFAULT_HARMONICS,
 ) -> xr.Dataset:
     """
     Count the daily bias per category and elevation bin, tile by tile.
 
-    The store is read one ``tile x tile`` block of the grid at a time (the
-    chunks :mod:`pism_terra.glacier.s4f_carra2` writes hold all days of a
-    256 x 256 block), its bias computed in blocks of *time_block* days and
-    added to a histogram of :func:`value_edges` bins. Memory is bounded by a
-    tile, not by the domain or the number of days kept; the histograms are
-    small and every summary -- daily medians for the fit, annual quantiles,
-    violin shapes -- is read off them, to within a fraction of *step*.
+    The store is read one block of the grid at a time, by default one chunk
+    of the store (see :func:`store_tile`), which holds all of its days; the
+    bias is computed in blocks of *time_block* days and added to a
+    histogram of :func:`value_edges` bins. Each worker adds its tile into
+    the totals as soon as it is done, so memory is bounded by *ntasks*
+    tiles plus one histogram per worker, not by the domain; a tile grows
+    with the days kept, which is why it should be a chunk, not more. Every
+    summary -- daily medians for the fit, annual quantiles, violin shapes
+    -- is read off the histograms, to within a fraction of *step*.
 
     Parameters
     ----------
@@ -498,19 +674,26 @@ def bias_histograms(
         Cells whose CARRA2 terrain lies below this are taken for sea and
         left out; None keeps them.
     ntasks : int, default 1
-        Tiles processed at once. Each needs a few GB.
+        Tiles processed at once. Each holds one tile of every field, all
+        days, and one histogram.
     time_block : int, default :data:`DEFAULT_TIME_BLOCK`
         Days computed at once within a tile.
-    tile : int, default :data:`TILE`
-        Tile size in cells; match the store's chunks so each is read once.
+    tile : int or None, optional
+        Tile size in cells along y and x; None takes the store's chunks,
+        see :func:`store_tile`.
     progress : bool, default False
         Show a progress bar over the tiles.
+    harmonics : int, default :data:`DEFAULT_HARMONICS`
+        Harmonics of each cell's seasonal cycle, see :func:`_tile_counts`.
 
     Returns
     -------
     xarray.Dataset
         ``counts`` on ``(time, category, centre, value)`` and ``cells`` (grid
-        cells per category and bin) on ``(category, centre)``; ``value`` holds
+        cells per category and bin) on ``(category, centre)``; for
+        :func:`variance_by_elevation`, ``anomaly_ss`` on ``(quantity,
+        category, centre)`` and ``cell_days`` on ``(category, centre)``, see
+        :func:`_tile_counts`; ``value`` holds
         the histogram bins' centres and ``attrs`` the ``step``, the
         ``min_elevation`` and how many cells it left out (``n_sea``).
     """
@@ -525,11 +708,23 @@ def bias_histograms(
     edges = value_edges(step)
     fields = ds[list(REQUIRED_VARS)]
     n_y, n_x = orography.shape
-    tiles = [(slice(y0, y0 + tile), slice(x0, x0 + tile)) for y0 in range(0, n_y, tile) for x0 in range(0, n_x, tile)]
+    tile_y, tile_x = store_tile(fields) if tile is None else (tile, tile)
+    tiles = [
+        (slice(y0, y0 + tile_y), slice(x0, x0 + tile_x)) for y0 in range(0, n_y, tile_y) for x0 in range(0, n_x, tile_x)
+    ]
+    logger.info("%d tiles of %d x %d cells", len(tiles), tile_y, tile_x)
 
-    def work(rows: slice, cols: slice) -> tuple[np.ndarray, int]:
+    counts = np.zeros((ds.sizes["time"], len(CATEGORIES), centres.size, edges.size - 1), dtype=np.int64)
+    anomaly_ss = np.zeros((len(ANOMALY_QUANTITIES), len(CATEGORIES), centres.size))
+    cell_days = np.zeros((len(CATEGORIES), centres.size))
+    lock = Lock()
+
+    def work(rows: slice, cols: slice) -> int:
         """
-        Load one tile and histogram it.
+        Load one tile, histogram it and add it to the totals.
+
+        Adding here rather than in the caller frees the tile's histogram as
+        soon as it is counted; a finished future would hold it to the end.
 
         Parameters
         ----------
@@ -538,22 +733,32 @@ def bias_histograms(
 
         Returns
         -------
-        tuple
-            See :func:`_tile_counts`.
+        int
+            Values beyond the histogram's range, see :func:`_tile_counts`.
         """
         part = fields.isel(y=rows, x=cols).load()
-        return _tile_counts(
-            part, category[rows, cols], elevation_bin[rows, cols], centres.size, edges, below, time_block
+        tile_counts, tile_clipped, tile_ss, tile_days = _tile_counts(
+            part,
+            category[rows, cols],
+            elevation_bin[rows, cols],
+            centres.size,
+            edges,
+            below,
+            time_block,
+            harmonics,
         )
+        del part
+        with lock:
+            counts[...] += tile_counts
+            anomaly_ss[...] += tile_ss
+            cell_days[...] += tile_days
+        return tile_clipped
 
-    counts = np.zeros((ds.sizes["time"], len(CATEGORIES), centres.size, edges.size - 1), dtype=np.int64)
     clipped = 0
     with ThreadPoolExecutor(max_workers=max(1, ntasks)) as pool:
         futures = [pool.submit(work, rows, cols) for rows, cols in tiles]
         for future in tqdm(as_completed(futures), total=len(futures), desc="Tiles", disable=not progress):
-            tile_counts, tile_clipped = future.result()
-            counts += tile_counts
-            clipped += tile_clipped
+            clipped += future.result()
     if clipped:
         logger.warning("%d bias values beyond %s K counted in the histogram's end bins", clipped, HIST_RANGE)
     cells = np.zeros((len(CATEGORIES), centres.size), dtype=np.int64)
@@ -562,9 +767,12 @@ def bias_histograms(
         {
             "counts": (("time", "category", "centre", "value"), counts),
             "cells": (("category", "centre"), cells),
+            "anomaly_ss": (("quantity", "category", "centre"), anomaly_ss),
+            "cell_days": (("category", "centre"), cell_days),
         },
         coords={
             "time": ds["time"].values,
+            "quantity": list(ANOMALY_QUANTITIES),
             "category": list(CATEGORIES),
             "centre": centres,
             "value": 0.5 * (edges[:-1] + edges[1:]),
@@ -641,10 +849,13 @@ def annual_histograms(hists: Sequence[xr.Dataset]) -> xr.Dataset:
     Returns
     -------
     xarray.Dataset
-        ``counts`` on ``(category, centre, value)`` and ``cells`` on
-        ``(category, centre)``, over the union of the elevation bins.
+        ``counts`` on ``(category, centre, value)``, ``cells`` and
+        ``cell_days`` on ``(category, centre)`` and ``anomaly_ss`` on
+        ``(quantity, category, centre)``, over the union of the elevation
+        bins. Each store's anomalies are taken from its own cycle.
     """
-    pooled = [h[["counts", "cells"]].assign(counts=h["counts"].sum("time")) for h in hists]
+    names = ["counts", "cells", "anomaly_ss", "cell_days"]
+    pooled = [h[names].assign(counts=h["counts"].sum("time")) for h in hists]
     aligned = xr.align(*pooled, join="outer", fill_value=0)
     total = sum(aligned[1:], aligned[0])
     total.attrs = dict(hists[0].attrs)
@@ -704,6 +915,29 @@ def year_fraction(time: Sequence[Any] | np.ndarray | pd.Series) -> np.ndarray:
     times = pd.to_datetime(pd.Series(np.asarray(time)))
     days = np.where(times.dt.is_leap_year, 366.0, 365.0)
     return ((times.dt.dayofyear.to_numpy() - 0.5) / days).astype(float)
+
+
+def _harmonic_columns(fraction: np.ndarray, harmonics: int = DEFAULT_HARMONICS) -> list[np.ndarray]:
+    """
+    Build the regressors of a smooth seasonal climatology.
+
+    Parameters
+    ----------
+    fraction : numpy.ndarray
+        Fraction of the year, from :func:`year_fraction`.
+    harmonics : int, default :data:`DEFAULT_HARMONICS`
+        Harmonics of the year.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        ``1``, then ``cos(2 pi k f)`` and ``sin(2 pi k f)`` for ``k = 1 ... harmonics``.
+    """
+    angle = 2.0 * np.pi * np.asarray(fraction, dtype=float)
+    columns = [np.ones_like(angle)]
+    for k in range(1, harmonics + 1):
+        columns += [np.cos(k * angle), np.sin(k * angle)]
+    return columns
 
 
 def _seasonal_columns(z: np.ndarray, fraction: np.ndarray, elevation_dependent: bool) -> list[np.ndarray]:
@@ -781,12 +1015,51 @@ def _least_squares(columns: list[np.ndarray], y: np.ndarray) -> tuple[np.ndarray
     return coef, float(residual @ residual)
 
 
+def _least_absolute(columns: list[np.ndarray], y: np.ndarray) -> tuple[np.ndarray, float]:
+    """
+    Solve a linear least-absolute-deviations problem, which follows the median.
+
+    Solved exactly through the dual of the linear programme
+    ``min sum |y - X b|``: ``max y^T d`` subject to ``X^T d = 0`` and
+    ``-1 <= d <= 1``. It has one constraint per coefficient rather than one
+    per value, which makes it some fifty times faster than the primal on a
+    few thousand daily medians; the coefficients are the negated marginals
+    of its equality constraints.
+
+    Parameters
+    ----------
+    columns : list of numpy.ndarray
+        Regressors.
+    y : numpy.ndarray
+        Values.
+
+    Returns
+    -------
+    coef : numpy.ndarray
+        Coefficients, in the order of *columns*.
+    sae : float
+        Sum of absolute residuals.
+
+    Raises
+    ------
+    RuntimeError
+        If the solver fails.
+    """
+    design = np.column_stack(columns)
+    result = linprog(-y, A_eq=design.T, b_eq=np.zeros(design.shape[1]), bounds=(-1.0, 1.0), method="highs")
+    if not result.success:
+        raise RuntimeError(f"least-absolute-deviations fit failed: {result.message}")
+    coef = -np.asarray(result.eqlin.marginals, dtype=float)
+    return coef, float(np.abs(y - design @ coef).sum())
+
+
 def fit_seasonal(
     z: Sequence[float] | np.ndarray | pd.Series,
     fraction: Sequence[float] | np.ndarray | pd.Series,
     y: Sequence[float] | np.ndarray | pd.Series,
     elevation_dependent: bool = True,
     elevation: str = "linear",
+    loss: str = DEFAULT_FIT_LOSS,
 ) -> dict[str, Any] | None:
     """
     Fit a bias that changes with elevation and follows one seasonal cycle.
@@ -806,7 +1079,10 @@ def fit_seasonal(
       which a straight line cannot follow.
 
     Without *elevation_dependent* the ``_per_km`` seasonal terms are zero.
-    For a given H everything is linear least squares; H is found by a scan
+    With *loss* ``"mean"`` the fit minimises the squared residuals and
+    follows the mean; with ``"median"`` it minimises the absolute residuals
+    and follows the median, which a long tail of large values does not pull
+    along. For a given H the problem is linear either way; H is found by a scan
     over :data:`SCALE_HEIGHT_RANGE` refined with a bounded 1-D minimisation;
     an H at the top of that range means the data show no curvature. The period
     is one year, so data from several years pool into one cycle.
@@ -822,26 +1098,34 @@ def fit_seasonal(
     elevation_dependent : bool, default True
         Let the seasonal amplitude and phase vary linearly with elevation.
     elevation : {"linear", "exponential"}, default "linear"
-        Annual-mean profile.
+        Annual profile.
+    loss : {"mean", "median"}, default :data:`DEFAULT_FIT_LOSS`
+        What the fit follows: least squares or least absolute deviations.
 
     Returns
     -------
     dict or None
-        ``elevation_model``; the profile's coefficients (``mean`` and
+        ``elevation_model``, ``loss``; the profile's coefficients (``mean`` and
         ``mean_per_km``, or ``background``, ``excess`` and ``scale_height``
         in m; the other model's are NaN); the coefficients of
-        :data:`SEASONAL_COEFFICIENTS`; ``rmse`` (K), ``r2``, ``bic``,
-        ``n_parameters`` and ``n``. None when there are no more values than
+        :data:`SEASONAL_COEFFICIENTS`; ``rmse`` and ``mae`` (K), ``r2``,
+        ``bic`` (Gaussian residuals for the mean fit, Laplace for the
+        median fit, so compare BIC within one loss only), ``n_parameters``
+        and ``n``. None when there are no more values than
         coefficients, or the values span a single elevation or a single day
         of the year.
 
     Raises
     ------
     ValueError
-        If *elevation* is not one of :data:`ELEVATION_MODELS`.
+        If *elevation* is not one of :data:`ELEVATION_MODELS`, or *loss* not
+        one of :data:`FIT_LOSSES`.
     """
     if elevation not in ELEVATION_MODELS:
         raise ValueError(f"unknown elevation model {elevation!r}; use one of {ELEVATION_MODELS}")
+    if loss not in FIT_LOSSES:
+        raise ValueError(f"unknown fit {loss!r}; use one of {FIT_LOSSES}")
+    solve = _least_squares if loss == "mean" else _least_absolute
     z_arr = np.asarray(z, dtype=float)
     f_arr = np.asarray(fraction, dtype=float)
     y_arr = np.asarray(y, dtype=float)
@@ -857,7 +1141,7 @@ def fit_seasonal(
 
         def sse_at(log_h: float) -> float:
             """
-            Sum of squared residuals for a decay height.
+            The fit's objective for a decay height.
 
             Parameters
             ----------
@@ -867,19 +1151,32 @@ def fit_seasonal(
             Returns
             -------
             float
-                The sum.
+                Sum of squared (mean) or absolute (median) residuals.
             """
-            return _least_squares(_elevation_columns(z_arr, "exponential", 10.0**log_h) + seasonal, y_arr)[1]
+            return solve(_elevation_columns(z_arr, "exponential", 10.0**log_h) + seasonal, y_arr)[1]
 
-        grid = np.linspace(math.log10(SCALE_HEIGHT_RANGE[0]), math.log10(SCALE_HEIGHT_RANGE[1]), 121)
+        grid = np.linspace(
+            math.log10(SCALE_HEIGHT_RANGE[0]), math.log10(SCALE_HEIGHT_RANGE[1]), SCALE_HEIGHT_SCAN[loss]
+        )
         best = int(np.argmin([sse_at(g) for g in grid]))
         low, high = grid[max(best - 1, 0)], grid[min(best + 1, grid.size - 1)]
         scale_height = 10.0 ** float(minimize_scalar(sse_at, bounds=(low, high), method="bounded").x)
 
-    coef, sse = _least_squares(_elevation_columns(z_arr, elevation, scale_height) + seasonal, y_arr)
+    columns = _elevation_columns(z_arr, elevation, scale_height) + seasonal
+    coef, objective = solve(columns, y_arr)
+    residual = y_arr - np.column_stack(columns) @ coef
+    sse, sae = float(residual @ residual), float(np.abs(residual).sum())
     n = y_arr.size
     sst = float(((y_arr - y_arr.mean()) ** 2).sum())
-    fit: dict[str, Any] = {"elevation_model": elevation}
+    # -2 log L up to a constant: Gaussian residuals for the mean fit, Laplace
+    # for the median fit, each at its maximum-likelihood scale.
+    if objective <= 0:
+        bic = -math.inf
+    elif loss == "mean":
+        bic = n * math.log(sse / n) + n_parameters * math.log(n)
+    else:
+        bic = 2 * n * math.log(sae / n) + n_parameters * math.log(n)
+    fit: dict[str, Any] = {"elevation_model": elevation, "loss": loss}
     if elevation == "linear":
         fit.update({"mean": float(coef[0]), "mean_per_km": float(coef[1])})
         fit.update({"background": math.nan, "excess": math.nan, "scale_height": math.nan})
@@ -891,8 +1188,9 @@ def fit_seasonal(
     fit.update(
         {
             "rmse": math.sqrt(sse / n),
+            "mae": sae / n,
             "r2": 1.0 - sse / sst if sst > 0 else math.nan,
-            "bic": n * math.log(sse / n) + n_parameters * math.log(n) if sse > 0 else -math.inf,
+            "bic": bic,
             "n_parameters": float(n_parameters),
             "n": float(n),
         }
@@ -1082,6 +1380,8 @@ def fit_categories(
     min_cells: int = DEFAULT_MIN_CELLS,
     elevation_dependent: bool = True,
     models: Sequence[str] = ELEVATION_MODELS,
+    loss: str = DEFAULT_FIT_LOSS,
+    harmonics: int = DEFAULT_HARMONICS,
 ) -> pd.DataFrame:
     """
     Fit the seasonal model to the daily medians, per category and elevation profile.
@@ -1096,6 +1396,10 @@ def fit_categories(
         See :func:`fit_seasonal`.
     models : sequence of str, default :data:`ELEVATION_MODELS`
         Elevation profiles to fit, see :func:`fit_seasonal`.
+    loss : {"mean", "median"}, default :data:`DEFAULT_FIT_LOSS`
+        What the fits follow, see :func:`fit_seasonal`.
+    harmonics : int, default :data:`DEFAULT_HARMONICS`
+        Harmonics of the climatology behind ``r2_ceiling``, see :func:`ceiling_fit`.
 
     Returns
     -------
@@ -1103,14 +1407,16 @@ def fit_categories(
         One row per category and profile that could be fitted, indexed by
         ``(category, elevation_model)``: the fields of :func:`fit_seasonal`,
         the elevation range of the bins used (``z_min``, ``z_max``),
-        ``elevation_dependent``, ``equation`` (see :func:`equation`) and
-        ``best``, True for the profile with the lowest BIC in its category.
+        ``elevation_dependent``, ``equation`` (see :func:`equation`),
+        ``best``, True for the profile with the lowest BIC in its category,
+        and the category's ``r2_ceiling``, ``rmse_ceiling`` and
+        ``mae_ceiling`` from :func:`ceiling_fit`.
     """
     rows = []
     for category in CATEGORIES:
         used = daily[(daily["category"] == category) & (daily["cells"] >= min_cells)]
         for model in models:
-            fit = fit_seasonal(used["centre"], used["fraction"], used["median"], elevation_dependent, model)
+            fit = fit_seasonal(used["centre"], used["fraction"], used["median"], elevation_dependent, model, loss)
             if fit is None:
                 logger.warning(
                     "%s: too few daily medians with %d or more cells for a seasonal fit", category, min_cells
@@ -1130,7 +1436,294 @@ def fit_categories(
         return pd.DataFrame(index=pd.MultiIndex.from_arrays([[], []], names=["category", "elevation_model"]))
     fits = pd.DataFrame(rows).set_index(["category", "elevation_model"])
     fits["best"] = fits["bic"] == fits.groupby(level="category")["bic"].transform("min")
+    ceiling = ceiling_fit(daily, min_cells=min_cells, loss=loss, harmonics=harmonics)
+    category = fits.index.get_level_values("category")
+    for name in ceiling.columns:
+        fits[name] = category.map(ceiling[name]).astype(float)
     return fits
+
+
+def ceiling_fit(
+    daily: pd.DataFrame,
+    min_cells: int = DEFAULT_MIN_CELLS,
+    loss: str = DEFAULT_FIT_LOSS,
+    harmonics: int = DEFAULT_HARMONICS,
+) -> pd.DataFrame:
+    """
+    Fit every elevation bin its own smooth seasonal cycle: the best a fit in elevation and season can do.
+
+    Each bin's daily medians get a mean and *harmonics* harmonics of the
+    year of their own, with the loss of the main fit. Any bias that depends
+    on elevation and the time of year alone is at best this one, up to
+    sharper seasonal detail than the harmonics follow, so its R² is the
+    ceiling of :func:`fit_seasonal`'s; what is left is the weather. With
+    the mean loss the main fits are nested in it and never do better; with
+    the median loss that holds for the absolute residuals, not strictly
+    for R².
+
+    Parameters
+    ----------
+    daily : pandas.DataFrame
+        Output of :func:`daily_medians`, one or several stores concatenated.
+    min_cells : int, default :data:`DEFAULT_MIN_CELLS`
+        Daily medians resting on fewer grid cells are left out, as in
+        :func:`fit_categories`.
+    loss : {"mean", "median"}, default :data:`DEFAULT_FIT_LOSS`
+        Least squares or least absolute deviations.
+    harmonics : int, default :data:`DEFAULT_HARMONICS`
+        Harmonics of the year per bin.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Indexed by ``category``: ``r2_ceiling``, ``rmse_ceiling`` and
+        ``mae_ceiling`` (K) over the bins with more daily medians than
+        coefficients, for the categories with any.
+    """
+    solve = _least_squares if loss == "mean" else _least_absolute
+    rows = {}
+    for category in CATEGORIES:
+        used = daily[(daily["category"] == category) & (daily["cells"] >= min_cells)]
+        used = used[np.isfinite(used["median"]) & np.isfinite(used["fraction"])]
+        values, residuals = [], []
+        for _, group in used.groupby("centre"):
+            columns = _harmonic_columns(group["fraction"].to_numpy(), harmonics)
+            y = group["median"].to_numpy(dtype=float)
+            if y.size <= len(columns):
+                continue
+            coef, _ = solve(columns, y)
+            values.append(y)
+            residuals.append(y - np.column_stack(columns) @ coef)
+        if not values:
+            continue
+        y, residual = np.concatenate(values), np.concatenate(residuals)
+        sse, sst = float(residual @ residual), float(((y - y.mean()) ** 2).sum())
+        rows[category] = {
+            "r2_ceiling": 1.0 - sse / sst if sst > 0 else math.nan,
+            "rmse_ceiling": math.sqrt(sse / y.size),
+            "mae_ceiling": float(np.abs(residual).mean()),
+        }
+    columns = ["r2_ceiling", "rmse_ceiling", "mae_ceiling"]
+    return pd.DataFrame.from_dict(rows, orient="index", columns=columns).rename_axis("category")
+
+
+def split_years(daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """
+    Split the daily medians into the first and the second half of their years.
+
+    Whole calendar years go to each half, so both see every season equally
+    often; with an odd number of years the second half gets the extra one.
+
+    Parameters
+    ----------
+    daily : pandas.DataFrame
+        Output of :func:`daily_medians`, one or several stores concatenated.
+
+    Returns
+    -------
+    tuple of pandas.DataFrame or None
+        The earlier and the later years, or None with fewer than two years.
+    """
+    years = pd.to_datetime(daily["time"]).dt.year
+    distinct = np.unique(years)
+    if distinct.size < 2:
+        return None
+    first = years < distinct[distinct.size // 2]
+    return daily[first], daily[~first]
+
+
+def half_record_stability(
+    daily: pd.DataFrame,
+    min_cells: int = DEFAULT_MIN_CELLS,
+    elevation_dependent: bool = True,
+    loss: str = DEFAULT_FIT_LOSS,
+    harmonics: int = DEFAULT_HARMONICS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fit the first and the second half of the record apart and compare the fitted biases.
+
+    The difference between the halves is what the fit changes from one
+    stretch of years to the next: a bias that differs between regions by
+    much more than this is a regional signal, not interannual weather. Both
+    halves' fits are evaluated on every elevation bin both cover and every
+    day of a 365-day year, and their difference split into the annual mean
+    and the seasonal cycle, so that ``rms_diff² = annual_rms_diff² +
+    cycle_rms_diff²``.
+
+    Parameters
+    ----------
+    daily : pandas.DataFrame
+        Output of :func:`daily_medians`, one or several stores concatenated.
+    min_cells : int, default :data:`DEFAULT_MIN_CELLS`
+        See :func:`fit_categories`.
+    elevation_dependent : bool, default True
+        See :func:`fit_seasonal`.
+    loss : {"mean", "median"}, default :data:`DEFAULT_FIT_LOSS`
+        See :func:`fit_seasonal`.
+    harmonics : int, default :data:`DEFAULT_HARMONICS`
+        See :func:`ceiling_fit`.
+
+    Returns
+    -------
+    halves : pandas.DataFrame
+        The fits of :func:`fit_categories` for each half, indexed by
+        ``(half, category, elevation_model)``, with the ``years`` each covers.
+    stability : pandas.DataFrame
+        Indexed by ``(category, elevation_model)``: ``years_first`` and
+        ``years_second``, the elevation range compared (``z_min``,
+        ``z_max``), and the second half's bias minus the first's (K):
+        ``rms_diff``, ``annual_rms_diff``, ``cycle_rms_diff``,
+        ``max_abs_diff``, and ``jja_diff``, the mean over June to August.
+        Both are empty with fewer than two years.
+    """
+    index = pd.MultiIndex.from_arrays([[], []], names=["category", "elevation_model"])
+    split = split_years(daily)
+    if split is None:
+        logger.warning("fewer than two years: no half-record stability check")
+        return pd.DataFrame(), pd.DataFrame(index=index)
+    fits, years = {}, {}
+    for half, part in zip(("first", "second"), split):
+        span = pd.to_datetime(part["time"]).dt.year
+        years[half] = f"{span.min()}-{span.max()}"
+        fits[half] = fit_categories(part, min_cells, elevation_dependent, loss=loss, harmonics=harmonics)
+        fits[half]["years"] = years[half]
+    halves = pd.concat(fits, names=["half"])
+
+    fraction = (np.arange(365) + 0.5) / 365.0
+    summer = (fraction >= 151 / 365) & (fraction < 243 / 365)
+    rows = []
+    for key in fits["first"].index.intersection(fits["second"].index):
+        first = {**fits["first"].loc[key].to_dict(), "elevation_model": key[1]}
+        second = {**fits["second"].loc[key].to_dict(), "elevation_model": key[1]}
+        lo, hi = max(first["z_min"], second["z_min"]), min(first["z_max"], second["z_max"])
+        centres = np.unique(daily.loc[daily["category"] == key[0], "centre"])
+        z = centres[(centres >= lo) & (centres <= hi)]
+        if z.size == 0:
+            continue
+        diff = seasonal_curve(second, z[:, None], fraction[None, :]) - seasonal_curve(
+            first, z[:, None], fraction[None, :]
+        )
+        annual = diff.mean(axis=1, keepdims=True)
+        rows.append(
+            {
+                "category": key[0],
+                "elevation_model": key[1],
+                "years_first": years["first"],
+                "years_second": years["second"],
+                "z_min": float(z.min()),
+                "z_max": float(z.max()),
+                "rms_diff": float(np.sqrt((diff**2).mean())),
+                "annual_rms_diff": float(np.sqrt((annual**2).mean())),
+                "cycle_rms_diff": float(np.sqrt(((diff - annual) ** 2).mean())),
+                "max_abs_diff": float(np.abs(diff).max()),
+                "jja_diff": float(diff[:, summer].mean()),
+            }
+        )
+    if not rows:
+        return halves, pd.DataFrame(index=index)
+    return halves, pd.DataFrame(rows).set_index(["category", "elevation_model"])
+
+
+def _signed_sqrt(value: np.ndarray | float) -> np.ndarray:
+    """
+    Take the square root of the magnitude, keeping the sign.
+
+    Parameters
+    ----------
+    value : array-like or float
+        A difference of variances.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``sign(value) sqrt(|value|)``.
+    """
+    value = np.asarray(value, dtype=float)
+    return np.sign(value) * np.sqrt(np.abs(value))
+
+
+def variance_by_elevation(annual: xr.Dataset) -> pd.DataFrame:
+    """
+    Compare the day-to-day spread of the 2 m and the free-air temperature per elevation bin.
+
+    The anomalies are taken per cell from its own smooth seasonal cycle
+    (see :func:`_tile_counts`) and their variances pooled over the bin's
+    cell-days. PISM's ``carra2_bias`` adds the bias to a 2 m temperature to
+    raise it to the free-air temperature at the ground. A bias that
+    depends on elevation and season only is part of that cycle, so the
+    corrected forcing keeps the 2 m air's anomalies, and the variance it
+    lacks against the free air is::
+
+        sigma_extra² = sigma_free² - sigma_t2m²
+
+    Where it is positive -- the 2 m air held near 0 degC over melting ice
+    varies less than the free air -- it may be added in quadrature to a
+    melt model's ``std_dev``. This is less than the bias's own spread
+    ``sigma_bias`` wherever the bias follows the free air's weather, so
+    adding all of that would overshoot. Where it is negative the corrected
+    forcing varies more than the free air already. ``sigma_extra`` carries
+    the sign of the difference.
+
+    Parameters
+    ----------
+    annual : xarray.Dataset
+        Output of :func:`annual_histograms` (or one of :func:`bias_histograms`).
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``category``, ``centre``, ``cell_days``, ``sigma_t2m``,
+        ``sigma_free``, ``sigma_bias`` and ``sigma_extra`` (K), for bins with
+        cell-days.
+    """
+    ss = annual["anomaly_ss"].transpose("quantity", "category", "centre")
+    days = annual["cell_days"].transpose("category", "centre").values
+    with np.errstate(invalid="ignore", divide="ignore"):
+        variance = {q: ss.sel(quantity=q).values / days for q in ANOMALY_QUANTITIES}
+    category, centre = np.meshgrid(annual["category"].values, annual["centre"].values, indexing="ij")
+    frame = pd.DataFrame(
+        {
+            "category": category.ravel(),
+            "centre": centre.ravel(),
+            "cell_days": days.ravel(),
+            "sigma_t2m": np.sqrt(variance["t2m"]).ravel(),
+            "sigma_free": np.sqrt(variance["free"]).ravel(),
+            "sigma_bias": np.sqrt(variance["bias"]).ravel(),
+            "sigma_extra": _signed_sqrt(variance["free"] - variance["t2m"]).ravel(),
+        }
+    )
+    return frame[frame["cell_days"] > 0].reset_index(drop=True)
+
+
+def pooled_sigma_extra(fits: pd.DataFrame, annual: xr.Dataset) -> pd.Series:
+    """
+    Pool :func:`variance_by_elevation`'s ``sigma_extra`` over each fit's elevation range.
+
+    Parameters
+    ----------
+    fits : pandas.DataFrame
+        Output of :func:`fit_categories`.
+    annual : xarray.Dataset
+        Output of :func:`annual_histograms`.
+
+    Returns
+    -------
+    pandas.Series
+        ``sigma_extra`` (K, signed) on the index of *fits*, from the
+        variances pooled over the cell-days of the bins in
+        ``[z_min, z_max]``; NaN without any.
+    """
+    ss = annual["anomaly_ss"]
+    days = annual["cell_days"]
+    centre = annual["centre"]
+    out = pd.Series(math.nan, index=fits.index, name="sigma_extra")
+    for (category, model), fit in fits.iterrows():
+        inside = (centre >= fit["z_min"]) & (centre <= fit["z_max"])
+        n = float(days.sel(category=category).where(inside, 0.0).sum())
+        if n > 0:
+            difference = ss.sel(quantity="free", category=category) - ss.sel(quantity="t2m", category=category)
+            out.loc[(category, model)] = float(_signed_sqrt(float(difference.where(inside, 0.0).sum()) / n))
+    return out
 
 
 def _fit_rows(fits: pd.DataFrame, category: str) -> list[dict[str, Any]]:
@@ -1206,6 +1799,25 @@ def seasonal_by_elevation(fits: pd.DataFrame, centres: Sequence[float] | np.ndar
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=columns)
 
 
+def fit_label(fit: Mapping[str, Any]) -> str:
+    """
+    Summarise a fit's quality by the statistic it minimised.
+
+    Parameters
+    ----------
+    fit : Mapping
+        A fit from :func:`fit_seasonal` or a row of :func:`fit_categories`.
+
+    Returns
+    -------
+    str
+        RMSE for a mean fit, MAE for a median fit, then R².
+    """
+    if fit.get("loss", "mean") == "median":
+        return f"MAE {fit['mae']:.2f} K, R² {fit['r2']:.2f}"
+    return f"RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}"
+
+
 def _equation_panel(ax: Any, fits: pd.DataFrame) -> None:
     """
     Write every fit's equation and statistics into an empty axes.
@@ -1226,7 +1838,7 @@ def _equation_panel(ax: Any, fits: pd.DataFrame) -> None:
             note = "   H at its limit: no curvature, a straight line"
         lines.append(
             f"{'★' if fit['best'] else ' '} {fit['category'].replace('_', ' ')}, {fit['elevation_model']}:"
-            f"  RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}, BIC {fit['bic']:.0f}{note}"
+            f"  {fit_label(fit)}, BIC {fit['bic']:.0f}{note}"
         )
         lines.append(f"    {fit['equation']}")
     ax.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=7, transform=ax.transAxes)
@@ -1380,7 +1992,8 @@ def plot_bias_by_elevation(
     ax.set_xlabel("Level fit at the terrain − 2 m air temperature (K)")
     ax.set_ylabel(f"CARRA2 terrain elevation (m), {bin_width:g} m bins")
     ax.set_title(title or "Free-air extrapolation vs CARRA2 2 m temperature, every grid cell", fontsize=11)
-    ax.legend(loc="upper right", title="cells and annual-mean fits", fontsize=8)
+    loss = str(fits["loss"].iloc[0]) if "loss" in fits and not fits.empty else "mean"
+    ax.legend(loc="upper right", title=f"cells and annual {loss} fits", fontsize=8)
     ax.grid(axis="x", alpha=0.3)
     _equation_panel(text_ax, fits)
     return fig
@@ -1430,8 +2043,7 @@ def plot_seasonal_fit(daily: pd.DataFrame, fits: pd.DataFrame, min_cells: int = 
                 curve = seasonal_curve(fit, centre, (days - 0.5) / 365.0)
                 ax.plot(days, curve, color=cmap(norm(centre)), lw=1.6)
             ax.set_title(
-                f"{category.replace('_', ' ')}, {fit['elevation_model']} profile: "
-                f"RMSE {fit['rmse']:.2f} K, R² {fit['r2']:.2f}",
+                f"{category.replace('_', ' ')}, {fit['elevation_model']} profile: " f"{fit_label(fit)}",
                 fontsize=10,
             )
         else:
@@ -1445,128 +2057,6 @@ def plot_seasonal_fit(daily: pd.DataFrame, fits: pd.DataFrame, min_cells: int = 
     fig.colorbar(matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap), ax=axes, label="Bin elevation (m)")
     _equation_panel(fig.add_subplot(grid[1, :]), fits)
     fig.suptitle("Free-air extrapolation vs CARRA2 2 m temperature: elevation profile with a yearly cycle")
-    return fig
-
-
-def site_bias(ds: xr.Dataset, sites: gpd.GeoDataFrame, below: int | None = DEFAULT_BELOW) -> pd.DataFrame | None:
-    """
-    Sample a store at point sites and compute the daily bias there.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        CARRA2 store.
-    sites : geopandas.GeoDataFrame
-        Points with a CRS, labelled by a ``site`` column or their index.
-    below : int or None, default :data:`DEFAULT_BELOW`
-        See :func:`fit_to_ground`.
-
-    Returns
-    -------
-    pandas.DataFrame or None
-        ``site``, ``time``, ``orography`` and ``bias``; None when no site
-        lies inside the store's grid.
-    """
-    try:
-        points = sample_points(ds, sites, variables=list(REQUIRED_VARS))
-    except ValueError as exc:
-        logger.warning("no site sampled: %s", exc)
-        return None
-    points = points.load()
-    bias = ground_bias(points, below=below)
-    frame = bias.to_dataframe().reset_index()[["site", "time", "bias"]]
-    orography = points["orography"].to_series()
-    frame["orography"] = frame["site"].map(orography)
-    return frame
-
-
-def _monthly_violins(ax: Any, rows: pd.DataFrame) -> None:
-    """
-    Draw one grey violin per month of a bias table.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-        Axes to draw on.
-    rows : pandas.DataFrame
-        Rows with ``time`` and ``bias``.
-    """
-    months = pd.to_datetime(rows["time"]).dt.month
-    data = {m: rows.loc[months == m, "bias"].dropna().to_numpy() for m in range(1, 13)}
-    present = [m for m, values in data.items() if values.size > 1]
-    if present:
-        parts = ax.violinplot(
-            [data[m] for m in present], positions=present, widths=0.85, showmedians=True, showextrema=False
-        )
-        _style_violins(parts, "0.8")
-    ax.axhline(0, color="k", lw=0.8)
-    ax.set_xticks(range(1, 13), MONTH_LABELS)
-    ax.grid(axis="y", alpha=0.3)
-
-
-def plot_sites_pooled(frame: pd.DataFrame) -> Figure:
-    """
-    Plot the bias per month for all sites pooled, with each site's monthly median.
-
-    Parameters
-    ----------
-    frame : pandas.DataFrame
-        Output of :func:`site_bias`.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        The figure.
-    """
-    fig, ax = plt.subplots(figsize=(11, 5), constrained_layout=True)
-    _monthly_violins(ax, frame)
-    sites = list(dict.fromkeys(frame["site"]))
-    medians = frame.assign(month=pd.to_datetime(frame["time"]).dt.month).groupby(["site", "month"])["bias"].median()
-    offsets = np.linspace(-0.25, 0.25, len(sites)) if len(sites) > 1 else [0.0]
-    for color, dx, site in zip(matplotlib.colormaps["tab10"].colors, offsets, sites):
-        series = medians.loc[site]
-        ax.plot(series.index + dx, series.to_numpy(), "o", ms=5, color=color, mec="k", mew=0.4, label=str(site))
-    ax.set_ylabel("Level fit at the terrain − 2 m air temperature (K)")
-    ax.set_title("Free-air extrapolation vs CARRA2 2 m temperature, all sites pooled", fontsize=11)
-    ax.legend(title="site median", ncol=3, fontsize=8, loc="upper left")
-    return fig
-
-
-def plot_sites(frame: pd.DataFrame, ncols: int = 2) -> Figure:
-    """
-    Plot the bias per month in one panel per site.
-
-    Parameters
-    ----------
-    frame : pandas.DataFrame
-        Output of :func:`site_bias`.
-    ncols : int, default 2
-        Panels per row.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        The figure.
-    """
-    sites = list(dict.fromkeys(frame["site"]))
-    nrows = math.ceil(len(sites) / ncols)
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(5.5 * ncols, 3.3 * nrows), sharex=True, sharey=True, constrained_layout=True
-    )
-    axes = np.atleast_1d(axes).ravel()
-    for ax, site in zip(axes, sites):
-        rows = frame[frame["site"] == site]
-        _monthly_violins(ax, rows)
-        ax.set_title(
-            f"{site}  (CARRA2 terrain {rows['orography'].iloc[0]:.0f} m, "
-            f"annual median {rows['bias'].median():+.1f} K)",
-            fontsize=10,
-        )
-    for ax in axes[len(sites) :]:
-        ax.set_visible(False)
-    for ax in axes[::ncols]:
-        ax.set_ylabel("Fit at terrain − 2 m T (K)")
-    fig.suptitle("Free-air extrapolation vs CARRA2 2 m temperature, per site")
     return fig
 
 
@@ -1632,24 +2122,19 @@ def _parse_min_elevation(value: str) -> float | None:
     return None if value.lower() == "none" else float(value)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _parser() -> ArgumentParser:
     """
-    Run the bias analysis from the command line.
-
-    Parameters
-    ----------
-    argv : sequence of str or None, optional
-        Command-line arguments without the program name.
+    Build the command-line parser.
 
     Returns
     -------
-    int
-        Exit code.
+    argparse.ArgumentParser
+        The parser of :func:`main`.
     """
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.description = (
         "Compare CARRA2's free-air temperature, fitted through the pressure levels and carried down to the "
-        "terrain, with its 2 m air temperature: on and off glacier, by elevation, and optionally at sites."
+        "terrain, with its 2 m air temperature: on and off glacier, by elevation."
     )
     parser.add_argument(
         "CARRA2", nargs="+", help="Daily CARRA2 stores from pism-s4f-carra2 (.zarr or NetCDF), local or s3://."
@@ -1660,7 +2145,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="Glacier outline files (GeoPackage, shapefile, ...), local or s3://.",
     )
-    parser.add_argument("--sites", default=None, help="Point sites to plot the monthly bias at, local or s3://.")
     parser.add_argument("--output-path", type=Path, default=Path("carra2_bias"), help="Directory for the results.")
     parser.add_argument("--bin-width", type=float, default=DEFAULT_BIN_WIDTH, help="Width of the elevation bins (m).")
     parser.add_argument(
@@ -1691,12 +2175,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Cells whose CARRA2 terrain lies below this (m) are taken for sea and left out; 'none' keeps all.",
     )
     parser.add_argument(
+        "--fit",
+        choices=FIT_LOSSES,
+        default=DEFAULT_FIT_LOSS,
+        help="Fit the daily medians' mean (least squares) or their median (least absolute deviations).",
+    )
+    parser.add_argument(
         "--hist-step", type=float, default=DEFAULT_HIST_STEP, help="Bin width of the bias histograms (K)."
     )
     parser.add_argument(
         "--time-block", type=int, default=DEFAULT_TIME_BLOCK, help="Days computed at once within a tile."
     )
-    add_ntasks_argument(parser, default=4, help_text="Grid tiles processed at once; each needs a few GB of memory.")
+    parser.add_argument(
+        "--tile",
+        type=int,
+        default=None,
+        help="Tile size in grid cells; by default the store's chunks, so each chunk is read once.",
+    )
+    add_ntasks_argument(
+        parser,
+        default=4,
+        help_text="Grid tiles processed at once; each holds one tile of every field for all days.",
+    )
     parser.add_argument(
         "--anon",
         default=True,
@@ -1705,6 +2205,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--no-anon", dest="anon", action="store_false", help="Read S3 with your AWS credentials.")
     parser.add_argument("--dpi", type=int, default=300, help="Resolution of the figures.")
+    parser.add_argument(
+        "--harmonics",
+        type=int,
+        default=DEFAULT_HARMONICS,
+        help="Harmonics of the year in the seasonal climatologies behind r2_ceiling and sigma_extra.",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """
+    Run the bias analysis from the command line.
+
+    Parameters
+    ----------
+    argv : sequence of str or None, optional
+        Command-line arguments without the program name.
+
+    Returns
+    -------
+    int
+        Exit code.
+    """
+    parser = _parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     output = args.output_path
@@ -1712,10 +2236,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     setup_logging(output / "carra2_bias_correction.log")
 
     outlines = read_vectors(args.outlines, anon=args.anon)
-    sites = read_vector(args.sites, anon=args.anon) if args.sites else None
     logger.info("%d outlines from %s", len(outlines), args.outlines)
 
-    hists, dailies, site_frames = [], [], []
+    hists, dailies = [], []
     for path in args.CARRA2:
         print(f"Reading {path}...", flush=True)
         ds = open_carra2(path, anon=args.anon)
@@ -1734,7 +2257,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             min_elevation=args.min_elevation,
             ntasks=args.ntasks,
             time_block=args.time_block,
+            tile=args.tile,
             progress=True,
+            harmonics=args.harmonics,
         )
         logger.info(
             "%s: %d of %d cells on glacier, %d left out as sea",
@@ -1745,20 +2270,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         hists.append(hist)
         dailies.append(daily_medians(hist, source))
-        if sites is not None:
-            frame = site_bias(ds, sites, below=args.below)
-            if frame is not None:
-                site_frames.append(frame.assign(source=source))
 
     annual = annual_histograms(hists)
     medians = binned_medians(annual)
     daily = pd.concat(dailies, ignore_index=True)
-    fits = fit_categories(daily, min_cells=args.min_cells, elevation_dependent=args.season == "elevation")
+    fits = fit_categories(
+        daily,
+        min_cells=args.min_cells,
+        elevation_dependent=args.season == "elevation",
+        loss=args.fit,
+        harmonics=args.harmonics,
+    )
+    variance = variance_by_elevation(annual)
+    if not fits.empty:
+        fits["sigma_extra"] = pooled_sigma_extra(fits, annual)
     cycle = seasonal_by_elevation(fits, annual["centre"].values)
+    halves, stability = half_record_stability(
+        daily,
+        min_cells=args.min_cells,
+        elevation_dependent=args.season == "elevation",
+        loss=args.fit,
+        harmonics=args.harmonics,
+    )
     medians.to_csv(output / "bias_by_elevation_medians.csv", index=False)
     daily.to_csv(output / "bias_daily_medians.csv", index=False)
     fits.to_csv(output / "bias_seasonal_fit.csv")
     cycle.to_csv(output / "bias_seasonal_by_elevation.csv", index=False)
+    variance.to_csv(output / "bias_variance_by_elevation.csv", index=False)
+    if not stability.empty:
+        halves.to_csv(output / "bias_seasonal_fit_halves.csv")
+        stability.to_csv(output / "bias_half_stability.csv")
     for name, figure in (
         ("bias_by_elevation.png", plot_bias_by_elevation(annual, medians, fits, bin_width=args.bin_width)),
         ("bias_seasonal_fit.png", plot_seasonal_fit(daily, fits, min_cells=args.min_cells)),
@@ -1766,21 +2307,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         figure.savefig(output / name, dpi=args.dpi)
         plt.close(figure)
 
-    if site_frames:
-        frame = pd.concat(site_frames, ignore_index=True)
-        frame.to_csv(output / "site_bias.csv", index=False)
-        for name, figure in (
-            ("site_bias_monthly.png", plot_sites_pooled(frame)),
-            ("site_bias_per_site.png", plot_sites(frame)),
-        ):
-            figure.savefig(output / name, dpi=args.dpi)
-            plt.close(figure)
-
     if not fits.empty:
-        columns = ["rmse", "r2", "bic", "best"]
+        columns = ["rmse", "mae", "r2", "r2_ceiling", "sigma_extra", "bic", "best"]
         print(fits[columns].round(3).to_string())
         for (category, model), fit in fits.iterrows():
             print(f"{category:11s} {model:11s} {fit['equation']}")
+    if not stability.empty:
+        first, second = stability[["years_first", "years_second"]].iloc[0]
+        print(f"Second half ({second}) minus first half ({first}) of the fitted bias, K:")
+        columns = ["rms_diff", "annual_rms_diff", "cycle_rms_diff", "max_abs_diff", "jja_diff"]
+        print(stability[columns].round(3).to_string())
     print(f"Results in {output}")
     return 0
 

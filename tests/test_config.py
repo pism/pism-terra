@@ -639,3 +639,15 @@ def test_no_config_carries_an_unknown_campaign_key(config_dir: Path):
         checked += 1
     # The glob found something to check.
     assert checked > 0
+
+
+def test_dict2str_drops_empty_file_options():
+    """
+    An empty ``*.file`` option keeps PISM's default; a bare flag would stop PISM ("requires an argument").
+    """
+    from pism_terra.workflow import dict2str  # pylint: disable=import-outside-toplevel
+
+    out = dict2str({"surface.debris.thickness.file": "", "regional": "", "input.file": "boot.nc"})
+    assert "surface.debris.thickness.file" not in out
+    assert "-regional " in out
+    assert "-input.file boot.nc" in out

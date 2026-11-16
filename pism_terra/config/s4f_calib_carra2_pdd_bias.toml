@@ -58,8 +58,8 @@ velocity = "none"
 'output.sizes.medium' = "sftgif,velsurf_mag,mask,usurf"
 'output.spatial.file' = "none"
 'output.spatial.stop_missing' = 'no'
-'output.spatial.times' = "monthly"
-'output.spatial.vars' = "effective_air_temp,effective_precipitation,ice_surface_temp,climatic_mass_balance,velsurf_mag,velbase_mag,mask,usurf,pdd_fluxes,mass_fluxes,ice_mass,thk"
+'output.spatial.times' = "weekly"
+'output.spatial.vars' = "effective_air_temp,effective_precipitation,usurf,pdd_fluxes,thk,ice_mass"
 
 [grid]
 
@@ -145,7 +145,7 @@ model = "pdd"
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
 'surface.pdd.refreeze_ice_melt' = "no"
-'surface.pdd.std_dev.value' = 5.0
+'surface.pdd.std_dev.value' = 1.0
 
 [surface.options.pdd_forcing]
 
@@ -159,7 +159,7 @@ model = "pdd"
 'surface.pdd.factor_snow' = 0.0032967032967033
 'surface.pdd.refreeze' = 0.6
 'surface.pdd.refreeze_ice_melt' = "no"
-'surface.pdd.std_dev.value' = 5.0
+'surface.pdd.std_dev.value' = 1.0
 
 [surface.options.debm_simple]
 
@@ -173,7 +173,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.value' = 5.0
+'surface.debm_simple.std_dev.value' = 1.0
 'surface.models' = "debm_simple"
 
 [surface.options.debm_simple_forcing]
@@ -194,7 +194,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.value' = 5.0
+'surface.debm_simple.std_dev.value' = 1.0
 'surface.force_to_thickness.alpha' = 0.98
 'surface.force_to_thickness.file' = "none"
 'surface.force_to_thickness.ice_free_alpha_factor' = 10
@@ -212,7 +212,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.value' = 5.0
+'surface.debm_simple.std_dev.value' = 1.0
 'surface.models' = "debm_simple"
 
 [surface.options.debm_enhanced_forcing]
@@ -227,7 +227,7 @@ model = "pdd"
 'surface.debm_simple.interpret_precip_as_snow' = "no"
 'surface.debm_simple.refreeze' = 0.6
 'surface.debm_simple.refreeze_ice_melt' = "no"
-'surface.debm_simple.std_dev.value' = 5.0
+'surface.debm_simple.std_dev.value' = 1.0
 'surface.force_to_thickness.alpha' = 0.98
 'surface.force_to_thickness.file' = "none"
 'surface.force_to_thickness.ice_free_alpha_factor' = 10
@@ -253,6 +253,15 @@ model = "given_carra2bias"
 
 [atmosphere.options.given_carra2bias]
 
+'atmosphere.carra2_bias.background' = 1.81
+'atmosphere.carra2_bias.cos' = -1.57
+'atmosphere.carra2_bias.cos_gradient' = 0.47
+'atmosphere.carra2_bias.excess' = 4.21
+'atmosphere.carra2_bias.scale_height' = 970.0
+'atmosphere.carra2_bias.sin' = -0.28
+'atmosphere.carra2_bias.sin_gradient' = 0.07
+'atmosphere.carra2_bias.z_max' = 5250
+'atmosphere.carra2_bias.z_min' = 1000
 'atmosphere.elevation_change.file' = "none"
 'atmosphere.elevation_change.periodic' = "yes"
 'atmosphere.elevation_change.temperature_lapse_rate' = 6.0

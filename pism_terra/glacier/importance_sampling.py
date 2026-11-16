@@ -32,11 +32,13 @@ from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 
+import geopandas as gpd
 import matplotlib as mpl
 import matplotlib.pylab as plt
 import numpy as np
 import pandas as pd
 import pint_xarray  # pylint: disable=unused-import
+import pyogrio
 import xarray as xr
 from tqdm.contrib.logging import logging_redirect_tqdm
 
@@ -317,7 +319,51 @@ def coverage(obs: xr.DataArray, sim: xr.DataArray, landice: xr.DataArray | None)
     return valid, glacier
 
 
-def plot_best_member(obs: xr.DataArray, best: xr.DataArray, title: str, filename: Path | str) -> None:
+def load_outline(path: Path | str, obs_file: Path | str) -> gpd.GeoDataFrame | None:
+    """
+    Read a staged outline and project it onto the observation grid.
+
+    Parameters
+    ----------
+    path : Path or str
+        Outline GeoPackage, e.g. the ``rgi_<rgi_id>-C.gpkg`` staged next to
+        the observations.
+    obs_file : Path or str
+        ``obs_<rgi_id>.nc``; its grid mapping gives the target CRS. Without
+        one the outline's own ``crs`` column (the CRS staging projects the
+        grid with) is used.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame or None
+        The outline in the grid's CRS, or None when the file is missing or
+        no CRS can be found.
+    """
+    path = Path(path)
+    if not path.is_file():
+        logger.info("no outline at %s; maps drawn without it", path)
+        return None
+    # pyogrio directly rather than gpd.read_file, which corrupts the heap on
+    # some envs (see pism_terra.glacier.stage).
+    outline = pyogrio.read_dataframe(path, use_arrow=False)
+    with xr.open_dataset(obs_file) as ds:
+        grid_mappings = {ds[v].attrs.get("grid_mapping") for v in ds.data_vars} - {None}
+        crs = next((ds[m].attrs.get("crs_wkt") for m in sorted(grid_mappings) if m in ds), None)
+    if crs is None and "crs" in outline:
+        crs = outline["crs"].iloc[0]
+    if crs is None:
+        logger.warning("%s: no CRS for the observation grid; maps drawn without the outline", path.name)
+        return None
+    return outline.to_crs(crs)
+
+
+def plot_best_member(
+    obs: xr.DataArray,
+    best: xr.DataArray,
+    title: str,
+    filename: Path | str,
+    outline: gpd.GeoDataFrame | None = None,
+) -> None:
     """
     Map the observed field, the best member and their difference.
 
@@ -331,6 +377,9 @@ def plot_best_member(obs: xr.DataArray, best: xr.DataArray, title: str, filename
         Title of the middle panel.
     filename : Path or str
         Output figure.
+    outline : geopandas.GeoDataFrame or None, optional
+        Outline in the grid's CRS (:func:`load_outline`), drawn on every
+        panel as a thin black line.
     """
     vmax = float(np.nanmax(np.abs(np.concatenate([np.ravel(obs.values), np.ravel(best.values)])))) * 1.0 / 2.0
     if not np.isfinite(vmax) or vmax == 0:
@@ -341,6 +390,12 @@ def plot_best_member(obs: xr.DataArray, best: xr.DataArray, title: str, filename
         mappable = None
         for ax, (field, label) in zip(axes, panels):
             mappable = field.plot(ax=ax, vmin=-vmax, vmax=vmax, cmap="RdBu", add_colorbar=False)
+            if outline is not None:
+                # Keep the field's extent should the outline reach past it.
+                xlim, ylim = ax.get_xlim(), ax.get_ylim()
+                outline.boundary.plot(ax=ax, color="k", lw=0.5)
+                ax.set_xlim(xlim)
+                ax.set_ylim(ylim)
             ax.set_title(label)
             ax.set_aspect("equal")
             ax.set_xlabel("")
@@ -371,6 +426,7 @@ def benchmark_glacier(
     bootstrap: bool = True,
     reduction: str = DEFAULT_REDUCTION,
     acf_threshold: float = DEFAULT_ACF_THRESHOLD,
+    outline: gpd.GeoDataFrame | None = None,
 ) -> tuple[xr.Dataset, pd.DataFrame, pd.DataFrame]:
     """
     Importance-sample and rank one glacier's ensemble, writing its outputs.
@@ -405,6 +461,9 @@ def benchmark_glacier(
     acf_threshold : float, optional
         Autocorrelation level that defines the decorrelation length, and with
         it the block side; lower values give longer blocks.
+    outline : geopandas.GeoDataFrame or None, optional
+        Glacier-complex outline in the grid's CRS, drawn on the best-member
+        maps.
 
     Returns
     -------
@@ -481,6 +540,7 @@ def benchmark_glacier(
                 best_field,
                 f"Best (uq_id={best}, RMSE={float(ranking['rmse_mean'].sel({MEMBER_DIM: best})):.2f})",
                 glacier_dir / f"importance_{sim_var}_best_rmse.png",
+                outline=outline,
             )
         for fudge_factor in weighted.fudge_factor.values:
             w = weighted["weights"].sel(fudge_factor=fudge_factor)
@@ -673,6 +733,7 @@ def benchmark_one(
         bootstrap=bootstrap,
         reduction=reduction,
         acf_threshold=acf_threshold,
+        outline=load_outline(obs_file.parent / f"rgi_{rgi_id}-C.gpkg", obs_file),
     )
     return result, summary, table, uq_df
 
