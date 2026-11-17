@@ -90,6 +90,7 @@ summer_school/cloud
 :hidden:
 
 s4f/inversion
+s4f/carra2_bias
 ```
 
 ```{toctree}
