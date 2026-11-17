@@ -99,3 +99,11 @@ mpiexec -n $SLURM_NTASKS apptainer run ${container} pism {{ run_str }}
 
 {{ dh_str }}
 {% endif %}
+
+{% if stakes_str %}
+# ###############################################################################
+# USGS STAKE EXTRACTION
+# ###############################################################################
+
+{{ stakes_str }}
+{% endif %}

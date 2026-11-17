@@ -101,3 +101,11 @@ mpiexec -n 1  apptainer run ${container} pism_async_writer -f : -n ${pismtasks} 
 
 {{ dh_str }}
 {% endif %}
+
+{% if stakes_str %}
+# ###############################################################################
+# USGS STAKE EXTRACTION
+# ###############################################################################
+
+{{ stakes_str }}
+{% endif %}

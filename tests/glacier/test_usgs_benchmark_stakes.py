@@ -25,6 +25,7 @@ placed on cell centres from the grid itself. No network access.
 """
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -658,3 +659,214 @@ def test_a_repeated_row_does_not_stop_the_dataset(caplog):
 
     assert float(out["ba_model"].sel(run="RGI1 id_0", site="AB", time=2000)) == -1.5
     assert "1 rows repeat a run, stake, year and season" in caplog.text
+
+
+def _release_points(stake_release: dict[str, Path]):
+    """
+    The sites of the synthetic release, as the benchmark builds them.
+
+    Parameters
+    ----------
+    stake_release : dict of str to Path
+        The synthetic release.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Stakes ``Foo:A`` and ``Foo:Z``.
+    """
+    sites = usgs.load_sites(stake_release["sites"])
+    tables = [usgs.load_measurements(stake_release["data"], "Foo", layer) for layer in ("stakes", "subseasonal")]
+    return ubs.stake_points(sites, tables)
+
+
+def _run_spatial_file(tmp_path: Path, **kwargs) -> Path:
+    """
+    A spatial file in a run's ``output/spatial/`` directory.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    **kwargs
+        Passed on to :func:`spatial_file`.
+
+    Returns
+    -------
+    Path
+        The file written.
+    """
+    spatial = tmp_path / "run" / "output" / "spatial"
+    spatial.mkdir(parents=True)
+    return spatial_file(spatial / "spatial_g100m_X_id_0_2000-01-01_2002-01-01.nc", **kwargs)
+
+
+def _sample(file: Path, stake_release: dict[str, Path], method: str = "nearest"):
+    """
+    The benchmark's per-file step on *file*.
+
+    Parameters
+    ----------
+    file : Path
+        Spatial file.
+    stake_release : dict of str to Path
+        The synthetic release.
+    method : str, default "nearest"
+        Sampling method.
+
+    Returns
+    -------
+    tuple or None
+        What :func:`ubs._sample_one_file` returns.
+    """
+    stakes = {"Foo": usgs.load_measurements(stake_release["data"], "Foo")}
+    subseasonal = {"Foo": usgs.load_measurements(stake_release["data"], "Foo", "subseasonal")}
+    points = _release_points(stake_release)
+    return ubs._sample_one_file(  # pylint: disable=protected-access
+        file, {file: "run"}, points, stakes, subseasonal, {}, method
+    )
+
+
+def test_stake_samples_sit_beside_the_spatial_directory():
+    """A run's stake file lives in ``output/stakes/`` under the spatial file's stem."""
+    path = ubs.stake_samples_path(Path("/r/output/spatial/spatial_g100m_X_id_0_2000-01-01_2002-01-01.nc"))
+    assert path == Path("/r/output/stakes/stakes_g100m_X_id_0_2000-01-01_2002-01-01.nc")
+
+
+@pytest.mark.parametrize("method", ["nearest", "linear"])
+def test_extracted_stakes_stand_in_for_the_spatial_file(tmp_path, stake_release, monkeypatch, method):
+    """
+    The benchmark gives the same balances from the stake file, without sampling the spatial file.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    stake_release : dict of str to Path
+        The synthetic release.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to skip the download and to forbid sampling.
+    method : str
+        Sampling method.
+    """
+    monkeypatch.setattr(ubs, "download_usgs_benchmark", lambda data_dir, force_overwrite=False: stake_release)
+    file = _run_spatial_file(tmp_path)
+    direct = _sample(file, stake_release, method)
+    assert ubs.extract_cli([str(file), "--data-path", str(tmp_path), "--method", method]) == 0
+    assert ubs.stake_samples_path(file).is_file()
+
+    def refuse(*args, **kwargs):
+        """
+        Stand in for :func:`ubs.sample_points` and fail.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Ignored.
+        """
+        raise AssertionError("the spatial file was sampled")
+
+    monkeypatch.setattr(ubs, "sample_points", refuse)
+    extracted = _sample(file, stake_release, method)
+    assert direct is not None and extracted is not None
+    pd.testing.assert_frame_equal(extracted[0]["Foo"], direct[0]["Foo"])
+    assert extracted[2] == direct[2]
+    xr.testing.assert_allclose(extracted[1]["Foo"].reset_coords(drop=True), direct[1]["Foo"].reset_coords(drop=True))
+
+
+def test_a_stake_file_that_does_not_answer_falls_back(tmp_path, stake_release, caplog):
+    """
+    Another sampling method, a moved stake or a newer spatial file mean reading the spatial file.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    stake_release : dict of str to Path
+        The synthetic release.
+    caplog : pytest.LogCaptureFixture
+        Fixture capturing the fallback messages.
+    """
+    file = _run_spatial_file(tmp_path)
+    points = _release_points(stake_release)
+    ubs.extract_stakes(file, points=points)
+    loaded = ubs.load_stake_samples(file, points, "nearest")
+    assert loaded is not None
+    status, sampled = loaded
+    assert status == "sampled" and sampled is not None and sampled["site"].values.tolist() == ["Foo:A", "Foo:Z"]
+    # A subset of the sites is answered from the same file.
+    loaded = ubs.load_stake_samples(file, points.iloc[:1], "nearest")
+    assert loaded is not None
+    _, sampled = loaded
+    assert sampled is not None and sampled["site"].values.tolist() == ["Foo:A"]
+
+    caplog.set_level("INFO", logger="pism_terra.glacier.usgs_benchmark_stakes")
+    assert ubs.load_stake_samples(file, points, "linear") is None
+    moved = points.copy()
+    moved.geometry = moved.geometry.translate(xoff=0.01)
+    assert ubs.load_stake_samples(file, moved, "nearest") is None
+    assert "sampled differently" in caplog.text
+
+    stake_file = ubs.stake_samples_path(file)
+    stamp = stake_file.stat().st_mtime
+    os.utime(file, (stamp + 10, stamp + 10))
+    assert ubs.load_stake_samples(file, points, "nearest") is None
+    assert "is older than" in caplog.text
+
+
+def test_runs_without_stakes_or_seasons_get_a_marker(tmp_path, stake_release):
+    """
+    Annual output and a grid without stakes are recorded, so the spatial file is never opened.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    stake_release : dict of str to Path
+        The synthetic release.
+    """
+    points = _release_points(stake_release)
+    annual = _run_spatial_file(tmp_path / "annual", monthly=False)
+    ubs.extract_stakes(annual, points=points)
+    assert ubs.load_stake_samples(annual, points, "nearest") == ("not_monthly", None)
+    assert _sample(annual, stake_release) is None
+
+    far = points.copy()
+    far.geometry = far.geometry.translate(xoff=5.0)
+    elsewhere = _run_spatial_file(tmp_path / "elsewhere")
+    ubs.extract_stakes(elsewhere, points=far)
+    assert ubs.load_stake_samples(elsewhere, far, "nearest") == ("sampled", None)
+
+
+def test_extraction_without_the_usgs_release_does_not_fail_the_job(tmp_path, monkeypatch, caplog):
+    """
+    A release that cannot be fetched leaves no stake file and exits 0.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Pytest temporary directory.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture used to fail the download.
+    caplog : pytest.LogCaptureFixture
+        Fixture capturing the warning.
+    """
+
+    def offline(data_dir, force_overwrite=False):
+        """
+        Stand in for the download and fail.
+
+        Parameters
+        ----------
+        data_dir : Path
+            Ignored.
+        force_overwrite : bool
+            Ignored.
+        """
+        raise OSError("no network")
+
+    monkeypatch.setattr(ubs, "download_usgs_benchmark", offline)
+    file = _run_spatial_file(tmp_path)
+    assert ubs.extract_cli([str(file), "--data-path", str(tmp_path / "cache")]) == 0
+    assert not ubs.stake_samples_path(file).exists()
+    assert "USGS sites unavailable" in caplog.text

@@ -435,6 +435,32 @@ def _dh_command(spatial_file: Path, output_path: Path, rgi_id: str, name_options
     )
 
 
+def _stakes_command(spatial_file: Path) -> str:
+    """
+    Build the per-run USGS stake extraction command.
+
+    Renders a ``pism-glacier-extract-stakes`` call that samples the run's
+    spatial output at every USGS benchmark stake and writes the series to
+    ``output/stakes/`` beside ``spatial/``. A spatial file holds one whole
+    grid per chunk, so reading a few stakes costs a pass over it; doing that
+    once in the job, while the file is fresh, spares
+    ``pism-glacier-usgs-benchmark-stakes`` (and ``pism-s4f-report``) from
+    re-reading every run's spatial file. A run without stakes in its grid
+    gets a small file saying so.
+
+    Parameters
+    ----------
+    spatial_file : pathlib.Path
+        The run's spatial output, the input to the extraction.
+
+    Returns
+    -------
+    str
+        The command line.
+    """
+    return f"pism-glacier-extract-stakes {spatial_file.resolve()}"
+
+
 def _postprocess_commands(
     spatial_file: Path,
     output_path: Path,
@@ -1065,6 +1091,7 @@ def _render_inverse_run(
         }
     )
     params.update({"dh_str": _dh_command(spatial_file, output_path, rgi_id, name_options)})
+    params.update({"stakes_str": _stakes_command(spatial_file)})
     # Jinja drops a variable the template never mentions, so a template
     # written for the other runner yields a script missing its main leg.
     check_template_legs(template_file, params)
@@ -1392,6 +1419,7 @@ def _render_forward_run(
         }
     )
     params.update({"dh_str": _dh_command(spatial_file, output_path, rgi_id, name_options)})
+    params.update({"stakes_str": _stakes_command(spatial_file)})
     # Jinja drops a variable the template never mentions, so a template
     # written for the other runner yields a script missing its main leg.
     check_template_legs(template_file, params)

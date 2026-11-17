@@ -21,16 +21,21 @@ Test glacier.run functions.
 
 from pathlib import Path
 
+import jinja2
+import jinja2.meta
 import pytest
 
+import pism_terra
 from pism_terra.glacier.run import (
     DH_END,
     DH_START,
     _dh_command,
     _nullable_string,
     _postprocess_commands,
+    _stakes_command,
     snapshot_project_file,
 )
+from pism_terra.glacier.usgs_benchmark_stakes import stake_samples_path
 
 
 @pytest.mark.parametrize(
@@ -132,6 +137,35 @@ def test_dh_filenames_stay_apart_across_ensemble_members():
 
     assert member_0.endswith(f"/out/dh/dh_RGI2000-v7.0-C-01-04374_id_0_uq_0_{DH_START}_{DH_END}.nc")
     assert member_0.rsplit(" ", 1)[-1] != member_1.rsplit(" ", 1)[-1]
+
+
+def test_stakes_command_samples_the_run_spatial_file():
+    """One stake extraction of the run's spatial file, written where the benchmark looks for it."""
+    command = _stakes_command(SPATIAL)
+
+    assert command == f"pism-glacier-extract-stakes {SPATIAL.resolve()}"
+    assert stake_samples_path(SPATIAL.resolve()).parent.name == "stakes"
+
+
+@pytest.mark.parametrize(
+    "template", ["chinook.j2", "chinook-apptainer.j2", "chinook-apptainer-async.j2", "debug.j2", "ec2.j2"]
+)
+def test_every_glacier_template_runs_the_stake_extraction(template):
+    """
+    Each template with the dh step also runs the stake extraction, after the main legs.
+
+    Jinja drops a slot a template never mentions, so a template without
+    ``stakes_str`` would quietly leave the benchmark reading every spatial file.
+
+    Parameters
+    ----------
+    template : str
+        Template file name.
+    """
+    text = (Path(pism_terra.__file__).parent / "templates" / template).read_text("utf-8")
+    assert "stakes_str" in jinja2.meta.find_undeclared_variables(jinja2.Environment().parse(text))
+    rendered = jinja2.Template(text).render(run_str="RUN", stakes_str="EXTRACT")
+    assert rendered.index("EXTRACT") > rendered.index("RUN")
 
 
 def test_snapshot_copies_and_is_idempotent(tmp_path: Path) -> None:

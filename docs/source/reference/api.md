@@ -252,7 +252,11 @@ Read the files PISM writes with `-profile` when `campaign.profile` is set
 
     find_spatial_files
     stake_points
+    all_stake_points
     sample_points
+    extract_stakes
+    load_stake_samples
+    stake_samples_path
     point_smb_rate
     first_measurement
     ends_before

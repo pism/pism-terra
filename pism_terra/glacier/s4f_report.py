@@ -408,7 +408,8 @@ def stake_method_note(output_dir: Path) -> dict[str, str]:
         "outline nearest their centroid within 5 km (<em>USGS glaciers matched to RGI</em>).</p>",
         "<h4>2. Model values at a stake</h4>",
         f"<p>Every monthly <code>spatial_*.nc</code> file under the run directory is read at the stakes, as "
-        f"{sampled}{n_files}; files that end before "
+        f"{sampled}{n_files}, from the run's <code>stakes/stakes_*.nc</code> written by "
+        "<code>pism-glacier-extract-stakes</code> in the job when there is one; files that end before "
         "the first measurement (initialisation legs) are left out. The surface mass balance rate is "
         f"<code>(surface_accumulation_flux &minus; surface_runoff_flux) / &rho;<sub>w</sub></code> with "
         f"&rho;<sub>w</sub> = {rho:g} kg m<sup>-3</sup>, in m w.e. per year; without those two fields, "

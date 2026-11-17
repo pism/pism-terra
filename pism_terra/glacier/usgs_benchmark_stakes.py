@@ -39,6 +39,7 @@ gradient plot per season with two-piece linear fits hinged at the ELA, and a
 NetCDF file into a ``<rgi_id>`` sub-directory.
 """
 
+import fcntl
 import json
 import logging
 import math
@@ -1416,6 +1417,217 @@ def to_dataset(table: pd.DataFrame, sampled: Sequence[xr.Dataset] = ()) -> xr.Da
     return drop_grid_mapping(out)
 
 
+#: Sub-directory of a run's ``output/`` that holds the per-run stake samples.
+STAKES_DIR = "stakes"
+
+#: Tolerance (degrees) for a stake to count as unchanged between the site
+#: list a stake file was extracted with and the one the benchmark uses.
+SITE_TOLERANCE_DEG = 1e-6
+
+
+def stake_samples_path(spatial_file: Path | str) -> Path:
+    """
+    Where the per-run stake samples of a spatial file live.
+
+    Parameters
+    ----------
+    spatial_file : Path or str
+        ``<output>/spatial/spatial_<stem>.nc``.
+
+    Returns
+    -------
+    pathlib.Path
+        ``<output>/stakes/stakes_<stem>.nc``, the sibling of ``spatial/``.
+    """
+    spatial_file = Path(spatial_file)
+    stem = spatial_file.name
+    stem = stem[len("spatial_") :] if stem.startswith("spatial_") else stem
+    return spatial_file.parent.parent / STAKES_DIR / f"stakes_{stem}"
+
+
+def all_stake_points(data_dir: Path | str = DEFAULT_DATA_DIR, force_overwrite: bool = False) -> gpd.GeoDataFrame:
+    """
+    Every measured site of the release, whatever RGI outline it matches.
+
+    The benchmark keeps the glaciers it can match to an outline; a run's
+    extraction does not know which those are, so it samples them all and
+    the benchmark picks its own afterwards.
+
+    Parameters
+    ----------
+    data_dir : Path or str, optional
+        Cache for the ScienceBase archives.
+    force_overwrite : bool, default False
+        Re-download the archives.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        The sites, as :func:`stake_points` returns them.
+    """
+    paths = download_usgs_benchmark(data_dir, force_overwrite=force_overwrite)
+    sites = load_sites(paths["sites"], skip=SKIPPED_GLACIERS)
+    tables = [
+        load_measurements(paths["data"], glacier, layer)
+        for glacier in sorted(sites["Glacier"].unique())
+        for layer in ("stakes", "subseasonal")
+    ]
+    return stake_points(sites, tables)
+
+
+def _site_list(points: gpd.GeoDataFrame) -> list[list[Any]]:
+    """
+    The sites of *points* as ``[site, lon, lat]`` rows.
+
+    Parameters
+    ----------
+    points : geopandas.GeoDataFrame
+        Sites from :func:`stake_points`.
+
+    Returns
+    -------
+    list of list
+        One row per site.
+    """
+    return [[str(s), float(g.x), float(g.y)] for s, g in zip(points["site"], points.geometry)]
+
+
+def extract_stakes(
+    spatial_file: Path | str,
+    outfile: Path | str | None = None,
+    *,
+    data_dir: Path | str = DEFAULT_DATA_DIR,
+    method: str = "nearest",
+    points: gpd.GeoDataFrame | None = None,
+) -> Path:
+    """
+    Sample one run's spatial file at every USGS stake and write the series.
+
+    Meant to run in the job right after PISM: a spatial file is chunked one
+    whole grid per time step, so a handful of stakes costs a pass over the
+    whole file, and doing that for every run at report time is the slow
+    part of the benchmark. The result is what :func:`sample_points`
+    returns, plus the site list it was sampled against, so the benchmark
+    can tell whether the file still answers its question (see
+    :func:`load_stake_samples`). A run without stakes in its grid, or
+    without monthly output, still gets a small file saying so, which spares
+    the benchmark from opening the spatial file at all.
+
+    Parameters
+    ----------
+    spatial_file : Path or str
+        The run's ``spatial_*.nc``.
+    outfile : Path or str or None, optional
+        Destination; defaults to :func:`stake_samples_path`.
+    data_dir : Path or str, optional
+        Cache for the ScienceBase archives.
+    method : {"nearest", "linear"}, optional
+        How the grid is sampled at a stake (see :func:`sample_points`).
+    points : geopandas.GeoDataFrame or None, optional
+        Sites to sample; defaults to :func:`all_stake_points`.
+
+    Returns
+    -------
+    pathlib.Path
+        The file written.
+    """
+    spatial_file = Path(spatial_file)
+    outfile = Path(outfile) if outfile is not None else stake_samples_path(spatial_file)
+    if points is None:
+        points = all_stake_points(data_dir)
+    attrs: dict[str, Any] = {
+        "source": str(spatial_file.resolve()),
+        "sampling": method,
+        "candidate_sites": json.dumps(_site_list(points)),
+    }
+    with open_pism(spatial_file) as ds:
+        if not is_monthly(ds["time"].values):
+            attrs["status"] = "not_monthly"
+            out = xr.Dataset(attrs=attrs)
+        else:
+            sampled = sample_points(ds, points, method=method)
+            if sampled is None:
+                attrs["status"] = "no_sites"
+                out = xr.Dataset(attrs=attrs)
+            else:
+                attrs["status"] = "sampled"
+                out = sampled.assign_attrs({**sampled.attrs, **attrs})
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+    partial = outfile.with_name(outfile.name + ".partial")
+    out.to_netcdf(partial, encoding=datetime_encoding(out))
+    partial.replace(outfile)
+    logger.info("%s: %s, %d site(s) -> %s", spatial_file.name, attrs["status"], out.sizes.get("site", 0), outfile)
+    return outfile
+
+
+def load_stake_samples(
+    spatial_file: Path | str, points: gpd.GeoDataFrame, method: str
+) -> tuple[str, xr.Dataset | None] | None:
+    """
+    The per-run stake samples of a spatial file, when they can stand in for it.
+
+    The file from :func:`extract_stakes` is used only when it is newer than
+    the spatial file, was sampled with the same *method*, and was sampled
+    against a site list holding every one of *points* at the same place.
+    Anything else falls back to reading the spatial file.
+
+    Parameters
+    ----------
+    spatial_file : Path or str
+        The run's ``spatial_*.nc``.
+    points : geopandas.GeoDataFrame
+        The benchmark's sites, from :func:`stake_points`.
+    method : {"nearest", "linear"}
+        The benchmark's sampling method.
+
+    Returns
+    -------
+    tuple or None
+        ``("not_monthly", None)``; ``("sampled", ds)`` with *points*' sites
+        inside the grid, ``ds`` being None when there are none; or None when
+        there is no usable file.
+    """
+    spatial_file = Path(spatial_file)
+    path = stake_samples_path(spatial_file)
+    if not path.is_file():
+        return None
+    if spatial_file.is_file() and spatial_file.stat().st_mtime > path.stat().st_mtime:
+        logger.info("%s is older than %s; reading the spatial file", path.name, spatial_file.name)
+        return None
+    try:
+        ds = open_pism(path)
+    except (OSError, ValueError) as exc:
+        logger.warning("%s cannot be read (%s); reading the spatial file", path, exc)
+        return None
+    with ds:
+        status = ds.attrs.get("status")
+        if status == "not_monthly":
+            return "not_monthly", None
+        candidates = {site: (lon, lat) for site, lon, lat in json.loads(ds.attrs.get("candidate_sites", "[]"))}
+        covered = all(
+            site in candidates
+            and abs(candidates[site][0] - lon) < SITE_TOLERANCE_DEG
+            and abs(candidates[site][1] - lat) < SITE_TOLERANCE_DEG
+            for site, lon, lat in _site_list(points)
+        )
+        if ds.attrs.get("sampling") != method or not covered:
+            logger.info("%s was sampled differently; reading the spatial file", path.name)
+            return None
+        if status != "sampled":
+            return "sampled", None
+        keep = np.isin(ds["site"].values, points["site"].to_numpy())
+        if not keep.any():
+            return "sampled", None
+        sampled = ds.isel(site=np.flatnonzero(keep)).load()
+    # Written as datetimes, the interval edges come back as cftime objects
+    # under ``open_pism``; the balances expect what sample_points made.
+    with xr.open_dataset(path) as plain:
+        sampled = sampled.assign_coords(
+            {name: ("time", pd.DatetimeIndex(plain[name].values)) for name in ("month_start", "month_end")}
+        )
+    return "sampled", sampled
+
+
 def _sample_one_file(
     file: Path,
     labels: Mapping[Path, str],
@@ -1462,18 +1674,25 @@ def _sample_one_file(
         file is not monthly or no stake falls inside its grid.
     """
     label = labels[Path(file)]
-    try:
-        ds = open_pism(file)
-    except (OSError, ValueError) as exc:
-        # One file that cannot be read -- truncated, or still being written --
-        # costs that run, not the benchmark of every other one.
-        logger.warning("%s: cannot be read (%s); skipping %s", label, exc, file)
-        return None
-    with ds:
-        if not is_monthly(ds["time"].values):
+    extracted = load_stake_samples(file, points, method)
+    if extracted is not None:
+        status, sampled = extracted
+        if status == "not_monthly":
             logger.info("%s: not monthly output; skipping", label)
             return None
-        sampled = sample_points(ds, points, method=method)
+    else:
+        try:
+            ds = open_pism(file)
+        except (OSError, ValueError) as exc:
+            # One file that cannot be read -- truncated, or still being written --
+            # costs that run, not the benchmark of every other one.
+            logger.warning("%s: cannot be read (%s); skipping %s", label, exc, file)
+            return None
+        with ds:
+            if not is_monthly(ds["time"].values):
+                logger.info("%s: not monthly output; skipping", label)
+                return None
+            sampled = sample_points(ds, points, method=method)
     if sampled is None:
         logger.info("%s: no stake inside the grid", label)
         return None
@@ -1580,6 +1799,14 @@ def run_pipeline(
                 "%d of them end before the first measurement (%s), e.g. init legs; left out", len(early), first.date()
             )
             files = [file for file in files if file not in early]
+    if files:
+        extracted = sum(stake_samples_path(file).is_file() for file in files)
+        logger.info(
+            "%d of %d spatial files have per-run stake samples (%s/); the rest are read in full",
+            extracted,
+            len(files),
+            STAKES_DIR,
+        )
     tables: dict[str, list[pd.DataFrame]] = {glacier: [] for glacier in stakes}
     samples: dict[str, list[xr.Dataset]] = {glacier: [] for glacier in stakes}
     ice_free: dict[tuple[str, str], int] = {}
@@ -1785,6 +2012,73 @@ def cli(argv: Sequence[str] | None = None) -> int:
     """
     _ = main(argv=argv)
     return 0
+
+
+def extract_cli(argv: Sequence[str] | None = None) -> int:
+    """
+    Console entry point of the per-run stake extraction.
+
+    Parameters
+    ----------
+    argv : sequence of str or None, optional
+        Command-line arguments (excluding the program name).
+
+    Returns
+    -------
+    int
+        Exit code (``0`` on success).
+    """
+    parser = ArgumentParser(
+        description="Sample one PISM spatial file at every USGS benchmark stake, for "
+        "pism-glacier-usgs-benchmark-stakes to read instead of the spatial file.",
+        formatter_class=ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("SPATIAL_FILE", help="The run's spatial_*.nc.")
+    parser.add_argument(
+        "--output", default=None, help="Destination; defaults to <output>/stakes/stakes_<stem>.nc beside spatial/."
+    )
+    parser.add_argument("--data-path", default=DEFAULT_DATA_DIR, help="Cache for the USGS archives.")
+    parser.add_argument("--method", choices=("nearest", "linear"), default="nearest", help="Stake sampling.")
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    # A job step: its log is the job's, so INFO goes to the console.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    data_dir = Path(args.data_path).expanduser()
+    try:
+        points = _locked_stake_points(data_dir)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        # Losing the stake file only costs the benchmark a slower read of the
+        # spatial file; it should not fail a job whose run has finished.
+        logger.warning("USGS sites unavailable (%s); no stake file written", exc)
+        return 0
+    extract_stakes(args.SPATIAL_FILE, args.output, method=args.method, points=points)
+    return 0
+
+
+def _locked_stake_points(data_dir: Path) -> gpd.GeoDataFrame:
+    """
+    :func:`all_stake_points`, one process at a time.
+
+    Every member of an ensemble finishes at about the same time, and the
+    first to find the cache empty would otherwise download and extract the
+    archives on top of the others.
+
+    Parameters
+    ----------
+    data_dir : pathlib.Path
+        Cache for the ScienceBase archives.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        The sites.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with open(data_dir / ".download.lock", "a", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        except OSError:
+            logger.info("%s does not support locks; reading the cache unlocked", data_dir)
+        return all_stake_points(data_dir)
 
 
 if __name__ == "__main__":
