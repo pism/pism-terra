@@ -1,0 +1,155 @@
+#!/bin/bash
+{#- ------------------------------------------------------------------------
+    NAS Electra Skylake (model=sky_ele: 2x20-core Xeon Gold 6148, 40 cores
+    per node), PBS Pro, PISM in an apptainer container with the host's
+    Intel MPI.
+
+    Queue: a NAS queue named in the config (normal, long, devel, debug, low)
+    is used as given. Anything else -- including a chinook partition such as
+    "t2small" left over in a shared config -- is replaced by the queue that
+    fits the walltime: "normal" up to 8 h, "long" beyond.
+------------------------------------------------------------------------- #}
+{%- set cores_per_node = 40 %}
+{%- set wt = walltime | default("08:00:00") %}
+{%- set wt_parts = wt.split(":") %}
+{%- set wt_seconds = (wt_parts[0] | int) * 3600 + (wt_parts[1] | int) * 60 + (wt_parts[2] | int) %}
+{%- set nas_queues = ["normal", "long", "devel", "debug", "low"] %}
+{%- if queue is defined and queue in nas_queues %}
+{%- set pbs_queue = queue %}
+{%- elif wt_seconds > 8 * 3600 %}
+{%- set pbs_queue = "long" %}
+{%- else %}
+{%- set pbs_queue = "normal" %}
+{%- endif %}
+{%- set n_tasks = ntasks | default((nodes | default(1)) * cores_per_node) | int %}
+{%- set n_nodes = nodes | default(((n_tasks + cores_per_node - 1) // cores_per_node)) | int %}
+#PBS -N pism
+#PBS -q {{ pbs_queue }}
+#PBS -l select={{ n_nodes }}:ncpus={{ cores_per_node }}:mpiprocs={{ cores_per_node }}:model=sky_ele
+#PBS -l place=scatter:excl
+#PBS -l walltime={{ wt }}
+#PBS -m abe
+#PBS -j oe
+#PBS -o {{ output_path }}/
+# With more than one project (GID), charge the right one at submit time:
+#   qsub -W group_list=sXXXX <this script>
+
+# Abort on the first failing leg. Without this a leg that dies still leaves
+# the next one to start on a missing input file — and pismi, whose Python
+# driver has no top-level catch, then deadlocks in MPI_Finalize and holds
+# the nodes until the job is cancelled.
+set -e
+
+module purge
+module load apptainer/x86-toss4 comp-intel/2023.2.1
+# NAS has no Intel MPI module; it ships with the oneAPI tree. 2021.x keeps
+# its ABI, so this runs a container built against an older 2021 release.
+source /nasa/intel/oneapi/mpi/2021.17/env/vars.sh
+
+# Honour a container passed in from the submitting environment. Unlike
+# SLURM, PBS does not carry the submitting environment into the job, so pass
+# it explicitly:  qsub -v container=/path/to/image.sif <this script>
+#
+# The compute nodes have no squashfuse, so apptainer unpacks a .sif into a
+# temporary sandbox once per rank at every launch. Converting once into a
+# sandbox directory avoids that, and a directory is accepted here as well:
+#   apptainer build --sandbox /nobackup/$USER/pism-ismip7 pism-ismip7.sif
+export container="${container:-/nobackup/$USER/pism-ismip7.sif}"
+if [ ! -e "${container}" ]; then
+    echo "Container ${container} not found." >&2
+    echo "Override it with: qsub -v container=/path/to/image.sif <this script>" >&2
+    exit 1
+fi
+echo "Using container ${container}"
+
+umask 007
+
+cd "$PBS_O_WORKDIR"
+
+# conda's udunits2/libz activation hooks export host paths that are invalid
+# inside the apptainer container (=> "ut_read_xml() failed"). Drop them so the
+# container uses its own udunits2.xml. Keeps working even if the env is active.
+unset UDUNITS2_XML_PATH UDUNITS2_XML_DIR LD_PRELOAD
+
+{% if n_nodes == 1 -%}
+# Single node: shared memory only. The libfabric bundled with the container's
+# Intel MPI has no mlx provider, and one node needs no network anyway.
+export I_MPI_FABRICS=shm
+{%- else -%}
+# Multi-node: shared memory within a node, libfabric between nodes. The
+# container's bundled libfabric has no mlx provider; if MPI_Init fails in
+# fi_getinfo(), try  FI_PROVIDER=verbs  (or tcp to rule out the fabric).
+export I_MPI_FABRICS=shm:ofi
+{%- endif %}
+export I_MPI_PIN_DOMAIN=core
+
+ulimit -l unlimited || true
+ulimit -s unlimited || true
+ulimit
+
+{% if output_dirs %}
+# Output directories. A run staged through S3 arrives without them (a bucket
+# keeps no empty directories) and PISM does not create them itself.
+mkdir -p {{ output_dirs | join(" ") }}
+{% endif %}
+
+
+# Spread PISM's output over several OSTs before anything is written. /nobackup
+# is Lustre; this stops a single writer's throughput from depending on which
+# OST it happened to land on: see docs/source/developer/lustre_striping.md.
+# ``{{ output_path }}`` is the *logs* directory (used for -o above) and the
+# output tree is its sibling; the run's subdirectories already exist, so each
+# needs its own layout. Inert where there is no Lustre client.
+command -v lfs >/dev/null 2>&1 && find "$(dirname "{{ output_path }}")/output" -type d \
+    -exec lfs setstripe -c 8 {} \; 2>/dev/null || true
+
+NTASKS={{ n_tasks }}
+pismtasks=$(( NTASKS - 4 ))
+
+{% if run_init_str %}
+# ###############################################################################
+# INIT RUN
+# ###############################################################################
+
+mpiexec -n 1  apptainer run ${container} pism_async_writer -f : -n ${pismtasks} apptainer run ${container} pism {{ run_init_str }} -output.asynchronous
+{% endif %}
+
+{% if inv_str %}
+# ###############################################################################
+# INVERSION RUN
+# ###############################################################################
+
+mpiexec -n  ${NTASKS} apptainer run  ${container} pismi {{ inv_str }}
+{% endif %}
+
+{% if run_str %}
+# ###############################################################################
+# FORWARD RUN
+# ###############################################################################
+
+mpiexec -n 1  apptainer run ${container} pism_async_writer -f : -n ${pismtasks} apptainer run ${container} pism {{ run_str }} -output.asynchronous
+{% endif %}
+
+{% if post_process_str %}
+# ###############################################################################
+# POSTPROCESSING RUN
+# ###############################################################################
+
+{{ post_process_str }}
+{% endif %}
+
+{% if dh_str %}
+# ###############################################################################
+# DH POSTPROCESSING RUN
+# ###############################################################################
+
+{{ dh_str }}
+{% endif %}
+
+{% if stakes_str %}
+# ###############################################################################
+# USGS STAKE EXTRACTION
+# ###############################################################################
+
+{{ stakes_str }}
+{% endif %}
