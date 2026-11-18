@@ -246,7 +246,7 @@ model = "given_carra2bias"
 
 'atmosphere.elevation_change.file' = "none"
 'atmosphere.elevation_change.periodic' = "yes"
-'atmosphere.elevation_change.temperature_lapse_rate' = 6.0
+'atmosphere.elevation_change.temperature_lapse_rate' = 6.5
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = "yes"
 'atmosphere.models' = "given,elevation_change"
@@ -264,7 +264,7 @@ model = "given_carra2bias"
 'atmosphere.carra2_bias.z_min' = 1000
 'atmosphere.elevation_change.file' = "none"
 'atmosphere.elevation_change.periodic' = "yes"
-'atmosphere.elevation_change.temperature_lapse_rate' = 6.0
+'atmosphere.elevation_change.temperature_lapse_rate' = 6.5
 'atmosphere.given.file' = "none"
 'atmosphere.given.periodic' = "yes"
 'atmosphere.models' = "given,elevation_change,carra2_bias"
