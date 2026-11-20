@@ -87,6 +87,8 @@ ulimit -l unlimited || true
 ulimit -s unlimited || true
 ulimit
 
+source activate pism-terra
+
 {% if output_dirs %}
 # Output directories. A run staged through S3 arrives without them (a bucket
 # keeps no empty directories) and PISM does not create them itself.
